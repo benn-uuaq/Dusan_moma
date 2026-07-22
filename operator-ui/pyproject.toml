@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smr-operator-ui"
+version = "0.1.0"
+description = "PyQt6 operator console for the SMR nondestructive inspection robot"
+requires-python = ">=3.10"
+dependencies = ["PyQt6>=6.7,<7", "psycopg[binary]>=3.2,<4"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-qt>=4.4"]
+
+[project.scripts]
+smr-operator-ui = "smr_operator_ui.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+smr_operator_ui = ["styles/*.qss", "resources/*.ttf", "resources/*.png"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyqt6"

@@ -67,21 +67,27 @@
 
 | 작성일 | 제목 | 파일 | 상태 |
 | --- | --- | --- | --- |
-| 2026-06-16 | UT 시스템 구성 문의서 | `requests/docx/2026-06-16_UT시스템_구성_문의서.docx` | 문의 준비 |
-| 2026-06-16 | 문의사항 관리표 | `requests/xlsx/이로운솔루션_문의사항_관리표.xlsx` | 관리 준비 |
-| 2026-06-16 | UT 시스템 구성 원본 이미지 | `requests/images/2026-06-16_ut_system_configuration_source.png` | 보관 |
-| 2026-06-16 | UT 시스템 구성 문의 Markdown 초안 | `requests/2026-06-16_ut_system_configuration_questions.md` | 참고용 |
+| 2026-06-16 | UT 시스템 구성 문의서 | `docx/2026-06-16_UT시스템_구성_문의서.docx` | 문의 준비 |
+| 2026-06-16 | 문의사항 관리표 | `xlsx/이로운솔루션_문의사항_관리표.xlsx` | 관리 준비 |
+| 2026-06-16 | UT 시스템 구성 원본 이미지 | `images/2026-06-16_ut_system_configuration_source.png` | 보관 |
+| 2026-06-16 | UT 시스템 구성 문의 Markdown 초안 | `2026-06-16_ut_system_configuration_questions.md` | 참고용 |
+| 2026-06-16 | 수행계획서 Form | `pptx/소형원자로_비파괴검사_수행계획서_폼.pptx` | 작성 준비 |
+| 2026-06-12 | 로봇 시스템 구매사양서 | `이로운솔루션_3S_Robotics_로봇시스템_구매사양서_v.1.0.pdf` | 반영 완료 |
+| 2026-06-16 | 로봇 시스템 구매사양서 추출 텍스트 | `이로운솔루션_3S_Robotics_로봇시스템_구매사양서_v.1.0.extracted.txt` | 참고용 |
 
 ## 권장 파일 구조
 
 ```text
-requests/
   docx/
     공식 문의서, 회신 요청서
   xlsx/
     문의사항 관리표, 회신 상태 추적표
   images/
     원본 이미지, 캡처, 도면 참고 이미지
+  pptx/
+    수행계획서, 발표자료, 구성 설명 자료
+  pdf/
+    외부 수신/발주/계약 관련 원본 문서
 ```
 
 ## 변경 요청 기록 양식

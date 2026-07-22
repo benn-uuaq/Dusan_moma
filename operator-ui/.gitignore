@@ -1,0 +1,11 @@
+.deps/
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+artifacts/*.png
+build/
+dist/
+pyinstaller-spec/
+*.spec
+gallery-site/

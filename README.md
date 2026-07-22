@@ -33,6 +33,7 @@
 - [안전 및 리스크 관리](docs/06_safety_risk.md)
 - [데이터 관리 계획](docs/07_data_management.md)
 - [AMR 수동 이동 및 아웃트리거 수평 보정](docs/08_amr_leveling_and_outrigger.md)
+- [로봇 시스템 구매사양서 반영 정리](docs/09_robot_system_purchase_spec.md)
 - [이로운 솔루션 요청사항 관리](docs/erounsolution_requests/README.md)
 - [회의록](docs/meeting_notes.md)
 - [작업 로그](docs/work_log.md)

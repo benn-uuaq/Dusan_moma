@@ -1,0 +1,47 @@
+* { font-family: "Malgun Gothic", "Noto Sans KR", sans-serif; color: #17212B; font-size: 20px; }
+QMainWindow, QWidget#AppRoot { background: #F4F7FA; }
+QFrame#TopBar { background: #0070C0; border: 0; }
+QFrame#TopBar QLabel { color: white; background: transparent; }
+QLabel#Brand { font-size: 26px; font-weight: 700; }
+QLabel#Product { font-size: 20px; font-weight: 600; }
+QLabel#TopMeta { font-size: 20px; }
+QFrame#Surface { background: #FFFFFF; border: 1px solid #D4DCE5; border-radius: 8px; }
+QFrame#RightRail { background: #F7FAFD; border-left: 1px solid #D4DCE5; }
+QLabel#SectionTitle { color: #00599A; font-size: 20px; font-weight: 700; }
+QLabel#HeroValue { color: #0070C0; font-size: 34px; font-weight: 700; }
+QLabel#HeroCurrent { color: #F5A000; font-size: 40px; font-weight: 700; }
+QLabel#MetricLabel { color: #607080; font-size: 20px; }
+QLabel#MetricValue { color: #0070C0; font-size: 20px; font-weight: 700; }
+QLabel#Muted { color: #607080; }
+QLabel#StatusGood { color: #198754; font-weight: 700; }
+QLabel#StatusWarn { color: #F5A000; font-weight: 700; }
+QLabel#StatusDanger { color: #D32F2F; font-weight: 700; }
+QLineEdit#KeypadDisplay { min-height: 64px; padding: 0 16px; border: 2px solid #0070C0; border-radius: 7px; background: #FFFFFF; color: #17212B; font-size: 28px; font-weight: 700; }
+QPushButton { min-height: 64px; border: 1px solid #0070C0; border-radius: 7px; background: #FFFFFF; color: #0070C0; font-size: 20px; font-weight: 700; padding: 0 18px; }
+QPushButton:hover { background: #EAF5FD; }
+QPushButton:pressed { background: #D9EEFB; }
+QPushButton:disabled { border-color: #B7C1CB; color: #8A97A3; background: #EFF2F5; }
+QPushButton#PrimaryButton { min-height: 82px; background: #0070C0; color: #FFFFFF; border: 0; font-size: 28px; }
+QPushButton#PrimaryButton:hover { background: #00599A; }
+QPushButton#PauseButton { min-height: 64px; }
+QPushButton#DangerButton { color: #D32F2F; border-color: #D32F2F; }
+QFrame#SequenceStep { background: #FFFFFF; border: 1px solid #D4DCE5; border-radius: 7px; }
+QFrame#SequenceStep[active="true"] { background: #EAF5FD; border: 2px solid #0070C0; }
+QFrame#CycleRow { border-bottom: 1px solid #D4DCE5; }
+QTableWidget { background: white; gridline-color: #D4DCE5; border: 1px solid #D4DCE5; selection-background-color: #EAF5FD; }
+QHeaderView::section { background: #EAF5FD; color: #00599A; padding: 8px; border: 0; border-bottom: 1px solid #D4DCE5; font-weight: 700; }
+
+/* Touch-sized settings screens */
+QWidget#SettingsScreen QLabel#HeroValue { font-size: 32px; font-weight: 700; }
+QWidget#SettingsScreen QLabel#SectionTitle { font-size: 24px; font-weight: 700; }
+QWidget#SettingsScreen QLabel#SettingsFieldLabel { font-size: 18px; font-weight: 600; }
+QWidget#SettingsScreen QWidget#SettingsInput { min-height: 64px; font-size: 20px; font-weight: 600; }
+QWidget#SettingsScreen QLineEdit#SettingsInput,
+QWidget#SettingsScreen QSpinBox#SettingsInput,
+QWidget#SettingsScreen QDoubleSpinBox#SettingsInput,
+QWidget#SettingsScreen QComboBox#SettingsInput { padding: 0 14px; }
+QWidget#SettingsScreen QCheckBox#SettingsInput { spacing: 12px; font-size: 18px; }
+QWidget#SettingsScreen QPushButton { min-height: 64px; padding-left: 24px; padding-right: 24px; font-size: 20px; font-weight: 700; }
+QWidget#SettingsScreen QPushButton#SettingsTile { min-height: 120px; }
+QWidget#SettingsScreen QPushButton#PrimarySettingsButton { min-height: 72px; font-size: 22px; background: #0070C0; color: #FFFFFF; border: 0; }
+QWidget#SettingsScreen QPushButton#PrimarySettingsButton:hover { background: #00599A; }

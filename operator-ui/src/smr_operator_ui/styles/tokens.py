@@ -1,0 +1,15 @@
+COLORS = {
+    "primary": "#0070C0",
+    "primary_dark": "#00599A",
+    "secondary": "#00B0F0",
+    "background": "#F4F7FA",
+    "surface": "#FFFFFF",
+    "surface_alt": "#F7FAFD",
+    "text": "#17212B",
+    "muted": "#607080",
+    "border": "#D4DCE5",
+    "success": "#198754",
+    "warning": "#F5A000",
+    "danger": "#D32F2F",
+    "pending": "#D9DEE5",
+}

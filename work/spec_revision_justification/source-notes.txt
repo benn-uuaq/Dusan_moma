@@ -1,0 +1,6 @@
+Source 1: docs/erounsolution_requests/requests/이로운솔루션_3S_Robotics_로봇시스템_구매사양서_v.1.0.pdf
+Source 2: docs/09_robot_system_purchase_spec.md
+Source 3: docs/02_requirements.md
+Source 4: docs/03_system_architecture.md
+Source 5: docs/06_safety_risk.md
+Source 6: user-requested operating model: external manual, internal automatic, no simultaneous AMR+cobot motion
