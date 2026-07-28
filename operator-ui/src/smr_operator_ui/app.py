@@ -1,9 +1,13 @@
+"""애플리케이션 초기화, 최상위 화면 전환, 서비스 연결을 담당한다."""
+
 from __future__ import annotations
 
 import os
 import sys
 from datetime import datetime
 from importlib.resources import files
+from math import isfinite
+from typing import Any
 
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QFontDatabase
@@ -24,11 +28,18 @@ from smr_operator_ui.screens import (
     MainScreen, ManualScreen, ModeSlotsScreen, RunScreen, SettingsMenuScreen,
     SystemSettingsScreen, UTSettingsScreen,
 )
-from smr_operator_ui.services import InspectionSimulator, SettingsService
+from smr_operator_ui.services import (
+    InspectionSimulator,
+    MqttServer,
+    MqttTopics,
+    SettingsService,
+)
 from smr_operator_ui.styles import load_stylesheet
 
 
 class TopBar(QFrame):
+    """제품 정보와 시스템 요약 상태를 항상 표시하는 상단 바."""
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("TopBar")
@@ -45,7 +56,7 @@ class TopBar(QFrame):
         layout.addStretch()
         self.clock = QLabel()
         self.clock.setObjectName("TopMeta")
-        self.clock.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.clock.setAlignment(Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.clock)
         for name in ("PLC", "AMR", "Cobot", "UT"):
             layout.addWidget(ConnectionBadge(name))
@@ -58,16 +69,24 @@ class TopBar(QFrame):
         self._update_clock()
 
     def _update_clock(self) -> None:
+        """운영자에게 표시되는 현재 날짜와 시각을 갱신한다."""
         now = datetime.now()
-        self.clock.setText(now.strftime("날짜  %Y-%m-%d (%a)\n시간  %H:%M:%S  Asia/Seoul"))
+        self.clock.setText(now.strftime("날짜  %Y-%m-%d (%a)\n시간  %H:%M:%S"))
 
 
 class OperatorWindow(QMainWindow):
-    def __init__(self) -> None:
+    """화면 스택을 소유하고 UI·시뮬레이터·설정 서비스를 조정한다."""
+
+    def __init__(
+        self,
+        mqtt_server: MqttServer | None = None,
+        *,
+        start_mqtt: bool = True,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("3S-Robotics | SMR Operator Console")
         self.resize(1280, 720)
-        self.setMinimumSize(1024, 576)
+        self.setMinimumSize(1280, 720)
         root = QWidget()
         root.setObjectName("AppRoot")
         layout = QVBoxLayout(root)
@@ -80,7 +99,10 @@ class OperatorWindow(QMainWindow):
 
         self.simulator = InspectionSimulator(self)
         self.settings_service = SettingsService(self)
+        self.mqtt_server = mqtt_server or MqttServer(parent=self)
         self.main_screen = MainScreen()
+        # 화면 키를 탐색 시그널에도 사용하여, 화면 전환 로직이 구체적인
+        # QWidget 인스턴스에 직접 의존하지 않게 한다.
         self.screens = {
             "main": self.main_screen,
             "manual": ManualScreen(), "run": RunScreen(),
@@ -111,6 +133,8 @@ class OperatorWindow(QMainWindow):
         self.simulator.activity.connect(self.main_screen.show_activity)
         self.main_screen.update_snapshot(self.simulator.snapshot)
 
+        # FormScreen 기반 화면만 settings_scope를 제공한다. 이 조회표를 한 번
+        # 구성해 두면 서비스 콜백이 결과를 전달할 화면을 빠르게 찾을 수 있다.
         self._settings_screens = {
             screen.settings_scope: screen
             for screen in self.screens.values()
@@ -124,7 +148,18 @@ class OperatorWindow(QMainWindow):
         for scope in (*self._settings_screens.keys(), "inspection_target"):
             self.settings_service.load(scope)
 
+        # Paho 네트워크 스레드에서 수신한 명령은 Qt 시그널을 통해 GUI
+        # 스레드의 이 처리기로 전달된다.
+        self.mqtt_server.command_received.connect(self._handle_mqtt_command)
+        self.mqtt_server.connected_changed.connect(
+            self._show_mqtt_connection_state
+        )
+        self.mqtt_server.error_occurred.connect(self._show_mqtt_error)
+        if start_mqtt:
+            self.mqtt_server.start()
+
     def _apply_stored_settings(self, scope: str, values: dict) -> None:
+        """DB 조회 결과를 해당 설정 범위의 소유 화면으로 전달한다."""
         if scope == "inspection_target":
             if "diameter_m" in values and "height_m" in values:
                 self.main_screen.orbit_view.set_target_dimensions(
@@ -136,6 +171,7 @@ class OperatorWindow(QMainWindow):
             screen.apply_values(values)
 
     def _mark_settings_saved(self, scope: str) -> None:
+        """PostgreSQL 저장 완료 후 해당 화면의 상태를 갱신한다."""
         screen = self._settings_screens.get(scope)
         if screen is not None:
             screen.mark_saved()
@@ -143,31 +179,125 @@ class OperatorWindow(QMainWindow):
             self.main_screen.show_activity("검사 대상 크기를 PostgreSQL에 저장했습니다.")
 
     def _show_settings_error(self, scope: str, message: str) -> None:
+        """Python 스택 추적을 노출하지 않고 저장소 오류를 표시한다."""
         screen = self._settings_screens.get(scope)
         if screen is not None:
             screen.show_storage_error(message)
         elif scope == "inspection_target":
             self.main_screen.show_activity(f"설정 저장소 오류: {message}")
 
+    def _handle_mqtt_command(
+        self,
+        topic: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """수신 MQTT 명령을 검사대상 설정과 검사 사이클에 반영한다."""
+        if topic == MqttTopics.JOB_COMMAND:
+            self._apply_mqtt_job_info(payload)
+            return
+
+        if topic != MqttTopics.MC_COMMAND:
+            return
+
+        amr_command = payload.get("amr")
+        if amr_command == "run":
+            self.simulator.start_cycle()
+        elif amr_command in {"stop", "ems"}:
+            # MQTT 명령은 재전송될 수 있으므로 토글이 아닌 멱등적인
+            # 일시정지 API를 사용한다.
+            self.simulator.pause_cycle()
+
+    def _apply_mqtt_job_info(self, payload: dict[str, Any]) -> None:
+        """Job 치수를 mm에서 m로 변환해 화면과 저장소에 반영한다."""
+        try:
+            job_info = payload["job_info"]
+            diameter_mm = float(str(job_info["diameter"]).strip())
+            height_mm = float(str(job_info["height"]).strip())
+            thickness_mm = float(str(job_info["thickness"]).strip())
+            target_distance_mm = float(
+                str(job_info["target_distance"]).strip()
+            )
+            values_mm = (
+                diameter_mm,
+                height_mm,
+                thickness_mm,
+                target_distance_mm,
+            )
+            if any(not isfinite(value) or value <= 0 for value in values_mm):
+                raise ValueError("검사대상 치수는 0보다 큰 유한한 값이어야 합니다.")
+        except (KeyError, TypeError, ValueError) as exc:
+            self.main_screen.show_activity(
+                f"MQTT Job 정보 적용 실패: {exc}"
+            )
+            return
+
+        diameter_m = diameter_mm / 1000.0
+        height_m = height_mm / 1000.0
+        self.main_screen.set_target_dimensions(diameter_m, height_m)
+        self.settings_service.save(
+            "inspection_target",
+            {
+                "job_id": str(payload.get("job_id", "")),
+                "diameter_m": diameter_m,
+                "height_m": height_m,
+                "thickness_m": thickness_mm / 1000.0,
+                "target_distance_m": target_distance_mm / 1000.0,
+            },
+        )
+        self.main_screen.show_activity(
+            "MQTT Job 정보를 검사대상 설정에 적용했습니다. "
+            f"(지름 {diameter_m:.2f} m, 높이 {height_m:.2f} m)"
+        )
+
+    def _show_mqtt_connection_state(self, connected: bool) -> None:
+        """MQTT Broker 연결 상태를 메인 화면 활동 문구로 표시한다."""
+        message = (
+            "MQTT Broker에 연결되었습니다."
+            if connected
+            else "MQTT Broker 연결이 종료되었습니다."
+        )
+        self.main_screen.show_activity(message)
+
+    def _show_mqtt_error(self, message: str) -> None:
+        """MQTT 오류를 메인 화면에 간단한 운영 메시지로 표시한다."""
+        self.main_screen.show_activity(f"MQTT 오류: {message}")
+
     def navigate(self, key: str) -> None:
+        """새 화면을 열고 이전 화면 복귀를 위해 현재 화면을 기록한다."""
         screen = self.screens.get(key)
         if screen is None or key == self._current_screen_key:
             return
-        self._navigation_history.append(self._current_screen_key)
+
+        if key == "main":
+            # 메인 화면은 탐색의 기준점이므로 이전 경로를 남기지 않는다.
+            self._navigation_history.clear()
+        else:
+            self._navigation_history.append(self._current_screen_key)
+
         self._current_screen_key = key
         self.stack.setCurrentWidget(screen)
 
     def navigate_back(self) -> None:
+        """탐색 기록이 있으면 가장 최근에 방문한 화면으로 돌아간다."""
         if not self._navigation_history:
             return
         key = self._navigation_history.pop()
         screen = self.screens.get(key)
         if screen is not None:
+            if key == "main":
+                # 이전 버튼으로 메인에 도착한 경우에도 오래된 경로를 제거한다.
+                self._navigation_history.clear()
             self._current_screen_key = key
             self.stack.setCurrentWidget(screen)
 
+    def closeEvent(self, event) -> None:  # noqa: N802
+        """창 종료 전에 MQTT 네트워크 루프를 정리한다."""
+        self.mqtt_server.stop()
+        super().closeEvent(event)
+
 
 def create_application(argv: list[str] | None = None) -> QApplication:
+    """QApplication을 생성하거나 재사용하고 공통 글꼴과 QSS를 적용한다."""
     app = QApplication.instance() or QApplication(argv or sys.argv)
     app.setApplicationName("SMR Operator UI")
     app.setStyle("Fusion")
@@ -179,6 +309,7 @@ def create_application(argv: list[str] | None = None) -> QApplication:
 
 
 def main() -> int:
+    """Qt 이벤트 루프를 실행하고 프로세스 종료 코드를 반환한다."""
     if "--offscreen" in sys.argv:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = create_application()

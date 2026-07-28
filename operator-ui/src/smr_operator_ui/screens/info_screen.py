@@ -1,8 +1,12 @@
+"""간단한 보조 페이지에서 재사용하는 정보 화면이다."""
+
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
 
 class InfoScreen(QWidget):
+    """제목과 설명 및 공통 이전 화면 버튼을 표시한다."""
+
     back_requested = pyqtSignal()
 
     def __init__(self, title: str, description: str, parent=None) -> None:

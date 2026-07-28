@@ -1,1 +1,1 @@
-"""Bundled runtime resources."""
+"""실행 시 사용하는 패키지 내장 리소스."""

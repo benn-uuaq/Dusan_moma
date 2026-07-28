@@ -1,3 +1,5 @@
+"""운영 화면에서 공통으로 사용하는 소형 위젯을 제공한다."""
+
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
@@ -5,6 +7,8 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 
 class ConnectionBadge(QFrame):
+    """장비 이름과 연결 상태를 간결하게 표시한다."""
+
     def __init__(self, name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -20,6 +24,8 @@ class ConnectionBadge(QFrame):
 
 
 class MetricRow(QFrame):
+    """검사 및 장비의 실시간 수치를 항목명과 값으로 표시한다."""
+
     def __init__(self, label: str, value: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("CycleRow")
@@ -36,10 +42,13 @@ class MetricRow(QFrame):
         self.setMinimumHeight(38)
 
     def set_value(self, value: str) -> None:
+        """행을 다시 만들지 않고 표시값만 변경한다."""
         self.value_label.setText(value)
 
 
 class SequenceStep(QFrame):
+    """구간마다 반복되는 안전 순서의 한 단계를 표시한다."""
+
     def __init__(self, number: int, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("SequenceStep")
@@ -57,6 +66,7 @@ class SequenceStep(QFrame):
         self.setMinimumHeight(66)
 
     def set_active(self, active: bool) -> None:
+        """동적 QSS 속성을 변경하고 스타일을 즉시 다시 계산한다."""
         self.setProperty("active", active)
         self.style().unpolish(self)
         self.style().polish(self)

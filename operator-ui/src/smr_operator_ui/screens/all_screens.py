@@ -1,3 +1,5 @@
+"""보조 운영 화면과 PostgreSQL 기반 공통 설정 폼을 제공한다."""
+
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -11,6 +13,8 @@ from smr_operator_ui.keypad import TouchDoubleSpinBox, TouchLineEdit, TouchSpinB
 
 
 class BaseScreen(QWidget):
+    """제목, 본문, 이전 화면 요청을 제공하는 공통 보조 화면 틀."""
+
     navigate = pyqtSignal(str)
     back_requested = pyqtSignal()
 
@@ -33,6 +37,7 @@ class BaseScreen(QWidget):
         self.body.addLayout(head)
 
     def surface(self, title: str) -> tuple[QFrame, QVBoxLayout]:
+        """스타일이 적용된 내용 카드를 만들고 내부 레이아웃을 반환한다."""
         frame = QFrame(); frame.setObjectName("Surface")
         layout = QVBoxLayout(frame); layout.setContentsMargins(16, 12, 16, 12); layout.setSpacing(9)
         label = QLabel(title); label.setObjectName("SectionTitle"); layout.addWidget(label)
@@ -40,6 +45,8 @@ class BaseScreen(QWidget):
 
 
 class ManualScreen(BaseScreen):
+    """AMR, 리프트, 아웃트리거 수동 제어 화면."""
+
     def __init__(self) -> None:
         super().__init__("수동 제어", "점검 모드에서만 사용할 수 있으며, 버튼을 누르는 동안에만 동작합니다.")
         grid = QGridLayout(); grid.setSpacing(12); self.body.addLayout(grid, 1)
@@ -65,6 +72,8 @@ class ManualScreen(BaseScreen):
 
 
 class RunScreen(BaseScreen):
+    """검사 계획과 사전 조건을 확인하는 화면."""
+
     def __init__(self) -> None:
         super().__init__("검사 실행", "검사 계획을 선택하고 사전 조건을 확인한 뒤 원주 사이클을 시작합니다.")
         row=QHBoxLayout(); self.body.addLayout(row,1)
@@ -84,20 +93,28 @@ class RunScreen(BaseScreen):
 
 
 class SettingsMenuScreen(BaseScreen):
+    """설정, 진단, 로그, 수동 제어 화면으로 이동하는 타일 메뉴."""
+
     def __init__(self) -> None:
         super().__init__("설정 / 진단", "장비 설정과 운전 기록을 관리합니다.")
         self.setObjectName("SettingsScreen")
         grid=QGridLayout(); grid.setSpacing(14); self.body.addLayout(grid,1)
         items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("io","I/O 상태","PLC 입출력 진단"),("system","시스템 설정","시간·단위·로그"),("ut","UT 시스템 설정","검사 조건과 트리거"),("cobot","Cobot 설정","연결과 작업 슬롯"),("errors","오류 로그","활성 및 과거 오류"),("logs","로그 파일","날짜별 기록 관리"),("modes","운전 모드 저장","설정 슬롯 관리"))
         for i,(key,title,desc) in enumerate(items):
+            # key를 기본 인자로 고정한다. 그렇지 않으면 모든 lambda가
+            # 반복문의 마지막 key만 참조하게 된다.
             b=QPushButton(f"{title}\n{desc}"); b.setObjectName("SettingsTile"); b.clicked.connect(lambda _,k=key:self.navigate.emit(k)); grid.addWidget(b,i//4,i%4)
 
 
 class IOStatusScreen(BaseScreen):
+    """PLC와 장비의 입출력을 표시하는 읽기 전용 진단 표."""
+
     def __init__(self) -> None:
         super().__init__("I/O 상태", "PLC와 장비별 디지털·아날로그 신호를 조회합니다.")
         table=QTableWidget(10,5); table.setHorizontalHeaderLabels(["주소","신호명","방향","값","상태"])
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # PLC 어댑터 연결 전에도 화면을 개발할 수 있도록 임시 데이터를
+        # 사용한다. 운영자가 값을 바꾸지 못하도록 표는 읽기 전용이다.
         data=[("X000","Emergency Stop","IN","OFF","정상"),("X001","Safety Scanner","IN","ON","정상"),("X010","Outrigger 1 Contact","IN","ON","정상"),("X011","Outrigger 2 Contact","IN","ON","정상"),("X012","Outrigger 3 Contact","IN","ON","정상"),("Y000","AMR Drive Enable","OUT","OFF","정상"),("Y010","Lift Brake","OUT","ON","정상"),("D100","Lift Height","IN","1200 mm","정상"),("D110","Roll","IN","0.00°","정상"),("D111","Pitch","IN","0.00°","정상")]
         for r,row in enumerate(data):
             for c,v in enumerate(row): table.setItem(r,c,QTableWidgetItem(v))
@@ -105,6 +122,8 @@ class IOStatusScreen(BaseScreen):
 
 
 class FormScreen(BaseScreen):
+    """입력 위젯 값을 항목명 기준으로 직렬화하는 공통 설정 폼."""
+
     save_requested = pyqtSignal(str, dict)
 
     def __init__(self,scope:str,title:str,subtitle:str,fields:list[tuple[str,QWidget]]) -> None:
@@ -133,6 +152,7 @@ class FormScreen(BaseScreen):
         self._saved_values = self.values()
 
     def values(self) -> dict[str, object]:
+        """입력값을 JSONB와 호환되는 Python 자료형으로 수집한다."""
         values: dict[str, object] = {}
         for key, widget in self._fields.items():
             if isinstance(widget, TouchLineEdit):
@@ -146,6 +166,7 @@ class FormScreen(BaseScreen):
         return values
 
     def apply_values(self, values: dict[str, object]) -> None:
+        """불러온 설정값을 자료형이 맞는 입력 위젯에 적용한다."""
         for key, value in values.items():
             widget = self._fields.get(key)
             if isinstance(widget, TouchLineEdit):
@@ -167,14 +188,17 @@ class FormScreen(BaseScreen):
         self.save_status.style().polish(self.save_status)
 
     def restore_saved_values(self) -> None:
+        """저장하지 않은 변경을 버리고 최근 확정값으로 복원한다."""
         self.apply_values(self._saved_values)
         self.save_status.setText("저장된 값으로 되돌렸습니다.")
 
     def _request_save(self) -> None:
+        """직접 DB를 호출하지 않고 서비스 계층에 저장을 요청한다."""
         self.save_status.setText("PostgreSQL에 저장하는 중입니다.")
         self.save_requested.emit(self.settings_scope, self.values())
 
     def mark_saved(self) -> None:
+        """현재 값을 이후 변경 취소 시 사용할 기준값으로 기록한다."""
         self._saved_values = self.values()
         self.save_status.setObjectName("StatusGood")
         self.save_status.setText("PostgreSQL에 저장했습니다.")
@@ -182,35 +206,48 @@ class FormScreen(BaseScreen):
         self.save_status.style().polish(self.save_status)
 
     def show_storage_error(self, message: str) -> None:
+        """저장소 오류를 해당 설정 화면에 사용자용 문구로 표시한다."""
         self.save_status.setObjectName("StatusDanger")
         self.save_status.setText(f"저장소 오류: {message}")
         self.save_status.style().unpolish(self.save_status)
         self.save_status.style().polish(self.save_status)
 
 
-def line(text:str)->TouchLineEdit: return TouchLineEdit(text)
+def line(text:str)->TouchLineEdit:
+    """공통 가상 키보드를 여는 텍스트 입력 필드를 만든다."""
+    return TouchLineEdit(text)
 def spin(value:int,lo:int=0,hi:int=9999)->TouchSpinBox:
+    """공통 터치 키패드를 여는 정수 입력 필드를 만든다."""
     w=TouchSpinBox(); w.setRange(lo,hi); w.setValue(value); return w
 def dspin(value:float,suffix:str)->TouchDoubleSpinBox:
+    """공학 단위가 표시되는 실수 터치 입력 필드를 만든다."""
     w=TouchDoubleSpinBox(); w.setRange(-9999,9999); w.setDecimals(2); w.setValue(value); w.setSuffix(suffix); return w
 
 
 class SystemSettingsScreen(FormScreen):
+    """콘솔, 갱신 주기, 보존 기간, 저장 경로를 설정하는 화면."""
+
     def __init__(self):
         lang=QComboBox(); lang.addItems(["한국어","English"])
         super().__init__("system","시스템 설정","운영 환경과 로그 정책을 설정합니다.",[("장비 이름",line("SMR Operator Console")),("언어",lang),("상태 갱신 주기",spin(200,50,5000)),("로그 보존 기간",spin(365,1,3650)),("데이터 저장 위치",line("D:/SMR/Data")),("안전 설정",QLabel("PLC 관리 · 읽기 전용"))])
 
 class UTSettingsScreen(FormScreen):
+    """초음파 검사 장비의 연결 및 수집 조건 설정 화면."""
+
     def __init__(self):
         super().__init__("ut","UT 시스템 설정","검사 중에는 품질 관련 설정이 잠깁니다.",[("UT 주소",line("192.168.0.50")),("통신 포트",spin(5000)),("검사 조건",line("SMR_SHELL_A")),("주사 속도",dspin(150," mm/s")),("게인",dspin(26," dB")),("마킹 트리거",QCheckBox("기준 초과 시 출력"))])
 
 class CobotSettingsScreen(FormScreen):
+    """협동로봇 연결과 작업 슬롯을 설정하는 화면."""
+
     def __init__(self):
         tasks=QComboBox(); tasks.addItems([f"TASK {i:02d}" for i in range(1,25)])
         super().__init__("cobot","Cobot 설정","연결 설정과 검사 작업 슬롯을 관리합니다.",[("IP 주소",line("192.168.0.40")),("포트",spin(500)),("장치 ID",spin(1)),("선택 작업",tasks),("연결 상태",QLabel("● 연결됨")),("마지막 응답",QLabel("12 ms"))])
 
 
 class ErrorLogScreen(BaseScreen):
+    """현재 및 과거 알람을 보여주는 읽기 전용 화면."""
+
     def __init__(self):
         super().__init__("오류 로그","활성 오류를 먼저 확인하고 원인을 해소한 뒤 리셋합니다.")
         table=QTableWidget(4,6); table.setHorizontalHeaderLabels(["발생 시각","코드","장비","심각도","메시지","상태"])
@@ -223,6 +260,8 @@ class ErrorLogScreen(BaseScreen):
 
 
 class LogFilesScreen(BaseScreen):
+    """검사 및 시스템 로그 파일 관리 화면."""
+
     def __init__(self):
         super().__init__("로그 파일","검사 작업과 연결된 기록을 날짜별로 관리합니다.")
         table=QTableWidget(5,5); table.setHorizontalHeaderLabels(["생성 시각","작업 ID","종류","크기","파일명"])
@@ -235,6 +274,8 @@ class LogFilesScreen(BaseScreen):
 
 
 class ModeSlotsScreen(BaseScreen):
+    """저장된 운전 모드 슬롯을 선택하는 화면."""
+
     def __init__(self):
         super().__init__("운전 모드 저장","검사 조건과 장비 위치를 슬롯으로 관리합니다.")
         grid=QGridLayout(); self.body.addLayout(grid,1)

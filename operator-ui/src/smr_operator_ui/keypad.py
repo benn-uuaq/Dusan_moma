@@ -1,3 +1,5 @@
+"""터치 전용 숫자 키패드와 가상 키보드 공통 위젯을 제공한다."""
+
 from __future__ import annotations
 
 from PyQt6.QtCore import QEvent, Qt
@@ -18,7 +20,7 @@ from PyQt6.QtWidgets import (
 
 
 class NumericKeypadDialog(QDialog):
-    """Touch-first numeric input with range validation."""
+    """허용 범위를 검증하는 터치 중심 숫자 입력 창."""
 
     def __init__(
         self,
@@ -89,6 +91,7 @@ class NumericKeypadDialog(QDialog):
         return f"{value:.{self.decimals}f}"
 
     def _append(self, token: str) -> None:
+        """소수점 중복을 막으면서 유효한 숫자 토큰을 추가한다."""
         current = self.display.text()
         if token == "." and (self.decimals == 0 or "." in current):
             return
@@ -111,6 +114,7 @@ class NumericKeypadDialog(QDialog):
         self.error.clear()
 
     def _confirm(self) -> None:
+        """입력 창을 확정하기 전에 표시된 값과 허용 범위를 검증한다."""
         try:
             value = float(self.display.text())
         except ValueError:
@@ -123,6 +127,7 @@ class NumericKeypadDialog(QDialog):
         self.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """Esc 키만 허용하고 모든 값 입력은 터치 버튼으로 제한한다."""
         if event.key() == Qt.Key.Key_Escape:
             self.reject()
         else:
@@ -130,7 +135,7 @@ class NumericKeypadDialog(QDialog):
 
 
 class VirtualKeyboardDialog(QDialog):
-    """Common on-screen keyboard for editable text settings."""
+    """텍스트 설정 입력에 사용하는 공통 화면 키보드."""
 
     def __init__(self, value: str, title: str = "텍스트 입력", parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -194,6 +199,7 @@ class VirtualKeyboardDialog(QDialog):
         self.display.setText(self.display.text() + text)
 
     def _toggle_case(self) -> None:
+        """이후 입력 문자와 키 표시를 대문자 또는 소문자로 전환한다."""
         self._uppercase = not self._uppercase
         for button in self._letter_buttons:
             button.setText(button.text().swapcase())
@@ -203,6 +209,7 @@ class VirtualKeyboardDialog(QDialog):
         self.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """Esc 취소는 유지하면서 물리 키보드의 텍스트 입력을 차단한다."""
         if event.key() == Qt.Key.Key_Escape:
             self.reject()
         else:
@@ -210,9 +217,12 @@ class VirtualKeyboardDialog(QDialog):
 
 
 class _TouchNumericMixin:
+    """Qt 스핀박스 전체 영역을 터치 키패드 실행 영역으로 바꾼다."""
+
     dialog_title = "숫자 입력"
 
     def _configure_touch_input(self) -> None:
+        """기본 화살표를 숨기고 테두리와 입력부 모두를 터치 영역으로 만든다."""
         self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.lineEdit().setReadOnly(True)
         self.lineEdit().installEventFilter(self)
@@ -221,6 +231,7 @@ class _TouchNumericMixin:
         self.lineEdit().setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _open_keypad(self) -> None:
+        """현재 스핀박스의 범위와 정밀도에 맞춘 키패드를 연다."""
         dialog = NumericKeypadDialog(
             value=float(self.value()),
             minimum=float(self.minimum()),
@@ -234,6 +245,7 @@ class _TouchNumericMixin:
             self.setValue(dialog.result_value)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        """QAbstractSpinBox 내부 입력부가 처리하는 클릭을 가로챈다."""
         if watched is self.lineEdit() and event.type() == QEvent.Type.MouseButtonPress:
             if event.button() == Qt.MouseButton.LeftButton:
                 self._open_keypad()
@@ -241,6 +253,7 @@ class _TouchNumericMixin:
         return super().eventFilter(watched, event)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        """스핀박스 테두리 영역을 터치해도 키패드를 연다."""
         if event.button() == Qt.MouseButton.LeftButton:
             self._open_keypad()
             event.accept()
@@ -248,22 +261,29 @@ class _TouchNumericMixin:
         super().mousePressEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """물리 키보드로 운전 설정값을 직접 변경하지 못하게 한다."""
         event.accept()
 
 
 class TouchSpinBox(_TouchNumericMixin, QSpinBox):
+    """숫자 키패드로만 수정할 수 있는 정수 입력 필드."""
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._configure_touch_input()
 
 
 class TouchDoubleSpinBox(_TouchNumericMixin, QDoubleSpinBox):
+    """숫자 키패드로만 수정할 수 있는 실수 입력 필드."""
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._configure_touch_input()
 
 
 class TouchLineEdit(QLineEdit):
+    """공통 가상 키보드로 수정하는 읽기 전용 표시 필드."""
+
     def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
         super().__init__(text, parent)
         self.setReadOnly(True)
@@ -271,6 +291,7 @@ class TouchLineEdit(QLineEdit):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        """텍스트 입력 상자 전체를 가상 키보드 터치 영역으로 사용한다."""
         if event.button() == Qt.MouseButton.LeftButton:
             dialog = VirtualKeyboardDialog(self.text(), parent=self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -280,4 +301,5 @@ class TouchLineEdit(QLineEdit):
         super().mousePressEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """물리 키보드를 통한 직접 수정을 차단한다."""
         event.accept()

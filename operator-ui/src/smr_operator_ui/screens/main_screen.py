@@ -1,3 +1,5 @@
+"""검사 상태, 주요 제어, 검사 대상 설정을 제공하는 메인 화면이다."""
+
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -20,6 +22,10 @@ from smr_operator_ui.state import AppSnapshot, CyclePhase
 
 
 class MainScreen(QWidget):
+    """검사 사이클을 표시하고 사용자 동작은 시그널로 위임한다."""
+
+    # 화면은 장비나 저장 서비스를 직접 호출하지 않고 동작을 요청한다.
+    # OperatorWindow가 아래 시그널을 알맞은 서비스에 연결한다.
     start_requested = pyqtSignal()
     pause_requested = pyqtSignal()
     manual_requested = pyqtSignal()
@@ -143,6 +149,7 @@ class MainScreen(QWidget):
         root.addWidget(rail)
 
     def _edit_target_dimensions(self) -> None:
+        """터치 전용 숫자 필드로 검사 대상의 지름과 높이를 입력받는다."""
         dialog = QDialog(self)
         dialog.setWindowTitle("검사 대상 설정")
         dialog.setModal(True)
@@ -180,12 +187,19 @@ class MainScreen(QWidget):
         layout.addWidget(buttons)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            # 화면에는 값을 즉시 반영하고, 같은 값의 비동기 저장은
+            # 애플리케이션 계층에 요청한다.
             diameter_m = diameter_input.value()
             height_m = height_input.value()
-            self.orbit_view.set_target_dimensions(diameter_m, height_m)
+            self.set_target_dimensions(diameter_m, height_m)
             self.target_dimensions_changed.emit(diameter_m, height_m)
 
+    def set_target_dimensions(self, diameter_m: float, height_m: float) -> None:
+        """외부 설정 또는 사용자 입력으로 검사 대상 크기를 변경한다."""
+        self.orbit_view.set_target_dimensions(diameter_m, height_m)
+
     def _hero_box(self, label: str, value: QLabel, suffix: str = "") -> QFrame:
+        """대시보드 상단에서 재사용할 요약 카드를 만든다."""
         frame = QFrame()
         frame.setObjectName("Surface")
         layout = QVBoxLayout(frame)
@@ -204,6 +218,7 @@ class MainScreen(QWidget):
         return frame
 
     def update_snapshot(self, snapshot: AppSnapshot) -> None:
+        """하나의 일관된 상태 스냅샷을 대시보드 전체에 반영한다."""
         cycle = snapshot.cycle
         self.segment_label.setText(f"{cycle.current_segment:02d}")
         self.progress_label.setText(f"{cycle.progress_percent} %")
@@ -220,6 +235,8 @@ class MainScreen(QWidget):
         self.completed.set_value(str(cycle.completed_segments))
         self.pending.set_value(str(cycle.total_segments - cycle.completed_segments))
 
+        # 일반 검사 순서 안에서는 다음 단계가 순환한다. 완료나 대기처럼
+        # 순서 밖의 상태는 별도의 문구를 명시해야 한다.
         if cycle.phase in self._phase_order:
             index = self._phase_order.index(cycle.phase)
             next_phase = self._phase_order[(index + 1) % len(self._phase_order)].value
@@ -237,4 +254,5 @@ class MainScreen(QWidget):
         self.pause_button.setText("재개" if cycle.paused else "일시정지")
 
     def show_activity(self, message: str) -> None:
+        """서비스 또는 시뮬레이터의 최근 활동 메시지를 표시한다."""
         self.activity_label.setText(message)

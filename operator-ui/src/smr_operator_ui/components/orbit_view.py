@@ -1,3 +1,5 @@
+"""검사 대상, 구간 링, 로봇 위치를 직접 그리는 위젯이다."""
+
 from __future__ import annotations
 
 import math
@@ -12,7 +14,7 @@ from smr_operator_ui.styles.tokens import COLORS
 
 
 class OrbitView(QWidget):
-    """Twelve-segment circumference view for the active inspection cycle."""
+    """진행 중인 검사를 12개 원주 구간으로 표시한다."""
 
     target_clicked = pyqtSignal()
 
@@ -25,6 +27,8 @@ class OrbitView(QWidget):
         if source.isNull():
             self._robot_pixmap = source
         else:
+            # 원본 이미지의 불필요한 여백을 잘라낸다. 이렇게 해야 이미지를
+            # 확대·축소하여 원주 위에 배치할 때 로봇이 중앙에 맞는다.
             crop = QRect(
                 int(source.width() * 0.15),
                 int(source.height() * 0.05),
@@ -37,18 +41,22 @@ class OrbitView(QWidget):
         self.setToolTip("검사 대상을 클릭하여 크기를 설정하세요.")
 
     def set_state(self, state: CycleState) -> None:
+        """표시할 검사 상태를 교체하고 다시 그리도록 요청한다."""
         self._state = state
         self.update()
 
     def set_target_dimensions(self, diameter_m: float, height_m: float) -> None:
+        """중앙에 표시되는 검사 대상의 지름과 높이를 갱신한다."""
         self._target_diameter_m = diameter_m
         self._target_height_m = height_m
         self.update()
 
     def target_dimensions(self) -> tuple[float, float]:
+        """현재 검사 대상의 지름과 높이를 미터 단위로 반환한다."""
         return self._target_diameter_m, self._target_height_m
 
     def _target_rect(self) -> QRectF:
+        """현재 위젯 크기를 기준으로 클릭 가능한 중앙 원 영역을 계산한다."""
         center = QPointF(self.width() * 0.44, self.height() * 0.48)
         radius = min(self.width() * 0.34, self.height() * 0.36)
         target_diameter = radius * 1.24
@@ -60,6 +68,7 @@ class OrbitView(QWidget):
         )
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        """중앙 검사 대상 원을 직접 눌렀을 때만 클릭 시그널을 발생시킨다."""
         if event.button() == Qt.MouseButton.LeftButton and self._target_rect().contains(event.position()):
             self.target_clicked.emit()
             event.accept()
@@ -67,6 +76,7 @@ class OrbitView(QWidget):
         super().mousePressEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
+        """검사 대상, 진행 구간, 번호, 로봇, 범례를 그린다."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
@@ -92,6 +102,8 @@ class OrbitView(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(orbit)
 
+        # Qt의 drawPie는 1/16도 단위를 사용한다. 구간 사이에 4도 간격을
+        # 두어 12개의 진행 구간이 서로 명확하게 구분되게 한다.
         gap = 4 * 16
         for index in range(self._state.total_segments):
             start_deg = 90 - index * 30 - 13
@@ -109,6 +121,8 @@ class OrbitView(QWidget):
                 int((30 * 16) - gap),
             )
 
+        # 채워진 부채꼴의 안쪽을 배경색 원으로 가려 검사 대상 주변에
+        # 고리 모양의 진행 표시만 남긴다.
         painter.setBrush(QColor(COLORS["background"]))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(QRectF(center.x() - radius * 1.03, center.y() - radius * 1.03, radius * 2.06, radius * 2.06))
@@ -126,6 +140,8 @@ class OrbitView(QWidget):
             painter.setPen(QColor(COLORS["text"]))
             painter.drawText(QRectF(x - 17, y - 12, 34, 24), Qt.AlignmentFlag.AlignCenter, f"{index + 1:02d}")
 
+        # 1번 구간은 12시 방향에서 시작하며 이후 구간은 시계 방향으로
+        # 30도씩 동일하게 이동한다.
         robot_angle = math.radians(-90 + (self._state.current_segment - 1) * 30)
         rx = center.x() + math.cos(robot_angle) * radius
         ry = center.y() + math.sin(robot_angle) * radius

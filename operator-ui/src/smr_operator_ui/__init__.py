@@ -1,3 +1,3 @@
-"""SMR operator console package."""
+"""SMR 운영자 콘솔 패키지."""
 
 __version__ = "0.1.0"
