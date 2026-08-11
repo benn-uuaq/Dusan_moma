@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from smr_operator_ui.components import MetricRow
 from smr_operator_ui.keypad import TouchDoubleSpinBox, TouchLineEdit, TouchSpinBox
 
 
@@ -71,6 +72,113 @@ class ManualScreen(BaseScreen):
         alert.setObjectName("StatusWarn"); self.body.addWidget(alert)
 
 
+class CobotManualScreen(BaseScreen):
+    """엘리트 협동로봇의 연결, 전원, 프로그램 제어와 상태를 다루는 화면.
+
+    화면은 장비를 직접 호출하지 않고 `command_requested`로 요청만 알린다.
+    실제 통신 연결 시 이 시그널을 Dashboard 명령이나 ROS 2 서비스에 잇는다.
+    """
+
+    command_requested = pyqtSignal(str)
+
+    # 버튼 문구와 명령 키를 함께 둔다. 명령 키는 robot_control_node가 제공하는
+    # robot/dashboard/* 서비스 이름과 일치시켜 이후 연결을 단순하게 만든다.
+    _CONNECTION = (("연결", "connect"), ("연결 해제", "disconnect"))
+    _POWER = (("전원 ON", "power_on"), ("전원 OFF", "power_off"), ("브레이크 해제", "brake_release"))
+    _PROGRAM = (("재생", "play"), ("일시정지", "pause"), ("정지", "stop"))
+
+    def __init__(self) -> None:
+        super().__init__("Cobot 수동 제어", "점검 모드에서만 사용합니다. 검사 사이클 진행 중에는 사용하지 마십시오.")
+        # 720 px 높이 안에서 카드가 서로 밀리지 않도록 세로로 쌓지 않고
+        # 3열로 나눈다. 각 열이 화면 높이를 그대로 사용한다.
+        columns=QHBoxLayout(); columns.setSpacing(12); self.body.addLayout(columns,1)
+
+        conn,c=self.surface("연결")
+        self.endpoint_label=QLabel(); self.endpoint_label.setObjectName("Muted"); c.addWidget(self.endpoint_label)
+        self.connection_state=QLabel("● 연결 안 됨"); self.connection_state.setObjectName("StatusDanger"); c.addWidget(self.connection_state)
+        c.addLayout(self._button_row(self._CONNECTION))
+        c.addWidget(self._note("세 채널(29999 / 30001 / 502)이 모두 연결되어야 제어할 수 있습니다."))
+        c.addStretch()
+        columns.addWidget(conn,3)
+
+        middle=QVBoxLayout(); middle.setSpacing(12); columns.addLayout(middle,4)
+        power,p=self.surface("전원 · 브레이크")
+        p.addLayout(self._button_row(self._POWER))
+        p.addWidget(self._note("브레이크 해제 전에 로봇 주변에 사람이 없는지 확인하십시오."))
+        p.addStretch()
+        middle.addWidget(power)
+
+        program,pg=self.surface("프로그램 제어")
+        pg.addLayout(self._button_row(self._PROGRAM))
+        pg.addWidget(self._note("정지는 프로그램을 처음으로 되돌립니다."))
+        pg.addStretch()
+        middle.addWidget(program)
+
+        status,s=self.surface("로봇 상태")
+        self.metrics={
+            "robot_mode": MetricRow("로봇 모드","-"),
+            "control_method": MetricRow("제어 방식","-"),
+            "operation_mode": MetricRow("운전 모드","-"),
+            "tcp_pose": MetricRow("TCP 위치","-"),
+        }
+        for row in self.metrics.values():
+            s.addWidget(row)
+        alarm_title=QLabel("알람"); alarm_title.setObjectName("MetricLabel"); s.addWidget(alarm_title)
+        self.alarm_list=QListWidget(); self.alarm_list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.alarm_list.setMinimumHeight(72)
+        s.addWidget(self.alarm_list,1)
+        columns.addWidget(status,4)
+
+        self.activity_label=QLabel("장비에 연결되어 있지 않습니다. 화면 동작만 확인할 수 있습니다.")
+        self.activity_label.setObjectName("Muted"); self.activity_label.setWordWrap(True)
+        self.body.addWidget(self.activity_label)
+        self.set_endpoint("192.168.227.134")
+        self.set_alarms([])
+
+    def _note(self, text: str) -> QLabel:
+        """카드 폭을 넘지 않도록 줄바꿈되는 안내 문구를 만든다."""
+        label=QLabel(text); label.setObjectName("Muted"); label.setWordWrap(True)
+        return label
+
+    def _button_row(self, items: tuple[tuple[str, str], ...]) -> QHBoxLayout:
+        """명령 버튼을 한 줄로 배치하고 눌림을 시그널로 전달한다."""
+        row=QHBoxLayout()
+        for text,command in items:
+            button=QPushButton(text); button.setMinimumHeight(56)
+            # command를 기본 인자로 고정하지 않으면 모든 버튼이 반복문의
+            # 마지막 명령만 전달하게 된다.
+            button.clicked.connect(lambda _,key=command,label=text:self._request(key,label))
+            row.addWidget(button)
+        return row
+
+    def _request(self, command: str, label: str) -> None:
+        """명령 요청을 기록하고 상위 계층에 전달한다."""
+        self.activity_label.setText(f"'{label}' 명령을 요청했습니다. (장비 미연결)")
+        self.command_requested.emit(command)
+
+    def set_endpoint(self, ip: str) -> None:
+        """연결 설정 화면에서 지정한 대상 주소를 표시한다."""
+        self.endpoint_label.setText(f"대상  {ip}")
+
+    def set_connected(self, connected: bool) -> None:
+        """세 채널 연결 여부를 화면 상단에 표시한다."""
+        self.connection_state.setText("● 연결됨" if connected else "● 연결 안 됨")
+        self.connection_state.setObjectName("StatusGood" if connected else "StatusDanger")
+        self.connection_state.style().unpolish(self.connection_state)
+        self.connection_state.style().polish(self.connection_state)
+
+    def apply_status(self, values: dict[str, str]) -> None:
+        """robot/status/* 토픽에 대응하는 표시값을 갱신한다."""
+        for key, row in self.metrics.items():
+            if key in values:
+                row.set_value(values[key])
+
+    def set_alarms(self, alarms: list[str]) -> None:
+        """수집된 알람 목록을 표시한다."""
+        self.alarm_list.clear()
+        self.alarm_list.addItems(alarms or ["활성 알람 없음"])
+
+
 class RunScreen(BaseScreen):
     """검사 계획과 사전 조건을 확인하는 화면."""
 
@@ -99,7 +207,7 @@ class SettingsMenuScreen(BaseScreen):
         super().__init__("설정 / 진단", "장비 설정과 운전 기록을 관리합니다.")
         self.setObjectName("SettingsScreen")
         grid=QGridLayout(); grid.setSpacing(14); self.body.addLayout(grid,1)
-        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("io","I/O 상태","PLC 입출력 진단"),("system","시스템 설정","시간·단위·로그"),("ut","UT 시스템 설정","검사 조건과 트리거"),("cobot","Cobot 설정","연결과 작업 슬롯"),("errors","오류 로그","활성 및 과거 오류"),("logs","로그 파일","날짜별 기록 관리"),("modes","운전 모드 저장","설정 슬롯 관리"))
+        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("io","I/O 상태","PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·MQTT IP"),("system","시스템 설정","시간·단위·로그"),("ut","UT 시스템 설정","검사 조건과 트리거"),("cobot","Cobot 설정","검사 작업 슬롯"),("errors","오류 로그","활성 및 과거 오류"),("logs","로그 파일","날짜별 기록 관리"),("modes","운전 모드 저장","설정 슬롯 관리"))
         for i,(key,title,desc) in enumerate(items):
             # key를 기본 인자로 고정한다. 그렇지 않으면 모든 lambda가
             # 반복문의 마지막 key만 참조하게 된다.
@@ -126,21 +234,48 @@ class FormScreen(BaseScreen):
 
     save_requested = pyqtSignal(str, dict)
 
-    def __init__(self,scope:str,title:str,subtitle:str,fields:list[tuple[str,QWidget]]) -> None:
+    def __init__(self,scope:str,title:str,subtitle:str,fields:list[tuple[str,QWidget|None]],columns:int=1) -> None:
         super().__init__(title,subtitle)
         self.settings_scope = scope
         self._fields: dict[str, QWidget] = {}
         self._saved_values: dict[str, object] = {}
         self.setObjectName("SettingsScreen")
         surface,layout=self.surface("설정값")
-        form=QFormLayout(); form.setSpacing(16)
+
+        # 위젯이 없는 항목은 입력이 아니라 구역 제목이다. 구역을 기준으로
+        # 항목을 묶어 두면 열 배치와 단일 폼 배치를 같은 정의로 처리할 수 있다.
+        groups: list[tuple[str, list[tuple[str, QWidget]]]] = []
         for label,widget in fields:
-            field_label = QLabel(label)
-            field_label.setObjectName("SettingsFieldLabel")
-            widget.setObjectName("SettingsInput")
-            self._fields[label] = widget
-            form.addRow(field_label,widget)
-        layout.addLayout(form)
+            if widget is None:
+                groups.append((label, []))
+                continue
+            if not groups:
+                groups.append(("", []))
+            groups[-1][1].append((label, widget))
+
+        # 화면 높이는 720 px로 고정되어 있어 항목이 많으면 세로 한 줄로는
+        # 넘친다. 구역을 열로 나누어 배치한다.
+        columns_layout=QHBoxLayout(); columns_layout.setSpacing(24)
+        per_column=max(1,-(-len(groups)//max(1,columns)))
+        column: QVBoxLayout | None = None
+        for index,(section_title,entries) in enumerate(groups):
+            if index % per_column == 0:
+                column=QVBoxLayout(); column.setSpacing(8); columns_layout.addLayout(column,1)
+            if section_title:
+                section=QLabel(section_title); section.setObjectName("SectionTitle"); column.addWidget(section)
+            form=QFormLayout(); form.setSpacing(16 if columns == 1 else 10)
+            for label,widget in entries:
+                field_label = QLabel(label)
+                field_label.setObjectName("SettingsFieldLabel")
+                widget.setObjectName("SettingsInput")
+                self._fields[label] = widget
+                form.addRow(field_label,widget)
+            column.addLayout(form)
+        for i in range(columns_layout.count()):
+            item=columns_layout.itemAt(i)
+            if item.layout() is not None:
+                item.layout().addStretch()
+        layout.addLayout(columns_layout,1)
         row=QHBoxLayout(); row.addStretch()
         cancel=QPushButton("변경 취소"); cancel.setObjectName("SettingsButton"); cancel.clicked.connect(self.restore_saved_values); row.addWidget(cancel)
         save=QPushButton("저장"); save.setObjectName("PrimarySettingsButton"); save.clicked.connect(self._request_save); row.addWidget(save)
@@ -238,11 +373,41 @@ class UTSettingsScreen(FormScreen):
         super().__init__("ut","UT 시스템 설정","검사 중에는 품질 관련 설정이 잠깁니다.",[("UT 주소",line("192.168.0.50")),("통신 포트",spin(5000)),("검사 조건",line("SMR_SHELL_A")),("주사 속도",dspin(150," mm/s")),("게인",dspin(26," dB")),("마킹 트리거",QCheckBox("기준 초과 시 출력"))])
 
 class CobotSettingsScreen(FormScreen):
-    """협동로봇 연결과 작업 슬롯을 설정하는 화면."""
+    """협동로봇 작업 슬롯을 설정하는 화면."""
 
     def __init__(self):
         tasks=QComboBox(); tasks.addItems([f"TASK {i:02d}" for i in range(1,25)])
-        super().__init__("cobot","Cobot 설정","연결 설정과 검사 작업 슬롯을 관리합니다.",[("IP 주소",line("192.168.0.40")),("포트",spin(500)),("장치 ID",spin(1)),("선택 작업",tasks),("연결 상태",QLabel("● 연결됨")),("마지막 응답",QLabel("12 ms"))])
+        super().__init__("cobot","Cobot 설정","검사 작업 슬롯을 관리합니다. 연결 정보는 연결 설정 화면에서 관리합니다.",[("선택 작업",tasks),("연결 상태",QLabel("● 연결됨")),("마지막 응답",QLabel("12 ms"))])
+
+
+class ConnectionSettingsScreen(FormScreen):
+    """협동로봇, 차량용 PLC, MQTT Broker의 유선 연결 정보를 한 화면에서 설정한다."""
+
+    def __init__(self):
+        plc_protocol=QComboBox(); plc_protocol.addItems(["KEYENCE MC Protocol","Modbus TCP"])
+        super().__init__(
+            "connection","연결 설정",
+            "각 장비의 유선 연결 정보를 설정합니다. 변경한 값은 다음 연결 시도부터 적용됩니다.",
+            [
+                ("협동로봇 (Elite CS612)",None),
+                ("협동로봇 IP",line("192.168.227.134")),
+                ("Dashboard 포트",spin(29999,1,65535)),
+                ("Primary 포트",spin(30001,1,65535)),
+                ("Modbus 포트",spin(502,1,65535)),
+                ("차량용 PLC",None),
+                ("PLC IP",line("192.168.0.10")),
+                ("PLC 포트",spin(5000,1,65535)),
+                ("PLC 프로토콜",plc_protocol),
+                ("PLC 국번",spin(1,0,255)),
+                ("MQTT Broker",None),
+                ("MQTT Broker 주소",line("127.0.0.1")),
+                ("MQTT 포트",spin(1883,1,65535)),
+                ("MQTT Client ID",line("smr-operator-ui")),
+                ("MQTT Keep Alive",spin(60,10,3600)),
+                ("MQTT TLS 사용",QCheckBox()),
+            ],
+            columns=3,
+        )
 
 
 class ErrorLogScreen(BaseScreen):

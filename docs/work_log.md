@@ -20,3 +20,5 @@
 | 2026-08-11 | ROS 2 워크스페이스 구성 | 저장소 루트를 colcon 워크스페이스로 전환. 루트 `.gitignore` 및 `operator-ui/COLCON_IGNORE` 추가 | AMR 패키지 skeleton 생성 |
 | 2026-08-11 | 엘리트 협동로봇 제어부 이식 | `ws_elt`의 드라이버·제어 노드·launch를 `src/elite_robot_controller`로 이식. `colcon build` 통과, 노드·launch 실행 확인 | 실장비 연결 후 토픽/서비스 동작 검증 |
 | 2026-08-11 | 개발 환경 절차 문서화 | README에 venv(`--system-site-packages` 필수), direnv, 빌드, 실행 절차 추가 | 팀원 환경에서 절차 재현 확인 |
+| 2026-08-11 | 운영 UI 연결 설정 화면 추가 | 협동로봇·차량용 PLC·MQTT Broker 유선 연결 정보를 한 화면에서 관리. Cobot 설정의 중복 주소 항목은 이관 | 현장 유선 결선 확정 후 기본 IP 갱신 |
+| 2026-08-11 | 운영 UI Cobot 수동 제어 화면 추가 | 연결·전원·브레이크·프로그램 제어 버튼과 상태 표시를 구성. 명령은 `command_requested` 시그널로만 전달 | 시그널을 실제 로봇 제어 경로에 연결 |

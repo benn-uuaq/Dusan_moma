@@ -24,9 +24,10 @@ from PyQt6.QtWidgets import (
 
 from smr_operator_ui.components import ConnectionBadge
 from smr_operator_ui.screens import (
-    CobotSettingsScreen, ErrorLogScreen, IOStatusScreen, LogFilesScreen,
-    MainScreen, ManualScreen, ModeSlotsScreen, RunScreen, SettingsMenuScreen,
-    SystemSettingsScreen, UTSettingsScreen,
+    CobotManualScreen, CobotSettingsScreen, ConnectionSettingsScreen,
+    ErrorLogScreen, IOStatusScreen, LogFilesScreen, MainScreen, ManualScreen,
+    ModeSlotsScreen, RunScreen, SettingsMenuScreen, SystemSettingsScreen,
+    UTSettingsScreen,
 )
 from smr_operator_ui.services import (
     InspectionSimulator,
@@ -103,13 +104,16 @@ class OperatorWindow(QMainWindow):
         self.main_screen = MainScreen()
         # 화면 키를 탐색 시그널에도 사용하여, 화면 전환 로직이 구체적인
         # QWidget 인스턴스에 직접 의존하지 않게 한다.
+        self.cobot_manual_screen = CobotManualScreen()
         self.screens = {
             "main": self.main_screen,
             "manual": ManualScreen(), "run": RunScreen(),
             "settings": SettingsMenuScreen(), "io": IOStatusScreen(),
+            "connection": ConnectionSettingsScreen(),
             "system": SystemSettingsScreen(), "ut": UTSettingsScreen(),
             "cobot": CobotSettingsScreen(), "errors": ErrorLogScreen(),
             "logs": LogFilesScreen(), "modes": ModeSlotsScreen(),
+            "cobot_manual": self.cobot_manual_screen,
         }
         self._current_screen_key = "main"
         self._navigation_history: list[str] = []
@@ -169,12 +173,23 @@ class OperatorWindow(QMainWindow):
         screen = self._settings_screens.get(scope)
         if screen is not None:
             screen.apply_values(values)
+            if scope == "connection":
+                self._sync_cobot_endpoint()
+
+    def _sync_cobot_endpoint(self) -> None:
+        """연결 설정의 협동로봇 주소를 Cobot 수동 제어 화면에 반영한다."""
+        values = self.screens["connection"].values()
+        ip = str(values.get("협동로봇 IP", "")).strip()
+        if ip:
+            self.cobot_manual_screen.set_endpoint(ip)
 
     def _mark_settings_saved(self, scope: str) -> None:
         """PostgreSQL 저장 완료 후 해당 화면의 상태를 갱신한다."""
         screen = self._settings_screens.get(scope)
         if screen is not None:
             screen.mark_saved()
+            if scope == "connection":
+                self._sync_cobot_endpoint()
         elif scope == "inspection_target":
             self.main_screen.show_activity("검사 대상 크기를 PostgreSQL에 저장했습니다.")
 

@@ -47,6 +47,10 @@
 - [x] 개발 언어 및 프레임워크 결정 (ROS 2 Humble / Python 3.10, 운영 UI는 PyQt6)
 - [x] ROS 2 워크스페이스 구성 및 빌드 환경 확정
 - [x] 엘리트 협동로봇 제어부 ROS 2 패키지화 (`src/elite_robot_controller`)
+- [x] 운영 UI 연결 설정 화면 (협동로봇·PLC·MQTT IP)
+- [x] 운영 UI Cobot 수동 제어 화면 (연결·전원·프로그램 제어)
+- [ ] Cobot 수동 제어 화면의 `command_requested`를 실제 제어 경로에 연결
+- [ ] 연결 설정값을 MqttServer 및 장비 어댑터의 실제 접속 정보로 반영
 - [ ] 엘리트 로봇 실장비 연결 후 토픽/서비스 동작 검증
 - [ ] 운영 UI(MQTT) ↔ ROS 2 브리지 구현 — 규격은 `docs/mqtt_topic_form.md`
 - [ ] 운영 UI의 Linux 실행 환경 확인 (PyQt6, PostgreSQL, MQTT Broker)
