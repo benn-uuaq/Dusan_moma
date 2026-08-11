@@ -50,7 +50,10 @@
 - [x] 운영 UI 연결 설정 화면 (협동로봇·PLC·MQTT IP)
 - [x] 운영 UI Cobot 수동 제어 화면 (연결·전원·프로그램 제어)
 - [ ] Cobot 수동 제어 화면의 `command_requested`를 실제 제어 경로에 연결 (connect, disconnect, power_on, power_off, brake_release, play, pause, stop, home)
-- [ ] **TCP 현재값 및 제로점 기준값의 Modbus 레지스터 주소 확인** — 확정 후 `apply_tcp()`, `apply_zero_point()`에 값 공급
+- [x] TCP 현재값 및 제로점 기준값의 Modbus 레지스터 주소 확인 (절대 260~265, 원점 기준 280~285)
+- [ ] 위치 환산 계수 실장비 검증 (`POSITION_SCALE = 0.1`이 맞는지, 레지스터가 0.1 mm 단위인지)
+- [ ] 운영 UI를 `robot/status/tcp_pose`, `robot/status/tcp_pose_zero` 토픽에 연결
+- [ ] 이식 코드(`robot_driver.py`, `robot_control_node.py`)의 flake8/pep257 위반 일괄 정리
 - [x] TCP 위치·회전 성분의 단위 확정 (위치 mm, 회전 mrad) 및 화면 표기
 - [ ] 연결 설정값을 MqttServer 및 장비 어댑터의 실제 접속 정보로 반영
 - [ ] 엘리트 로봇 실장비 연결 후 토픽/서비스 동작 검증

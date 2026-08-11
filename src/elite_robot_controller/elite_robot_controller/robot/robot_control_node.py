@@ -7,9 +7,21 @@ from std_srvs.srv import Trigger
 from elite_robot_controller.robot.robot_driver import Robot_30001, Robot_29999, Robot_modbus, AlarmManager
 
 class RobotControlNode(Node):
+    # Modbus 레지스터 주소. 자세는 축마다 레지스터 1개씩 6개가 연속으로 놓인다.
+    REG_ROBOT_MODE = 66
+    REG_CONTROL_METHOD = 71
+    REG_OPERATION_MODE = 72
+    REG_TCP_ABSOLUTE = 260   # 현재 절대 TCP (260~265)
+    REG_TCP_ZERO_RELATIVE = 280   # 원점 기준 상대 pose (280~285)
+    POSE_REGISTER_COUNT = 6
+
+    # 레지스터 1당 실제 값. 위치는 0.1 mm, 회전은 1 mrad 단위로 본다.
+    POSITION_SCALE = 0.1
+    ROTATION_SCALE = 1.0
+
     def __init__(self):
         super().__init__('robot_control_node')
-        
+
         self.declare_parameter('robot_ip', '192.168.227.134')
         robot_ip = self.get_parameter('robot_ip').get_parameter_value().string_value
         
@@ -29,6 +41,7 @@ class RobotControlNode(Node):
         self.pub_control_method = self.create_publisher(Int32, 'robot/status/control_method', 10)
         self.pub_op_mode = self.create_publisher(Int32, 'robot/status/operation_mode', 10)
         self.pub_tcp_pose = self.create_publisher(Float32MultiArray, 'robot/status/tcp_pose', 10)
+        self.pub_tcp_pose_zero = self.create_publisher(Float32MultiArray, 'robot/status/tcp_pose_zero', 10)
         self.pub_alarm = self.create_publisher(String, 'robot/status/alarms', 10)
 
         # 대시보드 명령 서비스 매핑
@@ -57,23 +70,17 @@ class RobotControlNode(Node):
 
     def update_robot_loop(self):
         # 주소 66, 71, 72 정밀 수집 및 파싱
-        robot_mode = self.robot_modbus.get_register(66)
-        control_method = self.robot_modbus.get_register(71)
-        operation_mode = self.robot_modbus.get_register(72)
-        
+        robot_mode = self.robot_modbus.get_register(self.REG_ROBOT_MODE)
+        control_method = self.robot_modbus.get_register(self.REG_CONTROL_METHOD)
+        operation_mode = self.robot_modbus.get_register(self.REG_OPERATION_MODE)
+
         if robot_mode is not None: self.pub_robot_mode.publish(Int32(data=robot_mode))
         if control_method is not None: self.pub_control_method.publish(Int32(data=control_method))
         if operation_mode is not None: self.pub_op_mode.publish(Int32(data=operation_mode))
 
-        # TCP 공간 좌표 정보 트래킹 (384 ~ 389번 레지스터)
-        tcp_regs = self.robot_modbus.get_all_registers(384, 6)
-        if tcp_regs and len(tcp_regs) == 6:
-            pose_msg = Float32MultiArray()
-            pose_msg.data = [
-                tcp_regs[0] * 0.1, tcp_regs[1] * 0.1, tcp_regs[2] * 0.1,  # XYZ (mm 단위 스케일 보정)
-                float(tcp_regs[3]), float(tcp_regs[4]), float(tcp_regs[5]) # Rx, Ry, Rz (mRad)
-            ]
-            self.pub_tcp_pose.publish(pose_msg)
+        # 현재 절대 TCP (260~265)와 원점 기준 상대 pose (280~285)
+        self.publish_pose(self.REG_TCP_ABSOLUTE, self.pub_tcp_pose)
+        self.publish_pose(self.REG_TCP_ZERO_RELATIVE, self.pub_tcp_pose_zero)
 
         # 30001 포트 비동기 백그라운드 실시간 알람 스트림 처리
         self.robot_primary.get_data()
@@ -83,6 +90,27 @@ class RobotControlNode(Node):
                 alarm_msg = String()
                 alarm_msg.data = f"[ALARM] {alarm.msg}" if alarm.msg else f"[ALARM CODE] E{alarm.code} S{alarm.sub}"
                 self.pub_alarm.publish(alarm_msg)
+
+    def publish_pose(self, start_address, publisher):
+        """자세 레지스터 6개를 읽어 [X, Y, Z, Rx, Ry, Rz]로 발행한다.
+
+        get_all_registers가 부호 있는 16비트로 변환해 주므로 여기서는
+        단위 환산만 한다. X, Y, Z는 mm, Rx, Ry, Rz는 mrad이다.
+        """
+        regs = self.robot_modbus.get_all_registers(start_address, self.POSE_REGISTER_COUNT)
+        if not regs or len(regs) != self.POSE_REGISTER_COUNT:
+            return
+
+        pose_msg = Float32MultiArray()
+        pose_msg.data = [
+            regs[0] * self.POSITION_SCALE,
+            regs[1] * self.POSITION_SCALE,
+            regs[2] * self.POSITION_SCALE,
+            regs[3] * self.ROTATION_SCALE,
+            regs[4] * self.ROTATION_SCALE,
+            regs[5] * self.ROTATION_SCALE,
+        ]
+        publisher.publish(pose_msg)
 
     def _execute_dash_cmd(self, func, name, response):
         res_str = func()

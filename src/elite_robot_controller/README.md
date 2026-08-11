@@ -30,11 +30,35 @@ Elite CS612 협동로봇을 ROS 2에서 제어하기 위한 패키지입니다. 
 
 | 토픽 | 타입 | 출처 |
 | --- | --- | --- |
-| `robot/status/robot_mode` | `std_msgs/Int32` | Modbus 레지스터 66 |
-| `robot/status/control_method` | `std_msgs/Int32` | Modbus 레지스터 71 |
-| `robot/status/operation_mode` | `std_msgs/Int32` | Modbus 레지스터 72 |
-| `robot/status/tcp_pose` | `std_msgs/Float32MultiArray` | 30001 패킷 |
+| `robot/status/robot_mode` | `std_msgs/Int32` | Modbus 66 |
+| `robot/status/control_method` | `std_msgs/Int32` | Modbus 71 |
+| `robot/status/operation_mode` | `std_msgs/Int32` | Modbus 72 |
+| `robot/status/tcp_pose` | `std_msgs/Float32MultiArray` | Modbus 260~265 (현재 절대 TCP) |
+| `robot/status/tcp_pose_zero` | `std_msgs/Float32MultiArray` | Modbus 280~285 (원점 기준 상대 pose) |
 | `robot/status/alarms` | `std_msgs/String` | 30001 알람 |
+
+## Modbus 레지스터 맵
+
+주소는 `RobotControlNode`의 클래스 상수로 한 곳에 모아 두었다.
+
+| 상수 | 주소 | 내용 |
+| --- | --- | --- |
+| `REG_ROBOT_MODE` | 66 | 로봇 모드 |
+| `REG_CONTROL_METHOD` | 71 | 제어 방식 |
+| `REG_OPERATION_MODE` | 72 | 운전 모드 |
+| `REG_TCP_ABSOLUTE` | 260~265 | 현재 절대 TCP |
+| `REG_TCP_ZERO_RELATIVE` | 280~285 | 원점 기준 상대 pose |
+
+자세는 축마다 레지스터 1개씩 `[X, Y, Z, Rx, Ry, Rz]` 순서로 6개가 연속 배치된다. `Robot_modbus.get_all_registers()`가 부호 있는 16비트로 변환해 주므로 노드에서는 단위 환산만 한다.
+
+| 성분 | 상수 | 환산 | 발행 단위 |
+| --- | --- | --- | --- |
+| X, Y, Z | `POSITION_SCALE` | 레지스터 × 0.1 | mm |
+| Rx, Ry, Rz | `ROTATION_SCALE` | 레지스터 × 1.0 | mrad |
+
+레지스터를 6개 모두 읽지 못하면 잘못된 자세를 내보내지 않도록 발행을 건너뛴다.
+
+> **확인 필요:** 위치 환산 계수 0.1은 이식 전 코드의 값을 그대로 이어받은 것으로, 실장비에서 검증하지 않았다. 레지스터가 0.1 mm가 아니라 1 mm 단위라면 `POSITION_SCALE`만 1.0으로 바꾸면 된다.
 
 **서비스** (모두 `std_srvs/Trigger`, 29999 Dashboard 명령에 대응)
 
@@ -59,6 +83,18 @@ ros2 launch elite_robot_controller elite_cs612.launch.py robot_ip:=192.168.227.1
 ```bash
 pip install pyModbusTCP
 ```
+
+## 테스트
+
+```bash
+colcon test --packages-select elite_robot_controller && colcon test-result --verbose
+```
+
+`test_pose_publishing.py`는 Modbus 클라이언트를 대체해 로봇 없이 자세 레지스터 주소와 단위 환산을 검증한다.
+
+**워크스페이스 가상환경의 `pytest`로 직접 실행하지 말 것.** ROS Humble의 `launch_testing` 플러그인은 pytest 6 API를 사용하는데 `operator-ui`가 pytest 8 이상을 요구해 같은 가상환경에서 충돌한다. `colcon test`는 정상 동작한다.
+
+`flake8`과 `pep257` 검사는 현재 실패한다. `robot_driver.py`와 `robot_control_node.py`를 `ws_elt`에서 로직 수정 없이 이식했고 원본이 이미 스타일 규칙을 지키지 않았기 때문이다. 일괄 정리는 실장비 검증 이후로 미룬다.
 
 ## 주의
 
