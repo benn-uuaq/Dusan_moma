@@ -37,6 +37,8 @@ class RobotControlNode(Node):
         self.pub_op_mode = self.create_publisher(Int32, 'robot/status/operation_mode', 10)
         self.pub_tcp_pose = self.create_publisher(Float32MultiArray, 'robot/status/tcp_pose', 10)
         self.pub_tcp_pose_zero = self.create_publisher(Float32MultiArray, 'robot/status/tcp_pose_zero', 10)
+        self.pub_tcp_pose_base = self.create_publisher(Float32MultiArray, 'robot/status/tcp_pose_base', 10)
+        self.pub_joint_position = self.create_publisher(Float32MultiArray, 'robot/status/joint_position', 10)
         self.pub_alarm = self.create_publisher(String, 'robot/status/alarms', 10)
 
         # 대시보드 명령 서비스 매핑
@@ -80,6 +82,8 @@ class RobotControlNode(Node):
         self.publish_code('operation_mode', self.pub_op_mode)
         self.publish_pose('tcp_absolute', self.pub_tcp_pose)
         self.publish_pose('tcp_zero_relative', self.pub_tcp_pose_zero)
+        self.publish_pose('tcp_base_frame', self.pub_tcp_pose_base)
+        self.publish_pose('joint_position', self.pub_joint_position)
 
         # 30001 포트 비동기 백그라운드 실시간 알람 스트림 처리
         self.robot_primary.get_data()
@@ -113,16 +117,9 @@ class RobotControlNode(Node):
         if not regs or len(regs) != entry.count:
             return
 
-        scale = self.registers
+        scales = self.registers.scales_for(entry)
         pose_msg = Float32MultiArray()
-        pose_msg.data = [
-            regs[0] * scale.position_scale,
-            regs[1] * scale.position_scale,
-            regs[2] * scale.position_scale,
-            regs[3] * scale.rotation_scale,
-            regs[4] * scale.rotation_scale,
-            regs[5] * scale.rotation_scale,
-        ]
+        pose_msg.data = [value * scale for value, scale in zip(regs, scales)]
         publisher.publish(pose_msg)
 
     def write_register(self, name, value):

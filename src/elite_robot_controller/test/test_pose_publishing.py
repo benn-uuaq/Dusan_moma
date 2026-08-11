@@ -87,9 +87,39 @@ def test_shipped_register_map_matches_known_addresses():
     assert registers.read_entry("robot_mode").address == 66
     assert registers.read_entry("control_method").address == 71
     assert registers.read_entry("operation_mode").address == 72
+    assert registers.read_entry("joint_position").address == 73
+    assert registers.read_entry("tcp_base_frame").address == 384
     # 아직 확인되지 않은 주소는 null로 남아 있어야 한다.
     assert registers.write_entry("save_home_pose").available is False
     assert registers.available_writes() == []
+
+
+def test_joint_angles_use_rotation_scale_for_every_axis():
+    """관절 각도는 6축 모두 mrad이므로 위치 환산을 적용하면 안 된다."""
+    registers = register_map.load()
+    entry = registers.read_entry("joint_position")
+
+    assert entry.kind == "angle"
+    assert registers.scales_for(entry) == [1.0] * 6
+    # 자세는 앞 3개만 위치 환산을 받는다.
+    pose = registers.read_entry("tcp_base_frame")
+    assert registers.scales_for(pose) == [0.1, 0.1, 0.1, 1.0, 1.0, 1.0]
+
+
+def test_angle_entry_is_published_without_position_scaling():
+    node = make_node(
+        {73: [207, -1466, -1875, -1371, 1570, 207]},
+        {
+            "scale": {"position_per_count": 0.1, "rotation_per_count": 1.0},
+            "read": {"joint_position": {"address": 73, "count": 6, "kind": "angle"}},
+            "write": {},
+        },
+    )
+    publisher = FakePublisher()
+
+    node.publish_pose("joint_position", publisher)
+
+    assert publisher.messages[0] == [207.0, -1466.0, -1875.0, -1371.0, 1570.0, 207.0]
 
 
 def test_pose_uses_addresses_from_map():

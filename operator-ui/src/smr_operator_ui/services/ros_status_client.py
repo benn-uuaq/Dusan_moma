@@ -42,6 +42,8 @@ class RosTopics:
     OPERATION_MODE = "robot/status/operation_mode"
     TCP_POSE = "robot/status/tcp_pose"
     TCP_POSE_ZERO = "robot/status/tcp_pose_zero"
+    TCP_POSE_BASE = "robot/status/tcp_pose_base"
+    JOINT_POSITION = "robot/status/joint_position"
     ALARMS = "robot/status/alarms"
 
     LINEAR_SPEED = "robot/command/linear_speed"
@@ -75,6 +77,8 @@ class RosStatusClient(QObject):
     # [X, Y, Z, Rx, Ry, Rz] 순서의 6개 값을 그대로 전달한다.
     tcp_pose_changed = pyqtSignal(list)
     tcp_pose_zero_changed = pyqtSignal(list)
+    tcp_pose_base_changed = pyqtSignal(list)
+    joint_position_changed = pyqtSignal(list)
     # 상태는 (원값, 표시 문구)로 함께 전달해 화면이 다시 해석하지 않게 한다.
     robot_mode_changed = pyqtSignal(int, str)
     control_method_changed = pyqtSignal(int, str)
@@ -142,6 +146,12 @@ class RosStatusClient(QObject):
             )
             self._node.create_subscription(
                 Float32MultiArray, RosTopics.TCP_POSE_ZERO, self._on_tcp_pose_zero, 10
+            )
+            self._node.create_subscription(
+                Float32MultiArray, RosTopics.TCP_POSE_BASE, self._on_tcp_pose_base, 10
+            )
+            self._node.create_subscription(
+                Float32MultiArray, RosTopics.JOINT_POSITION, self._on_joint_position, 10
             )
             self._node.create_subscription(
                 Int32, RosTopics.ROBOT_MODE, self._on_robot_mode, 10
@@ -256,6 +266,12 @@ class RosStatusClient(QObject):
 
     def _on_tcp_pose_zero(self, msg) -> None:
         self._emit_pose(msg, self.tcp_pose_zero_changed)
+
+    def _on_tcp_pose_base(self, msg) -> None:
+        self._emit_pose(msg, self.tcp_pose_base_changed)
+
+    def _on_joint_position(self, msg) -> None:
+        self._emit_pose(msg, self.joint_position_changed)
 
     def _on_robot_mode(self, msg) -> None:
         self._emit_code(msg, ROBOT_MODE_NAMES, self.robot_mode_changed)

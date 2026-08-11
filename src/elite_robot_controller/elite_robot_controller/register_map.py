@@ -17,12 +17,14 @@ DEFAULT_FILENAME = "modbus_registers.json"
 class RegisterEntry:
     """레지스터 한 항목. 주소가 없으면 사용할 수 없다."""
 
-    __slots__ = ("name", "address", "count")
+    __slots__ = ("name", "address", "count", "kind")
 
-    def __init__(self, name: str, address: int | None, count: int) -> None:
+    def __init__(self, name: str, address: int | None, count: int, kind: str = "pose") -> None:
         self.name = name
         self.address = address
         self.count = count
+        # pose는 앞 3개가 위치, 뒤 3개가 회전이다. angle은 6개 모두 회전이다.
+        self.kind = kind
 
     @property
     def available(self) -> bool:
@@ -51,7 +53,10 @@ class RegisterMap:
                 continue
             address = value.get("address")
             entries[name] = RegisterEntry(
-                name, None if address is None else int(address), int(value.get("count", 1))
+                name,
+                None if address is None else int(address),
+                int(value.get("count", 1)),
+                str(value.get("kind", "pose")),
             )
         return entries
 
@@ -60,6 +65,14 @@ class RegisterMap:
 
     def write_entry(self, name: str) -> RegisterEntry:
         return self.write.get(name) or RegisterEntry(name, None, 1)
+
+    def scales_for(self, entry: "RegisterEntry") -> list[float]:
+        """항목의 성분별 환산 계수를 순서대로 돌려준다."""
+        if entry.kind == "angle":
+            return [self.rotation_scale] * entry.count
+        # pose는 위치 3개와 회전 3개로 나뉜다.
+        half = entry.count // 2
+        return [self.position_scale] * half + [self.rotation_scale] * (entry.count - half)
 
     def available_writes(self) -> list[str]:
         """주소가 정해진 쓰기 항목 이름을 돌려준다. UI 버튼 활성화에 쓴다."""

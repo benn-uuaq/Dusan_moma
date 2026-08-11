@@ -153,7 +153,8 @@ class OperatorWindow(QMainWindow):
         self.settings_service.loaded.connect(self._apply_stored_settings)
         self.settings_service.saved.connect(self._mark_settings_saved)
         self.settings_service.failed.connect(self._show_settings_error)
-        for scope in (*self._settings_screens.keys(), "inspection_target"):
+        self._saved_poses: dict[str, str] = {}
+        for scope in (*self._settings_screens.keys(), "inspection_target", self.POSE_SCOPE):
             self.settings_service.load(scope)
 
         # Paho 네트워크 스레드에서 수신한 명령은 Qt 시그널을 통해 GUI
@@ -173,9 +174,13 @@ class OperatorWindow(QMainWindow):
             lambda _code, name: self.cobot_manual_screen.apply_status({"operation_mode": name})
         )
         self.ros_status.alarm_received.connect(self.cobot_manual_screen.add_alarm)
+        self.ros_status.tcp_pose_base_changed.connect(self._show_tcp_pose_base)
+        self.ros_status.joint_position_changed.connect(
+            self.cobot_jog_screen.apply_joint_position
+        )
         self.ros_status.command_result.connect(self._show_command_result)
         self.cobot_jog_screen.jog_pressed.connect(self._send_jog)
-        self.cobot_jog_screen.command_requested.connect(self.ros_status.call_command)
+        self.cobot_jog_screen.command_requested.connect(self._save_reference_pose)
         self.cobot_manual_screen.command_requested.connect(self._handle_cobot_command)
         self.screens["cobot"].save_requested.connect(self._send_linear_speed)
         self.cobot_jog_screen.set_enabled_commands(set(self._available_writes()))
@@ -193,6 +198,11 @@ class OperatorWindow(QMainWindow):
 
     def _apply_stored_settings(self, scope: str, values: dict) -> None:
         """DB 조회 결과를 해당 설정 범위의 소유 화면으로 전달한다."""
+        if scope == self.POSE_SCOPE:
+            self._saved_poses = {str(k): str(v) for k, v in values.items()}
+            for command, text in self._saved_poses.items():
+                self.cobot_jog_screen.set_saved_pose(command, text)
+            return
         if scope == "inspection_target":
             if "diameter_m" in values and "height_m" in values:
                 self.main_screen.orbit_view.set_target_dimensions(
@@ -303,10 +313,13 @@ class OperatorWindow(QMainWindow):
         self.main_screen.show_activity(message)
 
     def _show_tcp_pose(self, values: list) -> None:
-        """현재 절대 TCP 자세를 수동 제어와 조그 화면에 함께 표시한다."""
-        formatted = self._format_pose(values)
-        self.cobot_manual_screen.apply_tcp(formatted)
-        self.cobot_jog_screen.apply_position(formatted)
+        """현재 절대 TCP 자세를 수동 제어 화면에 표시한다."""
+        self.cobot_manual_screen.apply_tcp(self._format_pose(values))
+
+    def _show_tcp_pose_base(self, values: list) -> None:
+        """기본 프레임 기준 TCP를 조그 화면의 축 옆에 표시한다."""
+        self._last_tcp_pose = list(values)
+        self.cobot_jog_screen.apply_position(self._format_pose(values))
 
     def _show_tcp_pose_zero(self, values: list) -> None:
         """원점 기준 상대 자세를 Cobot 수동 제어 화면에 표시한다."""
@@ -320,6 +333,30 @@ class OperatorWindow(QMainWindow):
         """
         axes = ("x", "y", "z", "rx", "ry", "rz")
         return {axis: f"{value:.1f}" for axis, value in zip(axes, values)}
+
+    # 저장한 기준 위치는 설정 저장소에 남겨 다시 열어도 보이게 한다.
+    POSE_SCOPE = "cobot_poses"
+
+    def _save_reference_pose(self, command: str) -> None:
+        """현재 자세를 기준 위치로 기록하고 로봇에도 저장을 요청한다.
+
+        로봇 쪽 레지스터 주소가 없으면 화면 기록만 남긴다. 주소를 모른 채
+        쓰면 엉뚱한 레지스터를 건드리기 때문이다.
+        """
+        pose = getattr(self, "_last_tcp_pose", None)
+        if pose:
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            text = "  ".join(
+                f"{axis} {value:.1f}"
+                for axis, value in zip(("X", "Y", "Z", "RX", "RY", "RZ"), pose)
+            )
+            self._saved_poses[command] = f"{text}\n{stamp}"
+            self.cobot_jog_screen.set_saved_pose(command, self._saved_poses[command])
+            self.settings_service.save(self.POSE_SCOPE, self._saved_poses)
+        else:
+            self.cobot_jog_screen.show_result("현재 TCP 값을 아직 받지 못했습니다.")
+            return
+        self.ros_status.call_command(command)
 
     def _available_writes(self) -> list[str]:
         """주소가 정해져 실제로 보낼 수 있는 명령 이름을 모은다."""

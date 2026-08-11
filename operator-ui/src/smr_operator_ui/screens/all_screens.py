@@ -2,17 +2,36 @@
 
 from __future__ import annotations
 
+import json
+import os
 from datetime import datetime
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QListWidget, QProgressBar, QPushButton,
-    QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from smr_operator_ui.components import MetricRow
 from smr_operator_ui.keypad import TouchDoubleSpinBox, TouchLineEdit, TouchSpinBox
+
+
+def load_plc_signals(path: str | None = None) -> list[dict]:
+    """PLC 신호 목록을 설정 파일에서 읽는다.
+
+    신호가 늘어나도 코드를 고치지 않도록 목록을 밖으로 뺐다. 파일이 없거나
+    형식이 어긋나면 빈 목록을 돌려주고 화면은 그대로 뜬다.
+    """
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "config", "plc_io.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return list(json.load(handle).get("signals", []))
+    except (OSError, ValueError):
+        return []
 
 
 class BaseScreen(QWidget):
@@ -286,7 +305,9 @@ class CobotJogScreen(BaseScreen):
     jog_released = pyqtSignal(str, int)
     command_requested = pyqtSignal(str)
 
-    _JOINTS = ("J1", "J2", "J3", "J4", "J5", "J6")
+    # 관절 이름은 Modbus 레지스터 73~78의 순서를 그대로 따른다.
+    _JOINTS = (("베이스", "mrad"), ("어깨", "mrad"), ("엘보", "mrad"),
+               ("손목 1", "mrad"), ("손목 2", "mrad"), ("손목 3", "mrad"))
     _TCP_AXES = (("X", "mm"), ("Y", "mm"), ("Z", "mm"),
                  ("RX", "mrad"), ("RY", "mrad"), ("RZ", "mrad"))
     _SAVE = (("홈 위치 저장", "save_home_pose"), ("시작 포즈 저장", "save_start_pose"))
@@ -294,72 +315,86 @@ class CobotJogScreen(BaseScreen):
     def __init__(self) -> None:
         super().__init__("Cobot 조그 / 위치 저장",
                          "점검 모드에서만 사용합니다. 버튼을 누르는 동안에만 움직입니다.")
-        columns=QHBoxLayout(); columns.setSpacing(12); self.body.addLayout(columns,1)
+        self.jog_buttons: dict[tuple[str, int, int], QPushButton] = {}
+        self.joint_values: dict[int, QLabel] = {}
+        self.tcp_values: dict[str, QLabel] = {}
 
-        joint_card,jc=self.surface("관절 조그")
-        jc.addLayout(self._jog_grid("joint", [(name, "") for name in self._JOINTS]))
+        columns = QHBoxLayout(); columns.setSpacing(12); self.body.addLayout(columns, 1)
+
+        joint_card, jc = self.surface("관절 조그")
+        jc.addLayout(self._jog_grid("joint", self._JOINTS, self.joint_values))
         jc.addStretch()
-        columns.addWidget(joint_card,1)
+        columns.addWidget(joint_card, 4)
 
-        tcp_card,tc=self.surface("TCP 조그")
-        tc.addLayout(self._jog_grid("tcp", list(self._TCP_AXES)))
+        tcp_card, tc = self.surface("TCP 조그")
+        tc.addLayout(self._jog_grid("tcp", self._TCP_AXES, self.tcp_values))
         tc.addStretch()
-        columns.addWidget(tcp_card,1)
+        columns.addWidget(tcp_card, 4)
 
-        right=QVBoxLayout(); right.setSpacing(12); columns.addLayout(right,1)
-        position,pc=self.surface("현재 위치")
-        self.position_rows: dict[str, MetricRow] = {}
-        for axis,unit in self._TCP_AXES:
-            row=MetricRow(f"{axis} ({unit})","-")
-            self.position_rows[axis.lower()]=row
-            pc.addWidget(row)
-        pc.addStretch()
-        right.addWidget(position,1)
-
-        save_card,sc=self.surface("기준 위치 저장")
+        # 저장된 기준 위치는 조그 값과 헷갈리지 않도록 오른쪽에 따로 둔다.
+        right = QVBoxLayout(); right.setSpacing(12); columns.addLayout(right, 3)
         self.save_buttons: dict[str, QPushButton] = {}
-        for text,command in self._SAVE:
-            button=QPushButton(text); button.setMinimumHeight(52)
-            button.clicked.connect(lambda _,key=command,label=text: self._request(key,label))
-            self.save_buttons[command]=button
-            sc.addWidget(button)
-        sc.addStretch()
-        right.addWidget(save_card)
+        self.saved_labels: dict[str, QLabel] = {}
+        for text, command in self._SAVE:
+            card, cl = self.surface(text.replace(" 저장", ""))
+            saved = QLabel("저장된 값 없음")
+            saved.setObjectName("Muted"); saved.setWordWrap(True)
+            self.saved_labels[command] = saved
+            cl.addWidget(saved)
+            button = QPushButton(text); button.setMinimumHeight(52)
+            button.clicked.connect(lambda _, key=command, label=text: self._request(key, label))
+            self.save_buttons[command] = button
+            cl.addWidget(button)
+            cl.addStretch()
+            right.addWidget(card, 1)
 
-        self.activity_label=QLabel("장비에 연결되어 있지 않습니다. 화면 동작만 확인할 수 있습니다.")
+        self.activity_label = QLabel("장비에 연결되어 있지 않습니다. 화면 동작만 확인할 수 있습니다.")
         self.activity_label.setObjectName("Muted"); self.activity_label.setWordWrap(True)
         self.body.addWidget(self.activity_label)
-        self.jog_buttons: dict[tuple[str,int,int], QPushButton] = getattr(self,"jog_buttons",{})
 
-    def _jog_grid(self, kind: str, axes: list[tuple[str,str]]) -> QGridLayout:
-        """축마다 - / 축이름 / + 를 한 줄로 배치한다."""
-        if not hasattr(self,"jog_buttons"):
-            self.jog_buttons={}
-        grid=QGridLayout(); grid.setSpacing(6)
-        for index,(name,unit) in enumerate(axes):
-            label=QLabel(f"{name} ({unit})" if unit else name)
+    def _jog_grid(self, kind: str, axes, values: dict) -> QGridLayout:
+        """축마다 [-] 이름 현재값 [+] 를 한 줄로 배치한다.
+
+        현재값을 버튼 사이에 두어 움직이는 축의 값을 바로 볼 수 있게 한다.
+        """
+        grid = QGridLayout(); grid.setSpacing(6)
+        for index, (name, unit) in enumerate(axes):
+            label = QLabel(f"{name} ({unit})")
             label.setObjectName("MetricLabel")
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            grid.addWidget(label,index,1)
-            for column,direction,text in ((0,-1,"−"),(2,1,"＋")):
-                button=QPushButton(text); button.setMinimumHeight(44); button.setMinimumWidth(56)
+            label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(label, index, 1)
+
+            value = QLabel("-")
+            value.setObjectName("MetricValue")
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            value.setMinimumWidth(72)
+            values[index if kind == "joint" else name.lower()] = value
+            grid.addWidget(value, index, 2)
+
+            for column, direction, text in ((0, -1, "−"), (3, 1, "＋")):
+                button = QPushButton(text)
+                button.setMinimumHeight(44); button.setMinimumWidth(52)
                 # kind/index/direction을 기본 인자로 고정하지 않으면 모든
                 # 버튼이 반복문의 마지막 축을 전달하게 된다.
                 button.pressed.connect(
-                    lambda k=kind,i=index,d=direction: self._on_jog_pressed(k,i,d)
+                    lambda k=kind, i=index, d=direction: self._on_jog_pressed(k, i, d)
                 )
                 button.released.connect(
-                    lambda k=kind,i=index: self.jog_released.emit(k,i)
+                    lambda k=kind, i=index: self.jog_released.emit(k, i)
                 )
-                self.jog_buttons[(kind,index,direction)]=button
-                grid.addWidget(button,index,column)
-        grid.setColumnStretch(1,1)
+                self.jog_buttons[(kind, index, direction)] = button
+                grid.addWidget(button, index, column)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(2, 1)
         return grid
 
+    def _axis_name(self, kind: str, index: int) -> str:
+        return (self._JOINTS if kind == "joint" else self._TCP_AXES)[index][0]
+
     def _on_jog_pressed(self, kind: str, index: int, direction: int) -> None:
-        axis = self._JOINTS[index] if kind == "joint" else self._TCP_AXES[index][0]
         self.activity_label.setText(
-            f"{axis} 축을 {'＋' if direction > 0 else '−'} 방향으로 조그 요청했습니다."
+            f"{self._axis_name(kind, index)} 축을 "
+            f"{'＋' if direction > 0 else '−'} 방향으로 조그 요청했습니다."
         )
         self.jog_pressed.emit(kind, index, direction)
 
@@ -367,17 +402,32 @@ class CobotJogScreen(BaseScreen):
         self.activity_label.setText(f"'{label}'을 요청했습니다.")
         self.command_requested.emit(command)
 
+    def apply_joint_position(self, values: list) -> None:
+        """관절 각도를 축 이름 옆에 표시한다. 순서는 레지스터 순서와 같다."""
+        for index, value in enumerate(values):
+            label = self.joint_values.get(index)
+            if label is not None:
+                label.setText(f"{value:.1f}" if isinstance(value, (int, float)) else str(value))
+
     def apply_position(self, values: dict[str, str]) -> None:
-        """현재 위치 표시를 갱신한다. 키는 x, y, z, rx, ry, rz이다."""
-        for axis,row in self.position_rows.items():
+        """TCP 현재값을 축 이름 옆에 표시한다. 키는 x, y, z, rx, ry, rz이다."""
+        for axis, label in self.tcp_values.items():
             if axis in values:
-                row.set_value(values[axis])
+                label.setText(values[axis])
+
+    def set_saved_pose(self, command: str, text: str) -> None:
+        """저장되어 있는 기준 위치를 보여준다."""
+        label = self.saved_labels.get(command)
+        if label is not None:
+            label.setText(text or "저장된 값 없음")
 
     def set_enabled_commands(self, available: set[str]) -> None:
-        """레지스터 주소가 정해진 명령만 누를 수 있게 한다."""
-        for command,button in self.save_buttons.items():
-            button.setEnabled(command in available)
-        for (kind,_index,_direction),button in self.jog_buttons.items():
+        """레지스터 주소가 정해진 조그만 누를 수 있게 한다.
+
+        위치 저장은 로봇에 쓰지 못해도 화면에 기록을 남길 수 있으므로
+        잠그지 않는다. 조그는 로봇을 실제로 움직이므로 잠근다.
+        """
+        for (kind, _index, _direction), button in self.jog_buttons.items():
             button.setEnabled(f"jog_{kind}" in available)
 
     def show_result(self, message: str) -> None:
@@ -420,87 +470,102 @@ class SettingsMenuScreen(BaseScreen):
 
 
 class IOStatusScreen(BaseScreen):
-    """PLC와 장비의 입출력을 표시하고 출력 신호를 조작하는 화면."""
+    """PLC 입출력을 조회하고 출력 신호를 조작하는 화면.
+
+    신호 목록은 `config/plc_io.json`에서 읽는다. 신호가 늘어나도 파일만
+    고치면 되고 화면 코드는 그대로 둔다.
+    """
 
     # 출력 신호를 바꿔 달라는 요청. (주소, 켜기여부)를 전달한다.
     output_requested = pyqtSignal(str, bool)
 
-    # PLC 어댑터 연결 전에도 화면을 개발할 수 있도록 임시 데이터를 사용한다.
-    _ROWS = (
-        ("X000","Emergency Stop","IN","OFF","정상"),
-        ("X001","Safety Scanner","IN","ON","정상"),
-        ("X010","Outrigger 1 Contact","IN","ON","정상"),
-        ("X011","Outrigger 2 Contact","IN","ON","정상"),
-        ("X012","Outrigger 3 Contact","IN","ON","정상"),
-        ("Y000","AMR Drive Enable","OUT","OFF","정상"),
-        ("Y010","Lift Brake","OUT","ON","정상"),
-        ("D100","Lift Height","IN","1200 mm","정상"),
-        ("D110","Roll","IN","0.00°","정상"),
-        ("D111","Pitch","IN","0.00°","정상"),
-    )
+    COLUMNS = ("주소", "신호명", "방향", "값", "상태")
 
-    def __init__(self) -> None:
-        super().__init__("I/O 상태", "표는 조회 전용입니다. 출력 신호는 아래 출력 제어에서 켜고 끕니다.")
-        table=QTableWidget(len(self._ROWS),5)
-        table.setHorizontalHeaderLabels(["주소","신호명","방향","값","상태"])
+    def __init__(self, signals: list[dict] | None = None) -> None:
+        super().__init__("I/O 상태", "왼쪽 목록은 조회 전용이고, 오른쪽에서 출력 신호를 켜고 끕니다.")
+        self.signals = signals if signals is not None else load_plc_signals()
+
+        columns = QHBoxLayout(); columns.setSpacing(12); self.body.addLayout(columns, 1)
+
+        table = QTableWidget(len(self.signals), len(self.COLUMNS))
+        table.setHorizontalHeaderLabels(list(self.COLUMNS))
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.value_items: dict[str, QTableWidgetItem] = {}
-        for r,row in enumerate(self._ROWS):
-            for c,v in enumerate(row):
-                item=QTableWidgetItem(v); table.setItem(r,c,item)
-                if c == 3:
-                    self.value_items[row[0]]=item
-        # 신호명이 가장 길므로 남는 폭을 그 열에 준다.
-        header=table.horizontalHeader()
+        for row, signal in enumerate(self.signals):
+            cells = (signal.get("address", ""), signal.get("name", ""),
+                     signal.get("direction", ""), signal.get("value", ""),
+                     signal.get("status", ""))
+            for column, text in enumerate(cells):
+                item = QTableWidgetItem(str(text)); table.setItem(row, column, item)
+                if column == 3:
+                    self.value_items[str(signal.get("address", ""))] = item
+        header = table.horizontalHeader()
         table.resizeColumnsToContents()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(1, header.ResizeMode.Stretch)
-        self.body.addWidget(table,1)
+        columns.addWidget(table, 3)
 
-        # 조작 버튼을 표 칸 안에 두면 행이 답답해지므로 표 밖으로 뺀다.
-        # 입력 신호는 PLC가 정하는 값이라 조작 대상이 아니다.
-        controls,cl=self.surface("출력 제어")
-        row=QHBoxLayout(); row.setSpacing(16)
+        # 조작 버튼을 표 칸 안에 두면 행이 답답해지므로 오른쪽에 모아 둔다.
+        controls, cl = self.surface("출력 제어")
+        self.output_buttons: dict[str, list[QPushButton]] = {}
         self.output_state_labels: dict[str, QLabel] = {}
-        for address,name,direction,value,_status in self._ROWS:
-            if direction != "OUT":
-                continue
-            row.addWidget(self._output_block(address,name,value))
-        row.addStretch()
-        cl.addLayout(row)
-        self.body.addWidget(controls)
 
-        self.activity_label=QLabel("출력 신호를 바꾸면 PLC에 요청을 보냅니다.")
+        # 출력 신호가 얼마나 늘어날지 모르므로 목록은 스크롤되게 둔다.
+        inner = QWidget()
+        stack = QVBoxLayout(inner)
+        stack.setContentsMargins(0, 0, 0, 0); stack.setSpacing(8)
+        outputs = [s for s in self.signals if str(s.get("direction", "")).upper() == "OUT"]
+        current_group = None
+        for signal in outputs:
+            group = signal.get("group") or "기타"
+            if group != current_group:
+                current_group = group
+                header = QLabel(group); header.setObjectName("MetricLabel")
+                stack.addWidget(header)
+            stack.addWidget(self._output_row(signal))
+        if not outputs:
+            stack.addWidget(QLabel("조작할 출력 신호가 없습니다."))
+        stack.addStretch()
+
+        area = QScrollArea(); area.setWidget(inner); area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.Shape.NoFrame)
+        # 카드 위에 얹히므로 스크롤 영역 자체는 배경을 그리지 않는다.
+        area.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        cl.addWidget(area, 1)
+        controls.setMinimumWidth(380)
+        columns.addWidget(controls, 2)
+
+        self.activity_label = QLabel("출력 신호를 바꾸면 PLC에 요청을 보냅니다.")
         self.activity_label.setObjectName("Muted"); self.activity_label.setWordWrap(True)
         self.body.addWidget(self.activity_label)
 
-    def _output_block(self, address: str, name: str, value: str) -> QWidget:
-        """출력 신호 하나의 이름, 현재 값, ON/OFF 버튼을 한 카드에 묶는다.
+    def _output_row(self, signal: dict) -> QWidget:
+        """출력 신호 한 줄: 이름과 현재 값, 그리고 ON/OFF 버튼."""
+        address = str(signal.get("address", ""))
+        row = QWidget(); layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(8)
 
-        신호가 여러 개일 때 어느 버튼이 어느 신호의 것인지 헷갈리지 않도록
-        테두리로 구분한다.
-        """
-        card=QFrame(); card.setObjectName("SequenceStep")
-        layout=QHBoxLayout(card)
-        layout.setContentsMargins(14,8,14,8); layout.setSpacing(14)
-
-        names=QVBoxLayout(); names.setSpacing(0)
-        title=QLabel(f"{address}  {name}"); title.setObjectName("MetricLabel")
-        state=QLabel(f"현재  {value}"); state.setObjectName("MetricValue")
-        self.output_state_labels[address]=state
+        names = QVBoxLayout(); names.setSpacing(0)
+        title = QLabel(f"{address}  {signal.get('name', '')}")
+        title.setObjectName("MetricLabel"); title.setWordWrap(True)
+        state = QLabel(f"현재  {signal.get('value', '')}")
+        state.setObjectName("MetricValue")
+        self.output_state_labels[address] = state
         names.addWidget(title); names.addWidget(state)
-        layout.addLayout(names)
-        layout.addStretch()
+        layout.addLayout(names, 1)
 
-        for text,turn_on in (("ON",True),("OFF",False)):
-            button=QPushButton(text); button.setMinimumWidth(88)
+        buttons: list[QPushButton] = []
+        for text, turn_on in (("ON", True), ("OFF", False)):
+            button = QPushButton(text); button.setMinimumWidth(76)
             # address와 turn_on을 기본 인자로 고정하지 않으면 모든 버튼이
             # 반복문의 마지막 값을 전달하게 된다.
             button.clicked.connect(
-                lambda _,a=address,on=turn_on: self._request_output(a,on)
+                lambda _, a=address, on=turn_on: self._request_output(a, on)
             )
+            buttons.append(button)
             layout.addWidget(button)
-        return card
+        self.output_buttons[address] = buttons
+        return row
 
     def _request_output(self, address: str, turn_on: bool) -> None:
         """조작 요청을 기록하고 상위 계층에 전달한다."""
@@ -510,12 +575,15 @@ class IOStatusScreen(BaseScreen):
         self.output_requested.emit(address, turn_on)
 
     def set_value(self, address: str, value: str) -> None:
-        """PLC가 알려준 현재 값을 표와 출력 제어에 함께 반영한다."""
-        item=self.value_items.get(address)
+        """PLC가 알려준 현재 값을 목록과 출력 제어에 함께 반영한다."""
+        item = self.value_items.get(address)
         if item is not None:
             item.setText(value)
-        state=self.output_state_labels.get(address)
+        state = self.output_state_labels.get(address)
         if state is not None:
+            signal = next(
+                (s for s in self.signals if str(s.get("address")) == address), {}
+            )
             state.setText(f"현재  {value}")
 
 

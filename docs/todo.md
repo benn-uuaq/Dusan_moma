@@ -51,7 +51,9 @@
 - [x] 운영 UI Cobot 수동 제어 화면 (연결·전원·프로그램 제어)
 - [x] Modbus 레지스터 주소를 `config/modbus_registers.json` 한 곳으로 이관
 - [x] I/O 화면 출력 신호 ON/OFF 버튼, Cobot 작업 속도 설정, 관절/TCP 조그 및 기준 위치 저장 화면
-- [ ] **미확정 Modbus 주소 확인** — 작업 속도, 조그(관절/TCP), 홈 위치 저장, 시작 포즈 저장, 홈 이동, 관절 각도 읽기
+- [x] 관절 각도(73~78), 기본 프레임 TCP(384~389) 주소 반영
+- [ ] **미확정 Modbus 주소 확인** — 작업 속도, 조그(관절/TCP), 홈 위치 저장, 시작 포즈 저장, 홈 이동
+- [ ] `tcp_absolute`(260)와 `tcp_base_frame`(384)의 관계 확인 — 같은 값이면 하나로 정리
 - [ ] 조그 값 인코딩 확인 (축 번호와 방향을 한 레지스터에 담는 방식)
 - [ ] I/O 출력 ON/OFF를 실제 PLC 경로에 연결 (현재는 `output_requested` 시그널까지만)
 - [ ] Cobot 수동 제어 화면의 대시보드 명령(connect, power_on, brake_release, play, pause, stop)을 `robot/dashboard/*` 서비스에 연결

@@ -47,17 +47,11 @@ def test_io_screen_controls_only_outputs(qtbot) -> None:
     qtbot.addWidget(window)
     screen = window.screens["io"]
 
-    outputs = {row[0] for row in screen._ROWS if row[2] == "OUT"}
-    inputs = {row[0] for row in screen._ROWS if row[2] != "OUT"}
-    assert set(screen.output_state_labels) == outputs
-    assert not (set(screen.output_state_labels) & inputs)
+    outputs = {s["address"] for s in screen.signals if s["direction"] == "OUT"}
+    inputs = {s["address"] for s in screen.signals if s["direction"] != "OUT"}
+    assert set(screen.output_buttons) == outputs
+    assert not (set(screen.output_buttons) & inputs)
     window.close()
-
-
-def _output_buttons(screen, address):
-    """해당 출력 신호 카드 안의 ON/OFF 버튼을 찾는다."""
-    card = screen.output_state_labels[address].parent()
-    return card.findChildren(QPushButton)
 
 
 def test_io_output_buttons_emit_address_and_state(qtbot) -> None:
@@ -68,11 +62,11 @@ def test_io_output_buttons_emit_address_and_state(qtbot) -> None:
     received: list[tuple[str, bool]] = []
     screen.output_requested.connect(lambda a, on: received.append((a, on)))
 
-    on_button, off_button = _output_buttons(screen, "Y000")
+    on_button, off_button = screen.output_buttons["Y000"]
     qtbot.mouseClick(on_button, Qt.MouseButton.LeftButton)
     qtbot.mouseClick(off_button, Qt.MouseButton.LeftButton)
     # 다른 신호의 버튼이 섞이지 않아야 한다.
-    other_on, _ = _output_buttons(screen, "Y010")
+    other_on, _ = screen.output_buttons["Y010"]
     qtbot.mouseClick(other_on, Qt.MouseButton.LeftButton)
 
     assert received == [("Y000", True), ("Y000", False), ("Y010", True)]
@@ -136,32 +130,58 @@ def test_jog_press_and_release_are_reported(qtbot) -> None:
     window.close()
 
 
-def test_commands_are_disabled_until_address_is_known(qtbot) -> None:
-    """레지스터 주소가 없으면 버튼을 잠가 엉뚱한 곳에 쓰지 않게 한다."""
+def test_jog_is_disabled_until_address_is_known(qtbot) -> None:
+    """조그는 로봇을 움직이므로 주소가 없으면 잠근다."""
     window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     screen = window.cobot_jog_screen
 
     screen.set_enabled_commands(set())
-    assert all(not b.isEnabled() for b in screen.save_buttons.values())
     assert all(not b.isEnabled() for b in screen.jog_buttons.values())
 
-    screen.set_enabled_commands({"save_home_pose", "jog_tcp"})
-    assert screen.save_buttons["save_home_pose"].isEnabled()
-    assert not screen.save_buttons["save_start_pose"].isEnabled()
+    screen.set_enabled_commands({"jog_tcp"})
     assert screen.jog_buttons[("tcp", 0, 1)].isEnabled()
     assert not screen.jog_buttons[("joint", 0, 1)].isEnabled()
     window.close()
 
 
-def test_current_position_follows_tcp_topic(qtbot) -> None:
-    """조그 화면의 현재 위치도 TCP 토픽을 따라가야 한다."""
+def test_axis_values_follow_topics(qtbot) -> None:
+    """관절값과 TCP값이 각 축 이름 옆에 표시되어야 한다."""
     window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
+    screen = window.cobot_jog_screen
 
-    window.ros_status.tcp_pose_changed.emit([120.5, -340.0, 500.0, 1571.0, 0.0, -3141.0])
+    window.ros_status.joint_position_changed.emit(
+        [207.0, -1466.0, -1875.0, -1371.0, 1570.0, 207.0]
+    )
+    window.ros_status.tcp_pose_base_changed.emit(
+        [636.8, -47.3, 581.0, 3141.0, 0.0, -1570.0]
+    )
 
-    rows = window.cobot_jog_screen.position_rows
-    assert rows["x"].value_label.text() == "120.5"
-    assert rows["rz"].value_label.text() == "-3141.0"
+    assert screen.joint_values[0].text() == "207.0"
+    assert screen.joint_values[2].text() == "-1875.0"
+    assert screen.tcp_values["x"].text() == "636.8"
+    assert screen.tcp_values["rz"].text() == "-1570.0"
+    window.close()
+
+
+def test_saving_reference_pose_records_current_tcp(qtbot) -> None:
+    """저장 버튼은 현재 TCP 값을 기준 위치로 기록해 보여준다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.cobot_jog_screen
+
+    # 값을 받기 전에는 기록할 것이 없다.
+    screen.command_requested.emit("save_home_pose")
+    assert "저장된 값 없음" in screen.saved_labels["save_home_pose"].text()
+
+    window.ros_status.tcp_pose_base_changed.emit(
+        [636.8, -47.3, 581.0, 3141.0, 0.0, -1570.0]
+    )
+    screen.command_requested.emit("save_home_pose")
+
+    saved = screen.saved_labels["save_home_pose"].text()
+    assert "636.8" in saved and "-1570.0" in saved
+    # 다른 기준 위치는 영향을 받지 않는다.
+    assert "저장된 값 없음" in screen.saved_labels["save_start_pose"].text()
     window.close()
