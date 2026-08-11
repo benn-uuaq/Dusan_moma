@@ -16,11 +16,17 @@ class RobotControlNode(Node):
 
         self.declare_parameter('robot_ip', '192.168.227.134')
         self.declare_parameter('register_map', '')
-        # 조그 속도. 누르는 동안 이 속도로 움직인다.
-        self.declare_parameter('jog_joint_speed', 0.20)    # rad/s
-        self.declare_parameter('jog_tcp_speed', 0.05)      # m/s
-        self.declare_parameter('jog_tcp_rot_speed', 0.20)  # rad/s
-        self.declare_parameter('jog_accel', 0.5)
+        # 조그 속도는 레지스터 307(속도 비율 %)을 그대로 쓴다. 단위가 달라서
+        # 아래 값을 100 % 기준으로 두고 비율만큼 줄인다.
+        #   speedj  qd [rad/s], a [rad/s^2]   (스크립트 매뉴얼 3.1.26)
+        #   speedl  xd [m/s],   a [m/s^2]     (스크립트 매뉴얼 3.1.27)
+        self.declare_parameter('jog_joint_speed_max', 0.50)    # rad/s
+        self.declare_parameter('jog_tcp_speed_max', 0.10)      # m/s
+        self.declare_parameter('jog_tcp_rot_speed_max', 0.50)  # rad/s
+        self.declare_parameter('jog_accel_max', 1.00)
+        # speedj/speedl 의 t. 이 시간이 지나면 로봇이 스스로 멈춘다.
+        # UI 가 누르는 동안 명령을 되풀이하므로, 통신이 끊기면 여기서 선다.
+        self.declare_parameter('jog_hold_time', 0.5)
         # 홈 이동 시 movej 전에 movel로 올릴 높이 [m]
         self.declare_parameter('home_lift_z', 0.32)
         robot_ip = self.get_parameter('robot_ip').get_parameter_value().string_value
@@ -33,6 +39,8 @@ class RobotControlNode(Node):
         self.robot_modbus = Robot_modbus(robot_ip, 502)
         self.alarm_mgr = AlarmManager()
         self.connected = False
+        # 로봇 자체 속도 비율 [%]. 조그 속도도 이 값을 따른다.
+        self.speed_ratio = 100
 
         # 발행할 토픽 정의
         self.pub_robot_mode = self.create_publisher(Int32, 'robot/status/robot_mode', 10)
@@ -219,9 +227,18 @@ class RobotControlNode(Node):
         self._write_topic('linear_speed', msg)
 
     def cb_speed_ratio(self, msg):
-        # 로봇 자체 속도 비율. 태스크가 이 값으로 이송 속도를 줄인다.
-        ratio = max(2, min(100, int(msg.data)))
-        self._write_topic('speed_ratio', Int32(data=ratio))
+        # 태스크는 레지스터로, 조그는 이 값을 그대로 써서 속도를 줄인다.
+        self.speed_ratio = max(2, min(100, int(msg.data)))
+        self._write_topic('speed_ratio', Int32(data=self.speed_ratio))
+
+    def _jog_scale(self):
+        """속도 비율(2~100 %)을 배율로 바꾼다."""
+        return self.speed_ratio / 100.0
+
+    @staticmethod
+    def _round6(values):
+        """부동소수 잡음을 없앤다. 스크립트 문자열로 나가기 때문이다."""
+        return [round(float(v), 6) for v in values]
 
     def write_pose(self, name, values):
         """자세 6개를 연속 레지스터에 쓴다. 단위 환산은 읽기와 반대로 한다."""
@@ -279,10 +296,12 @@ class RobotControlNode(Node):
         if unit is None:
             self.get_logger().warn(f"[jog_joint] 축 번호가 범위를 벗어났습니다: {msg.data}")
             return
-        speed = self.get_parameter('jog_joint_speed').value
-        accel = self.get_parameter('jog_accel').value
-        qd = [value * speed for value in unit]
-        self.robot_primary.send_script(f"speedj({qd}, {accel}, 3600)")
+        scale = self._jog_scale()
+        speed = self.get_parameter('jog_joint_speed_max').value * scale
+        accel = self.get_parameter('jog_accel_max').value * scale
+        qd = self._round6([value * speed for value in unit])
+        hold = self.get_parameter('jog_hold_time').value
+        self.robot_primary.send_script(f"speedj({qd}, {round(accel, 6)}, {hold})")
 
     def cb_jog_tcp(self, msg):
         if not self.connected:
@@ -295,14 +314,16 @@ class RobotControlNode(Node):
             self.get_logger().warn(f"[jog_tcp] 축 번호가 범위를 벗어났습니다: {msg.data}")
             return
         # 앞 3개는 직선 속도, 뒤 3개는 회전 속도라 단위가 다르다.
-        linear = self.get_parameter('jog_tcp_speed').value
-        angular = self.get_parameter('jog_tcp_rot_speed').value
-        accel = self.get_parameter('jog_accel').value
-        xd = [
+        scale = self._jog_scale()
+        linear = self.get_parameter('jog_tcp_speed_max').value * scale
+        angular = self.get_parameter('jog_tcp_rot_speed_max').value * scale
+        accel = self.get_parameter('jog_accel_max').value * scale
+        xd = self._round6([
             value * (linear if index < 3 else angular)
             for index, value in enumerate(unit)
-        ]
-        self.robot_primary.send_script(f"speedl({xd}, {accel}, 3600)")
+        ])
+        hold = self.get_parameter('jog_hold_time').value
+        self.robot_primary.send_script(f"speedl({xd}, {round(accel, 6)}, {hold})")
 
     def cb_move_home(self, req, res):
         """안전 높이까지 movel로 올린 뒤 movej로 홈 관절값에 간다."""

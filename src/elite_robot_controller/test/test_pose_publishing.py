@@ -322,3 +322,81 @@ def test_loop_does_not_touch_modbus_before_connect():
 
     assert node.robot_modbus.reads == []
     assert node.pub_connected.messages == [False]
+
+
+class FakeParameter:
+    def __init__(self, value):
+        self.value = value
+
+
+def make_jog_node(ratio=100):
+    node = make_connectable_node()
+    node.connected = True
+    node.speed_ratio = ratio
+    params = {
+        'jog_joint_speed_max': 0.50,
+        'jog_tcp_speed_max': 0.10,
+        'jog_tcp_rot_speed_max': 0.50,
+        'jog_accel_max': 1.00,
+        'jog_hold_time': 0.5,
+    }
+    node.get_parameter = lambda name: FakeParameter(params[name])
+    node.sent = []
+    node.robot_primary.send_script = lambda s: node.sent.append(s) or True
+    node.robot_dash.robot_stop = lambda: node.sent.append("STOP")
+    return node
+
+
+def test_jog_speed_follows_speed_ratio():
+    """조그 속도는 레지스터 307 의 비율만큼 줄어든다."""
+    full = make_jog_node(100)
+    full.cb_jog_joint(FakeMessageInt(1))
+    assert "speedj" in full.sent[0]
+    assert "0.5" in full.sent[0]
+
+    slow = make_jog_node(20)
+    slow.cb_jog_joint(FakeMessageInt(1))
+    # 20 % 이면 0.5 rad/s 의 1/5, 가속도도 같은 비율로 줄어든다.
+    assert slow.sent[0] == "speedj([0.1, 0.0, 0.0, 0.0, 0.0, 0.0], 0.2, 0.5)"
+
+
+def test_jog_command_carries_hold_time():
+    """t 를 짧게 주어 명령이 끊기면 로봇이 스스로 서게 한다."""
+    node = make_jog_node()
+    node.cb_jog_joint(FakeMessageInt(1))
+
+    # 마지막 인자가 jog_hold_time 이다. 길게 주면 정지 명령이 실패했을 때
+    # 그 시간만큼 계속 움직인다.
+    assert node.sent[0].endswith(", 0.5)")
+
+
+def test_jog_values_have_no_float_noise():
+    """스크립트 문자열로 나가므로 부동소수 잡음이 없어야 한다."""
+    node = make_jog_node(20)
+    node.cb_jog_tcp(FakeMessageInt(3))
+
+    assert node.sent[0] == "speedl([0.0, 0.0, 0.02, 0.0, 0.0, 0.0], 0.2, 0.5)"
+
+
+def test_jog_tcp_uses_separate_linear_and_angular_speeds():
+    """직선과 회전은 단위가 다르므로 따로 곱한다."""
+    node = make_jog_node(50)
+    node.cb_jog_tcp(FakeMessageInt(1))     # X+
+    node.cb_jog_tcp(FakeMessageInt(4))     # RX+
+
+    assert node.sent[0] == "speedl([0.05, 0.0, 0.0, 0.0, 0.0, 0.0], 0.5, 0.5)"
+    assert node.sent[1] == "speedl([0.0, 0.0, 0.0, 0.25, 0.0, 0.0], 0.5, 0.5)"
+
+
+def test_jog_stop_uses_dashboard_stop():
+    """멈출 때는 감속 없이 서도록 29999 stop 을 쓴다."""
+    node = make_jog_node()
+    node.cb_jog_joint(FakeMessageInt(0))
+    node.cb_jog_tcp(FakeMessageInt(0))
+
+    assert node.sent == ["STOP", "STOP"]
+
+
+class FakeMessageInt:
+    def __init__(self, data):
+        self.data = data

@@ -6,7 +6,7 @@ import json
 import os
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QListWidget, QProgressBar, QPushButton,
@@ -312,10 +312,21 @@ class CobotJogScreen(BaseScreen):
                  ("RX", "mrad"), ("RY", "mrad"), ("RZ", "mrad"))
     _SAVE = (("홈 위치 저장", "save_home_pose"), ("시작 포즈 저장", "save_start_pose"))
 
+    # 누르고 있는 동안 명령을 되풀이하는 간격 [ms].
+    # 노드의 jog_hold_time(기본 0.5초)보다 충분히 짧아야 끊기지 않는다.
+    JOG_REPEAT_MS = 150
+
     def __init__(self) -> None:
         super().__init__("Cobot 조그 / 위치 저장",
                          "점검 모드에서만 사용합니다. 버튼을 누르는 동안에만 움직입니다.")
         self.jog_buttons: dict[tuple[str, int, int], QPushButton] = {}
+        # 로봇은 조그 명령을 받은 뒤 정해진 시간만 움직이고 스스로 선다.
+        # 누르고 있는 동안 명령을 되풀이해야 계속 움직인다. 화면이 멈추거나
+        # 통신이 끊기면 되풀이가 끊겨 로봇도 곧 선다.
+        self._active_jog: tuple[str, int, int] | None = None
+        self._jog_timer = QTimer(self)
+        self._jog_timer.setInterval(self.JOG_REPEAT_MS)
+        self._jog_timer.timeout.connect(self._repeat_jog)
         self.joint_values: dict[int, QLabel] = {}
         self.tcp_values: dict[str, QLabel] = {}
 
@@ -380,7 +391,7 @@ class CobotJogScreen(BaseScreen):
                     lambda k=kind, i=index, d=direction: self._on_jog_pressed(k, i, d)
                 )
                 button.released.connect(
-                    lambda k=kind, i=index: self.jog_released.emit(k, i)
+                    lambda k=kind, i=index: self._on_jog_released(k, i)
                 )
                 self.jog_buttons[(kind, index, direction)] = button
                 grid.addWidget(button, index, column)
@@ -394,9 +405,22 @@ class CobotJogScreen(BaseScreen):
     def _on_jog_pressed(self, kind: str, index: int, direction: int) -> None:
         self.activity_label.setText(
             f"{self._axis_name(kind, index)} 축을 "
-            f"{'＋' if direction > 0 else '−'} 방향으로 조그 요청했습니다."
+            f"{'＋' if direction > 0 else '−'} 방향으로 조그 중입니다."
         )
+        self._active_jog = (kind, index, direction)
         self.jog_pressed.emit(kind, index, direction)
+        self._jog_timer.start()
+
+    def _repeat_jog(self) -> None:
+        if self._active_jog is None:
+            self._jog_timer.stop()
+            return
+        self.jog_pressed.emit(*self._active_jog)
+
+    def _on_jog_released(self, kind: str, index: int) -> None:
+        self._jog_timer.stop()
+        self._active_jog = None
+        self.jog_released.emit(kind, index)
 
     def _request(self, command: str, label: str) -> None:
         self.activity_label.setText(f"'{label}'을 요청했습니다.")

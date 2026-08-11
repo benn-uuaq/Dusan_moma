@@ -282,3 +282,29 @@ def test_reconnect_rewrites_volatile_registers(qtbot, tmp_path, monkeypatch) -> 
     assert ("linear_speed", 150) in values
     assert ("speed_ratio", 100) in values
     window.close()
+
+
+def test_jog_repeats_while_held(qtbot) -> None:
+    """로봇은 정해진 시간만 움직이므로 누르는 동안 명령을 되풀이해야 한다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.cobot_jog_screen
+    sent: list[tuple[str, int, int]] = []
+    screen.jog_pressed.connect(lambda k, a, d: sent.append((k, a, d)))
+
+    screen._on_jog_pressed("tcp", 0, 1)
+    assert sent == [("tcp", 0, 1)]
+    assert screen._jog_timer.isActive()
+
+    qtbot.wait(screen.JOG_REPEAT_MS * 3)
+    assert len(sent) > 1, "누르고 있는데 명령이 한 번만 나갔습니다"
+    assert set(sent) == {("tcp", 0, 1)}
+
+    screen._on_jog_released("tcp", 0)
+    assert not screen._jog_timer.isActive()
+
+    # 손을 뗀 뒤에는 더 나가지 않아야 한다.
+    count = len(sent)
+    qtbot.wait(screen.JOG_REPEAT_MS * 3)
+    assert len(sent) == count
+    window.close()

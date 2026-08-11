@@ -106,7 +106,19 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 
 - 조그 값은 **부호가 방향, 절댓값이 축 번호(1~6)** 이며 `0`은 정지입니다.
 - 움직일 때는 `speedj` / `speedl`을 보내고, **멈출 때는 29999의 `stop`** 을 씁니다. 감속 없이 즉시 서기 위해서입니다.
-- 조그 속도는 노드 파라미터로 조정합니다: `jog_joint_speed`(rad/s), `jog_tcp_speed`(m/s), `jog_tcp_rot_speed`(rad/s), `jog_accel`.
+- **조그 속도는 레지스터 307(속도 비율 %)을 그대로 따릅니다.** 단위가 달라 아래 파라미터를 100 % 기준으로 두고 비율만큼 줄입니다.
+
+| 파라미터 | 기본값 | 단위 | 대상 |
+| --- | --- | --- | --- |
+| `jog_joint_speed_max` | 0.50 | rad/s | `speedj` 의 `qd` |
+| `jog_tcp_speed_max` | 0.10 | m/s | `speedl` 의 `xd` 앞 3개 |
+| `jog_tcp_rot_speed_max` | 0.50 | rad/s | `speedl` 의 `xd` 뒤 3개 |
+| `jog_accel_max` | 1.00 | rad/s² · m/s² | `a` |
+| `jog_hold_time` | 0.5 | s | `t` |
+
+예를 들어 비율이 20 %면 관절 조그는 0.1 rad/s, 가속도는 0.2가 됩니다.
+
+`t`(`jog_hold_time`)는 **짧게 둡니다.** 매뉴얼상 로봇은 `t` 동안 계속 움직이므로, 길게 주면 정지 명령이 실패했을 때 그 시간만큼 멈추지 않습니다. 대신 운영 UI가 버튼을 누르고 있는 동안 명령을 되풀이해 보내고(150 ms 간격), 화면이 멈추거나 통신이 끊기면 되풀이가 끊겨 로봇도 `t` 안에 섭니다.
 - `robot/command/move_home`은 `home_lift_z`까지 `movel`로 올린 뒤 310~315에 저장된 관절값으로 `movej` 합니다. 태스크의 `move_home` 노드와 같은 순서입니다.
 
 > `speedj`/`speedl`은 컨트롤러의 속도 백분율 설정에 영향을 받습니다(스크립트 매뉴얼 3.1.26/3.1.27). 100 %가 아니면 실제 속도가 그만큼 줄어듭니다.
