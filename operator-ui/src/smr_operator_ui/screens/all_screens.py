@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QListWidget, QProgressBar, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from smr_operator_ui.components import MetricRow
@@ -274,6 +274,116 @@ class CobotManualScreen(BaseScreen):
         self.alarm_list.scrollToTop()
 
 
+class CobotJogScreen(BaseScreen):
+    """관절과 TCP를 조그로 움직이고 기준 위치를 저장하는 화면.
+
+    조그는 누르는 동안 움직이는 동작이므로 누름과 뗌을 각각 알린다.
+    화면은 장비를 직접 호출하지 않고 시그널로 요청만 전달한다.
+    """
+
+    # (종류, 축 번호, 방향) — 종류는 joint 또는 tcp, 방향은 +1 / -1.
+    jog_pressed = pyqtSignal(str, int, int)
+    jog_released = pyqtSignal(str, int)
+    command_requested = pyqtSignal(str)
+
+    _JOINTS = ("J1", "J2", "J3", "J4", "J5", "J6")
+    _TCP_AXES = (("X", "mm"), ("Y", "mm"), ("Z", "mm"),
+                 ("RX", "mrad"), ("RY", "mrad"), ("RZ", "mrad"))
+    _SAVE = (("홈 위치 저장", "save_home_pose"), ("시작 포즈 저장", "save_start_pose"))
+
+    def __init__(self) -> None:
+        super().__init__("Cobot 조그 / 위치 저장",
+                         "점검 모드에서만 사용합니다. 버튼을 누르는 동안에만 움직입니다.")
+        columns=QHBoxLayout(); columns.setSpacing(12); self.body.addLayout(columns,1)
+
+        joint_card,jc=self.surface("관절 조그")
+        jc.addLayout(self._jog_grid("joint", [(name, "") for name in self._JOINTS]))
+        jc.addStretch()
+        columns.addWidget(joint_card,1)
+
+        tcp_card,tc=self.surface("TCP 조그")
+        tc.addLayout(self._jog_grid("tcp", list(self._TCP_AXES)))
+        tc.addStretch()
+        columns.addWidget(tcp_card,1)
+
+        right=QVBoxLayout(); right.setSpacing(12); columns.addLayout(right,1)
+        position,pc=self.surface("현재 위치")
+        self.position_rows: dict[str, MetricRow] = {}
+        for axis,unit in self._TCP_AXES:
+            row=MetricRow(f"{axis} ({unit})","-")
+            self.position_rows[axis.lower()]=row
+            pc.addWidget(row)
+        pc.addStretch()
+        right.addWidget(position,1)
+
+        save_card,sc=self.surface("기준 위치 저장")
+        self.save_buttons: dict[str, QPushButton] = {}
+        for text,command in self._SAVE:
+            button=QPushButton(text); button.setMinimumHeight(52)
+            button.clicked.connect(lambda _,key=command,label=text: self._request(key,label))
+            self.save_buttons[command]=button
+            sc.addWidget(button)
+        sc.addStretch()
+        right.addWidget(save_card)
+
+        self.activity_label=QLabel("장비에 연결되어 있지 않습니다. 화면 동작만 확인할 수 있습니다.")
+        self.activity_label.setObjectName("Muted"); self.activity_label.setWordWrap(True)
+        self.body.addWidget(self.activity_label)
+        self.jog_buttons: dict[tuple[str,int,int], QPushButton] = getattr(self,"jog_buttons",{})
+
+    def _jog_grid(self, kind: str, axes: list[tuple[str,str]]) -> QGridLayout:
+        """축마다 - / 축이름 / + 를 한 줄로 배치한다."""
+        if not hasattr(self,"jog_buttons"):
+            self.jog_buttons={}
+        grid=QGridLayout(); grid.setSpacing(6)
+        for index,(name,unit) in enumerate(axes):
+            label=QLabel(f"{name} ({unit})" if unit else name)
+            label.setObjectName("MetricLabel")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(label,index,1)
+            for column,direction,text in ((0,-1,"−"),(2,1,"＋")):
+                button=QPushButton(text); button.setMinimumHeight(44); button.setMinimumWidth(56)
+                # kind/index/direction을 기본 인자로 고정하지 않으면 모든
+                # 버튼이 반복문의 마지막 축을 전달하게 된다.
+                button.pressed.connect(
+                    lambda k=kind,i=index,d=direction: self._on_jog_pressed(k,i,d)
+                )
+                button.released.connect(
+                    lambda k=kind,i=index: self.jog_released.emit(k,i)
+                )
+                self.jog_buttons[(kind,index,direction)]=button
+                grid.addWidget(button,index,column)
+        grid.setColumnStretch(1,1)
+        return grid
+
+    def _on_jog_pressed(self, kind: str, index: int, direction: int) -> None:
+        axis = self._JOINTS[index] if kind == "joint" else self._TCP_AXES[index][0]
+        self.activity_label.setText(
+            f"{axis} 축을 {'＋' if direction > 0 else '−'} 방향으로 조그 요청했습니다."
+        )
+        self.jog_pressed.emit(kind, index, direction)
+
+    def _request(self, command: str, label: str) -> None:
+        self.activity_label.setText(f"'{label}'을 요청했습니다.")
+        self.command_requested.emit(command)
+
+    def apply_position(self, values: dict[str, str]) -> None:
+        """현재 위치 표시를 갱신한다. 키는 x, y, z, rx, ry, rz이다."""
+        for axis,row in self.position_rows.items():
+            if axis in values:
+                row.set_value(values[axis])
+
+    def set_enabled_commands(self, available: set[str]) -> None:
+        """레지스터 주소가 정해진 명령만 누를 수 있게 한다."""
+        for command,button in self.save_buttons.items():
+            button.setEnabled(command in available)
+        for (kind,_index,_direction),button in self.jog_buttons.items():
+            button.setEnabled(f"jog_{kind}" in available)
+
+    def show_result(self, message: str) -> None:
+        self.activity_label.setText(message)
+
+
 class RunScreen(BaseScreen):
     """검사 계획과 사전 조건을 확인하는 화면."""
 
@@ -302,7 +412,7 @@ class SettingsMenuScreen(BaseScreen):
         super().__init__("설정 / 진단", "장비 설정과 운전 기록을 관리합니다.")
         self.setObjectName("SettingsScreen")
         grid=QGridLayout(); grid.setSpacing(14); self.body.addLayout(grid,1)
-        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("io","I/O 상태","PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·MQTT IP"),("system","시스템 설정","시간·단위·로그"),("ut","UT 시스템 설정","검사 조건과 트리거"),("cobot","Cobot 설정","검사 작업 슬롯"),("errors","오류 로그","활성 및 과거 오류"),("logs","로그 파일","날짜별 기록 관리"),("modes","운전 모드 저장","설정 슬롯 관리"))
+        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·MQTT IP"),("system","시스템 설정","시간·단위·로그"),("ut","UT 시스템 설정","검사 조건과 트리거"),("cobot","Cobot 설정","검사 작업 슬롯"),("errors","오류 로그","활성 및 과거 오류"),("logs","로그 파일","날짜별 기록 관리"),("modes","운전 모드 저장","설정 슬롯 관리"))
         for i,(key,title,desc) in enumerate(items):
             # key를 기본 인자로 고정한다. 그렇지 않으면 모든 lambda가
             # 반복문의 마지막 key만 참조하게 된다.
@@ -310,18 +420,76 @@ class SettingsMenuScreen(BaseScreen):
 
 
 class IOStatusScreen(BaseScreen):
-    """PLC와 장비의 입출력을 표시하는 읽기 전용 진단 표."""
+    """PLC와 장비의 입출력을 표시하고 출력 신호를 조작하는 화면."""
+
+    # 출력 신호를 바꿔 달라는 요청. (주소, 켜기여부)를 전달한다.
+    output_requested = pyqtSignal(str, bool)
+
+    # PLC 어댑터 연결 전에도 화면을 개발할 수 있도록 임시 데이터를 사용한다.
+    _ROWS = (
+        ("X000","Emergency Stop","IN","OFF","정상"),
+        ("X001","Safety Scanner","IN","ON","정상"),
+        ("X010","Outrigger 1 Contact","IN","ON","정상"),
+        ("X011","Outrigger 2 Contact","IN","ON","정상"),
+        ("X012","Outrigger 3 Contact","IN","ON","정상"),
+        ("Y000","AMR Drive Enable","OUT","OFF","정상"),
+        ("Y010","Lift Brake","OUT","ON","정상"),
+        ("D100","Lift Height","IN","1200 mm","정상"),
+        ("D110","Roll","IN","0.00°","정상"),
+        ("D111","Pitch","IN","0.00°","정상"),
+    )
 
     def __init__(self) -> None:
-        super().__init__("I/O 상태", "PLC와 장비별 디지털·아날로그 신호를 조회합니다.")
-        table=QTableWidget(10,5); table.setHorizontalHeaderLabels(["주소","신호명","방향","값","상태"])
+        super().__init__("I/O 상태", "입력 신호는 조회만 하고, 출력 신호는 직접 켜고 끌 수 있습니다.")
+        table=QTableWidget(len(self._ROWS),6)
+        table.setHorizontalHeaderLabels(["주소","신호명","방향","값","상태","조작"])
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        # PLC 어댑터 연결 전에도 화면을 개발할 수 있도록 임시 데이터를
-        # 사용한다. 운영자가 값을 바꾸지 못하도록 표는 읽기 전용이다.
-        data=[("X000","Emergency Stop","IN","OFF","정상"),("X001","Safety Scanner","IN","ON","정상"),("X010","Outrigger 1 Contact","IN","ON","정상"),("X011","Outrigger 2 Contact","IN","ON","정상"),("X012","Outrigger 3 Contact","IN","ON","정상"),("Y000","AMR Drive Enable","OUT","OFF","정상"),("Y010","Lift Brake","OUT","ON","정상"),("D100","Lift Height","IN","1200 mm","정상"),("D110","Roll","IN","0.00°","정상"),("D111","Pitch","IN","0.00°","정상")]
-        for r,row in enumerate(data):
-            for c,v in enumerate(row): table.setItem(r,c,QTableWidgetItem(v))
-        table.horizontalHeader().setStretchLastSection(True); self.body.addWidget(table,1)
+        self.value_items: dict[str, QTableWidgetItem] = {}
+        for r,row in enumerate(self._ROWS):
+            for c,v in enumerate(row):
+                item=QTableWidgetItem(v); table.setItem(r,c,item)
+                if c == 3:
+                    self.value_items[row[0]]=item
+            # 입력 신호는 PLC가 정하는 값이라 조작 대상이 아니다.
+            if row[2] == "OUT":
+                table.setCellWidget(r,5,self._output_buttons(row[0]))
+                # QSS가 버튼 최소 높이를 66 px로 잡으므로 여백까지 더해 행을 키운다.
+                table.setRowHeight(r,78)
+        table.horizontalHeader().setStretchLastSection(False)
+        table.resizeColumnsToContents()
+        header=table.horizontalHeader()
+        header.setSectionResizeMode(1, header.ResizeMode.Stretch)
+        self.body.addWidget(table,1)
+        self.activity_label=QLabel("출력 신호를 바꾸면 PLC에 요청을 보냅니다.")
+        self.activity_label.setObjectName("Muted"); self.activity_label.setWordWrap(True)
+        self.body.addWidget(self.activity_label)
+
+    def _output_buttons(self, address: str) -> QWidget:
+        """한 출력 신호의 ON/OFF 버튼 쌍을 만든다."""
+        holder=QWidget(); layout=QHBoxLayout(holder)
+        layout.setContentsMargins(4,4,4,4); layout.setSpacing(6)
+        for text,turn_on in (("ON",True),("OFF",False)):
+            button=QPushButton(text); button.setMinimumHeight(44); button.setMinimumWidth(72)
+            # address와 turn_on을 기본 인자로 고정하지 않으면 모든 버튼이
+            # 반복문의 마지막 값을 전달하게 된다.
+            button.clicked.connect(
+                lambda _,a=address,on=turn_on: self._request_output(a,on)
+            )
+            layout.addWidget(button)
+        return holder
+
+    def _request_output(self, address: str, turn_on: bool) -> None:
+        """조작 요청을 기록하고 상위 계층에 전달한다."""
+        self.activity_label.setText(
+            f"{address} 출력을 {'ON' if turn_on else 'OFF'}으로 요청했습니다."
+        )
+        self.output_requested.emit(address, turn_on)
+
+    def set_value(self, address: str, value: str) -> None:
+        """PLC가 알려준 현재 값을 표에 반영한다."""
+        item=self.value_items.get(address)
+        if item is not None:
+            item.setText(value)
 
 
 class FormScreen(BaseScreen):
@@ -473,9 +641,26 @@ class UTSettingsScreen(FormScreen):
 class CobotSettingsScreen(FormScreen):
     """협동로봇 작업 슬롯을 설정하는 화면."""
 
+    # 저장할 때 이 항목을 로봇에도 보낸다. 항목명이 곧 저장 키이므로
+    # 값을 꺼낼 때도 이 이름을 쓴다.
+    SPEED_FIELD = "작업 속도"
+
     def __init__(self):
         tasks=QComboBox(); tasks.addItems([f"TASK {i:02d}" for i in range(1,25)])
-        super().__init__("cobot","Cobot 설정","검사 작업 슬롯을 관리합니다. 연결 정보는 연결 설정 화면에서 관리합니다.",[("선택 작업",tasks),("연결 상태",QLabel("● 연결됨")),("마지막 응답",QLabel("12 ms"))])
+        super().__init__(
+            "cobot","Cobot 설정",
+            "검사 작업 슬롯과 직선 동작 속도를 관리합니다. 연결 정보는 연결 설정 화면에서 관리합니다.",
+            [
+                ("선택 작업",tasks),
+                (self.SPEED_FIELD,spin(150,1,1000)),
+                ("연결 상태",QLabel("● 연결됨")),
+                ("마지막 응답",QLabel("12 ms")),
+            ],
+        )
+
+    def linear_speed(self) -> int:
+        """저장 시 로봇으로 보낼 직선 동작 속도(mm/s)를 돌려준다."""
+        return int(self.values().get(self.SPEED_FIELD, 0))
 
 
 class ConnectionSettingsScreen(FormScreen):
@@ -544,5 +729,9 @@ class ModeSlotsScreen(BaseScreen):
         grid=QGridLayout(); self.body.addLayout(grid,1)
         for i in range(1,9):
             text=f"슬롯 {i}\n" + ("SMR Shell 기본\n2026-07-16" if i==1 else "비어 있음")
-            b=QPushButton(text); b.setMinimumHeight(105); grid.addWidget(b,(i-1)//4,(i-1)%4)
+            b=QPushButton(text); b.setMinimumHeight(105)
+            # QSS의 min-height 때문에 버튼 높이가 한 줄 기준으로 고정된다.
+            # 여러 줄 문구가 잘리지 않도록 세로로 늘어나게 한다.
+            b.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+            grid.addWidget(b,(i-1)//4,(i-1)%4)
         row=QHBoxLayout(); row.addStretch(); row.addWidget(QPushButton("불러오기")); row.addWidget(QPushButton("현재 설정 저장")); self.body.addLayout(row)

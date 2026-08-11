@@ -1,0 +1,29 @@
+{
+  "_comment": [
+    "Elite CS612 Modbus 레지스터 맵. 주소를 코드에 두지 않고 이 파일에서만 관리한다.",
+    "address가 null인 항목은 주소 미확정을 뜻한다. 노드는 해당 기능을 거부하고,",
+    "UI는 관련 버튼을 비활성화한다. 주소를 확인하면 이 파일만 채우면 된다.",
+    "count는 연속으로 읽고 쓸 레지스터 개수이며, 자세는 [X, Y, Z, Rx, Ry, Rz] 순서다."
+  ],
+  "scale": {
+    "position_per_count": 0.1,
+    "rotation_per_count": 1.0,
+    "_comment": "레지스터 1당 실제 값. 위치는 mm, 회전은 mrad 기준이다."
+  },
+  "read": {
+    "robot_mode": { "address": 66, "count": 1 },
+    "control_method": { "address": 71, "count": 1 },
+    "operation_mode": { "address": 72, "count": 1 },
+    "tcp_absolute": { "address": 260, "count": 6 },
+    "tcp_zero_relative": { "address": 280, "count": 6 },
+    "joint_position": { "address": null, "count": 6 }
+  },
+  "write": {
+    "linear_speed": { "address": null, "count": 1 },
+    "jog_joint": { "address": null, "count": 1 },
+    "jog_tcp": { "address": null, "count": 1 },
+    "save_home_pose": { "address": null, "count": 1 },
+    "save_start_pose": { "address": null, "count": 1 },
+    "move_home": { "address": null, "count": 1 }
+  }
+}

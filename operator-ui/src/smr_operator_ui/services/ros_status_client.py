@@ -18,10 +18,20 @@ try:  # ROS가 설치되지 않은 환경에서도 화면은 그대로 동작해
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.node import Node
     from std_msgs.msg import Float32MultiArray, Int32, String
+    from std_srvs.srv import Trigger
 
     ROS_AVAILABLE = True
 except ImportError:  # pragma: no cover - ROS 미설치 환경에서만 실행된다.
     ROS_AVAILABLE = False
+
+try:
+    # 레지스터 맵은 ROS 패키지가 갖고 있다. 워크스페이스를 소싱하면
+    # 그대로 가져다 쓸 수 있어 주소 정의를 UI에 복제하지 않는다.
+    from elite_robot_controller import register_map
+
+    REGISTER_MAP_AVAILABLE = True
+except ImportError:  # pragma: no cover - ROS 워크스페이스 미소싱 환경.
+    REGISTER_MAP_AVAILABLE = False
 
 
 class RosTopics:
@@ -33,6 +43,14 @@ class RosTopics:
     TCP_POSE = "robot/status/tcp_pose"
     TCP_POSE_ZERO = "robot/status/tcp_pose_zero"
     ALARMS = "robot/status/alarms"
+
+    LINEAR_SPEED = "robot/command/linear_speed"
+    JOG_JOINT = "robot/command/jog_joint"
+    JOG_TCP = "robot/command/jog_tcp"
+
+    SAVE_HOME_POSE = "robot/command/save_home_pose"
+    SAVE_START_POSE = "robot/command/save_start_pose"
+    MOVE_HOME = "robot/command/move_home"
 
 
 # 레지스터 원값을 운영자가 읽을 수 있는 문구로 바꾼다. 값 구분은
@@ -62,9 +80,17 @@ class RosStatusClient(QObject):
     control_method_changed = pyqtSignal(int, str)
     operation_mode_changed = pyqtSignal(int, str)
     alarm_received = pyqtSignal(str)
+    command_result = pyqtSignal(str, bool, str)
     error_occurred = pyqtSignal(str)
 
     POSE_LENGTH = 6
+
+    # 한 번짜리 명령과 그 서비스 이름, 그리고 레지스터 맵에서 확인할 쓰기 항목.
+    COMMAND_SERVICES = {
+        "save_home_pose": (RosTopics.SAVE_HOME_POSE, "save_home_pose"),
+        "save_start_pose": (RosTopics.SAVE_START_POSE, "save_start_pose"),
+        "home": (RosTopics.MOVE_HOME, "move_home"),
+    }
 
     def __init__(self, node_name: str = "smr_operator_ui", parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -73,6 +99,23 @@ class RosStatusClient(QObject):
         self._executor = None
         self._thread: threading.Thread | None = None
         self._owns_context = False
+        self._publishers: dict[str, object] = {}
+        self._clients: dict[str, object] = {}
+        self._registers = None
+        if REGISTER_MAP_AVAILABLE:
+            try:
+                self._registers = register_map.load()
+            except Exception:  # pragma: no cover - 설정 파일이 없을 때만 발생한다.
+                self._registers = None
+
+    def writable(self, name: str) -> bool:
+        """레지스터 주소가 정해져 실제로 보낼 수 있는 명령인지 알려준다.
+
+        주소를 모르면 UI에서 버튼을 잠가 엉뚱한 레지스터에 쓰지 않게 한다.
+        """
+        if self._registers is None:
+            return False
+        return self._registers.write_entry(name).available
 
     @property
     def available(self) -> bool:
@@ -112,6 +155,15 @@ class RosStatusClient(QObject):
             self._node.create_subscription(
                 String, RosTopics.ALARMS, self._on_alarm, 10
             )
+            self._publishers = {
+                "linear_speed": self._node.create_publisher(Int32, RosTopics.LINEAR_SPEED, 10),
+                "jog_joint": self._node.create_publisher(Int32, RosTopics.JOG_JOINT, 10),
+                "jog_tcp": self._node.create_publisher(Int32, RosTopics.JOG_TCP, 10),
+            }
+            self._clients = {
+                key: self._node.create_client(Trigger, service)
+                for key, (service, _) in self.COMMAND_SERVICES.items()
+            }
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
             self._thread = threading.Thread(target=self._spin, daemon=True)
@@ -154,6 +206,50 @@ class RosStatusClient(QObject):
                 executor.spin()
         except Exception:  # pragma: no cover - stop() 중 실행기 해제로 발생한다.
             pass
+
+    def send_value(self, name: str, value: int) -> bool:
+        """작업 속도나 조그처럼 값이 있는 명령을 토픽으로 보낸다."""
+        publisher = self._publishers.get(name)
+        if publisher is None:
+            self.command_result.emit(name, False, "ROS 2에 연결되어 있지 않습니다.")
+            return False
+        if not self.writable(name):
+            self.command_result.emit(name, False, "Modbus 주소가 설정되지 않았습니다.")
+            return False
+        publisher.publish(Int32(data=int(value)))
+        self.command_result.emit(name, True, f"{name} 전송: {value}")
+        return True
+
+    def call_command(self, name: str) -> bool:
+        """위치 저장이나 홈 이동처럼 값이 없는 명령을 서비스로 호출한다.
+
+        응답은 기다리지 않고 콜백에서 `command_result`로 전달한다. GUI
+        스레드를 막지 않기 위해서다.
+        """
+        entry = self.COMMAND_SERVICES.get(name)
+        client = self._clients.get(name)
+        if entry is None or client is None:
+            self.command_result.emit(name, False, "ROS 2에 연결되어 있지 않습니다.")
+            return False
+        if not self.writable(entry[1]):
+            self.command_result.emit(name, False, "Modbus 주소가 설정되지 않았습니다.")
+            return False
+        if not client.service_is_ready():
+            self.command_result.emit(name, False, "로봇 제어 노드가 응답하지 않습니다.")
+            return False
+
+        future = client.call_async(Trigger.Request())
+        future.add_done_callback(lambda done: self._on_command_done(name, done))
+        return True
+
+    def _on_command_done(self, name: str, future) -> None:
+        """서비스 응답을 화면이 쓸 수 있는 형태로 전달한다."""
+        try:
+            response = future.result()
+        except Exception as exc:  # pragma: no cover - 통신 예외 경로.
+            self.command_result.emit(name, False, f"명령 실패: {exc}")
+            return
+        self.command_result.emit(name, bool(response.success), str(response.message))
 
     def _on_tcp_pose(self, msg) -> None:
         self._emit_pose(msg, self.tcp_pose_changed)

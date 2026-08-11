@@ -49,7 +49,12 @@
 - [x] 엘리트 협동로봇 제어부 ROS 2 패키지화 (`src/elite_robot_controller`)
 - [x] 운영 UI 연결 설정 화면 (협동로봇·PLC·MQTT IP)
 - [x] 운영 UI Cobot 수동 제어 화면 (연결·전원·프로그램 제어)
-- [ ] Cobot 수동 제어 화면의 `command_requested`를 실제 제어 경로에 연결 (connect, disconnect, power_on, power_off, brake_release, play, pause, stop, home)
+- [x] Modbus 레지스터 주소를 `config/modbus_registers.json` 한 곳으로 이관
+- [x] I/O 화면 출력 신호 ON/OFF 버튼, Cobot 작업 속도 설정, 관절/TCP 조그 및 기준 위치 저장 화면
+- [ ] **미확정 Modbus 주소 확인** — 작업 속도, 조그(관절/TCP), 홈 위치 저장, 시작 포즈 저장, 홈 이동, 관절 각도 읽기
+- [ ] 조그 값 인코딩 확인 (축 번호와 방향을 한 레지스터에 담는 방식)
+- [ ] I/O 출력 ON/OFF를 실제 PLC 경로에 연결 (현재는 `output_requested` 시그널까지만)
+- [ ] Cobot 수동 제어 화면의 대시보드 명령(connect, power_on, brake_release, play, pause, stop)을 `robot/dashboard/*` 서비스에 연결
 - [x] TCP 현재값 및 제로점 기준값의 Modbus 레지스터 주소 확인 (절대 260~265, 원점 기준 280~285)
 - [ ] 위치 환산 계수 실장비 검증 (`POSITION_SCALE = 0.1`이 맞는지, 레지스터가 0.1 mm 단위인지)
 - [x] 운영 UI를 `robot/status/tcp_pose`, `robot/status/tcp_pose_zero` 토픽에 연결

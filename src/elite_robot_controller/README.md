@@ -39,26 +39,58 @@ Elite CS612 협동로봇을 ROS 2에서 제어하기 위한 패키지입니다. 
 
 ## Modbus 레지스터 맵
 
-주소는 `RobotControlNode`의 클래스 상수로 한 곳에 모아 두었다.
+**주소는 코드에 두지 않고 [`config/modbus_registers.json`](config/modbus_registers.json) 한 곳에서만 관리한다.** 주소가 바뀌거나 새로 확인되면 이 파일만 고치면 되고 코드는 건드리지 않는다. 운영 UI도 같은 파일을 읽으므로 정의가 갈라지지 않는다.
 
-| 상수 | 주소 | 내용 |
+`register_map` 파라미터로 다른 경로를 지정할 수 있다.
+
+```bash
+ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/경로/my_registers.json
+```
+
+### 현재 내용
+
+| 항목 | 주소 | 내용 |
 | --- | --- | --- |
-| `REG_ROBOT_MODE` | 66 | 로봇 모드 |
-| `REG_CONTROL_METHOD` | 71 | 제어 방식 |
-| `REG_OPERATION_MODE` | 72 | 운전 모드 |
-| `REG_TCP_ABSOLUTE` | 260~265 | 현재 절대 TCP |
-| `REG_TCP_ZERO_RELATIVE` | 280~285 | 원점 기준 상대 pose |
+| `read.robot_mode` | 66 | 로봇 모드 |
+| `read.control_method` | 71 | 제어 방식 |
+| `read.operation_mode` | 72 | 운전 모드 |
+| `read.tcp_absolute` | 260~265 | 현재 절대 TCP |
+| `read.tcp_zero_relative` | 280~285 | 원점 기준 상대 pose |
+| `read.joint_position` | **미정** | 관절 각도 |
+| `write.linear_speed` | **미정** | 직선 동작 속도 |
+| `write.jog_joint` / `write.jog_tcp` | **미정** | 조그 명령 |
+| `write.save_home_pose` / `write.save_start_pose` | **미정** | 기준 위치 저장 |
+| `write.move_home` | **미정** | 홈 이동 |
+
+`address`가 `null`인 항목은 주소 미확정을 뜻한다. **노드는 해당 요청을 거부하고 Modbus 접근 자체를 하지 않는다.** 엉뚱한 레지스터에 쓰면 로봇이 예기치 않게 움직이기 때문이다. 운영 UI도 같은 파일을 읽어 해당 버튼을 비활성화한다.
+
+### 자세 값 환산
 
 자세는 축마다 레지스터 1개씩 `[X, Y, Z, Rx, Ry, Rz]` 순서로 6개가 연속 배치된다. `Robot_modbus.get_all_registers()`가 부호 있는 16비트로 변환해 주므로 노드에서는 단위 환산만 한다.
 
-| 성분 | 상수 | 환산 | 발행 단위 |
+| 성분 | 설정 항목 | 환산 | 발행 단위 |
 | --- | --- | --- | --- |
-| X, Y, Z | `POSITION_SCALE` | 레지스터 × 0.1 | mm |
-| Rx, Ry, Rz | `ROTATION_SCALE` | 레지스터 × 1.0 | mrad |
+| X, Y, Z | `scale.position_per_count` | 레지스터 × 0.1 | mm |
+| Rx, Ry, Rz | `scale.rotation_per_count` | 레지스터 × 1.0 | mrad |
 
 레지스터를 6개 모두 읽지 못하면 잘못된 자세를 내보내지 않도록 발행을 건너뛴다.
 
-> **확인 필요:** 위치 환산 계수 0.1은 이식 전 코드의 값을 그대로 이어받은 것으로, 실장비에서 검증하지 않았다. 레지스터가 0.1 mm가 아니라 1 mm 단위라면 `POSITION_SCALE`만 1.0으로 바꾸면 된다.
+> **확인 필요:** 위치 환산 계수 0.1은 이식 전 코드의 값을 그대로 이어받은 것으로, 실장비에서 검증하지 않았다. 레지스터가 0.1 mm가 아니라 1 mm 단위라면 설정 파일의 `position_per_count`만 1.0으로 바꾸면 된다.
+
+## 명령 인터페이스
+
+| 종류 | 이름 | 쓰기 항목 |
+| --- | --- | --- |
+| 서비스 (`std_srvs/Trigger`) | `robot/command/save_home_pose` | `save_home_pose` |
+| 서비스 (`std_srvs/Trigger`) | `robot/command/save_start_pose` | `save_start_pose` |
+| 서비스 (`std_srvs/Trigger`) | `robot/command/move_home` | `move_home` |
+| 토픽 (`std_msgs/Int32`) | `robot/command/linear_speed` | `linear_speed` |
+| 토픽 (`std_msgs/Int32`) | `robot/command/jog_joint` | `jog_joint` |
+| 토픽 (`std_msgs/Int32`) | `robot/command/jog_tcp` | `jog_tcp` |
+
+값이 없는 한 번짜리 명령은 성공 여부를 돌려받아야 하므로 서비스로, 값이 있는 명령은 토픽으로 받는다. 주소가 없으면 서비스는 `success=False`와 사유를 응답하고 토픽은 경고만 남긴다.
+
+> **확인 필요:** 조그 값의 인코딩(축 번호와 방향을 한 레지스터에 담는 방식)은 아직 로봇 규격으로 확인하지 않았다. 현재 UI는 `축번호 × 2 + 방향(+는 0, -는 1)`으로 보내며, 주소가 확정될 때 함께 맞춰야 한다.
 
 **서비스** (모두 `std_srvs/Trigger`, 29999 Dashboard 명령에 대응)
 

@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
 
 from smr_operator_ui.components import ConnectionBadge
 from smr_operator_ui.screens import (
-    CobotManualScreen, CobotSettingsScreen, ConnectionSettingsScreen,
+    CobotJogScreen, CobotManualScreen, CobotSettingsScreen, ConnectionSettingsScreen,
     ErrorLogScreen, IOStatusScreen, LogFilesScreen, MainScreen, ManualScreen,
     ModeSlotsScreen, RunScreen, SettingsMenuScreen, SystemSettingsScreen,
     UTSettingsScreen,
@@ -107,6 +107,7 @@ class OperatorWindow(QMainWindow):
         # 화면 키를 탐색 시그널에도 사용하여, 화면 전환 로직이 구체적인
         # QWidget 인스턴스에 직접 의존하지 않게 한다.
         self.cobot_manual_screen = CobotManualScreen()
+        self.cobot_jog_screen = CobotJogScreen()
         self.screens = {
             "main": self.main_screen,
             "manual": ManualScreen(), "run": RunScreen(),
@@ -116,6 +117,7 @@ class OperatorWindow(QMainWindow):
             "cobot": CobotSettingsScreen(), "errors": ErrorLogScreen(),
             "logs": LogFilesScreen(), "modes": ModeSlotsScreen(),
             "cobot_manual": self.cobot_manual_screen,
+            "cobot_jog": self.cobot_jog_screen,
         }
         self._current_screen_key = "main"
         self._navigation_history: list[str] = []
@@ -171,6 +173,12 @@ class OperatorWindow(QMainWindow):
             lambda _code, name: self.cobot_manual_screen.apply_status({"operation_mode": name})
         )
         self.ros_status.alarm_received.connect(self.cobot_manual_screen.add_alarm)
+        self.ros_status.command_result.connect(self._show_command_result)
+        self.cobot_jog_screen.jog_pressed.connect(self._send_jog)
+        self.cobot_jog_screen.command_requested.connect(self.ros_status.call_command)
+        self.cobot_manual_screen.command_requested.connect(self._handle_cobot_command)
+        self.screens["cobot"].save_requested.connect(self._send_linear_speed)
+        self.cobot_jog_screen.set_enabled_commands(set(self._available_writes()))
         self.ros_status.error_occurred.connect(self._show_ros_error)
         if start_ros:
             self.ros_status.start()
@@ -295,8 +303,10 @@ class OperatorWindow(QMainWindow):
         self.main_screen.show_activity(message)
 
     def _show_tcp_pose(self, values: list) -> None:
-        """현재 절대 TCP 자세를 Cobot 수동 제어 화면에 표시한다."""
-        self.cobot_manual_screen.apply_tcp(self._format_pose(values))
+        """현재 절대 TCP 자세를 수동 제어와 조그 화면에 함께 표시한다."""
+        formatted = self._format_pose(values)
+        self.cobot_manual_screen.apply_tcp(formatted)
+        self.cobot_jog_screen.apply_position(formatted)
 
     def _show_tcp_pose_zero(self, values: list) -> None:
         """원점 기준 상대 자세를 Cobot 수동 제어 화면에 표시한다."""
@@ -310,6 +320,39 @@ class OperatorWindow(QMainWindow):
         """
         axes = ("x", "y", "z", "rx", "ry", "rz")
         return {axis: f"{value:.1f}" for axis, value in zip(axes, values)}
+
+    def _available_writes(self) -> list[str]:
+        """주소가 정해져 실제로 보낼 수 있는 명령 이름을 모은다."""
+        names = ("jog_joint", "jog_tcp", "save_home_pose", "save_start_pose",
+                 "move_home", "linear_speed")
+        return [name for name in names if self.ros_status.writable(name)]
+
+    def _send_jog(self, kind: str, axis: int, direction: int) -> None:
+        """조그 요청을 레지스터에 넣을 코드값으로 바꿔 보낸다.
+
+        인코딩(축 번호와 방향을 한 값에 담는 방식)은 로봇 Modbus 규격
+        확인 후 확정한다. 주소가 없으면 전송 자체가 막힌다.
+        """
+        self.ros_status.send_value(f"jog_{kind}", axis * 2 + (0 if direction > 0 else 1))
+
+    def _handle_cobot_command(self, command: str) -> None:
+        """수동 제어 화면의 명령 중 ROS로 보낼 수 있는 것만 전달한다."""
+        if command in self.ros_status.COMMAND_SERVICES:
+            self.ros_status.call_command(command)
+
+    def _send_linear_speed(self, scope: str, values: dict) -> None:
+        """Cobot 설정을 저장할 때 작업 속도를 로봇에도 반영한다."""
+        if scope != "cobot":
+            return
+        speed = values.get(CobotSettingsScreen.SPEED_FIELD)
+        if speed is not None and self.ros_status.writable("linear_speed"):
+            self.ros_status.send_value("linear_speed", int(speed))
+
+    def _show_command_result(self, name: str, success: bool, message: str) -> None:
+        """명령 결과를 요청한 화면의 안내 문구로 보여준다."""
+        text = message if success else f"실패: {message}"
+        self.cobot_jog_screen.show_result(text)
+        self.cobot_manual_screen.activity_label.setText(text)
 
     def _show_ros_error(self, message: str) -> None:
         """ROS 수신 오류를 메인 화면에 간단한 운영 메시지로 표시한다."""
