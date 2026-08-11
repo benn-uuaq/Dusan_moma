@@ -43,7 +43,7 @@
 
 | Topic | 시그널 | 내용 |
 | --- | --- | --- |
-| `robot/status/tcp_pose` | `tcp_pose_changed(list)` | 현재 절대 TCP |
+| `robot/status/tcp_pose` | `tcp_pose_changed(list)` | 현재 TCP (기본 프레임, Modbus 384~389) |
 | `robot/status/tcp_pose_zero` | `tcp_pose_zero_changed(list)` | 원점 기준 상대 pose |
 | `robot/status/robot_mode` | `robot_mode_changed(int, str)` | 로봇 모드 |
 | `robot/status/control_method` | `control_method_changed(int, str)` | 제어 방식 |

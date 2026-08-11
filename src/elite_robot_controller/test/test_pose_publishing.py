@@ -66,7 +66,7 @@ def _default_map():
         "scale": {"position_per_count": 0.1, "rotation_per_count": 1.0},
         "read": {
             "robot_mode": {"address": 66, "count": 1},
-            "tcp_absolute": {"address": 260, "count": 6},
+            "tcp_absolute": {"address": 384, "count": 6},
             "tcp_zero_relative": {"address": 280, "count": 6},
             "joint_position": {"address": None, "count": 6},
         },
@@ -81,14 +81,13 @@ def test_shipped_register_map_matches_known_addresses():
     """패키지에 담긴 설정 파일이 확인된 주소를 그대로 갖고 있어야 한다."""
     registers = register_map.load()
 
-    assert registers.read_entry("tcp_absolute").address == 260
+    assert registers.read_entry("tcp_absolute").address == 384
     assert registers.read_entry("tcp_absolute").count == 6
     assert registers.read_entry("tcp_zero_relative").address == 280
     assert registers.read_entry("robot_mode").address == 66
     assert registers.read_entry("control_method").address == 71
     assert registers.read_entry("operation_mode").address == 72
     assert registers.read_entry("joint_position").address == 73
-    assert registers.read_entry("tcp_base_frame").address == 384
     # 아직 확인되지 않은 주소는 null로 남아 있어야 한다.
     assert registers.write_entry("save_home_pose").available is False
     assert registers.available_writes() == []
@@ -102,7 +101,7 @@ def test_joint_angles_use_rotation_scale_for_every_axis():
     assert entry.kind == "angle"
     assert registers.scales_for(entry) == [1.0] * 6
     # 자세는 앞 3개만 위치 환산을 받는다.
-    pose = registers.read_entry("tcp_base_frame")
+    pose = registers.read_entry("tcp_absolute")
     assert registers.scales_for(pose) == [0.1, 0.1, 0.1, 1.0, 1.0, 1.0]
 
 
@@ -123,20 +122,20 @@ def test_angle_entry_is_published_without_position_scaling():
 
 
 def test_pose_uses_addresses_from_map():
-    node = make_node({260: [0] * 6, 280: [0] * 6})
+    node = make_node({384: [0] * 6, 280: [0] * 6})
     absolute, zero = FakePublisher(), FakePublisher()
 
     node.publish_pose("tcp_absolute", absolute)
     node.publish_pose("tcp_zero_relative", zero)
 
-    assert node.robot_modbus.reads == [(260, 6), (280, 6)]
+    assert node.robot_modbus.reads == [(384, 6), (280, 6)]
     assert len(absolute.messages) == 1
     assert len(zero.messages) == 1
 
 
 def test_position_and_rotation_scaling():
     """위치는 0.1 mm 단위, 회전은 1 mrad 단위로 환산한다."""
-    node = make_node({260: [1205, -3400, 5000, 1571, 0, -3141]})
+    node = make_node({384: [1205, -3400, 5000, 1571, 0, -3141]})
     publisher = FakePublisher()
 
     node.publish_pose("tcp_absolute", publisher)
@@ -146,7 +145,7 @@ def test_position_and_rotation_scaling():
 
 def test_short_or_missing_response_is_not_published():
     """레지스터를 다 읽지 못하면 잘못된 자세를 발행하지 않는다."""
-    node = make_node({260: [1, 2, 3]})
+    node = make_node({384: [1, 2, 3]})
     publisher = FakePublisher()
 
     node.publish_pose("tcp_absolute", publisher)

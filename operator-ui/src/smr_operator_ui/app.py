@@ -174,7 +174,6 @@ class OperatorWindow(QMainWindow):
             lambda _code, name: self.cobot_manual_screen.apply_status({"operation_mode": name})
         )
         self.ros_status.alarm_received.connect(self.cobot_manual_screen.add_alarm)
-        self.ros_status.tcp_pose_base_changed.connect(self._show_tcp_pose_base)
         self.ros_status.joint_position_changed.connect(
             self.cobot_jog_screen.apply_joint_position
         )
@@ -313,13 +312,11 @@ class OperatorWindow(QMainWindow):
         self.main_screen.show_activity(message)
 
     def _show_tcp_pose(self, values: list) -> None:
-        """현재 절대 TCP 자세를 수동 제어 화면에 표시한다."""
-        self.cobot_manual_screen.apply_tcp(self._format_pose(values))
-
-    def _show_tcp_pose_base(self, values: list) -> None:
-        """기본 프레임 기준 TCP를 조그 화면의 축 옆에 표시한다."""
+        """현재 TCP 자세를 수동 제어와 조그 화면에 함께 표시한다."""
         self._last_tcp_pose = list(values)
-        self.cobot_jog_screen.apply_position(self._format_pose(values))
+        formatted = self._format_pose(values)
+        self.cobot_manual_screen.apply_tcp(formatted)
+        self.cobot_jog_screen.apply_position(formatted)
 
     def _show_tcp_pose_zero(self, values: list) -> None:
         """원점 기준 상대 자세를 Cobot 수동 제어 화면에 표시한다."""

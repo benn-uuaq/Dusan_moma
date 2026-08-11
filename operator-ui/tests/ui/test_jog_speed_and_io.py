@@ -154,7 +154,7 @@ def test_axis_values_follow_topics(qtbot) -> None:
     window.ros_status.joint_position_changed.emit(
         [207.0, -1466.0, -1875.0, -1371.0, 1570.0, 207.0]
     )
-    window.ros_status.tcp_pose_base_changed.emit(
+    window.ros_status.tcp_pose_changed.emit(
         [636.8, -47.3, 581.0, 3141.0, 0.0, -1570.0]
     )
 
@@ -175,7 +175,7 @@ def test_saving_reference_pose_records_current_tcp(qtbot) -> None:
     screen.command_requested.emit("save_home_pose")
     assert "저장된 값 없음" in screen.saved_labels["save_home_pose"].text()
 
-    window.ros_status.tcp_pose_base_changed.emit(
+    window.ros_status.tcp_pose_changed.emit(
         [636.8, -47.3, 581.0, 3141.0, 0.0, -1570.0]
     )
     screen.command_requested.emit("save_home_pose")

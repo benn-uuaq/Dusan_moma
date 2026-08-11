@@ -33,9 +33,8 @@ Elite CS612 협동로봇을 ROS 2에서 제어하기 위한 패키지입니다. 
 | `robot/status/robot_mode` | `std_msgs/Int32` | Modbus 66 |
 | `robot/status/control_method` | `std_msgs/Int32` | Modbus 71 |
 | `robot/status/operation_mode` | `std_msgs/Int32` | Modbus 72 |
-| `robot/status/tcp_pose` | `std_msgs/Float32MultiArray` | Modbus 260~265 (현재 절대 TCP) |
+| `robot/status/tcp_pose` | `std_msgs/Float32MultiArray` | Modbus 384~389 (현재 TCP, 기본 프레임) |
 | `robot/status/tcp_pose_zero` | `std_msgs/Float32MultiArray` | Modbus 280~285 (원점 기준 상대 pose) |
-| `robot/status/tcp_pose_base` | `std_msgs/Float32MultiArray` | Modbus 384~389 (기본 프레임 TCP) |
 | `robot/status/joint_position` | `std_msgs/Float32MultiArray` | Modbus 73~78 (관절 각도) |
 | `robot/status/alarms` | `std_msgs/String` | 30001 알람 |
 
@@ -57,9 +56,8 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 | `read.control_method` | 71 | 제어 방식 |
 | `read.operation_mode` | 72 | 운전 모드 |
 | `read.joint_position` | 73~78 | 관절 각도 (베이스, 어깨, 엘보, 손목 1~3) |
-| `read.tcp_absolute` | 260~265 | 현재 절대 TCP |
+| `read.tcp_absolute` | 384~389 | 현재 TCP (기본 프레임) |
 | `read.tcp_zero_relative` | 280~285 | 원점 기준 상대 pose |
-| `read.tcp_base_frame` | 384~389 | 기본 프레임 기준 TCP |
 | `write.linear_speed` | **미정** | 직선 동작 속도 |
 | `write.jog_joint` / `write.jog_tcp` | **미정** | 조그 명령 |
 | `write.save_home_pose` / `write.save_start_pose` | **미정** | 기준 위치 저장 |
@@ -80,8 +78,6 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 
 레지스터를 6개 모두 읽지 못하면 잘못된 자세를 내보내지 않도록 발행을 건너뛴다.
 
-> **확인 필요:** `tcp_absolute`(260)와 `tcp_base_frame`(384)의 관계가 아직 확실하지 않다. 이식 전 코드는 384를 읽고 있었고, 이후 260이 '현재 절대 TCP'로 확인되었다. 둘 다 읽어 각각 발행하고 있으며, 같은 값이면 하나로 줄인다.
->
 > **확인 필요:** 위치 환산 계수 0.1은 이식 전 코드의 값을 그대로 이어받은 것으로, 실장비에서 검증하지 않았다. 레지스터가 0.1 mm가 아니라 1 mm 단위라면 설정 파일의 `position_per_count`만 1.0으로 바꾸면 된다.
 
 ## 명령 인터페이스
