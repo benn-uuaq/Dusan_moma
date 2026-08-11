@@ -66,6 +66,7 @@ def test_cobot_manual_buttons_emit_dashboard_commands(qtbot) -> None:
         ("전원 ON", "power_on"),
         ("브레이크 해제", "brake_release"),
         ("정지", "stop"),
+        ("홈 이동", "home"),
     ):
         qtbot.mouseClick(by_text[label], Qt.MouseButton.LeftButton)
         assert received[-1] == command
@@ -78,10 +79,65 @@ def test_cobot_manual_status_updates(qtbot) -> None:
     screen = window.cobot_manual_screen
     screen.set_connected(True)
     assert "연결됨" in screen.connection_state.text()
-    screen.apply_status({"robot_mode": "RUNNING", "tcp_pose": "X 0.10 / Y 0.00 / Z 0.50 m"})
+    screen.apply_status({"robot_mode": "RUNNING"})
     assert screen.metrics["robot_mode"].value_label.text() == "RUNNING"
     screen.set_alarms(["ER112 Response timeout"])
     assert screen.alarm_list.count() == 1
     screen.set_alarms([])
     assert screen.alarm_list.item(0).text() == "활성 알람 없음"
+    window.close()
+
+
+def test_cobot_manual_shows_six_pose_components(qtbot) -> None:
+    window = OperatorWindow(start_mqtt=False)
+    qtbot.addWidget(window)
+    screen = window.cobot_manual_screen
+    axes = ("x", "y", "z", "rx", "ry", "rz")
+    assert tuple(screen.tcp_rows) == axes
+    assert tuple(screen.zero_rows) == axes
+
+    # 현재값과 제로점 기준은 서로 독립적으로 갱신되어야 한다.
+    screen.apply_tcp({"x": "120.5", "rz": "-3.20"})
+    assert screen.tcp_rows["x"].value_label.text() == "120.5"
+    assert screen.tcp_rows["rz"].value_label.text() == "-3.20"
+    assert screen.zero_rows["x"].value_label.text() == "-"
+
+    screen.apply_zero_point({"x": "0.0"})
+    assert screen.zero_rows["x"].value_label.text() == "0.0"
+    assert screen.tcp_rows["x"].value_label.text() == "120.5"
+
+    # 전달하지 않은 성분은 이전 값을 유지한다.
+    screen.apply_tcp({"y": "10.0"})
+    assert screen.tcp_rows["x"].value_label.text() == "120.5"
+    window.close()
+
+
+def test_cobot_manual_layout_fits_fixed_console_height(qtbot) -> None:
+    """1280x720 고정 콘솔에서 카드나 버튼이 잘리지 않아야 한다."""
+    from PyQt6.QtWidgets import QFrame
+
+    window = OperatorWindow(start_mqtt=False)
+    qtbot.addWidget(window)
+    window.resize(1280, 720)
+    window.navigate("cobot_manual")
+    window.show()
+    qtbot.waitExposed(window)
+    screen = window.cobot_manual_screen
+
+    undersized = [
+        card.findChild(type(screen.endpoint_label)).text()
+        for card in screen.findChildren(QFrame)
+        if card.objectName() == "Surface"
+        and (
+            card.height() < card.minimumSizeHint().height()
+            or card.width() < card.minimumSizeHint().width()
+        )
+    ]
+    assert undersized == []
+    clipped = [
+        b.text()
+        for b in screen.findChildren(QPushButton)
+        if b.width() < b.minimumSizeHint().width()
+    ]
+    assert clipped == []
     window.close()

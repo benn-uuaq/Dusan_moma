@@ -49,7 +49,9 @@
 - [x] 엘리트 협동로봇 제어부 ROS 2 패키지화 (`src/elite_robot_controller`)
 - [x] 운영 UI 연결 설정 화면 (협동로봇·PLC·MQTT IP)
 - [x] 운영 UI Cobot 수동 제어 화면 (연결·전원·프로그램 제어)
-- [ ] Cobot 수동 제어 화면의 `command_requested`를 실제 제어 경로에 연결
+- [ ] Cobot 수동 제어 화면의 `command_requested`를 실제 제어 경로에 연결 (connect, disconnect, power_on, power_off, brake_release, play, pause, stop, home)
+- [ ] **TCP 현재값 및 제로점 기준값의 Modbus 레지스터 주소 확인** — 확정 후 `apply_tcp()`, `apply_zero_point()`에 값 공급
+- [ ] TCP 위치·회전 성분의 단위(mm/deg 여부) 확인 후 화면에 단위 표기
 - [ ] 연결 설정값을 MqttServer 및 장비 어댑터의 실제 접속 정보로 반영
 - [ ] 엘리트 로봇 실장비 연결 후 토픽/서비스 동작 검증
 - [ ] 운영 UI(MQTT) ↔ ROS 2 브리지 구현 — 규격은 `docs/mqtt_topic_form.md`

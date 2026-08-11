@@ -86,48 +86,69 @@ class CobotManualScreen(BaseScreen):
     _CONNECTION = (("연결", "connect"), ("연결 해제", "disconnect"))
     _POWER = (("전원 ON", "power_on"), ("전원 OFF", "power_off"), ("브레이크 해제", "brake_release"))
     _PROGRAM = (("재생", "play"), ("일시정지", "pause"), ("정지", "stop"))
+    _MOTION = (("홈 이동", "home"),)
+
+    # TCP 자세를 구성하는 6개 성분. 위치와 회전 성분의 단위가 서로 다르므로
+    # 표시 순서를 이 한 곳에서만 정의한다.
+    _POSE_AXES = ("x", "y", "z", "rx", "ry", "rz")
 
     def __init__(self) -> None:
         super().__init__("Cobot 수동 제어", "점검 모드에서만 사용합니다. 검사 사이클 진행 중에는 사용하지 마십시오.")
-        # 720 px 높이 안에서 카드가 서로 밀리지 않도록 세로로 쌓지 않고
-        # 3열로 나눈다. 각 열이 화면 높이를 그대로 사용한다.
-        columns=QHBoxLayout(); columns.setSpacing(12); self.body.addLayout(columns,1)
+        # 720 px 높이 안에서 카드가 서로 밀리지 않도록 조작부는 4열 격자에
+        # 담고, TCP 6개 성분은 아래쪽 영역 전체를 사용한다.
+        top=QGridLayout(); top.setSpacing(12); self.body.addLayout(top,3)
 
         conn,c=self.surface("연결")
         self.endpoint_label=QLabel(); self.endpoint_label.setObjectName("Muted"); c.addWidget(self.endpoint_label)
         self.connection_state=QLabel("● 연결 안 됨"); self.connection_state.setObjectName("StatusDanger"); c.addWidget(self.connection_state)
         c.addLayout(self._button_row(self._CONNECTION))
-        c.addWidget(self._note("세 채널(29999 / 30001 / 502)이 모두 연결되어야 제어할 수 있습니다."))
         c.addStretch()
-        columns.addWidget(conn,3)
+        top.addWidget(conn,0,0)
 
-        middle=QVBoxLayout(); middle.setSpacing(12); columns.addLayout(middle,4)
         power,p=self.surface("전원 · 브레이크")
         p.addLayout(self._button_row(self._POWER))
-        p.addWidget(self._note("브레이크 해제 전에 로봇 주변에 사람이 없는지 확인하십시오."))
+        p.addWidget(self._note("브레이크 해제 전 로봇 주변을 확인하십시오."))
         p.addStretch()
-        middle.addWidget(power)
+        top.addWidget(power,0,1)
 
         program,pg=self.surface("프로그램 제어")
         pg.addLayout(self._button_row(self._PROGRAM))
         pg.addWidget(self._note("정지는 프로그램을 처음으로 되돌립니다."))
         pg.addStretch()
-        middle.addWidget(program)
+        top.addWidget(program,0,2)
+
+        motion,mo=self.surface("이동")
+        mo.addLayout(self._button_row(self._MOTION))
+        mo.addWidget(self._note("경로 확인 후 실행"))
+        mo.addStretch()
+        top.addWidget(motion,0,3)
+
+        alarms,al=self.surface("알람")
+        self.alarm_list=QListWidget(); self.alarm_list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.alarm_list.setMinimumHeight(48)
+        al.addWidget(self.alarm_list,1)
+        top.addWidget(alarms,1,0)
 
         status,s=self.surface("로봇 상태")
         self.metrics={
             "robot_mode": MetricRow("로봇 모드","-"),
             "control_method": MetricRow("제어 방식","-"),
             "operation_mode": MetricRow("운전 모드","-"),
-            "tcp_pose": MetricRow("TCP 위치","-"),
         }
+        # 세로로 쌓으면 아래 카드를 밀어내므로 세 항목을 가로로 배치한다.
+        status_row=QHBoxLayout(); status_row.setSpacing(12)
         for row in self.metrics.values():
-            s.addWidget(row)
-        alarm_title=QLabel("알람"); alarm_title.setObjectName("MetricLabel"); s.addWidget(alarm_title)
-        self.alarm_list=QListWidget(); self.alarm_list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.alarm_list.setMinimumHeight(72)
-        s.addWidget(self.alarm_list,1)
-        columns.addWidget(status,4)
+            status_row.addWidget(row,1)
+        s.addLayout(status_row)
+        s.addStretch()
+        top.addWidget(status,1,1,1,3)
+        # 버튼 수와 문구 길이가 열마다 다르므로 너비를 같게 나누지 않는다.
+        for column,stretch in enumerate((3,4,4,2)):
+            top.setColumnStretch(column,stretch)
+
+        bottom=QHBoxLayout(); bottom.setSpacing(12); self.body.addLayout(bottom,2)
+        self.tcp_rows=self._pose_card(bottom,"TCP 현재값")
+        self.zero_rows=self._pose_card(bottom,"제로점 기준")
 
         self.activity_label=QLabel("장비에 연결되어 있지 않습니다. 화면 동작만 확인할 수 있습니다.")
         self.activity_label.setObjectName("Muted"); self.activity_label.setWordWrap(True)
@@ -139,6 +160,23 @@ class CobotManualScreen(BaseScreen):
         """카드 폭을 넘지 않도록 줄바꿈되는 안내 문구를 만든다."""
         label=QLabel(text); label.setObjectName("Muted"); label.setWordWrap(True)
         return label
+
+    def _pose_card(self, parent: QHBoxLayout, title: str) -> dict[str, MetricRow]:
+        """TCP 6개 성분을 개별 행으로 보여주는 카드를 만든다."""
+        card,layout=self.surface(title)
+        grid=QGridLayout(); grid.setSpacing(6); grid.setContentsMargins(0,0,0,0)
+        rows: dict[str, MetricRow] = {}
+        for index,axis in enumerate(self._POSE_AXES):
+            # 위치 성분과 회전 성분을 각각 한 줄에 두어 3열 2행으로 배치한다.
+            row=MetricRow(axis.upper(),"-")
+            rows[axis]=row
+            grid.addWidget(row,index//3,index%3)
+        for column in range(3):
+            grid.setColumnStretch(column,1)
+        layout.addLayout(grid)
+        layout.addStretch()
+        parent.addWidget(card,1)
+        return rows
 
     def _button_row(self, items: tuple[tuple[str, str], ...]) -> QHBoxLayout:
         """명령 버튼을 한 줄로 배치하고 눌림을 시그널로 전달한다."""
@@ -172,6 +210,20 @@ class CobotManualScreen(BaseScreen):
         for key, row in self.metrics.items():
             if key in values:
                 row.set_value(values[key])
+
+    def apply_tcp(self, values: dict[str, str]) -> None:
+        """현재 TCP 자세를 성분별로 표시한다. 키는 x, y, z, rx, ry, rz이다."""
+        self._apply_pose(self.tcp_rows, values)
+
+    def apply_zero_point(self, values: dict[str, str]) -> None:
+        """제로점 기준 TCP 자세를 성분별로 표시한다."""
+        self._apply_pose(self.zero_rows, values)
+
+    def _apply_pose(self, rows: dict[str, MetricRow], values: dict[str, str]) -> None:
+        """전달된 성분만 갱신하고 나머지는 이전 값을 유지한다."""
+        for axis, row in rows.items():
+            if axis in values:
+                row.set_value(values[axis])
 
     def set_alarms(self, alarms: list[str]) -> None:
         """수집된 알람 목록을 표시한다."""
@@ -277,8 +329,11 @@ class FormScreen(BaseScreen):
                 item.layout().addStretch()
         layout.addLayout(columns_layout,1)
         row=QHBoxLayout(); row.addStretch()
-        cancel=QPushButton("변경 취소"); cancel.setObjectName("SettingsButton"); cancel.clicked.connect(self.restore_saved_values); row.addWidget(cancel)
-        save=QPushButton("저장"); save.setObjectName("PrimarySettingsButton"); save.clicked.connect(self._request_save); row.addWidget(save)
+        cancel=QPushButton("변경 취소"); cancel.setObjectName("SettingsButton"); cancel.clicked.connect(self.restore_saved_values)
+        save=QPushButton("저장"); save.setObjectName("PrimarySettingsButton"); save.clicked.connect(self._request_save)
+        # 문구 길이가 달라도 두 버튼이 같은 크기로 보이도록 폭을 맞춘다.
+        for button in (cancel,save):
+            button.setMinimumWidth(140); row.addWidget(button)
         layout.addLayout(row)
         self.save_status = QLabel("PostgreSQL에서 설정을 불러오는 중입니다.")
         self.save_status.setObjectName("Muted")
@@ -389,7 +444,7 @@ class ConnectionSettingsScreen(FormScreen):
             "connection","연결 설정",
             "각 장비의 유선 연결 정보를 설정합니다. 변경한 값은 다음 연결 시도부터 적용됩니다.",
             [
-                ("협동로봇 (Elite CS612)",None),
+                ("협동로봇",None),
                 ("협동로봇 IP",line("192.168.227.134")),
                 ("Dashboard 포트",spin(29999,1,65535)),
                 ("Primary 포트",spin(30001,1,65535)),
