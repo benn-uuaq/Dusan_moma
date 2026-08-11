@@ -165,8 +165,8 @@ def test_dashboard_commands_are_mapped_to_services():
         service, register = RosStatusClient.COMMAND_SERVICES[command]
         assert service == f"robot/dashboard/{command}"
         assert register is None
-    # 반대로 홈 이동은 Modbus에 쓰므로 주소가 필요하다.
-    assert RosStatusClient.COMMAND_SERVICES["home"][1] == "move_home"
+    # 홈 이동도 30001 스크립트로 처리하므로 레지스터 주소가 필요 없다.
+    assert RosStatusClient.COMMAND_SERVICES["home"] == ("robot/command/move_home", None)
 
 
 def test_connection_state_reaches_the_screen(qtbot):

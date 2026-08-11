@@ -739,15 +739,17 @@ class CobotSettingsScreen(FormScreen):
     # 저장할 때 이 항목을 로봇에도 보낸다. 항목명이 곧 저장 키이므로
     # 값을 꺼낼 때도 이 이름을 쓴다.
     SPEED_FIELD = "작업 속도"
+    RATIO_FIELD = "속도 비율"
 
     def __init__(self):
         tasks=QComboBox(); tasks.addItems([f"TASK {i:02d}" for i in range(1,25)])
         super().__init__(
             "cobot","Cobot 설정",
-            "검사 작업 슬롯과 직선 동작 속도를 관리합니다. 연결 정보는 연결 설정 화면에서 관리합니다.",
+            "작업 슬롯과 속도를 관리합니다. 작업 속도는 movel 속도이고, 속도 비율은 로봇 전체 속도에 곱해집니다.",
             [
                 ("선택 작업",tasks),
                 (self.SPEED_FIELD,spin(150,1,1000)),
+                (self.RATIO_FIELD,spin(100,2,100)),
                 ("연결 상태",QLabel("● 연결됨")),
                 ("마지막 응답",QLabel("12 ms")),
             ],
@@ -756,6 +758,10 @@ class CobotSettingsScreen(FormScreen):
     def linear_speed(self) -> int:
         """저장 시 로봇으로 보낼 직선 동작 속도(mm/s)를 돌려준다."""
         return int(self.values().get(self.SPEED_FIELD, 0))
+
+    def speed_ratio(self) -> int:
+        """로봇 자체 속도 비율(2~100 %)을 돌려준다."""
+        return int(self.values().get(self.RATIO_FIELD, 100))
 
 
 class ConnectionSettingsScreen(FormScreen):

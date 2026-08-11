@@ -1,0 +1,53 @@
+# =============================================================================
+#  dus_pass_r.script — dusan_v1
+#  오른쪽(Y-) 으로 한 줄. X 를 벽면 2차식으로 보정하며 간다
+#
+#  펜던트에서 "7_pass_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def pr2_w1(a, v):
+    if (v > 32000):
+        v = 32000
+    end
+    if (v < -32000):
+        v = -32000
+    end
+    write_port_register(a, floor(v + 0.5))
+end
+
+
+# 오른쪽(Y-) 으로 한 줄. 구간을 나눠 매 구간 X 를 벽면 2차식에 맞춘다.
+# 구간 사이는 블렌드(r)로 이어서 감속 없이 지나간다.
+y_from = get_actual_tcp_pose()[1]
+y_to = zero_pose[1] - app_width * 0.001
+n_seg = ceil(app_width * 1.0 / seg_len)
+if (n_seg < 1):
+    n_seg = 1
+end
+
+i_seg = 1
+while (i_seg <= n_seg):
+    tgt_pose = get_actual_tcp_pose()
+    tgt_pose[1] = y_from + (y_to - y_from) * i_seg * 1.0 / n_seg
+    dy = tgt_pose[1] - y_c
+    tgt_pose[0] = qa * dy * dy + qb * dy + qc
+    if (i_seg < n_seg):
+        movel(tgt_pose, a = 1.2, v = v_scan, r = 0.005)
+    end
+    if (i_seg >= n_seg):
+        movel(tgt_pose, a = 1.2, v = v_scan)
+    end
+    i_seg = i_seg + 1
+end
+
+row_idx = row_idx + 1
+dir_sign = -1
+pass_done = 1
+path_len = path_len + app_width
+write_port_register(291, row_idx)
+pr2_w1(297, path_len * 0.1)
+pr2_w1(298, row_idx * 100.0 / rows)

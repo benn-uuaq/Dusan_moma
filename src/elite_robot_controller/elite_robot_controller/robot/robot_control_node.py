@@ -16,6 +16,13 @@ class RobotControlNode(Node):
 
         self.declare_parameter('robot_ip', '192.168.227.134')
         self.declare_parameter('register_map', '')
+        # 조그 속도. 누르는 동안 이 속도로 움직인다.
+        self.declare_parameter('jog_joint_speed', 0.20)    # rad/s
+        self.declare_parameter('jog_tcp_speed', 0.05)      # m/s
+        self.declare_parameter('jog_tcp_rot_speed', 0.20)  # rad/s
+        self.declare_parameter('jog_accel', 0.5)
+        # 홈 이동 시 movej 전에 movel로 올릴 높이 [m]
+        self.declare_parameter('home_lift_z', 0.32)
         robot_ip = self.get_parameter('robot_ip').get_parameter_value().string_value
         map_path = self.get_parameter('register_map').get_parameter_value().string_value
         self.registers = register_map.load(map_path or None)
@@ -51,16 +58,22 @@ class RobotControlNode(Node):
         self.create_service(Trigger, 'robot/dashboard/pause', self.cb_dash_pause)
         self.create_service(Trigger, 'robot/dashboard/stop', self.cb_dash_stop)
 
-        # 위치 저장과 홈 이동은 값이 없는 한 번짜리 명령이므로 Trigger를 쓴다.
-        self.create_service(Trigger, 'robot/command/save_home_pose', self.cb_save_home_pose)
-        self.create_service(Trigger, 'robot/command/save_start_pose', self.cb_save_start_pose)
+        # 홈 이동은 값이 없는 한 번짜리 명령이므로 Trigger를 쓴다. 기준 위치
+        # 저장은 UI가 값을 보내므로 아래 토픽으로 받는다.
         self.create_service(Trigger, 'robot/command/move_home', self.cb_move_home)
 
-        # 값이 있는 명령은 토픽으로 받는다. 작업 속도는 mm/s, 조그는
-        # 레지스터에 그대로 넣을 코드값이다.
+        # 값이 있는 명령은 토픽으로 받는다.
+        # 작업 속도는 mm/s, 속도 비율은 2~100 [%]이며 레지스터에 쓴다.
         self.create_subscription(Int32, 'robot/command/linear_speed', self.cb_linear_speed, 10)
+        self.create_subscription(Int32, 'robot/command/speed_ratio', self.cb_speed_ratio, 10)
+        # 조그는 레지스터가 아니라 30001 스크립트로 처리한다.
+        # 값의 부호가 방향, 절댓값이 축 번호(1~6)이며 0은 정지다.
         self.create_subscription(Int32, 'robot/command/jog_joint', self.cb_jog_joint, 10)
         self.create_subscription(Int32, 'robot/command/jog_tcp', self.cb_jog_tcp, 10)
+
+        # 기준 위치는 6개 레지스터에 한 번에 쓴다.
+        self.create_subscription(Float32MultiArray, 'robot/command/home_joint', self.cb_home_joint, 10)
+        self.create_subscription(Float32MultiArray, 'robot/command/start_pose', self.cb_start_pose, 10)
 
         # 10Hz 주기로 모드버스 데이터 갱신 및 30001 알람 수집
         self.timer = self.create_timer(0.1, self.update_robot_loop)
@@ -196,15 +209,6 @@ class RobotControlNode(Node):
         response.message = message
         return response
 
-    def cb_save_home_pose(self, req, res):
-        return self._write_service('save_home_pose', 1, res)
-
-    def cb_save_start_pose(self, req, res):
-        return self._write_service('save_start_pose', 1, res)
-
-    def cb_move_home(self, req, res):
-        return self._write_service('move_home', 1, res)
-
     def _write_topic(self, name, msg):
         """토픽으로 받은 값을 레지스터에 쓰고 실패만 기록한다."""
         success, message = self.write_register(name, int(msg.data))
@@ -214,11 +218,123 @@ class RobotControlNode(Node):
     def cb_linear_speed(self, msg):
         self._write_topic('linear_speed', msg)
 
+    def cb_speed_ratio(self, msg):
+        # 로봇 자체 속도 비율. 태스크가 이 값으로 이송 속도를 줄인다.
+        ratio = max(2, min(100, int(msg.data)))
+        self._write_topic('speed_ratio', Int32(data=ratio))
+
+    def write_pose(self, name, values):
+        """자세 6개를 연속 레지스터에 쓴다. 단위 환산은 읽기와 반대로 한다."""
+        entry = self.registers.write_entry(name)
+        if not entry.available:
+            return False, f"[{name}] Modbus 주소가 설정되지 않았습니다."
+        if len(values) != entry.count:
+            return False, f"[{name}] 값이 {entry.count}개가 아닙니다: {len(values)}개"
+
+        scales = self.registers.scales_for(entry)
+        for offset, (value, scale) in enumerate(zip(values, scales)):
+            raw = int(round(float(value) / scale))
+            ok = self.robot_modbus.set_register(entry.address + offset, raw)
+            if not ok:
+                return False, f"[{name}] 레지스터 {entry.address + offset} 쓰기 실패"
+        return True, f"[{name}] 레지스터 {entry.address}~{entry.address + entry.count - 1} 갱신"
+
+    def _write_pose_topic(self, name, msg):
+        success, message = self.write_pose(name, list(msg.data))
+        if success:
+            # 태스크가 레지스터 값을 쓰도록 알린다.
+            self.robot_modbus.set_register(
+                self.registers.write_entry('pose_src').address or 308, 1
+            )
+        else:
+            self.get_logger().warn(message)
+
+    def cb_home_joint(self, msg):
+        self._write_pose_topic('home_joint', msg)
+
+    def cb_start_pose(self, msg):
+        self._write_pose_topic('start_pose', msg)
+
+    # ---------------------------------------------------------------- 조그
+    def _jog_vector(self, code, count=6):
+        """부호는 방향, 절댓값은 축 번호(1~6)인 코드를 속도 벡터로 바꾼다."""
+        axis = abs(int(code)) - 1
+        if axis < 0 or axis >= count:
+            return None
+        vector = [0.0] * count
+        vector[axis] = 1.0 if code > 0 else -1.0
+        return vector
+
+    def _jog_stop(self):
+        """29999 stop으로 즉시 멈춘다. 조그는 눌린 동안만 움직여야 한다."""
+        self.robot_dash.robot_stop()
+
     def cb_jog_joint(self, msg):
-        self._write_topic('jog_joint', msg)
+        if not self.connected:
+            return
+        if int(msg.data) == 0:
+            self._jog_stop()
+            return
+        unit = self._jog_vector(msg.data)
+        if unit is None:
+            self.get_logger().warn(f"[jog_joint] 축 번호가 범위를 벗어났습니다: {msg.data}")
+            return
+        speed = self.get_parameter('jog_joint_speed').value
+        accel = self.get_parameter('jog_accel').value
+        qd = [value * speed for value in unit]
+        self.robot_primary.send_script(f"speedj({qd}, {accel}, 3600)")
 
     def cb_jog_tcp(self, msg):
-        self._write_topic('jog_tcp', msg)
+        if not self.connected:
+            return
+        if int(msg.data) == 0:
+            self._jog_stop()
+            return
+        unit = self._jog_vector(msg.data)
+        if unit is None:
+            self.get_logger().warn(f"[jog_tcp] 축 번호가 범위를 벗어났습니다: {msg.data}")
+            return
+        # 앞 3개는 직선 속도, 뒤 3개는 회전 속도라 단위가 다르다.
+        linear = self.get_parameter('jog_tcp_speed').value
+        angular = self.get_parameter('jog_tcp_rot_speed').value
+        accel = self.get_parameter('jog_accel').value
+        xd = [
+            value * (linear if index < 3 else angular)
+            for index, value in enumerate(unit)
+        ]
+        self.robot_primary.send_script(f"speedl({xd}, {accel}, 3600)")
+
+    def cb_move_home(self, req, res):
+        """안전 높이까지 movel로 올린 뒤 movej로 홈 관절값에 간다."""
+        if not self.connected:
+            res.success = False
+            res.message = "[move_home] 로봇에 연결되어 있지 않습니다."
+            return res
+
+        entry = self.registers.write_entry('home_joint')
+        regs = self.robot_modbus.get_all_registers(entry.address, entry.count) \
+            if entry.available else []
+        if len(regs) != 6:
+            res.success = False
+            res.message = "[move_home] 홈 관절값이 저장되어 있지 않습니다."
+            self.get_logger().warn(res.message)
+            return res
+
+        scale = self.registers.rotation_scale
+        joints = [value * scale / 1000.0 for value in regs]   # mrad -> rad
+        lift_z = self.get_parameter('home_lift_z').value
+        script = (
+            "p = get_actual_tcp_pose()\n"
+            f"if (p[2] < {lift_z}):\n"
+            f"  p[2] = {lift_z}\n"
+            "  movel(p, a=1.2, v=0.25)\n"
+            "end\n"
+            f"movej({joints}, a=1.4, v=0.5)"
+        )
+        ok = self.robot_primary.send_script(script)
+        res.success = bool(ok)
+        res.message = "[move_home] 홈 이동을 요청했습니다." if ok else "[move_home] 스크립트 전송 실패"
+        return res
 
     def _execute_dash_cmd(self, func, name, response):
         res_str = func()

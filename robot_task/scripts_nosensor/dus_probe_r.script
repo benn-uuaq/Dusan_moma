@@ -1,0 +1,48 @@
+# =============================================================================
+#  dus_probe_r.script — dusan_v1
+#  Y- 끝으로 이동해 측정하고, 3점으로 벽면 2차식을 세운다
+#
+#  펜던트에서 "5_probe_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+# 중앙 기준 Y- 너비의 절반 (지금 Y+ 끝에 있으므로 너비만큼 내려간다)
+tgt_pose = get_actual_tcp_pose()
+tgt_pose[1] = y_c - app_width * 0.0005
+movel(tgt_pose, a = 1.2, v = v_move)
+y_r = get_actual_tcp_pose()[1]
+
+# Y- 끝 접근  [임시판 : 센서 없이 정해진 거리만 전진]
+x_start = get_actual_tcp_pose()[0]
+tgt_pose = get_actual_tcp_pose()
+tgt_pose[0] = x_start + (probe_dist) * 0.001
+movel(tgt_pose, a = 1.2, v = v_seek)
+
+n_probe = n_probe + 1
+write_port_register(304, n_probe)
+write_port_register(305, n_hit)
+
+p_rx = get_actual_tcp_pose()[0]
+write_port_register(302, floor(p_rx * 10000 + 0.5))
+
+tgt_pose = get_actual_tcp_pose()
+tgt_pose[0] = x_start
+movel(tgt_pose, a = 1.2, v = v_move)
+
+# ---- 3점을 지나는 2차식.  dy = Y - y_c 일 때
+#        x(dy) = qa*dy*dy + qb*dy + qc
+#      dy=0 -> p_cx,  dy=+half -> p_lx,  dy=-half -> p_rx
+half = app_width * 0.0005
+qc = p_cx
+qa = 0
+qb = 0
+if (half > 0.0001):
+    qa = (p_lx + p_rx - 2 * p_cx) / (2 * half * half)
+    qb = (p_lx - p_rx) / (2 * half)
+end
+
+# 볼록량 = 중앙 - 양끝평균. 벽이 평면이면 0 에 가깝다
+write_port_register(303, floor((p_cx - (p_lx + p_rx) * 0.5) * 10000 + 0.5))

@@ -4,8 +4,10 @@
     "address가 null인 항목은 주소 미확정을 뜻한다. 노드는 해당 기능을 거부하고,",
     "UI는 관련 버튼을 비활성화한다. 주소를 확인하면 이 파일만 채우면 된다.",
     "count는 연속으로 읽고 쓸 레지스터 개수이며, 자세는 [X, Y, Z, Rx, Ry, Rz] 순서다.",
-    "현재 TCP는 기본 프레임 기준인 384~389를 쓴다. 260~265도 TCP로 보이지만",
-    "실장비에서 확인되지 않아 사용하지 않는다.",
+    "현재 TCP는 로봇 자체 레지스터 384~389를 쓴다. 260~265는 태스크가",
+    "발행하는 같은 값이라 태스크가 돌지 않으면 갱신되지 않는다.",
+    "쓰기 주소는 로봇 태스크가 읽는 범용 레지스터(256~383)에 맞춘다.",
+    "조그와 홈 이동은 레지스터가 아니라 30001 스크립트로 처리하므로 여기에 없다.",
     "kind는 단위 환산 방법이다. pose는 앞 3개를 위치, 뒤 3개를 회전으로 보고,",
     "angle은 6개 모두 회전으로 본다. 관절 각도는 6축 전부 mrad이므로 angle이다."
   ],
@@ -23,11 +25,10 @@
     "tcp_zero_relative": { "address": 280, "count": 6, "kind": "pose" }
   },
   "write": {
-    "linear_speed": { "address": null, "count": 1 },
-    "jog_joint": { "address": null, "count": 1 },
-    "jog_tcp": { "address": null, "count": 1 },
-    "save_home_pose": { "address": null, "count": 1 },
-    "save_start_pose": { "address": null, "count": 1 },
-    "move_home": { "address": null, "count": 1 }
+    "linear_speed": { "address": 306, "count": 1 },
+    "speed_ratio": { "address": 307, "count": 1 },
+    "pose_src": { "address": 308, "count": 1 },
+    "home_joint": { "address": 310, "count": 6, "kind": "angle" },
+    "start_pose": { "address": 316, "count": 6, "kind": "pose" }
   }
 }

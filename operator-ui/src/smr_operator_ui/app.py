@@ -36,7 +36,12 @@ from smr_operator_ui.services import (
     RosStatusClient,
     SettingsService,
 )
+from smr_operator_ui.services.reference_poses import save_reference_poses
 from smr_operator_ui.styles import load_stylesheet
+
+# 저장 문구에 쓰는 축 이름. 홈은 관절, 시작 포즈는 TCP 좌표다.
+_JOINT_LABELS = ("J1", "J2", "J3", "J4", "J5", "J6")
+_POSE_LABELS = ("X", "Y", "Z", "RX", "RY", "RZ")
 
 
 class TopBar(QFrame):
@@ -174,12 +179,11 @@ class OperatorWindow(QMainWindow):
             lambda _code, name: self.cobot_manual_screen.apply_status({"operation_mode": name})
         )
         self.ros_status.alarm_received.connect(self.cobot_manual_screen.add_alarm)
-        self.ros_status.joint_position_changed.connect(
-            self.cobot_jog_screen.apply_joint_position
-        )
+        self.ros_status.joint_position_changed.connect(self._remember_joint)
         self.ros_status.command_result.connect(self._show_command_result)
         self.ros_status.connected_changed.connect(self.cobot_manual_screen.set_connected)
         self.cobot_jog_screen.jog_pressed.connect(self._send_jog)
+        self.cobot_jog_screen.jog_released.connect(self._stop_jog)
         self.cobot_jog_screen.command_requested.connect(self._save_reference_pose)
         self.cobot_manual_screen.command_requested.connect(self._handle_cobot_command)
         self.screens["cobot"].save_requested.connect(self._send_linear_speed)
@@ -312,6 +316,11 @@ class OperatorWindow(QMainWindow):
         )
         self.main_screen.show_activity(message)
 
+    def _remember_joint(self, values: list) -> None:
+        """조그 화면 표시와 기준 위치 저장에 쓸 관절값을 기억한다."""
+        self._last_joint = list(values)
+        self.cobot_jog_screen.apply_joint_position(values)
+
     def _show_tcp_pose(self, values: list) -> None:
         """현재 TCP 자세를 수동 제어와 조그 화면에 함께 표시한다."""
         self._last_tcp_pose = list(values)
@@ -341,20 +350,23 @@ class OperatorWindow(QMainWindow):
         로봇 쪽 레지스터 주소가 없으면 화면 기록만 남긴다. 주소를 모른 채
         쓰면 엉뚱한 레지스터를 건드리기 때문이다.
         """
-        pose = getattr(self, "_last_tcp_pose", None)
-        if pose:
-            stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-            text = "  ".join(
-                f"{axis} {value:.1f}"
-                for axis, value in zip(("X", "Y", "Z", "RX", "RY", "RZ"), pose)
-            )
-            self._saved_poses[command] = f"{text}\n{stamp}"
-            self.cobot_jog_screen.set_saved_pose(command, self._saved_poses[command])
-            self.settings_service.save(self.POSE_SCOPE, self._saved_poses)
+        # 홈은 movej로 가므로 관절값을, 시작 포즈는 TCP 좌표를 저장한다.
+        if command == "save_home_pose":
+            target, values, labels = "home_joint", getattr(self, "_last_joint", None), _JOINT_LABELS
         else:
-            self.cobot_jog_screen.show_result("현재 TCP 값을 아직 받지 못했습니다.")
+            target, values, labels = "start_pose", getattr(self, "_last_tcp_pose", None), _POSE_LABELS
+
+        if not values:
+            self.cobot_jog_screen.show_result("로봇에서 현재 값을 아직 받지 못했습니다.")
             return
-        self.ros_status.call_command(command)
+
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        text = "  ".join(f"{name} {value:.1f}" for name, value in zip(labels, values))
+        self._saved_poses[command] = f"{text}\n{stamp}"
+        self.cobot_jog_screen.set_saved_pose(command, self._saved_poses[command])
+        self.settings_service.save(self.POSE_SCOPE, self._saved_poses)
+        save_reference_poses({target: list(values)})
+        self.ros_status.send_pose(target, values)
 
     def _available_writes(self) -> list[str]:
         """주소가 정해져 실제로 보낼 수 있는 명령 이름을 모은다."""
@@ -363,12 +375,12 @@ class OperatorWindow(QMainWindow):
         return [name for name in names if self.ros_status.writable(name)]
 
     def _send_jog(self, kind: str, axis: int, direction: int) -> None:
-        """조그 요청을 레지스터에 넣을 코드값으로 바꿔 보낸다.
+        """조그 시작을 알린다. 노드가 30001로 speedj/speedl을 보낸다."""
+        self.ros_status.send_jog(kind, axis, direction)
 
-        인코딩(축 번호와 방향을 한 값에 담는 방식)은 로봇 Modbus 규격
-        확인 후 확정한다. 주소가 없으면 전송 자체가 막힌다.
-        """
-        self.ros_status.send_value(f"jog_{kind}", axis * 2 + (0 if direction > 0 else 1))
+    def _stop_jog(self, kind: str, _axis: int) -> None:
+        """버튼에서 손을 떼면 즉시 멈춘다. 노드가 29999 stop을 쓴다."""
+        self.ros_status.send_jog(kind, 0, 0)
 
     def _handle_cobot_command(self, command: str) -> None:
         """수동 제어 화면의 명령을 robot/dashboard/* 서비스로 보낸다."""
@@ -383,9 +395,13 @@ class OperatorWindow(QMainWindow):
         """Cobot 설정을 저장할 때 작업 속도를 로봇에도 반영한다."""
         if scope != "cobot":
             return
-        speed = values.get(CobotSettingsScreen.SPEED_FIELD)
-        if speed is not None and self.ros_status.writable("linear_speed"):
-            self.ros_status.send_value("linear_speed", int(speed))
+        for field, name in (
+            (CobotSettingsScreen.SPEED_FIELD, "linear_speed"),
+            (CobotSettingsScreen.RATIO_FIELD, "speed_ratio"),
+        ):
+            value = values.get(field)
+            if value is not None and self.ros_status.writable(name):
+                self.ros_status.send_value(name, int(value))
 
     # 위치 저장은 조그 화면에서, 나머지는 수동 제어 화면에서 요청한다.
     _JOG_COMMANDS = ("save_home_pose", "save_start_pose")

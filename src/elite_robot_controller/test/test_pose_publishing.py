@@ -88,9 +88,13 @@ def test_shipped_register_map_matches_known_addresses():
     assert registers.read_entry("control_method").address == 71
     assert registers.read_entry("operation_mode").address == 72
     assert registers.read_entry("joint_position").address == 73
-    # 아직 확인되지 않은 주소는 null로 남아 있어야 한다.
-    assert registers.write_entry("save_home_pose").available is False
-    assert registers.available_writes() == []
+    # 쓰기 주소는 로봇 태스크가 읽는 범용 레지스터 대역에 있어야 한다.
+    for name in ("linear_speed", "speed_ratio", "home_joint", "start_pose"):
+        entry = registers.write_entry(name)
+        assert entry.available, f"{name} 주소가 비어 있습니다"
+        assert 256 <= entry.address <= 383, f"{name}이 범용 대역 밖입니다"
+    assert registers.write_entry("home_joint").count == 6
+    assert registers.write_entry("home_joint").kind == "angle"
 
 
 def test_joint_angles_use_rotation_scale_for_every_axis():
@@ -195,12 +199,48 @@ def test_write_failure_is_reported():
     assert success is False
 
 
-def test_service_response_carries_result():
-    node = make_node()
-    response = node.cb_save_home_pose(None, FakeResponse())
+def test_pose_write_fills_every_register():
+    """자세 저장은 6개 레지스터를 한 번에 채운다."""
+    node = make_node(map_data={
+        "scale": {"position_per_count": 0.1, "rotation_per_count": 1.0},
+        "read": {},
+        "write": {
+            "home_joint": {"address": 310, "count": 6, "kind": "angle"},
+            "pose_src": {"address": 308, "count": 1},
+        },
+    })
 
-    assert response.success is False
-    assert node.get_logger().warnings
+    success, _ = node.write_pose("home_joint", [207.0, -1466.0, -1875.0, -1371.0, 1570.0, 207.0])
+
+    assert success is True
+    assert node.robot_modbus.writes == [
+        (310, 207), (311, -1466), (312, -1875), (313, -1371), (314, 1570), (315, 207)
+    ]
+
+
+def test_pose_write_rejects_wrong_length():
+    """성분이 모자라면 절반만 쓰지 않는다."""
+    node = make_node()
+    node.registers = register_map.RegisterMap({
+        "scale": {}, "read": {},
+        "write": {"home_joint": {"address": 310, "count": 6, "kind": "angle"}},
+    })
+
+    success, message = node.write_pose("home_joint", [1.0, 2.0])
+
+    assert success is False
+    assert "6개가 아닙니다" in message
+    assert node.robot_modbus.writes == []
+
+
+def test_jog_code_maps_axis_and_direction():
+    """부호가 방향, 절댓값이 축 번호다. 범위를 벗어나면 움직이지 않는다."""
+    node = make_node()
+
+    assert node._jog_vector(1) == [1.0, 0, 0, 0, 0, 0]
+    assert node._jog_vector(-6) == [0, 0, 0, 0, 0, -1.0]
+    assert node._jog_vector(7) is None
+    assert node._jog_vector(0) is None
 
 
 class FakeChannel:

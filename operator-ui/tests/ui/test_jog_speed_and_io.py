@@ -165,8 +165,9 @@ def test_axis_values_follow_topics(qtbot) -> None:
     window.close()
 
 
-def test_saving_reference_pose_records_current_tcp(qtbot) -> None:
-    """저장 버튼은 현재 TCP 값을 기준 위치로 기록해 보여준다."""
+def test_saving_reference_poses(qtbot, tmp_path, monkeypatch) -> None:
+    """홈은 관절값을, 시작 포즈는 TCP 값을 기록한다."""
+    monkeypatch.setenv("SMR_ROBOT_CONFIG_DIR", str(tmp_path))
     window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     screen = window.cobot_jog_screen
@@ -175,13 +176,53 @@ def test_saving_reference_pose_records_current_tcp(qtbot) -> None:
     screen.command_requested.emit("save_home_pose")
     assert "저장된 값 없음" in screen.saved_labels["save_home_pose"].text()
 
-    window.ros_status.tcp_pose_changed.emit(
-        [636.8, -47.3, 581.0, 3141.0, 0.0, -1570.0]
+    window.ros_status.joint_position_changed.emit(
+        [207.0, -1466.0, -1875.0, -1371.0, 1570.0, 207.0]
     )
-    screen.command_requested.emit("save_home_pose")
+    window.ros_status.tcp_pose_changed.emit([636.8, -47.3, 581.0, 3141.0, 0.0, -1570.0])
 
-    saved = screen.saved_labels["save_home_pose"].text()
-    assert "636.8" in saved and "-1570.0" in saved
-    # 다른 기준 위치는 영향을 받지 않는다.
-    assert "저장된 값 없음" in screen.saved_labels["save_start_pose"].text()
+    screen.command_requested.emit("save_home_pose")
+    home = screen.saved_labels["save_home_pose"].text()
+    assert "J1 207.0" in home and "J3 -1875.0" in home
+
+    screen.command_requested.emit("save_start_pose")
+    start = screen.saved_labels["save_start_pose"].text()
+    assert "X 636.8" in start and "RZ -1570.0" in start
+
+    # 로봇 쪽 설정 폴더에도 남아야 다음 기동에서 다시 쓸 수 있다.
+    import json
+    saved = json.loads((tmp_path / "reference_poses.json").read_text(encoding="utf-8"))
+    assert saved["home_joint"]["values"][0] == 207.0
+    assert saved["start_pose"]["values"][0] == 636.8
+    window.close()
+
+
+def test_jog_code_encodes_axis_and_direction(qtbot) -> None:
+    """조그 코드는 부호가 방향, 절댓값이 축 번호(1~6)이며 0은 정지다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    sent: list[tuple[str, int, int]] = []
+    window.ros_status.send_jog = lambda kind, axis, direction: sent.append(
+        (kind, axis, direction)
+    ) or True
+
+    window.cobot_jog_screen.jog_pressed.emit("joint", 2, 1)
+    window.cobot_jog_screen.jog_released.emit("joint", 2)
+    window.cobot_jog_screen.jog_pressed.emit("tcp", 5, -1)
+
+    assert sent == [("joint", 2, 1), ("joint", 0, 0), ("tcp", 5, -1)]
+    window.close()
+
+
+def test_speed_ratio_is_limited_to_robot_range(qtbot) -> None:
+    """로봇 자체 속도 비율은 2~100 %만 허용한다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.screens["cobot"]
+
+    assert CobotSettingsScreen.RATIO_FIELD in screen.values()
+    assert screen.speed_ratio() == 100
+    widget = screen._fields[CobotSettingsScreen.RATIO_FIELD]
+    assert widget.minimum() == 2
+    assert widget.maximum() == 100
     window.close()

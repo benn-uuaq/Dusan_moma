@@ -1,0 +1,812 @@
+def dusan_v1():
+  # Preamble Script.
+  # Test Preamble Script To Be Added In The Future.
+  set_safety_mode_transition_hardness(1)
+  # Configuration Preamble Script.
+  # Configuration variables.
+  # 
+  global Home_joint
+  Home_joint = [0.55498, -1.00739, -2.64993, -1.05507, 1.5708, 0.55497]
+  # 
+  global Home_pose
+  Home_pose = [0.33684, -0.00001, 0.31805, 3.14159, 0, -1.57079]
+  # 0=이 변수값 사용, 1=Modbus 256~259 사용 (레지스터 266)
+  global param_src
+  param_src = 0
+  # 접촉 센서 1 디지털 입력 번호
+  global sensor_di1
+  sensor_di1 = 0
+  # 접촉 센서 2 디지털 입력 번호 (둘 다 ON 이면 검출)
+  global sensor_di2
+  sensor_di2 = 1
+  # 전진 최대 거리 [mm]. 센서가 없으면 여기까지 가고 멈춘다
+  global seek_limit
+  seek_limit = 400
+  # [임시판 전용] 센서 없이 전진할 고정 거리 [mm]
+  global probe_dist
+  probe_dist = 300
+  # [임시판 전용] 중앙만 추가로 더 전진할 거리 [mm]. 휜 벽 흉내
+  global probe_bow
+  probe_bow = 0
+  # 측정 후 후퇴 거리 [mm]
+  global back_off
+  back_off = 100
+  # 가로 패스를 나누는 구간 길이 [mm]. 작을수록 X 보정이 촘촘하다
+  global seg_len
+  seg_len = 50
+  # 일반 이송 속도 [m/s]
+  global v_move
+  v_move = 0.25
+  # 스캔 이송 속도 [m/s]
+  global v_scan
+  v_scan = 0.1
+  # 전진 탐색 속도 [m/s]
+  global v_seek
+  v_seek = 0.05
+  # 작업 영역 좌우 너비 [mm] (입력레지스터 256)
+  global app_width
+  app_width = 600
+  # 작업 영역 높이 [mm] (입력레지스터 257)
+  global app_height
+  app_height = 800
+  # 스캐너 세로 유효높이 [mm] (입력레지스터 258)
+  global scan_h
+  scan_h = 150
+  # 세로 겹침 [mm] (입력레지스터 259)
+  global overlap
+  overlap = 20
+  # 상승 피치 = scan_h - overlap [mm] (고정)
+  global pitch
+  pitch = 130
+  # 가로 패스 수
+  global rows
+  rows = 6
+  # 완료한 가로 패스 수
+  global row_idx
+  row_idx = 6
+  # 1=오른쪽(Y-) 차례, -1=왼쪽(Y+) 차례
+  global dir_sign
+  dir_sign = 1
+  # 
+  global pass_done
+  pass_done = 1
+  # 측정 완료한 점 수 (0~3)
+  global n_probe
+  n_probe = 3
+  # 센서로 검출된 점 수
+  global n_hit
+  n_hit = 0
+  # 중앙 측정 X [m]
+  global p_cx
+  p_cx = 0.63684
+  # Y+ 끝 측정 X [m]
+  global p_lx
+  p_lx = 0.63684
+  # Y- 끝 측정 X [m]
+  global p_rx
+  p_rx = 0.63684
+  # 중앙 Y [m]
+  global y_c
+  y_c = -0.00001
+  # 
+  global y_l
+  y_l = 0.29999
+  # 
+  global y_r
+  y_r = -0.30001
+  # 너비의 절반 [m]
+  global half
+  half = 0.3
+  # 벽면 2차식 계수 : x = qa*dy^2 + qb*dy + qc, dy = Y - y_c
+  global qa
+  qa = 0.00003
+  # 벽면 2차식 1차항
+  global qb
+  qb = 0
+  # 벽면 2차식 상수항 (= 중앙 X)
+  global qc
+  qc = 0.63684
+  # 
+  global zero_ok
+  zero_ok = True
+  # 
+  global x_start
+  x_start = 0.33684
+  # 
+  global z_base
+  z_base = 0.32105
+  # 원점 = Y+ 끝 측정 위치
+  global zero_pose
+  zero_pose = [0.63684, 0.29999, 0.32105, 3.14159, -0, -1.57078]
+  # pose_inv(zero_pose)
+  global zero_inv
+  zero_inv = [0.29998, 0.63685, 0.32105, -3.14159, 0, -1.57078]
+  # 현재 절대 TCP (260~265 로 발행)
+  global cur_pose
+  cur_pose = [0.33684, -0.00001, 0.32105, 3.14159, 0.00001, -1.57078]
+  # 원점 기준 상대 pose (280~285 로 발행)
+  global rel_pose
+  rel_pose = [0.3, 0.30001, -0, -0, -0.00001, 0]
+  # 현재 구간 목표 pose
+  global tgt_pose
+  tgt_pose = [0.53685, 0.29999, 0.97103, 3.14156, 0.00006, -1.57144]
+  # 
+  global dy
+  dy = 0.3
+  # 
+  global y_from
+  y_from = -0.30001
+  # 
+  global y_to
+  y_to = 0.29999
+  # 
+  global n_seg
+  n_seg = 12
+  # 
+  global i_seg
+  i_seg = 13
+  # 누적 이동거리 [mm]
+  global path_len
+  path_len = 4250
+  # 워치독 카운터
+  global alive
+  alive = 29269
+  # 이동 스레드 핸들
+  global mv_h
+  mv_h = 0
+  # 발행 스레드 핸들
+  global pub_h
+  pub_h = 1610610240
+  set_tool_analog_io_work_mode(3)
+  set_tool_digital_io_work_mode(0)
+  set_tool_analog_input_domain(0)
+  set_tool_analog_output_domain(0)
+  set_tool_digital_io_config(0,0,False,False)
+  set_tool_digital_io_config(1,0,False,False)
+  set_tool_digital_io_config(2,0,False,False)
+  set_tool_digital_io_config(3,0,False,False)
+  tool_serial_config(False,115200,0,1,modbus_rtu = False,usage = 0)
+  set_tool_voltage(0)
+  set_tcp([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+  set_payload(0.0, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+  set_standard_analog_input_domain(0, 1)
+  set_standard_analog_input_domain(1, 1)
+  set_standard_analog_output_domain(0, 0)
+  set_standard_analog_output_domain(1, 0)
+  set_input_actions_to_default()
+  set_gravity([0.0, 0.0, 9.82])
+  # Frame variables.
+  # Temporary frame variables.
+  # Conveyor Config
+  #--------------- lifting Column Function -----------------
+  liftingColumn = rpc_factory("xmlrpc","http://0.0.0.0:9120/RPC2")
+  def visualLimitLiftingColumn(visualMinLimit=0, visualMaxLimit=500):
+      # 设置升降柱虚拟限位
+      # visualMinLimit:虚拟最低限位
+      # visualMaxLimit:虚拟最高限位
+      liftingColumn.setVisualLimit(visualMinLimit, visualMaxLimit)
+  def liftingCurrentHeight():
+      # 获取升降柱当前高度
+      return liftingColumn.currentHeight()
+  def liftingStop():
+      # 停止升降柱移动
+      return liftingColumn.stop()
+  def getLiftingTravel():
+      # 获取升降柱总行程
+      return 500
+  def getLiftingMinLimit():
+      # 获取升降柱最低限位
+      return 0
+  def getLiftingMaxLimit():
+      # 获取升降柱最高限位
+      return 500
+  def connectLiftingColumn(ip, port=502, slaveID=1,length=500):
+      # 链接升降柱
+      # ip:升降柱ip
+      # port:升降柱端口号
+      # slaveID:从站ID
+      # length:升降柱总行程
+      liftingColumn.setLiftingLength(length)
+      return liftingColumn.connect(ip, port, slaveID)
+  def disConnectLiftingColumn():
+      # 断开升降柱链接
+      return liftingColumn.disConnect()
+  def moveLiftingColumn(pos, speed, block=True):
+      # 升降柱移动命令
+      # pos: 升降柱位置
+      # speed: 升降柱速度
+      if pos > liftingColumn.getMaxLimit():
+          popup(s="Move pos is over limit max.", title="LiftingColumnAdapter Plugin Error", blocking=True)
+          halt()
+      moveRes = liftingColumn.move(pos, speed)
+      if not moveRes:
+          popup("Lifting Column Failed To Move! Please Check Lifting Column Status!", title="LiftingColumnAdapter Plugin Error", error=True, blocking=True)
+      while block:
+          currentHeight = liftingColumn.currentHeight()
+          errorCode = liftingColumn.errorCode()
+          if currentHeight < pos + 2 and currentHeight > pos - 2 and currentHeight != -1:
+              liftingColumn.clearMovingFlag()
+              return True
+          if errorCode > 0:
+              liftingColumn.stop()
+              liftingColumn.clearMovingFlag()
+              popup(s="Lifting error ,stop task.Error code: " + str(errorCode), title="LiftingColumnAdapter Plugin Error", blocking=True)
+              halt()
+              return False
+          sleep(0.2)
+      return moveRes
+  #--------------- lifting Column Function -----------------
+  # Set Node Preamble Script.
+  # Loop Node Preamble Script.
+  # Waypoint Node Preamble Script.
+  # Initial Variables value.
+  global Loop_1
+  def calculate_point_to_move_towards(frame, direction, position_distance):
+    posDir = [direction[0], direction[1], direction[2]]
+    if (norm(posDir) < 1e-6):
+      return get_target_waypoint()
+    end
+    direction_vector_normalized = normalize(posDir)
+    displacement_pose = [direction_vector_normalized[0] * position_distance,direction_vector_normalized[1] * position_distance,direction_vector_normalized[2] * position_distance,0,0,0]
+    wanted_displacement_in_base_frame = pose_sub(pose_trans(frame, displacement_pose), frame)
+    return pose_add(get_target_waypoint(), wanted_displacement_in_base_frame)
+  end
+  # Timer Node Preamble Script.
+  # SubTask Node Preamble Script.
+  # Before Start Preamble Script.
+  # Thread Node Preamble Script.
+  # Event Node Preamble Script.
+  # Main Task Script.
+  while (True):
+    $ LINE: (2, "로봇 메인 작업")
+    $ LINE: (3, "1 [스크립트파일] dus_init.script")
+    $ LINE: (4, "스크립트")
+    # =============================================================================
+    #  dus_init.script — dusan_v1
+    #  파라미터를 읽고 피치·행수를 계산한다. 실시간 발행 스레드를 띄운다
+    #
+    #  펜던트에서 "1_init" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+    #
+    #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+    #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+    #  ※ if / while 은 반드시 end 로 닫을 것
+    # =============================================================================
+    
+    def ini_w1(a, v):
+        if (v > 32000):
+            v = 32000
+        end
+        if (v < -32000):
+            v = -32000
+        end
+        write_port_register(a, floor(v + 0.5))
+    end
+    
+    
+    # 로봇 자체 레지스터 384~389 와 같은 단위.  길이 0.1mm, 회전 mRad
+    def ini_w6(a, p):
+        ini_w1(a, p[0] * 10000)
+        ini_w1(a + 1, p[1] * 10000)
+        ini_w1(a + 2, p[2] * 10000)
+        ini_w1(a + 3, p[3] * 1000)
+        ini_w1(a + 4, p[4] * 1000)
+        ini_w1(a + 5, p[5] * 1000)
+    end
+    
+    
+    # 절대 TCP(260~265) 와 원점기준 상대좌표(280~285), alive(293) 발행
+    def pub_rel():
+        global cur_pose
+        global rel_pose
+        global alive
+        cur_pose = get_actual_tcp_pose()
+        ini_w6(260, cur_pose)
+        if (zero_ok == True):
+            rel_pose = pose_trans(zero_inv, cur_pose)
+            ini_w6(280, rel_pose)
+        end
+        alive = alive + 1
+        if (alive > 30000):
+            alive = 0
+        end
+        write_port_register(293, alive)
+    end
+    
+    
+    # 제어주기마다 도는 발행 스레드. 이 뒤로는 평범한 movel 을 써도
+    # 이동 중 좌표가 계속 나간다.
+    def pub_thread():
+        while (True):
+            pub_rel()
+            sync()
+        end
+    end
+    
+    
+    # ------------------------------------------------------------------ 본문
+    # 266 = 1 이면 외부(Modbus)가 준 값을, 0 이면 펜던트 변수값을 쓴다
+    if (read_port_register(266, True) == 1):
+        app_width = read_port_register(256, True)
+        app_height = read_port_register(257, True)
+        scan_h = read_port_register(258, True)
+        overlap = read_port_register(259, True)
+    end
+    
+    if (app_width <= 0):
+        app_width = 1000
+    end
+    if (app_height < 0):
+        app_height = 0
+    end
+    if (scan_h <= 0):
+        scan_h = 200
+    end
+    if (overlap < 0):
+        overlap = 0
+    end
+    if (overlap >= scan_h):
+        overlap = scan_h - 10
+    end
+    
+    # 상승 피치 = 스캐너 높이 - 겹침 (고정)
+    pitch = scan_h - overlap
+    if (pitch <= 0):
+        pitch = 10
+    end
+    
+    # 스캐너가 한 자리에서 scan_h 를 훑으므로
+    # 마지막 패스가 (높이 - scan_h) 이상이면 사각형 전체가 덮인다
+    rows = ceil((app_height - scan_h) * 1.0 / pitch) + 1
+    if (rows < 1):
+        rows = 1
+    end
+    if (rows > 200):
+        popup(s = "ROWS OVER LIMIT(200). CHECK HEIGHT/SCAN_H/OVERLAP", title = "dusan_v1", blocking = True)
+        write_port_register(290, 9)
+        halt()
+    end
+    
+    row_idx = 0
+    dir_sign = 1
+    pass_done = 0
+    path_len = 0
+    alive = 0
+    zero_ok = False
+    n_probe = 0
+    n_hit = 0
+    qa = 0
+    qb = 0
+    qc = 0
+    
+    write_port_register(290, 0)
+    write_port_register(291, 0)
+    write_port_register(292, rows)
+    write_port_register(293, 0)
+    write_port_register(294, 0)
+    write_port_register(295, 0)
+    write_port_register(296, pitch)
+    write_port_register(297, 0)
+    write_port_register(298, 0)
+    write_port_register(304, 0)
+    write_port_register(305, 0)
+    
+    # 실시간 발행 스레드 기동
+    pub_h = start_thread(pub_thread, (), detach_mode = True)
+    $ LINE: (5, "2 move_home")
+    $ LINE: (6, "If")
+    if (get_actual_tcp_pose()[2]<Home_pose[2]-0.001):
+      $ LINE: (7, "MoveL")
+      $ LINE: (8, "방향 로봇 Z+")
+      global move_thread_flag_8
+      move_thread_flag_8 = 0
+      def move_thread_8():
+        global move_thread_flag_8
+        move_thread_flag_8 = 1
+        towardsPos = calculate_point_to_move_towards([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0,0.0,1.0], 1000.0)
+        movel(towardsPos, a=1.2, v=0.25)
+        move_thread_flag_8 = 2
+      end
+      move_thread_flag_8 = 0
+      move_thread_han_8 = start_thread(move_thread_8, (), detach_mode = False)
+      while (True):
+        if (get_actual_tcp_pose()[2]>=Home_pose[2]-0.001):
+          stop_thread(move_thread_han_8)
+          stopl(1.2)
+          $ LINE: (9, "Until (표현식)")
+          break
+        end
+        sync()
+      end
+    end
+    $ LINE: (10, "MoveJ")
+    $ LINE: (11, "Home_joint", "after")
+    movej(Home_joint, a=1.3962634015954636, v=1.0471975511965976)
+    $ LINE: (12, "3 [스크립트파일] dus_probe_c.script")
+    $ LINE: (13, "스크립트")
+    # =============================================================================
+    #  dus_probe_c.script — dusan_v1
+    #  중앙에서 전진해 벽을 찾고 X 를 기록한 뒤 후퇴한다
+    #
+    #  펜던트에서 "3_probe_center" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+    #
+    #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+    #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+    #  ※ if / while 은 반드시 end 로 닫을 것
+    # =============================================================================
+    
+    write_port_register(290, 2)
+    y_c = get_actual_tcp_pose()[1]
+    z_base = get_actual_tcp_pose()[2]
+    
+    # 중앙점 접근  [임시판 : 센서 없이 정해진 거리만 전진]
+    x_start = get_actual_tcp_pose()[0]
+    tgt_pose = get_actual_tcp_pose()
+    tgt_pose[0] = x_start + (probe_dist + probe_bow) * 0.001
+    movel(tgt_pose, a = 1.2, v = v_seek)
+    
+    n_probe = n_probe + 1
+    write_port_register(304, n_probe)
+    write_port_register(305, n_hit)
+    
+    p_cx = get_actual_tcp_pose()[0]
+    write_port_register(300, floor(p_cx * 10000 + 0.5))
+    
+    tgt_pose = get_actual_tcp_pose()
+    tgt_pose[0] = x_start
+    movel(tgt_pose, a = 1.2, v = v_move)
+    $ LINE: (14, "4 [스크립트파일] dus_probe_l.script")
+    $ LINE: (15, "스크립트")
+    # =============================================================================
+    #  dus_probe_l.script — dusan_v1
+    #  Y+ 로 너비/2 이동해 측정한다. 이 점이 원점이 된다
+    #
+    #  펜던트에서 "4_probe_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+    #
+    #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+    #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+    #  ※ if / while 은 반드시 end 로 닫을 것
+    # =============================================================================
+    
+    # 중앙에서 Y+ 로 너비의 절반만큼
+    tgt_pose = get_actual_tcp_pose()
+    tgt_pose[1] = y_c + app_width * 0.0005
+    movel(tgt_pose, a = 1.2, v = v_move)
+    y_l = get_actual_tcp_pose()[1]
+    
+    # Y+ 끝 접근  [임시판 : 센서 없이 정해진 거리만 전진]
+    x_start = get_actual_tcp_pose()[0]
+    tgt_pose = get_actual_tcp_pose()
+    tgt_pose[0] = x_start + (probe_dist) * 0.001
+    movel(tgt_pose, a = 1.2, v = v_seek)
+    
+    n_probe = n_probe + 1
+    write_port_register(304, n_probe)
+    write_port_register(305, n_hit)
+    
+    p_lx = get_actual_tcp_pose()[0]
+    write_port_register(301, floor(p_lx * 10000 + 0.5))
+    
+    # 이 자리가 원점이다
+    zero_pose = get_actual_tcp_pose()
+    zero_inv = pose_inv(zero_pose)
+    zero_ok = True
+    
+    tgt_pose = get_actual_tcp_pose()
+    tgt_pose[0] = x_start
+    movel(tgt_pose, a = 1.2, v = v_move)
+    $ LINE: (16, "5 [스크립트파일] dus_probe_r.script")
+    $ LINE: (17, "스크립트")
+    # =============================================================================
+    #  dus_probe_r.script — dusan_v1
+    #  Y- 끝으로 이동해 측정하고, 3점으로 벽면 2차식을 세운다
+    #
+    #  펜던트에서 "5_probe_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+    #
+    #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+    #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+    #  ※ if / while 은 반드시 end 로 닫을 것
+    # =============================================================================
+    
+    # 중앙 기준 Y- 너비의 절반 (지금 Y+ 끝에 있으므로 너비만큼 내려간다)
+    tgt_pose = get_actual_tcp_pose()
+    tgt_pose[1] = y_c - app_width * 0.0005
+    movel(tgt_pose, a = 1.2, v = v_move)
+    y_r = get_actual_tcp_pose()[1]
+    
+    # Y- 끝 접근  [임시판 : 센서 없이 정해진 거리만 전진]
+    x_start = get_actual_tcp_pose()[0]
+    tgt_pose = get_actual_tcp_pose()
+    tgt_pose[0] = x_start + (probe_dist) * 0.001
+    movel(tgt_pose, a = 1.2, v = v_seek)
+    
+    n_probe = n_probe + 1
+    write_port_register(304, n_probe)
+    write_port_register(305, n_hit)
+    
+    p_rx = get_actual_tcp_pose()[0]
+    write_port_register(302, floor(p_rx * 10000 + 0.5))
+    
+    tgt_pose = get_actual_tcp_pose()
+    tgt_pose[0] = x_start
+    movel(tgt_pose, a = 1.2, v = v_move)
+    
+    # ---- 3점을 지나는 2차식.  dy = Y - y_c 일 때
+    #        x(dy) = qa*dy*dy + qb*dy + qc
+    #      dy=0 -> p_cx,  dy=+half -> p_lx,  dy=-half -> p_rx
+    half = app_width * 0.0005
+    qc = p_cx
+    qa = 0
+    qb = 0
+    if (half > 0.0001):
+        qa = (p_lx + p_rx - 2 * p_cx) / (2 * half * half)
+        qb = (p_lx - p_rx) / (2 * half)
+    end
+    
+    # 볼록량 = 중앙 - 양끝평균. 벽이 평면이면 0 에 가깝다
+    write_port_register(303, floor((p_cx - (p_lx + p_rx) * 0.5) * 10000 + 0.5))
+    $ LINE: (18, "6 [스크립트파일] dus_goto_zero.script")
+    $ LINE: (19, "스크립트")
+    # =============================================================================
+    #  dus_goto_zero.script — dusan_v1
+    #  측정이 끝난 뒤 원점(Y+ 끝)으로 돌아가 스캔을 시작할 준비를 한다
+    #
+    #  펜던트에서 "6_goto_zero" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+    #
+    #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+    #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+    #  ※ if / while 은 반드시 end 로 닫을 것
+    # =============================================================================
+    
+    def gz_w1(a, v):
+        if (v > 32000):
+            v = 32000
+        end
+        if (v < -32000):
+            v = -32000
+        end
+        write_port_register(a, floor(v + 0.5))
+    end
+    
+    
+    def gz_w6(a, p):
+        gz_w1(a, p[0] * 10000)
+        gz_w1(a + 1, p[1] * 10000)
+        gz_w1(a + 2, p[2] * 10000)
+        gz_w1(a + 3, p[3] * 1000)
+        gz_w1(a + 4, p[4] * 1000)
+        gz_w1(a + 5, p[5] * 1000)
+    end
+    
+    
+    write_port_register(290, 3)
+    
+    # 먼저 Y 를 맞추고(벽에서 떨어진 상태로 이동), 그다음 X 로 접근한다
+    tgt_pose = get_actual_tcp_pose()
+    tgt_pose[1] = zero_pose[1]
+    movel(tgt_pose, a = 1.2, v = v_move)
+    
+    tgt_pose = get_actual_tcp_pose()
+    tgt_pose[0] = zero_pose[0]
+    movel(tgt_pose, a = 1.2, v = v_move)
+    
+    gz_w6(270, zero_pose)      # 원점 pose (스캔 중 변하지 않는다)
+    write_port_register(294, 1)
+    path_len = 0
+    write_port_register(290, 4)
+    $ LINE: (20, "루프 200 횟수")
+    Loop_1 = 0
+    while (Loop_1 < 200):
+      $ LINE: (21, "스크립트")
+      pass_done=0
+      $ LINE: (22, "If")
+      if (row_idx<rows and dir_sign>0 and pass_done==0):
+        $ LINE: (23, "7 [스크립트파일] dus_pass_r.script")
+        $ LINE: (24, "스크립트")
+        # =============================================================================
+        #  dus_pass_r.script — dusan_v1
+        #  오른쪽(Y-) 으로 한 줄. X 를 벽면 2차식으로 보정하며 간다
+        #
+        #  펜던트에서 "7_pass_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+        #
+        #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+        #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+        #  ※ if / while 은 반드시 end 로 닫을 것
+        # =============================================================================
+        
+        def pr2_w1(a, v):
+            if (v > 32000):
+                v = 32000
+            end
+            if (v < -32000):
+                v = -32000
+            end
+            write_port_register(a, floor(v + 0.5))
+        end
+        
+        
+        # 오른쪽(Y-) 으로 한 줄. 구간을 나눠 매 구간 X 를 벽면 2차식에 맞춘다.
+        # 구간 사이는 블렌드(r)로 이어서 감속 없이 지나간다.
+        y_from = get_actual_tcp_pose()[1]
+        y_to = zero_pose[1] - app_width * 0.001
+        n_seg = ceil(app_width * 1.0 / seg_len)
+        if (n_seg < 1):
+            n_seg = 1
+        end
+        
+        i_seg = 1
+        while (i_seg <= n_seg):
+            tgt_pose = get_actual_tcp_pose()
+            tgt_pose[1] = y_from + (y_to - y_from) * i_seg * 1.0 / n_seg
+            dy = tgt_pose[1] - y_c
+            tgt_pose[0] = qa * dy * dy + qb * dy + qc
+            if (i_seg < n_seg):
+                movel(tgt_pose, a = 1.2, v = v_scan, r = 0.005)
+            end
+            if (i_seg >= n_seg):
+                movel(tgt_pose, a = 1.2, v = v_scan)
+            end
+            i_seg = i_seg + 1
+        end
+        
+        row_idx = row_idx + 1
+        dir_sign = -1
+        pass_done = 1
+        path_len = path_len + app_width
+        write_port_register(291, row_idx)
+        pr2_w1(297, path_len * 0.1)
+        pr2_w1(298, row_idx * 100.0 / rows)
+      end
+      $ LINE: (25, "If")
+      if (row_idx<rows and dir_sign<0 and pass_done==0):
+        $ LINE: (26, "8 [스크립트파일] dus_pass_l.script")
+        $ LINE: (27, "스크립트")
+        # =============================================================================
+        #  dus_pass_l.script — dusan_v1
+        #  왼쪽(Y+) 으로 한 줄. X 를 벽면 2차식으로 보정하며 간다
+        #
+        #  펜던트에서 "8_pass_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+        #
+        #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+        #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+        #  ※ if / while 은 반드시 end 로 닫을 것
+        # =============================================================================
+        
+        def pl2_w1(a, v):
+            if (v > 32000):
+                v = 32000
+            end
+            if (v < -32000):
+                v = -32000
+            end
+            write_port_register(a, floor(v + 0.5))
+        end
+        
+        
+        # 왼쪽(Y+) 으로 한 줄. 구간을 나눠 매 구간 X 를 벽면 2차식에 맞춘다.
+        # 구간 사이는 블렌드(r)로 이어서 감속 없이 지나간다.
+        y_from = get_actual_tcp_pose()[1]
+        y_to = zero_pose[1]
+        n_seg = ceil(app_width * 1.0 / seg_len)
+        if (n_seg < 1):
+            n_seg = 1
+        end
+        
+        i_seg = 1
+        while (i_seg <= n_seg):
+            tgt_pose = get_actual_tcp_pose()
+            tgt_pose[1] = y_from + (y_to - y_from) * i_seg * 1.0 / n_seg
+            dy = tgt_pose[1] - y_c
+            tgt_pose[0] = qa * dy * dy + qb * dy + qc
+            if (i_seg < n_seg):
+                movel(tgt_pose, a = 1.2, v = v_scan, r = 0.005)
+            end
+            if (i_seg >= n_seg):
+                movel(tgt_pose, a = 1.2, v = v_scan)
+            end
+            i_seg = i_seg + 1
+        end
+        
+        row_idx = row_idx + 1
+        dir_sign = 1
+        pass_done = 1
+        path_len = path_len + app_width
+        write_port_register(291, row_idx)
+        pl2_w1(297, path_len * 0.1)
+        pl2_w1(298, row_idx * 100.0 / rows)
+      end
+      $ LINE: (28, "If")
+      if (row_idx<rows):
+        $ LINE: (29, "9 [스크립트파일] dus_up.script")
+        $ LINE: (30, "스크립트")
+        # =============================================================================
+        #  dus_up.script — dusan_v1
+        #  다음 줄로 한 피치만큼 상승한다
+        #
+        #  펜던트에서 "9_up" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+        #
+        #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+        #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+        #  ※ if / while 은 반드시 end 로 닫을 것
+        # =============================================================================
+        
+        def up_w1(a, v):
+            if (v > 32000):
+                v = 32000
+            end
+            if (v < -32000):
+                v = -32000
+            end
+            write_port_register(a, floor(v + 0.5))
+        end
+        
+        
+        # 목표 높이는 직전 위치가 아니라 원점(z_base) 기준 절대값으로 잡는다.
+        # 상대값으로 쌓으면 구간마다의 정지 오차가 행 수만큼 누적된다.
+        tgt_pose = get_actual_tcp_pose()
+        tgt_pose[2] = z_base + row_idx * pitch * 0.001
+        movel(tgt_pose, a = 1.2, v = v_scan)
+        
+        path_len = path_len + pitch
+        up_w1(297, path_len * 0.1)
+      end
+      $ LINE: (31, "If")
+      if (row_idx>=rows):
+        $ LINE: (32, "10 [스크립트파일] dus_finish.script")
+        $ LINE: (33, "스크립트")
+        # =============================================================================
+        #  dus_finish.script — dusan_v1
+        #  벽에서 후퇴하고 완료 플래그를 낸다
+        #
+        #  펜던트에서 "10_finish" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+        #
+        #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+        #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+        #  ※ if / while 은 반드시 end 로 닫을 것
+        # =============================================================================
+        
+        tgt_pose = get_actual_tcp_pose()
+        tgt_pose[0] = get_actual_tcp_pose()[0] - back_off * 0.001
+        movel(tgt_pose, a = 1.2, v = v_move)
+        
+        write_port_register(290, 5)
+        write_port_register(291, row_idx)
+        write_port_register(295, 1)
+        write_port_register(298, 100)
+        $ LINE: (34, "11 move_home")
+        $ LINE: (35, "If")
+        if (get_actual_tcp_pose()[2]<Home_pose[2]-0.001):
+          $ LINE: (36, "MoveL")
+          $ LINE: (37, "방향 로봇 Z+")
+          global move_thread_flag_37
+          move_thread_flag_37 = 0
+          def move_thread_37():
+            global move_thread_flag_37
+            move_thread_flag_37 = 1
+            towardsPos = calculate_point_to_move_towards([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0,0.0,1.0], 1000.0)
+            movel(towardsPos, a=1.2, v=0.25)
+            move_thread_flag_37 = 2
+          end
+          move_thread_flag_37 = 0
+          move_thread_han_37 = start_thread(move_thread_37, (), detach_mode = False)
+          while (True):
+            if (get_actual_tcp_pose()[2]>=Home_pose[2]-0.001):
+              stop_thread(move_thread_han_37)
+              stopl(1.2)
+              $ LINE: (38, "Until (표현식)")
+              break
+            end
+            sync()
+          end
+        end
+        $ LINE: (39, "MoveJ")
+        $ LINE: (40, "Home_joint", "after")
+        movej(Home_joint, a=1.3962634015954636, v=1.0471975511965976)
+        $ LINE: (41, "중지")
+        halt()
+      end
+      Loop_1 = Loop_1 + 1
+    end
+    $ LINE: (42, "중지")
+    halt()
+  end
+end

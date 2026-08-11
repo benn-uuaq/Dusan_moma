@@ -161,6 +161,22 @@ class Robot_30001():
             self.__sock = None
             print("[Robot Primary] Disconnect")
 
+    def send_script(self, script):
+        """스크립트 본문을 30001로 보낸다. 응답은 없다.
+
+        조그(speedl/speedj)와 홈 이동처럼 태스크 밖에서 로봇을 움직일 때 쓴다.
+        여러 줄이면 그대로 이어 보내고 마지막에 줄바꿈을 붙인다.
+        """
+        if self.__sock is None:
+            return False
+        try:
+            body = script if script.endswith("\n") else script + "\n"
+            self.__sock.sendall(body.encode("utf-8"))
+            return True
+        except Exception as e:
+            print(f"[ERROR][Robot Primary] Sending script: {e}")
+            return False
+
     def get_data(self):
         return self.__recv()
 

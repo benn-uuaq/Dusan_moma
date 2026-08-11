@@ -49,11 +49,12 @@ class RosTopics:
     DASHBOARD = "robot/dashboard"
 
     LINEAR_SPEED = "robot/command/linear_speed"
+    SPEED_RATIO = "robot/command/speed_ratio"
+    HOME_JOINT = "robot/command/home_joint"
+    START_POSE = "robot/command/start_pose"
     JOG_JOINT = "robot/command/jog_joint"
     JOG_TCP = "robot/command/jog_tcp"
 
-    SAVE_HOME_POSE = "robot/command/save_home_pose"
-    SAVE_START_POSE = "robot/command/save_start_pose"
     MOVE_HOME = "robot/command/move_home"
 
 
@@ -103,9 +104,7 @@ class RosStatusClient(QObject):
         "play": (f"{RosTopics.DASHBOARD}/play", None),
         "pause": (f"{RosTopics.DASHBOARD}/pause", None),
         "stop": (f"{RosTopics.DASHBOARD}/stop", None),
-        "save_home_pose": (RosTopics.SAVE_HOME_POSE, "save_home_pose"),
-        "save_start_pose": (RosTopics.SAVE_START_POSE, "save_start_pose"),
-        "home": (RosTopics.MOVE_HOME, "move_home"),
+        "home": (RosTopics.MOVE_HOME, None),
     }
 
     def __init__(self, node_name: str = "smr_operator_ui", parent: QObject | None = None) -> None:
@@ -116,6 +115,7 @@ class RosStatusClient(QObject):
         self._thread: threading.Thread | None = None
         self._owns_context = False
         self._publishers: dict[str, object] = {}
+        self._pose_publishers: dict[str, object] = {}
         self._clients: dict[str, object] = {}
         self._registers = None
         if REGISTER_MAP_AVAILABLE:
@@ -179,8 +179,15 @@ class RosStatusClient(QObject):
             )
             self._publishers = {
                 "linear_speed": self._node.create_publisher(Int32, RosTopics.LINEAR_SPEED, 10),
+                "speed_ratio": self._node.create_publisher(Int32, RosTopics.SPEED_RATIO, 10),
                 "jog_joint": self._node.create_publisher(Int32, RosTopics.JOG_JOINT, 10),
                 "jog_tcp": self._node.create_publisher(Int32, RosTopics.JOG_TCP, 10),
+            }
+            self._pose_publishers = {
+                "home_joint": self._node.create_publisher(
+                    Float32MultiArray, RosTopics.HOME_JOINT, 10),
+                "start_pose": self._node.create_publisher(
+                    Float32MultiArray, RosTopics.START_POSE, 10),
             }
             self._clients = {
                 key: self._node.create_client(Trigger, service)
@@ -240,6 +247,31 @@ class RosStatusClient(QObject):
             return False
         publisher.publish(Int32(data=int(value)))
         self.command_result.emit(name, True, f"{name} 전송: {value}")
+        return True
+
+    def send_pose(self, name: str, values: list) -> bool:
+        """기준 위치 6개 성분을 로봇 레지스터에 쓰도록 보낸다."""
+        publisher = self._pose_publishers.get(name)
+        if publisher is None:
+            self.command_result.emit(name, False, "ROS 2에 연결되어 있지 않습니다.")
+            return False
+        if not self.writable(name):
+            self.command_result.emit(name, False, "Modbus 주소가 설정되지 않았습니다.")
+            return False
+        publisher.publish(Float32MultiArray(data=[float(v) for v in values]))
+        self.command_result.emit(name, True, f"{name} 전송 완료")
+        return True
+
+    def send_jog(self, kind: str, axis: int, direction: int) -> bool:
+        """조그 명령을 보낸다. 부호가 방향, 절댓값이 축 번호(1~6)다.
+
+        0은 정지를 뜻하며 노드가 29999 stop으로 즉시 멈춘다.
+        """
+        code = 0 if direction == 0 else (axis + 1) * (1 if direction > 0 else -1)
+        publisher = self._publishers.get(f"jog_{kind}")
+        if publisher is None:
+            return False
+        publisher.publish(Int32(data=code))
         return True
 
     def call_command(self, name: str) -> bool:

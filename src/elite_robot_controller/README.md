@@ -59,10 +59,13 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 | `read.joint_position` | 73~78 | 관절 각도 (베이스, 어깨, 엘보, 손목 1~3) |
 | `read.tcp_absolute` | 384~389 | 현재 TCP (기본 프레임) |
 | `read.tcp_zero_relative` | 280~285 | 원점 기준 상대 pose |
-| `write.linear_speed` | **미정** | 직선 동작 속도 |
-| `write.jog_joint` / `write.jog_tcp` | **미정** | 조그 명령 |
-| `write.save_home_pose` / `write.save_start_pose` | **미정** | 기준 위치 저장 |
-| `write.move_home` | **미정** | 홈 이동 |
+| `write.linear_speed` | 306 | 작업 속도 [mm/s]. 태스크의 `movel` 속도 |
+| `write.speed_ratio` | 307 | 로봇 자체 속도 비율 [%] 2~100 |
+| `write.pose_src` | 308 | 1이면 태스크가 310~321의 기준 위치를 쓴다 |
+| `write.home_joint` | 310~315 | 홈 관절값 [mrad] |
+| `write.start_pose` | 316~321 | 시작 포즈 (길이 0.1 mm, 회전 mrad) |
+
+쓰기 주소는 로봇 태스크가 읽는 범용 레지스터 대역(256~383)에 맞췄습니다. 태스크가 이미 쓰는 256~305는 피했습니다.
 
 `address`가 `null`인 항목은 주소 미확정을 뜻한다. **노드는 해당 요청을 거부하고 Modbus 접근 자체를 하지 않는다.** 엉뚱한 레지스터에 쓰면 로봇이 예기치 않게 움직이기 때문이다. 운영 UI도 같은 파일을 읽어 해당 버튼을 비활성화한다.
 
@@ -89,12 +92,24 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 | 서비스 (`std_srvs/Trigger`) | `robot/command/save_start_pose` | `save_start_pose` |
 | 서비스 (`std_srvs/Trigger`) | `robot/command/move_home` | `move_home` |
 | 토픽 (`std_msgs/Int32`) | `robot/command/linear_speed` | `linear_speed` |
-| 토픽 (`std_msgs/Int32`) | `robot/command/jog_joint` | `jog_joint` |
-| 토픽 (`std_msgs/Int32`) | `robot/command/jog_tcp` | `jog_tcp` |
+| 토픽 (`std_msgs/Int32`) | `robot/command/speed_ratio` | `speed_ratio` |
+| 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/home_joint` | `home_joint` |
+| 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/start_pose` | `start_pose` |
+| 토픽 (`std_msgs/Int32`) | `robot/command/jog_joint` | 없음 (30001 스크립트) |
+| 토픽 (`std_msgs/Int32`) | `robot/command/jog_tcp` | 없음 (30001 스크립트) |
 
-값이 없는 한 번짜리 명령은 성공 여부를 돌려받아야 하므로 서비스로, 값이 있는 명령은 토픽으로 받는다. 주소가 없으면 서비스는 `success=False`와 사유를 응답하고 토픽은 경고만 남긴다.
+값이 없는 한 번짜리 명령은 성공 여부를 돌려받아야 하므로 서비스로, 값이 있는 명령은 토픽으로 받습니다.
 
-> **확인 필요:** 조그 값의 인코딩(축 번호와 방향을 한 레지스터에 담는 방식)은 아직 로봇 규격으로 확인하지 않았다. 현재 UI는 `축번호 × 2 + 방향(+는 0, -는 1)`으로 보내며, 주소가 확정될 때 함께 맞춰야 한다.
+### 조그와 홈 이동
+
+조그와 홈 이동은 레지스터가 아니라 **30001 포트로 스크립트를 보내** 처리합니다.
+
+- 조그 값은 **부호가 방향, 절댓값이 축 번호(1~6)** 이며 `0`은 정지입니다.
+- 움직일 때는 `speedj` / `speedl`을 보내고, **멈출 때는 29999의 `stop`** 을 씁니다. 감속 없이 즉시 서기 위해서입니다.
+- 조그 속도는 노드 파라미터로 조정합니다: `jog_joint_speed`(rad/s), `jog_tcp_speed`(m/s), `jog_tcp_rot_speed`(rad/s), `jog_accel`.
+- `robot/command/move_home`은 `home_lift_z`까지 `movel`로 올린 뒤 310~315에 저장된 관절값으로 `movej` 합니다. 태스크의 `move_home` 노드와 같은 순서입니다.
+
+> `speedj`/`speedl`은 컨트롤러의 속도 백분율 설정에 영향을 받습니다(스크립트 매뉴얼 3.1.26/3.1.27). 100 %가 아니면 실제 속도가 그만큼 줄어듭니다.
 
 **서비스** (모두 `std_srvs/Trigger`)
 
