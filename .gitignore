@@ -1,0 +1,17 @@
+# ROS 2 colcon 빌드 산출물
+build/
+install/
+log/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 인계받은 원본 아카이브 (470MB)
+erounsolution_project.zip
+
+# Windows / WSL
+*:Zone.Identifier
+Thumbs.db

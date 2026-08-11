@@ -44,11 +44,17 @@
 
 ## 개발
 
-- [ ] 개발 언어 및 프레임워크 결정
+- [x] 개발 언어 및 프레임워크 결정 (ROS 2 Humble / Python 3.10, 운영 UI는 PyQt6)
+- [x] ROS 2 워크스페이스 구성 및 빌드 환경 확정
+- [x] 엘리트 협동로봇 제어부 ROS 2 패키지화 (`src/elite_robot_controller`)
+- [ ] 엘리트 로봇 실장비 연결 후 토픽/서비스 동작 검증
+- [ ] 운영 UI(MQTT) ↔ ROS 2 브리지 구현 — 규격은 `docs/mqtt_topic_form.md`
+- [ ] 운영 UI의 Linux 실행 환경 확인 (PyQt6, PostgreSQL, MQTT Broker)
+- [ ] AMR 패키지 skeleton 생성 — 구성안은 `plan.md` 6절
 - [ ] 장비별 더미 드라이버 설계
 - [ ] AMR 수동/자동 모드 상태 관리 설계
 - [ ] IMU 센서 데이터 수집 모듈 설계
 - [ ] 아웃트리거 제어 및 수평 보정 알고리즘 설계
 - [ ] 검사 시퀀스 상태 머신 설계
-- [ ] 운영 UI 화면 구성안 작성
+- [x] 운영 UI 화면 구성안 작성 (`operator-ui/design.md`)
 - [ ] 데이터 저장 구조 설계

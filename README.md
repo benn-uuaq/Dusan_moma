@@ -38,6 +38,70 @@
 - [회의록](docs/meeting_notes.md)
 - [작업 로그](docs/work_log.md)
 - [할 일 목록](docs/todo.md)
+- [엘리트 협동로봇 제어 패키지](src/elite_robot_controller/README.md)
+
+## 저장소 구성
+
+| 경로 | 내용 |
+| --- | --- |
+| `docs/` | 프로젝트 문서 및 발주처 요청자료 |
+| `operator-ui/` | 운영자 UI (PyQt6 데스크톱 앱). 독립 실행되며 colcon 빌드 대상이 아니다 |
+| `src/` | ROS 2 패키지 |
+| `tools/`, `work/` | 문서 생성 스크립트 및 산출물 |
+
+## 개발 환경 준비
+
+Ubuntu 22.04 + ROS 2 Humble 환경을 전제로 한다. 이 저장소는 colcon 워크스페이스 루트이므로, 클론한 디렉터리가 곧 워크스페이스가 된다.
+
+### 1. 가상환경 생성
+
+**`--system-site-packages`가 반드시 필요하다.** 이 옵션이 없으면 가상환경 안에서 `rclpy`와 `colcon`이 보이지 않아 빌드와 실행이 모두 실패한다.
+
+```bash
+python3 -m venv --system-site-packages .venv
+```
+
+### 2. Python 의존성 설치
+
+```bash
+.venv/bin/pip install pyModbusTCP
+```
+
+### 3. 환경 자동 활성화 (direnv)
+
+저장소에 `.envrc`가 포함되어 있다. ROS 소싱 → 워크스페이스 소싱 → 가상환경 활성화를 디렉터리 진입 시 자동으로 수행한다.
+
+```bash
+sudo apt install direnv           # 최초 1회
+echo 'eval "$(direnv hook bash)"' >> ~/.bashrc
+direnv allow
+```
+
+direnv를 쓰지 않는다면 매번 아래를 수동으로 실행한다.
+
+```bash
+source /opt/ros/humble/setup.bash && source install/setup.bash && source .venv/bin/activate
+```
+
+### 4. 빌드
+
+```bash
+colcon build --symlink-install
+```
+
+빌드 후 `direnv reload`(또는 `source install/setup.bash`)로 워크스페이스를 다시 소싱한다.
+
+### 5. 동작 확인
+
+```bash
+ros2 launch elite_robot_controller elite_cs612.launch.py robot_ip:=192.168.227.134
+```
+
+로봇이 연결되어 있지 않으면 `[ERROR] 로봇 연결 실패` 로그 후 정상 종료한다. 이는 의도된 동작이다.
+
+### 운영자 UI 실행
+
+`operator-ui/`는 ROS 2와 별개로 동작하는 PyQt6 앱이다. 실행 방법은 [operator-ui/README.md](operator-ui/README.md)를 참고한다.
 
 ## 진행 원칙
 
