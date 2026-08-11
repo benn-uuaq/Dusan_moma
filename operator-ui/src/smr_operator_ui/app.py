@@ -33,6 +33,7 @@ from smr_operator_ui.services import (
     InspectionSimulator,
     MqttServer,
     MqttTopics,
+    RosStatusClient,
     SettingsService,
 )
 from smr_operator_ui.styles import load_stylesheet
@@ -83,6 +84,7 @@ class OperatorWindow(QMainWindow):
         mqtt_server: MqttServer | None = None,
         *,
         start_mqtt: bool = True,
+        start_ros: bool = True,
     ) -> None:
         super().__init__()
         self.setWindowTitle("3S-Robotics | SMR Operator Console")
@@ -154,6 +156,15 @@ class OperatorWindow(QMainWindow):
 
         # Paho 네트워크 스레드에서 수신한 명령은 Qt 시그널을 통해 GUI
         # 스레드의 이 처리기로 전달된다.
+        # 로봇 자세는 robot_control_node가 Modbus에서 읽어 발행한다. 화면은
+        # ROS 실행기 스레드가 아닌 GUI 스레드에서 시그널로 값을 받는다.
+        self.ros_status = RosStatusClient(parent=self)
+        self.ros_status.tcp_pose_changed.connect(self._show_tcp_pose)
+        self.ros_status.tcp_pose_zero_changed.connect(self._show_tcp_pose_zero)
+        self.ros_status.error_occurred.connect(self._show_ros_error)
+        if start_ros:
+            self.ros_status.start()
+
         self.mqtt_server.command_received.connect(self._handle_mqtt_command)
         self.mqtt_server.connected_changed.connect(
             self._show_mqtt_connection_state
@@ -273,6 +284,27 @@ class OperatorWindow(QMainWindow):
         )
         self.main_screen.show_activity(message)
 
+    def _show_tcp_pose(self, values: list) -> None:
+        """현재 절대 TCP 자세를 Cobot 수동 제어 화면에 표시한다."""
+        self.cobot_manual_screen.apply_tcp(self._format_pose(values))
+
+    def _show_tcp_pose_zero(self, values: list) -> None:
+        """원점 기준 상대 자세를 Cobot 수동 제어 화면에 표시한다."""
+        self.cobot_manual_screen.apply_zero_point(self._format_pose(values))
+
+    @staticmethod
+    def _format_pose(values: list) -> dict[str, str]:
+        """[X, Y, Z, Rx, Ry, Rz] 배열을 화면이 쓰는 성분별 문자열로 바꾼다.
+
+        단위는 항목명에 이미 표시되므로 값에는 붙이지 않는다.
+        """
+        axes = ("x", "y", "z", "rx", "ry", "rz")
+        return {axis: f"{value:.1f}" for axis, value in zip(axes, values)}
+
+    def _show_ros_error(self, message: str) -> None:
+        """ROS 수신 오류를 메인 화면에 간단한 운영 메시지로 표시한다."""
+        self.main_screen.show_activity(f"ROS 오류: {message}")
+
     def _show_mqtt_error(self, message: str) -> None:
         """MQTT 오류를 메인 화면에 간단한 운영 메시지로 표시한다."""
         self.main_screen.show_activity(f"MQTT 오류: {message}")
@@ -306,8 +338,9 @@ class OperatorWindow(QMainWindow):
             self.stack.setCurrentWidget(screen)
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        """창 종료 전에 MQTT 네트워크 루프를 정리한다."""
+        """창 종료 전에 MQTT 네트워크 루프와 ROS 구독을 정리한다."""
         self.mqtt_server.stop()
+        self.ros_status.stop()
         super().closeEvent(event)
 
 

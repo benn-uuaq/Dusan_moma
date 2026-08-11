@@ -31,3 +31,7 @@ smr_operator_ui = ["styles/*.qss", "resources/*.ttf", "resources/*.png"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 qt_api = "pyqt6"
+# ROS 2 Humble이 소싱된 셸에서는 ROS의 pytest 플러그인이 함께 로드된다.
+# 이 플러그인들은 pytest 6 API를 사용해 이 프로젝트가 요구하는 pytest 8 이상과
+# 충돌하므로 비활성화한다. ROS가 없는 환경에서는 이 설정이 아무 영향도 없다.
+addopts = "-p no:launch_testing -p no:launch_ros"

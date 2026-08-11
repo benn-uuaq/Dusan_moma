@@ -37,10 +37,20 @@
 - 기본 Broker는 `127.0.0.1:1883`이며 `SMR_MQTT_*` 환경 변수로 변경할 수 있습니다.
 - 재접속 간격은 1초부터 최대 30초까지 증가하며 10회 실패하면 자동 재접속을 종료합니다.
 
+### `ros_status_client.py`
+
+- `elite_robot_controller`의 `robot_control_node`가 발행하는 자세 토픽을 구독합니다.
+- `robot/status/tcp_pose`(현재 절대 TCP)와 `robot/status/tcp_pose_zero`(원점 기준 상대 pose)를 받습니다.
+- 값은 `[X, Y, Z, Rx, Ry, Rz]` 순서이며 위치는 mm, 회전은 mrad 단위입니다.
+- 구독 콜백은 ROS 실행기 스레드에서 실행되므로 값은 `tcp_pose_changed`, `tcp_pose_zero_changed` 시그널로만 전달합니다.
+- 성분이 6개가 아니면 화면에 일부 값만 반영되지 않도록 버리고 `error_occurred`를 보냅니다.
+- **rclpy는 선택 의존성입니다.** ROS가 없는 환경에서는 `available`이 `False`가 되고 화면은 그대로 동작합니다. Windows 배포본에서 ROS 없이 실행할 수 있어야 하므로 이 구조를 유지합니다.
+- `rclpy.init()`을 이 서비스가 호출한 경우에만 `rclpy.shutdown()`을 수행합니다.
+
 ### `__init__.py`
 
 - 다른 모듈에서 공통으로 사용할 서비스 클래스를 공개합니다.
-- 현재 `InspectionSimulator`, `SettingsService`, `MqttServer` 관련 클래스를 패키지 외부에 제공합니다.
+- 현재 `InspectionSimulator`, `SettingsService`, `MqttServer`, `RosStatusClient` 관련 클래스를 패키지 외부에 제공합니다.
 
 ## 사용 규칙
 

@@ -8,7 +8,7 @@ from smr_operator_ui.state import CyclePhase
 
 
 def test_start_and_pause_cycle(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     window.show()
     qtbot.mouseClick(window.main_screen.start_button, Qt.MouseButton.LeftButton)
@@ -21,7 +21,7 @@ def test_start_and_pause_cycle(qtbot) -> None:
 
 
 def test_manual_navigation(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     window.show()
     window.main_screen.manual_requested.emit()
@@ -32,7 +32,7 @@ def test_manual_navigation(qtbot) -> None:
 
 
 def test_back_returns_to_previous_screen(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     window.show()
     window.navigate("settings")
@@ -46,7 +46,7 @@ def test_back_returns_to_previous_screen(qtbot) -> None:
 
 
 def test_direct_main_navigation_clears_history(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     window.show()
     window.navigate("settings")
@@ -61,7 +61,7 @@ def test_direct_main_navigation_clears_history(qtbot) -> None:
 
 def test_mqtt_job_command_updates_target_dimensions(qtbot, monkeypatch) -> None:
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     saved: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -93,7 +93,7 @@ def test_mqtt_job_command_updates_target_dimensions(qtbot, monkeypatch) -> None:
 
 def test_mqtt_amr_run_starts_inspection(qtbot) -> None:
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
 
     mqtt_server.command_received.emit(
@@ -116,7 +116,7 @@ def test_mqtt_amr_stop_or_ems_pauses_inspection(
     amr_command,
 ) -> None:
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     window.simulator.start_cycle()
 

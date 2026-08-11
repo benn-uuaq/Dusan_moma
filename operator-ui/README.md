@@ -14,6 +14,26 @@ python -m venv .venv
 
 현재 구현은 실제 장비 대신 비차단 더미 서비스를 사용합니다. `검사 시작`을 누르면 12개 원주 구간에서 안전 순서가 반복되며, `일시정지`와 `재개`가 동작합니다.
 
+## ROS 2 연동 (선택)
+
+`Cobot 수동 제어` 화면의 TCP 자세 표시는 ROS 2 토픽에서 값을 받습니다.
+
+| 토픽 | 화면 표시 |
+| --- | --- |
+| `robot/status/tcp_pose` | TCP 현재값 |
+| `robot/status/tcp_pose_zero` | 제로점 기준 |
+
+값은 `dusan_ws`의 `elite_robot_controller` 패키지가 Modbus에서 읽어 발행합니다. UI를 실행하기 전에 해당 노드를 띄우고 UI도 ROS 2가 소싱된 셸에서 실행해야 합니다.
+
+```bash
+ros2 launch elite_robot_controller elite_cs612.launch.py robot_ip:=192.168.227.134
+python -m smr_operator_ui
+```
+
+**rclpy는 선택 의존성입니다.** ROS 2가 없는 환경에서는 자세 값이 `-`로 남고 나머지 화면은 그대로 동작합니다. Windows 배포본을 ROS 없이 실행할 수 있도록 하기 위한 구조이므로 `pyproject.toml`의 의존성에 `rclpy`를 넣지 않습니다.
+
+ROS 2를 소싱한 셸에서 테스트를 실행하면 ROS의 pytest 플러그인이 함께 로드되어 이 프로젝트가 요구하는 pytest 8 이상과 충돌합니다. `pyproject.toml`에서 해당 플러그인을 비활성화해 두었으므로 `pytest`를 그대로 실행하면 됩니다.
+
 이 작업공간에서는 의존성이 `operator-ui/.deps`에 준비되어 있으므로 다음 명령으로도 실행할 수 있습니다.
 
 ```powershell

@@ -15,7 +15,7 @@ def main() -> int:
     output = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("ui-capture.png")
     screen_key = sys.argv[2] if len(sys.argv) > 2 else "main"
     app = create_application(["capture-ui"])
-    window = OperatorWindow()
+    window = OperatorWindow(start_ros=False)
     window.resize(1280, 720)
     if screen_key == "main":
         demo_cycle = replace(

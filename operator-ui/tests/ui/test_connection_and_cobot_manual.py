@@ -5,7 +5,7 @@ from smr_operator_ui.app import OperatorWindow
 
 
 def test_settings_menu_opens_connection_screen(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     window.show()
     window.navigate("settings")
@@ -17,7 +17,7 @@ def test_settings_menu_opens_connection_screen(qtbot) -> None:
 
 
 def test_connection_screen_collects_all_device_addresses(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     values = window.screens["connection"].values()
     # 협동로봇, 차량용 PLC, MQTT Broker가 한 화면에 모여 있어야 한다.
@@ -37,7 +37,7 @@ def test_connection_screen_collects_all_device_addresses(qtbot) -> None:
 
 
 def test_cobot_settings_no_longer_duplicates_address(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     # 주소 항목은 연결 설정 화면으로 옮겼으므로 여기에 남아 있으면 안 된다.
     assert "IP 주소" not in window.screens["cobot"].values()
@@ -45,7 +45,7 @@ def test_cobot_settings_no_longer_duplicates_address(qtbot) -> None:
 
 
 def test_cobot_endpoint_follows_connection_settings(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     window._apply_stored_settings("connection", {"협동로봇 IP": "10.0.0.7"})
     assert "10.0.0.7" in window.cobot_manual_screen.endpoint_label.text()
@@ -53,7 +53,7 @@ def test_cobot_endpoint_follows_connection_settings(qtbot) -> None:
 
 
 def test_cobot_manual_buttons_emit_dashboard_commands(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     window.show()
     screen = window.cobot_manual_screen
@@ -74,7 +74,7 @@ def test_cobot_manual_buttons_emit_dashboard_commands(qtbot) -> None:
 
 
 def test_cobot_manual_status_updates(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     screen = window.cobot_manual_screen
     screen.set_connected(True)
@@ -89,7 +89,7 @@ def test_cobot_manual_status_updates(qtbot) -> None:
 
 
 def test_cobot_manual_shows_six_pose_components(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     screen = window.cobot_manual_screen
     axes = ("x", "y", "z", "rx", "ry", "rz")
@@ -116,7 +116,7 @@ def test_cobot_manual_layout_fits_fixed_console_height(qtbot) -> None:
     """1280x720 고정 콘솔에서 카드나 버튼이 잘리지 않아야 한다."""
     from PyQt6.QtWidgets import QFrame
 
-    window = OperatorWindow(start_mqtt=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     window.resize(1280, 720)
     window.navigate("cobot_manual")
