@@ -89,8 +89,11 @@ class CobotManualScreen(BaseScreen):
     _MOTION = (("홈 이동", "home"),)
 
     # TCP 자세를 구성하는 6개 성분. 위치와 회전 성분의 단위가 서로 다르므로
-    # 표시 순서를 이 한 곳에서만 정의한다.
-    _POSE_AXES = ("x", "y", "z", "rx", "ry", "rz")
+    # 표시 순서와 단위를 이 한 곳에서만 정의한다.
+    _POSE_AXES = (
+        ("x", "mm"), ("y", "mm"), ("z", "mm"),
+        ("rx", "mrad"), ("ry", "mrad"), ("rz", "mrad"),
+    )
 
     def __init__(self) -> None:
         super().__init__("Cobot 수동 제어", "점검 모드에서만 사용합니다. 검사 사이클 진행 중에는 사용하지 마십시오.")
@@ -166,9 +169,9 @@ class CobotManualScreen(BaseScreen):
         card,layout=self.surface(title)
         grid=QGridLayout(); grid.setSpacing(6); grid.setContentsMargins(0,0,0,0)
         rows: dict[str, MetricRow] = {}
-        for index,axis in enumerate(self._POSE_AXES):
+        for index,(axis,unit) in enumerate(self._POSE_AXES):
             # 위치 성분과 회전 성분을 각각 한 줄에 두어 3열 2행으로 배치한다.
-            row=MetricRow(axis.upper(),"-")
+            row=MetricRow(f"{axis.upper()} ({unit})","-")
             rows[axis]=row
             grid.addWidget(row,index//3,index%3)
         for column in range(3):
