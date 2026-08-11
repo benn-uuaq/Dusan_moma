@@ -49,11 +49,13 @@
 | `robot/status/control_method` | `control_method_changed(int, str)` | 제어 방식 |
 | `robot/status/operation_mode` | `operation_mode_changed(int, str)` | 운전 모드 |
 | `robot/status/alarms` | `alarm_received(str)` | 알람 문구 |
+| `robot/status/connected` | `connected_changed(bool)` | 세 채널 연결 여부 |
 
 - 자세 값은 `[X, Y, Z, Rx, Ry, Rz]` 순서이며 위치는 mm, 회전은 mrad 단위입니다. 성분이 6개가 아니면 화면에 일부 값만 반영되지 않도록 버리고 `error_occurred`를 보냅니다.
 - 상태 토픽은 레지스터 원값과 표시 문구를 함께 전달합니다. 화면이 값을 다시 해석하지 않아도 되고, 정의에 없는 값도 `알 수 없음 (원값)`으로 표시해 버리지 않습니다.
 - 표시 문구는 `ROBOT_MODE_NAMES`, `CONTROL_METHOD_NAMES`, `OPERATION_MODE_NAMES`에 있습니다. 값 구분은 `ws_elt`의 `robot_gui_dashboard`를 따르되, 콘솔 폭이 1280 px로 고정되어 있어 상태 행에서 잘리지 않도록 문구를 줄였습니다.
 - 구독 콜백은 ROS 실행기 스레드에서 실행되므로 값은 Qt 시그널로만 전달합니다.
+- `COMMAND_SERVICES`는 명령 키를 (서비스 이름, 필요한 쓰기 레지스터)로 잇습니다. 레지스터가 `None`이면 Modbus를 쓰지 않는 명령이라 주소 확인 없이 바로 보냅니다. 연결·전원·브레이크·프로그램 제어는 29999 소켓으로 나가므로 여기에 해당합니다.
 - 로봇에 값을 보낼 때도 이 서비스를 씁니다. 값이 있는 명령은 `send_value()`로 토픽에 실어 보내고, 값이 없는 한 번짜리 명령은 `call_command()`로 서비스를 호출합니다. 응답은 기다리지 않고 `command_result` 시그널로 전달해 GUI 스레드를 막지 않습니다.
 - **UI는 Modbus에 직접 연결하지 않습니다.** 쓰기는 모두 `robot_control_node`를 거칩니다. 연결이 한 곳이라 제어 경로가 갈라지지 않습니다.
 - 레지스터 주소는 ROS 패키지의 `config/modbus_registers.json`을 그대로 읽습니다(`writable()`). 주소가 없으면 전송을 막고 화면은 버튼을 잠급니다. UI에 주소를 복제하지 않기 위한 구조이며, ROS 워크스페이스를 소싱하지 않으면 모든 명령이 비활성화됩니다.

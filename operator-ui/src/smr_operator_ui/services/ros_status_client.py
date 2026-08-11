@@ -17,7 +17,7 @@ try:  # ROS가 설치되지 않은 환경에서도 화면은 그대로 동작해
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.node import Node
-    from std_msgs.msg import Float32MultiArray, Int32, String
+    from std_msgs.msg import Bool, Float32MultiArray, Int32, String
     from std_srvs.srv import Trigger
 
     ROS_AVAILABLE = True
@@ -44,6 +44,9 @@ class RosTopics:
     TCP_POSE_ZERO = "robot/status/tcp_pose_zero"
     JOINT_POSITION = "robot/status/joint_position"
     ALARMS = "robot/status/alarms"
+    CONNECTED = "robot/status/connected"
+
+    DASHBOARD = "robot/dashboard"
 
     LINEAR_SPEED = "robot/command/linear_speed"
     JOG_JOINT = "robot/command/jog_joint"
@@ -82,13 +85,24 @@ class RosStatusClient(QObject):
     control_method_changed = pyqtSignal(int, str)
     operation_mode_changed = pyqtSignal(int, str)
     alarm_received = pyqtSignal(str)
+    connected_changed = pyqtSignal(bool)
     command_result = pyqtSignal(str, bool, str)
     error_occurred = pyqtSignal(str)
 
     POSE_LENGTH = 6
 
-    # 한 번짜리 명령과 그 서비스 이름, 그리고 레지스터 맵에서 확인할 쓰기 항목.
+    # 한 번짜리 명령: (서비스 이름, 필요한 쓰기 레지스터).
+    # 레지스터가 None이면 Modbus를 쓰지 않는 명령이라 주소 확인이 필요 없다.
+    # 대시보드 명령은 29999 소켓으로 나가므로 여기에 해당한다.
     COMMAND_SERVICES = {
+        "connect": (f"{RosTopics.DASHBOARD}/connect", None),
+        "disconnect": (f"{RosTopics.DASHBOARD}/disconnect", None),
+        "power_on": (f"{RosTopics.DASHBOARD}/power_on", None),
+        "power_off": (f"{RosTopics.DASHBOARD}/power_off", None),
+        "brake_release": (f"{RosTopics.DASHBOARD}/brake_release", None),
+        "play": (f"{RosTopics.DASHBOARD}/play", None),
+        "pause": (f"{RosTopics.DASHBOARD}/pause", None),
+        "stop": (f"{RosTopics.DASHBOARD}/stop", None),
         "save_home_pose": (RosTopics.SAVE_HOME_POSE, "save_home_pose"),
         "save_start_pose": (RosTopics.SAVE_START_POSE, "save_start_pose"),
         "home": (RosTopics.MOVE_HOME, "move_home"),
@@ -159,6 +173,9 @@ class RosStatusClient(QObject):
             )
             self._node.create_subscription(
                 String, RosTopics.ALARMS, self._on_alarm, 10
+            )
+            self._node.create_subscription(
+                Bool, RosTopics.CONNECTED, self._on_connected, 10
             )
             self._publishers = {
                 "linear_speed": self._node.create_publisher(Int32, RosTopics.LINEAR_SPEED, 10),
@@ -236,7 +253,8 @@ class RosStatusClient(QObject):
         if entry is None or client is None:
             self.command_result.emit(name, False, "ROS 2에 연결되어 있지 않습니다.")
             return False
-        if not self.writable(entry[1]):
+        register = entry[1]
+        if register is not None and not self.writable(register):
             self.command_result.emit(name, False, "Modbus 주소가 설정되지 않았습니다.")
             return False
         if not client.service_is_ready():
@@ -273,6 +291,9 @@ class RosStatusClient(QObject):
 
     def _on_operation_mode(self, msg) -> None:
         self._emit_code(msg, OPERATION_MODE_NAMES, self.operation_mode_changed)
+
+    def _on_connected(self, msg) -> None:
+        self.connected_changed.emit(bool(msg.data))
 
     def _on_alarm(self, msg) -> None:
         text = str(msg.data).strip()

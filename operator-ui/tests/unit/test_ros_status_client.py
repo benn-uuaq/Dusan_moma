@@ -144,3 +144,50 @@ def test_stop_is_safe_when_never_started(qtbot):
     client = RosStatusClient()
     client.stop()
     client.stop()
+
+
+def test_dashboard_commands_are_mapped_to_services():
+    """수동 제어 화면의 명령이 모두 서비스에 연결되어 있어야 한다."""
+    from smr_operator_ui.screens import CobotManualScreen
+
+    screen_commands = {
+        command
+        for group in (CobotManualScreen._CONNECTION, CobotManualScreen._POWER,
+                      CobotManualScreen._PROGRAM, CobotManualScreen._MOTION)
+        for _label, command in group
+    }
+    missing = screen_commands - set(RosStatusClient.COMMAND_SERVICES)
+    assert missing == set(), f"서비스에 연결되지 않은 명령: {missing}"
+
+    # 대시보드 명령은 29999 소켓으로 나가므로 레지스터 주소가 필요 없다.
+    for command in ("connect", "disconnect", "power_on", "power_off",
+                    "brake_release", "play", "pause", "stop"):
+        service, register = RosStatusClient.COMMAND_SERVICES[command]
+        assert service == f"robot/dashboard/{command}"
+        assert register is None
+    # 반대로 홈 이동은 Modbus에 쓰므로 주소가 필요하다.
+    assert RosStatusClient.COMMAND_SERVICES["home"][1] == "move_home"
+
+
+def test_connection_state_reaches_the_screen(qtbot):
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.cobot_manual_screen
+
+    window.ros_status.connected_changed.emit(True)
+    assert "연결됨" in screen.connection_state.text()
+
+    window.ros_status.connected_changed.emit(False)
+    assert "연결 안 됨" in screen.connection_state.text()
+    window.close()
+
+
+def test_command_without_ros_reports_clearly(qtbot):
+    """ROS에 붙지 않은 상태에서 눌러도 조용히 실패하지 않아야 한다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+
+    window.cobot_manual_screen.command_requested.emit("power_on")
+
+    assert "실패" in window.cobot_manual_screen.activity_label.text()
+    window.close()

@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String, Int32, Float32MultiArray
+from std_msgs.msg import Bool, String, Int32, Float32MultiArray
 from std_srvs.srv import Trigger
 
 from elite_robot_controller import register_map
@@ -20,16 +20,12 @@ class RobotControlNode(Node):
         map_path = self.get_parameter('register_map').get_parameter_value().string_value
         self.registers = register_map.load(map_path or None)
 
+        self.robot_ip = robot_ip
         self.robot_dash = Robot_29999(robot_ip, 29999)
         self.robot_primary = Robot_30001(robot_ip, 30001)
         self.robot_modbus = Robot_modbus(robot_ip, 502)
         self.alarm_mgr = AlarmManager()
-        
-        if not self.connect_all_servers(robot_ip):
-            self.get_logger().error("[ERROR] 로봇 연결 실패")
-            raise SystemExit()
-        
-        # self.connect_all_servers()
+        self.connected = False
 
         # 발행할 토픽 정의
         self.pub_robot_mode = self.create_publisher(Int32, 'robot/status/robot_mode', 10)
@@ -39,6 +35,11 @@ class RobotControlNode(Node):
         self.pub_tcp_pose_zero = self.create_publisher(Float32MultiArray, 'robot/status/tcp_pose_zero', 10)
         self.pub_joint_position = self.create_publisher(Float32MultiArray, 'robot/status/joint_position', 10)
         self.pub_alarm = self.create_publisher(String, 'robot/status/alarms', 10)
+        self.pub_connected = self.create_publisher(Bool, 'robot/status/connected', 10)
+
+        # 연결과 해제도 서비스로 노출해 운영 UI에서 다룰 수 있게 한다.
+        self.create_service(Trigger, 'robot/dashboard/connect', self.cb_connect)
+        self.create_service(Trigger, 'robot/dashboard/disconnect', self.cb_disconnect)
 
         # 대시보드 명령 서비스 매핑
         self.create_service(Trigger, 'robot/dashboard/robot_mode', self.cb_dash_mode)
@@ -65,17 +66,66 @@ class RobotControlNode(Node):
         self.timer = self.create_timer(0.1, self.update_robot_loop)
         self.get_logger().info("[DEBUG]] ELITE Robot 제어 ROS2 노드가 활성화되었습니다.")
 
-    def connect_all_servers(self, robot_ip):
+        # 기동 시 한 번 붙어 본다. 실패해도 노드는 살아 있어야 운영 UI에서
+        # 연결 버튼을 쓸 수 있다.
+        if not self.connect_all_servers(robot_ip):
+            self.get_logger().warn(
+                "[WARN] 로봇에 연결하지 못했습니다. robot/dashboard/connect 로 다시 시도하십시오."
+            )
+
+    def connect_all_servers(self, robot_ip=None):
+        """세 채널을 모두 연결한다. 하나라도 실패하면 연결로 보지 않는다."""
         try:
             d_ok = self.robot_dash.connect_29999()
             p_ok = self.robot_primary.connect_30001()
             m_ok = self.robot_modbus.connect()
-            return d_ok and p_ok and m_ok
+            self.connected = bool(d_ok and p_ok and m_ok)
         except Exception as e:
             self.get_logger().error(f"[ERROR] 소켓 연결 중 예외 발생: {e}")
-            return False
+            self.connected = False
+        self.publish_connected()
+        return self.connected
+
+    def disconnect_all_servers(self):
+        """세 채널을 정리한다. 개별 실패는 남은 채널 정리를 막지 않는다."""
+        for close in (self.robot_dash.disconnect_29999,
+                      self.robot_primary.disconnect_30001,
+                      self.robot_modbus.disconnect):
+            try:
+                close()
+            except Exception as e:
+                self.get_logger().warn(f"[WARN] 연결 해제 중 예외: {e}")
+        self.connected = False
+        self.publish_connected()
+        return True
+
+    def publish_connected(self):
+        """세 채널 연결 여부를 알린다. 운영 UI가 이 값으로 상태를 표시한다."""
+        self.pub_connected.publish(Bool(data=self.connected))
+
+    def cb_connect(self, req, res):
+        ok = self.connect_all_servers()
+        res.success = ok
+        res.message = (
+            f"[connect] {self.robot_ip} 연결됨" if ok
+            else f"[connect] {self.robot_ip} 연결 실패"
+        )
+        if not ok:
+            self.get_logger().warn(res.message)
+        return res
+
+    def cb_disconnect(self, req, res):
+        self.disconnect_all_servers()
+        res.success = True
+        res.message = "[disconnect] 연결을 해제했습니다."
+        return res
 
     def update_robot_loop(self):
+        # 연결 전에 소켓을 건드리면 예외가 난다. 상태만 알리고 넘어간다.
+        if not self.connected:
+            self.publish_connected()
+            return
+
         self.publish_code('robot_mode', self.pub_robot_mode)
         self.publish_code('control_method', self.pub_control_method)
         self.publish_code('operation_mode', self.pub_op_mode)

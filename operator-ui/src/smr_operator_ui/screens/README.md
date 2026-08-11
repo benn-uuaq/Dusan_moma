@@ -21,6 +21,8 @@
     - 출력(OUT) 신호에만 버튼을 만든다. 입력은 PLC가 정하는 값이라 조작 대상이 아니다.
     - `set_value()`는 목록과 출력 제어의 현재 값을 함께 갱신한다.
   - `CobotManualScreen`은 엘리트 협동로봇의 연결, 전원·브레이크, 프로그램 제어, 홈 이동과 상태 표시를 담당한다.
+    - 버튼은 `command_requested`로 명령 키만 보내고, `OperatorWindow`가 `robot/dashboard/*` 서비스로 전달한다. 명령 키를 서비스 이름과 같게 맞춰 두었다.
+    - 연결 상태는 직접 판단하지 않고 `robot/status/connected` 값을 `set_connected()`로 받아 표시한다.
     - 화면 아래쪽 영역은 TCP 자세 표시에 사용한다. `TCP 현재값`과 `제로점 기준`을 나누어 각각 6개 성분을 개별 행으로 보여준다. 위치 성분 X, Y, Z는 mm, 회전 성분 RX, RY, RZ는 mrad 단위이며, 성분과 단위의 대응은 `_POSE_AXES` 한 곳에서만 정의한다.
     - 값 갱신은 `apply_tcp()`와 `apply_zero_point()`를 사용하며, 키는 `x`, `y`, `z`, `rx`, `ry`, `rz`이다. 전달하지 않은 성분은 이전 값을 유지한다. 값에는 단위를 붙이지 않는다. 단위는 항목명에 이미 표시된다.
     - 두 자세 값은 `services/ros_status_client.py`가 `robot/status/tcp_pose`와 `robot/status/tcp_pose_zero` 토픽에서 받아 `OperatorWindow`를 거쳐 전달한다. 원본은 `robot_control_node`가 읽는 Modbus 레지스터 384~389와 280~285이다.

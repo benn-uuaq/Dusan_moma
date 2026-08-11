@@ -178,6 +178,7 @@ class OperatorWindow(QMainWindow):
             self.cobot_jog_screen.apply_joint_position
         )
         self.ros_status.command_result.connect(self._show_command_result)
+        self.ros_status.connected_changed.connect(self.cobot_manual_screen.set_connected)
         self.cobot_jog_screen.jog_pressed.connect(self._send_jog)
         self.cobot_jog_screen.command_requested.connect(self._save_reference_pose)
         self.cobot_manual_screen.command_requested.connect(self._handle_cobot_command)
@@ -370,9 +371,13 @@ class OperatorWindow(QMainWindow):
         self.ros_status.send_value(f"jog_{kind}", axis * 2 + (0 if direction > 0 else 1))
 
     def _handle_cobot_command(self, command: str) -> None:
-        """수동 제어 화면의 명령 중 ROS로 보낼 수 있는 것만 전달한다."""
+        """수동 제어 화면의 명령을 robot/dashboard/* 서비스로 보낸다."""
         if command in self.ros_status.COMMAND_SERVICES:
             self.ros_status.call_command(command)
+        else:
+            self.cobot_manual_screen.activity_label.setText(
+                f"'{command}'에 연결된 명령이 없습니다."
+            )
 
     def _send_linear_speed(self, scope: str, values: dict) -> None:
         """Cobot 설정을 저장할 때 작업 속도를 로봇에도 반영한다."""
@@ -382,11 +387,16 @@ class OperatorWindow(QMainWindow):
         if speed is not None and self.ros_status.writable("linear_speed"):
             self.ros_status.send_value("linear_speed", int(speed))
 
+    # 위치 저장은 조그 화면에서, 나머지는 수동 제어 화면에서 요청한다.
+    _JOG_COMMANDS = ("save_home_pose", "save_start_pose")
+
     def _show_command_result(self, name: str, success: bool, message: str) -> None:
         """명령 결과를 요청한 화면의 안내 문구로 보여준다."""
         text = message if success else f"실패: {message}"
-        self.cobot_jog_screen.show_result(text)
-        self.cobot_manual_screen.activity_label.setText(text)
+        if name in self._JOG_COMMANDS:
+            self.cobot_jog_screen.show_result(text)
+        else:
+            self.cobot_manual_screen.activity_label.setText(text)
 
     def _show_ros_error(self, message: str) -> None:
         """ROS 수신 오류를 메인 화면에 간단한 운영 메시지로 표시한다."""

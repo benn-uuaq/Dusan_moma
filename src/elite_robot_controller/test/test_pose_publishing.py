@@ -201,3 +201,84 @@ def test_service_response_carries_result():
 
     assert response.success is False
     assert node.get_logger().warnings
+
+
+class FakeChannel:
+    """연결/해제만 흉내 내는 통신 채널."""
+
+    def __init__(self, ok=True):
+        self.ok = ok
+        self.opened = 0
+        self.closed = 0
+
+    def connect(self):
+        self.opened += 1
+        return self.ok
+
+    def disconnect(self):
+        self.closed += 1
+
+
+def make_connectable_node(dash_ok=True, primary_ok=True, modbus_ok=True):
+    node = make_node()
+    node.robot_ip = "10.0.0.9"
+    node.robot_dash = FakeChannel(dash_ok)
+    node.robot_primary = FakeChannel(primary_ok)
+    node.robot_modbus_channel = FakeChannel(modbus_ok)
+    node.robot_dash.connect_29999 = node.robot_dash.connect
+    node.robot_dash.disconnect_29999 = node.robot_dash.disconnect
+    node.robot_primary.connect_30001 = node.robot_primary.connect
+    node.robot_primary.disconnect_30001 = node.robot_primary.disconnect
+    modbus = node.robot_modbus
+    modbus.connect = node.robot_modbus_channel.connect
+    modbus.disconnect = node.robot_modbus_channel.disconnect
+    node.connected = False
+    node.pub_connected = FakePublisher()
+    return node
+
+
+def test_connect_requires_all_three_channels():
+    """한 채널이라도 실패하면 연결로 보지 않는다."""
+    node = make_connectable_node(modbus_ok=False)
+
+    assert node.connect_all_servers() is False
+    assert node.connected is False
+
+    node = make_connectable_node()
+    assert node.connect_all_servers() is True
+    assert node.connected is True
+
+
+def test_connect_service_reports_result():
+    node = make_connectable_node(dash_ok=False)
+    response = node.cb_connect(None, FakeResponse())
+
+    assert response.success is False
+    assert "10.0.0.9" in response.message
+
+
+def test_disconnect_closes_every_channel():
+    """한 채널 정리에 실패해도 나머지는 정리한다."""
+    node = make_connectable_node()
+    node.connect_all_servers()
+
+    def boom():
+        raise RuntimeError("소켓 오류")
+
+    node.robot_dash.disconnect_29999 = boom
+    node.cb_disconnect(None, FakeResponse())
+
+    assert node.connected is False
+    assert node.robot_primary.closed == 1
+    assert node.robot_modbus_channel.closed == 1
+
+
+def test_loop_does_not_touch_modbus_before_connect():
+    """연결 전에 소켓을 건드리면 예외가 난다. 읽기를 건너뛰어야 한다."""
+    node = make_connectable_node()
+    node.pub_robot_mode = FakePublisher()
+
+    node.update_robot_loop()
+
+    assert node.robot_modbus.reads == []
+    assert node.pub_connected.messages == [False]

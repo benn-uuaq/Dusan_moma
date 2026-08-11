@@ -97,7 +97,7 @@ colcon build --symlink-install
 ros2 launch elite_robot_controller elite_cs612.launch.py robot_ip:=192.168.227.134
 ```
 
-로봇이 연결되어 있지 않으면 `[ERROR] 로봇 연결 실패` 로그 후 정상 종료한다. 이는 의도된 동작이다.
+로봇이 연결되어 있지 않아도 노드는 계속 실행된다. 경고만 남기고 대기하며, 운영 UI의 `연결` 버튼이나 `robot/dashboard/connect` 서비스로 다시 시도할 수 있다.
 
 ### 운영자 UI 실행
 

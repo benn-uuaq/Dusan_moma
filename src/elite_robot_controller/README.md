@@ -37,6 +37,7 @@ Elite CS612 협동로봇을 ROS 2에서 제어하기 위한 패키지입니다. 
 | `robot/status/tcp_pose_zero` | `std_msgs/Float32MultiArray` | Modbus 280~285 (원점 기준 상대 pose) |
 | `robot/status/joint_position` | `std_msgs/Float32MultiArray` | Modbus 73~78 (관절 각도) |
 | `robot/status/alarms` | `std_msgs/String` | 30001 알람 |
+| `robot/status/connected` | `std_msgs/Bool` | 세 채널 연결 여부 |
 
 ## Modbus 레지스터 맵
 
@@ -95,9 +96,18 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 
 > **확인 필요:** 조그 값의 인코딩(축 번호와 방향을 한 레지스터에 담는 방식)은 아직 로봇 규격으로 확인하지 않았다. 현재 UI는 `축번호 × 2 + 방향(+는 0, -는 1)`으로 보내며, 주소가 확정될 때 함께 맞춰야 한다.
 
-**서비스** (모두 `std_srvs/Trigger`, 29999 Dashboard 명령에 대응)
+**서비스** (모두 `std_srvs/Trigger`)
 
-`robot/dashboard/` 아래: `robot_mode`, `status`, `power_on`, `power_off`, `brake_release`, `play`, `pause`, `stop`
+`robot/dashboard/` 아래:
+
+| 서비스 | 동작 |
+| --- | --- |
+| `connect` / `disconnect` | 세 채널을 연결하거나 해제한다. Modbus 레지스터를 쓰지 않는다 |
+| `robot_mode`, `status` | 29999 Dashboard 조회 명령 |
+| `power_on`, `power_off`, `brake_release` | 전원과 브레이크 |
+| `play`, `pause`, `stop` | 프로그램 제어 |
+
+Dashboard 명령은 29999 소켓으로 나가므로 레지스터 주소와 무관하게 바로 쓸 수 있습니다. 반면 `robot/command/*`는 Modbus 레지스터에 쓰므로 주소가 정해져야 동작합니다.
 
 ## 실행
 
@@ -109,7 +119,7 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p robot_ip:=192.1
 ros2 launch elite_robot_controller elite_cs612.launch.py robot_ip:=192.168.227.134
 ```
 
-**로봇이 연결되어 있지 않으면** 세 채널 연결에 실패하고 `[ERROR] 로봇 연결 실패` 로그를 남긴 뒤 `SystemExit`로 종료합니다. 이는 의도된 동작입니다.
+**로봇이 연결되어 있지 않아도 노드는 종료하지 않습니다.** 기동 시 한 번 연결을 시도하고, 실패하면 경고만 남긴 뒤 대기합니다. 운영 UI의 `연결` 버튼이나 `robot/dashboard/connect` 서비스로 다시 시도할 수 있습니다. 연결 전에는 Modbus 읽기를 건너뛰고 `robot/status/connected`로 상태만 알립니다.
 
 ## 의존성
 
