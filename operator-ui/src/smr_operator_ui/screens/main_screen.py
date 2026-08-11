@@ -69,7 +69,7 @@ class MainScreen(QWidget):
         sequence_label.setObjectName("SectionTitle")
         content.addWidget(sequence_label)
         sequence = QHBoxLayout()
-        sequence.setSpacing(8)
+        # sequence.setSpacing(8)
         names = ("정지·고정", "수평 보정", "Cobot 검사", "안전 위치", "다음 구간 이동")
         self.steps: list[SequenceStep] = []
         for index, name in enumerate(names, 1):

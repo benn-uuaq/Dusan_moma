@@ -23,7 +23,7 @@ class OrbitView(QWidget):
         self._state = CycleState()
         self._target_diameter_m = 2.0
         self._target_height_m = 4.0
-        source = QPixmap(str(files("smr_operator_ui.resources").joinpath("amr-cobot.png")))
+        source = QPixmap(str(files("smr_operator_ui.resources").joinpath("amr-cobot2.png")))
         if source.isNull():
             self._robot_pixmap = source
         else:
@@ -143,10 +143,10 @@ class OrbitView(QWidget):
         # 1번 구간은 12시 방향에서 시작하며 이후 구간은 시계 방향으로
         # 30도씩 동일하게 이동한다.
         robot_angle = math.radians(-90 + (self._state.current_segment - 1) * 30)
-        rx = center.x() + math.cos(robot_angle) * radius
-        ry = center.y() + math.sin(robot_angle) * radius
+        rx = center.x() + math.cos(robot_angle) * radius*0.9
+        ry = center.y() + math.sin(robot_angle) * radius*0.9
         if not self._robot_pixmap.isNull():
-            size = int(radius * 1.08)
+            size = int(radius * 0.6)
             robot = self._robot_pixmap.scaled(
                 size,
                 size,

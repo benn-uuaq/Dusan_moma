@@ -22,6 +22,7 @@ from typing import Any
 BROKER_DEFAULT = "127.0.0.1"
 PORT_DEFAULT = 1883
 QOS_DEFAULT = 1
+MAX_RECONNECT_ATTEMPTS = 10
 
 MC_COMMAND = "doosan/robot/req/mc_cmd"
 RESET = "doosan/robot/req/reset"
@@ -41,7 +42,7 @@ JOB_CLEAR_RESPONSE = "doosan/robot/resp/job_clear"
 JOB_COMMAND_RESPONSE = "doosan/robot/resp/job_cmd"
 
 HEARTBEAT = "Heartbeat/robot"
-LAST_WILL = "Dead/robot"
+LAST_WILL = "Dead/client"
 
 SUBSCRIPTIONS = (
     "doosan/robot/#",
@@ -140,6 +141,8 @@ class McMqttTestApp:
 
         self.client: Any | None = None
         self.connected = False
+        self.reconnect_failures = 0
+        self.retry_stop_requested = False
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
 
         self.host_var = tk.StringVar(value=BROKER_DEFAULT)
@@ -428,15 +431,30 @@ class McMqttTestApp:
                 )
             client = mqtt.Client(**kwargs)
             client.on_connect = self._on_connect
+            client.on_connect_fail = self._on_connect_fail
             client.on_disconnect = self._on_disconnect
             client.on_message = self._on_message
             client.reconnect_delay_set(min_delay=1, max_delay=30)
+            client.will_set(
+                LAST_WILL,
+                payload=json.dumps(
+                    {
+                        "status": "OFFLINE",
+                        "reason": "unexpected_disconnect",
+                    },
+                    separators=(",", ":"),
+                ),
+                qos=2,
+                retain=True,
+            )
 
             username = self.username_var.get().strip()
             if username:
                 client.username_pw_set(username, self.password_var.get())
 
             self.client = client
+            self.reconnect_failures = 0
+            self.retry_stop_requested = False
             self.connection_var.set("연결 중...")
             self.connect_button.configure(state=tk.DISABLED)
             client.connect_async(
@@ -452,8 +470,9 @@ class McMqttTestApp:
             self.connection_var.set("연결 실패")
             messagebox.showerror("MQTT 연결 오류", str(exc))
 
-    def _disconnect(self) -> None:
+    def _disconnect(self, retry_exhausted: bool = False) -> None:
         """MQTT 연결과 네트워크 스레드를 정상적으로 종료한다."""
+        self.retry_stop_requested = retry_exhausted
         client, self.client = self.client, None
         if client is not None:
             try:
@@ -462,6 +481,10 @@ class McMqttTestApp:
             except Exception as exc:
                 self._log("ERROR", "-", f"연결 종료 실패: {exc}")
         self._set_connected(False)
+        if retry_exhausted:
+            self.connection_var.set(
+                f"재접속 실패 ({MAX_RECONNECT_ATTEMPTS}회)"
+            )
 
     def _on_connect(
         self,
@@ -478,11 +501,14 @@ class McMqttTestApp:
             code = int(getattr(reason_code, "value", -1))
 
         if code != 0:
-            self.events.put(
-                ("connection_error", f"Broker 연결 거부: {reason_code}")
+            self._record_reconnect_failure(
+                client,
+                f"Broker 연결 거부: {reason_code}",
             )
             return
 
+        self.reconnect_failures = 0
+        self.retry_stop_requested = False
         for topic in SUBSCRIPTIONS:
             client.subscribe(topic, qos=QOS_DEFAULT)
         self.events.put(("connected", None))
@@ -495,6 +521,32 @@ class McMqttTestApp:
     ) -> None:
         """연결 종료 이벤트를 tkinter 스레드로 전달한다."""
         self.events.put(("disconnected", args))
+
+    def _on_connect_fail(self, client: Any, _userdata: Any) -> None:
+        """TCP 연결 실패를 재접속 횟수에 포함한다."""
+        self._record_reconnect_failure(client, "Broker 연결 실패")
+
+    def _record_reconnect_failure(self, client: Any, reason: str) -> None:
+        """실패 횟수를 기록하고 10회에서 자동 재접속 중단을 요청한다."""
+        if client is not self.client or self.retry_stop_requested:
+            return
+        self.reconnect_failures += 1
+        attempt = self.reconnect_failures
+        if attempt >= MAX_RECONNECT_ATTEMPTS:
+            self.retry_stop_requested = True
+            self.events.put(
+                (
+                    "retry_exhausted",
+                    f"{reason} ({attempt}/{MAX_RECONNECT_ATTEMPTS})",
+                )
+            )
+            return
+        self.events.put(
+            (
+                "retry_failed",
+                f"{reason} ({attempt}/{MAX_RECONNECT_ATTEMPTS})",
+            )
+        )
 
     def _on_message(
         self,
@@ -526,10 +578,25 @@ class McMqttTestApp:
                     self._log("INFO", "-", "Broker 연결 및 Topic 구독 완료")
                 elif event == "disconnected":
                     self._set_connected(False)
-                    self._log("INFO", "-", "Broker 연결이 종료되었습니다.")
+                    if self.retry_stop_requested:
+                        self.connection_var.set(
+                            f"재접속 실패 ({MAX_RECONNECT_ATTEMPTS}회)"
+                        )
+                    else:
+                        self._log("INFO", "-", "Broker 연결이 종료되었습니다.")
                 elif event == "connection_error":
                     self._set_connected(False)
                     self._log("ERROR", "-", str(value))
+                elif event == "retry_failed":
+                    self._set_connected(False)
+                    self.connection_var.set(
+                        f"재접속 중 ({self.reconnect_failures}/"
+                        f"{MAX_RECONNECT_ATTEMPTS})"
+                    )
+                    self._log("ERROR", "-", str(value))
+                elif event == "retry_exhausted":
+                    self._log("ERROR", "-", str(value))
+                    self._disconnect(retry_exhausted=True)
                 elif event == "message":
                     topic, payload = value
                     self._log("RECV", topic, payload)

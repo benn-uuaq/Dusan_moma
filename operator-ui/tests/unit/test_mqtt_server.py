@@ -5,6 +5,7 @@ import pytest
 from smr_operator_ui.services.mqtt_server import (
     MqttConfig,
     MqttPayloadError,
+    MqttServer,
     MqttTopics,
     validate_command_payload,
 )
@@ -18,6 +19,36 @@ def test_default_config_matches_topic_document() -> None:
     assert config.qos == 1
     assert config.clean_session is True
     assert config.tls is False
+    assert config.max_reconnect_attempts == 10
+
+
+def test_reconnect_stops_after_configured_failures(qtbot) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.disconnect_calls = 0
+            self.loop_stop_calls = 0
+
+        def disconnect(self) -> None:
+            self.disconnect_calls += 1
+
+        def loop_stop(self) -> None:
+            self.loop_stop_calls += 1
+
+    service = MqttServer(
+        MqttConfig(
+            client_id="operator-ui-test",
+            max_reconnect_attempts=10,
+        )
+    )
+    fake_client = FakeClient()
+    service._client = fake_client
+
+    for _ in range(10):
+        service._on_connect_fail(fake_client, None)
+
+    assert service._client is None
+    assert fake_client.disconnect_calls == 1
+    assert fake_client.loop_stop_calls == 1
 
 
 def test_mc_command_accepts_one_target_only() -> None:

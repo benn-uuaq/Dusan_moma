@@ -76,6 +76,7 @@ class MqttConfig:
     password: str | None = None
     reconnect_min_delay: int = 1
     reconnect_max_delay: int = 30
+    max_reconnect_attempts: int = 10
     command_max_age_ms: int = 10 * 60 * 1000
     heartbeat_timeout_ms: int = 10 * 1000
 
@@ -101,6 +102,9 @@ class MqttConfig:
             tls=_env_bool("SMR_MQTT_TLS", False),
             username=os.getenv("SMR_MQTT_USERNAME") or None,
             password=os.getenv("SMR_MQTT_PASSWORD") or None,
+            max_reconnect_attempts=_env_int(
+                "SMR_MQTT_MAX_RECONNECT_ATTEMPTS", 10
+            ),
         )
 
 
@@ -124,6 +128,7 @@ class MqttServer(QObject):
     robot_online_changed = pyqtSignal(bool)
     published = pyqtSignal(str, str)
     error_occurred = pyqtSignal(str)
+    _retry_limit_reached = pyqtSignal()
 
     def __init__(
         self,
@@ -137,6 +142,9 @@ class MqttServer(QObject):
         self._robot_online = False
         self._last_heartbeat_monotonic: float | None = None
         self._latest_command_timestamp: dict[str, int] = {}
+        self._reconnect_failures = 0
+        self._retry_stop_requested = False
+        self._retry_limit_reached.connect(self._stop_after_retry_limit)
 
         # Heartbeat가 10초 이상 수신되지 않으면 로봇 오프라인 상태로 전환한다.
         self._heartbeat_watchdog = QTimer(self)
@@ -155,6 +163,8 @@ class MqttServer(QObject):
             return
 
         try:
+            self._reconnect_failures = 0
+            self._retry_stop_requested = False
             client = self._create_client()
             self._client = client
             client.connect_async(
@@ -301,6 +311,7 @@ class MqttServer(QObject):
             kwargs["callback_api_version"] = mqtt.CallbackAPIVersion.VERSION2
         client = mqtt.Client(**kwargs)
         client.on_connect = self._on_connect
+        client.on_connect_fail = self._on_connect_fail
         client.on_disconnect = self._on_disconnect
         client.on_message = self._on_message
         client.reconnect_delay_set(
@@ -334,8 +345,14 @@ class MqttServer(QObject):
         code = _reason_code_int(reason_code)
         if code != 0:
             self._set_connected(False)
-            self.error_occurred.emit(f"MQTT Broker 연결 거부: {reason_code}")
+            self._record_reconnect_failure(
+                client,
+                f"MQTT Broker 연결 거부: {reason_code}",
+            )
             return
+
+        self._reconnect_failures = 0
+        self._retry_stop_requested = False
 
         subscriptions = [
             (topic, self.config.qos) for topic in MqttTopics.SUBSCRIPTIONS
@@ -351,6 +368,30 @@ class MqttServer(QObject):
         self._set_connected(False)
         # 정상 종료가 아닌 경우의 Reason Code는 Paho 버전에 따라 위치가 다르므로
         # 연결 상태만 갱신하고 재연결은 Paho의 네트워크 루프에 맡긴다.
+
+    def _on_connect_fail(self, client: Any, _userdata: Any) -> None:
+        """TCP 연결 실패를 재접속 횟수에 포함한다."""
+        self._record_reconnect_failure(client, "MQTT Broker 연결 실패")
+
+    def _record_reconnect_failure(self, client: Any, reason: str) -> None:
+        """재접속 실패를 세고 10회 도달 시 네트워크 루프를 종료한다."""
+        if client is not self._client or self._retry_stop_requested:
+            return
+        limit = max(1, self.config.max_reconnect_attempts)
+        self._reconnect_failures += 1
+        attempt = self._reconnect_failures
+        if attempt >= limit:
+            self._retry_stop_requested = True
+            self.error_occurred.emit(
+                f"{reason} ({attempt}/{limit}). 자동 재접속을 종료합니다."
+            )
+            self._retry_limit_reached.emit()
+            return
+        self.error_occurred.emit(f"{reason} ({attempt}/{limit})")
+
+    def _stop_after_retry_limit(self) -> None:
+        """Paho 콜백 스레드 밖에서 안전하게 연결 루프를 정리한다."""
+        self.stop()
 
     def _on_message(self, _client: Any, _userdata: Any, message: Any) -> None:
         """수신 JSON을 검증하고 Topic 종류에 맞는 Qt 시그널을 발생시킨다."""

@@ -22,7 +22,7 @@ Topic의 방향은 특정 프로그램의 관점에서 `송신/수신`으로 표
 | Keep Alive | `[작성]초` |
 | Clean Start / Clean Session | `[작성]` |
 | 기본 QoS | `1` |
-| 재연결 정책 | `[작성]` |
+| 재연결 정책 | `1초부터 최대 30초까지 증가, 연결 실패 10회 후 자동 재접속 종료` |
 | 운영 Broker | `emqx` |
 | 개발 Broker | `Mosquitto` |
 
@@ -208,7 +208,7 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 {
     "timestamp": "1784727779111",
     "request" : "true"
-} 
+}
 ```
 
 #### Payload 필드
@@ -272,7 +272,7 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 {
     "timestamp": "1784727779111",
     "request" : "true"
-} 
+}
 ```
 
 #### Payload 필드
@@ -337,7 +337,7 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 {
     "timestamp": "1784727779111",
     "request" : "true"
-} 
+}
 ```
 
 #### Payload 필드
@@ -408,7 +408,7 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
         "thickness" : "500",
         "target_distance" : "8560"
     }
-} 
+}
 ```
 
 #### Payload 필드
@@ -443,7 +443,219 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 | 오래된 메시지 수신 | `timestamp 확인하여 중복 메세지 확인 및 최신 메세지 우선` |
 | 처리 성공/실패 확인 | 응답 Topic이 정의되지 않아 별도 정의 필요 |
 
+### T-006: 로봇 state 상태
 
+주어진 명세를 기준으로 작성한 첫 번째 Topic이다. `[확인 필요]`와 `[권장]` 표시는 아직 확정되지 않은 내용이다.
+
+#### 기본 정보
+
+| 항목 | 입력값 |
+|---|---|
+| Topic | `doosan/robot/robot_state` |
+| 목적 | 새로운 job 명령 |
+| 분류 | `state` |
+| 발행자 | `Operatior UI` |
+| 구독자 | `MC` |
+| 발행 조건 | 주기 발생 |
+| 발행 주기 | 10hz |
+| QoS | `0` |
+| Retain | `N` |
+| 메시지 만료 시간 | `1 minute` |
+| 중요도 | `중요` |
+
+#### Payload 형식
+
+| 항목 | 입력값 |
+|---|---|
+| 데이터 형식 | `JSON` |
+| 문자 인코딩 | `UTF-8` |
+| 스키마 버전 | `[명세 없음]` |
+| Timestamp 기준 | `UTC Unix Epoch 밀리초` |
+
+주어진 Payload 예시:
+
+```json
+{
+    "timestamp": "1784727720000",
+    "mode" : "auto",
+    "amr" : "stop",
+    "cobot" : "stop"
+}
+```
+
+#### Payload 필드
+
+| 필드 경로 | 자료형 | 필수 | 단위 | 허용값/범위 | 설명 | 값 예시 |
+|---|---|---|---|---|---|---|
+| `timestamp` | `string` | `Y` | `ms` | UTC Unix Epoch 밀리초로 추정 | 명령 생성 시각 | `"1784727720000"` |
+| `mode` | `string` | `Y` | - | `auto`,`manual` | 자동/수동 모드 | `"auto"` |
+| `amr` | `string` | `Y` | - | `stop`, `run`, `error`, `idle`, `hold` | amr state | `"stop"` |
+| `cobot` | `string` | `Y` | - | `stop`, `run`, `error`, `idle`, `hold` | cobot state | `"stop"` |
+
+#### 명령값 정리
+
+| 대상 | 명령값 | 의미 |
+|---|---|---|
+| mode | `auto` | 자동/수동 모드 |
+| amr | `stop` | amr state |
+| cobot | `stop` |  cobot state |
+
+
+#### 유효성 및 예외 처리
+
+| 상황 | 처리 방법 |
+|---|---|
+| 필수 필드 누락 | `명령 거부` |
+| 허용되지 않은 명령값 | `명령 거부 및 오류 응답` |
+| 중복 메시지 수신 | `timestamp 확인하여 중복 메세지 확인 및 최신 메세지 우선` |
+| 오래된 메시지 수신 | `timestamp 확인하여 중복 메세지 확인 및 최신 메세지 우선` |
+| 처리 성공/실패 확인 | 응답 Topic이 정의되지 않아 별도 정의 필요 |
+
+
+
+### T-007: 로봇 error 상태
+
+주어진 명세를 기준으로 작성한 첫 번째 Topic이다. `[확인 필요]`와 `[권장]` 표시는 아직 확정되지 않은 내용이다.
+
+#### 기본 정보
+
+| 항목 | 입력값 |
+|---|---|
+| Topic | `doosan/robot/error` |
+| 목적 | 새로운 job 명령 |
+| 분류 | `state` |
+| 발행자 | `Operatior UI` |
+| 구독자 | `MC` |
+| 발행 조건 | event, 구독자 요청시 |
+| 발행 주기 | 10hz |
+| QoS | `1` |
+| Retain | `Y` |
+| 메시지 만료 시간 | `10 minute` |
+| 중요도 | `중요` |
+
+#### Payload 형식
+
+| 항목 | 입력값 |
+|---|---|
+| 데이터 형식 | `JSON` |
+| 문자 인코딩 | `UTF-8` |
+| 스키마 버전 | `[명세 없음]` |
+| Timestamp 기준 | `UTC Unix Epoch 밀리초` |
+
+주어진 Payload 예시:
+
+```json
+{
+    "timestamp": "1784727779111",
+    "error_count" : "2",
+    "error_list" : ["emergency","safety error"],
+    "error_time" : "1784727779110"
+}
+```
+
+#### Payload 필드
+
+| 필드 경로 | 자료형 | 필수 | 단위 | 허용값/범위 | 설명 | 값 예시 |
+|---|---|---|---|---|---|---|
+| `timestamp` | `string` | `Y` | `ms` | UTC Unix Epoch 밀리초로 추정 | 명령 생성 시각 | `"1784727720000"` |
+| `error_count` | `string` | `Y` | - | `0~10` | 발생한 에러 카운트 | `"2"` |
+| `error_list` | `string` | `Y` | - | `emergency`, `safety error`... | 발생한 에러 리스트 | `"emergency"` |
+| `error_time` | `string` | `Y` | - | UTC Unix Epoch | 마지막 에러 발생시간| `"1784727779110"` |
+
+#### 명령값 정리
+
+| 대상 | 명령값 | 의미 |
+|---|---|---|
+| error_count | `2` | 자동/수동 모드 |
+| error_list | `emergency` | 발생한 에러 리스트 |
+| error_time | `1784727779110` |  마지막 에러 발생시간 |
+
+
+#### 유효성 및 예외 처리
+
+| 상황 | 처리 방법 |
+|---|---|
+| 필수 필드 누락 | `명령 거부` |
+| 허용되지 않은 명령값 | `명령 거부 및 오류 응답` |
+| 중복 메시지 수신 | `timestamp 확인하여 중복 메세지 확인 및 최신 메세지 우선` |
+| 오래된 메시지 수신 | `timestamp 확인하여 중복 메세지 확인 및 최신 메세지 우선` |
+| 처리 성공/실패 확인 | 응답 Topic이 정의되지 않아 별도 정의 필요 |
+
+
+
+
+### T-008: 로봇 error 상태
+
+주어진 명세를 기준으로 작성한 첫 번째 Topic이다. `[확인 필요]`와 `[권장]` 표시는 아직 확정되지 않은 내용이다.
+
+#### 기본 정보
+
+| 항목 | 입력값 |
+|---|---|
+| Topic | `doosan/robot/tcp` |
+| 목적 | 새로운 job 명령 |
+| 분류 | `state` |
+| 발행자 | `Operatior UI` |
+| 구독자 | `MC` |
+| 발행 조건 | event, 구독자 요청시 |
+| 발행 주기 | 10hz |
+| QoS | `1` |
+| Retain | `Y` |
+| 메시지 만료 시간 | `10 minute` |
+| 중요도 | `중요` |
+
+#### Payload 형식
+
+| 항목 | 입력값 |
+|---|---|
+| 데이터 형식 | `JSON` |
+| 문자 인코딩 | `UTF-8` |
+| 스키마 버전 | `[명세 없음]` |
+| Timestamp 기준 | `UTC Unix Epoch 밀리초` |
+
+주어진 Payload 예시:
+
+```json
+{
+    {
+    "timestamp": "1784727779111",
+    "x" : "1205",
+    "y" : "852",
+    "z" : "1208",
+    "angle" : "-1214"
+}
+}
+```
+
+#### Payload 필드
+
+| 필드 경로 | 자료형 | 필수 | 단위 | 허용값/범위 | 설명 | 값 예시 |
+|---|---|---|---|---|---|---|
+| `timestamp` | `string` | `Y` | `ms` | UTC Unix Epoch 밀리초로 추정 | 명령 생성 시각 | `"1784727720000"` |
+| `x` | `string` | `Y` | mm | `0~1000000000` | x 좌표 | `"1000"` |
+| `y` | `string` | `Y` | mm | `0~1000000000` | y 좌표 | `"1000"` |
+| `z` | `string` | `Y` | mm | `0~1000000000` | z 좌표 | `"1000"` |
+| `yaw` | `string` | `Y` | radian | +,- 3.14 | yaw theta| `"1.257"` |
+
+#### 명령값 정리
+
+| 대상 | 명령값 | 의미 |
+|---|---|---|
+| x | `1000` | 자동/수동 모드 |
+| y | `1000` | 발생한 에러 리스트 |
+| z | `1000` |  마지막 에러 발생시간 |
+| yaw | `1.257` |  yaw theta |
+
+
+#### 유효성 및 예외 처리
+
+| 상황 | 처리 방법 |
+|---|---|
+| 필수 필드 누락 | `명령 거부` |
+| 허용되지 않은 명령값 | `명령 거부 및 오류 응답` |
+| 중복 메시지 수신 | `timestamp 확인하여 중복 메세지 확인 및 최신 메세지 우선` |
+| 오래된 메시지 수신 | `timestamp 확인하여 중복 메세지 확인 및 최신 메세지 우선` |
+| 처리 성공/실패 확인 | 응답 Topic이 정의되지 않아 별도 정의 필요 |
 ---
 
 ## 5. Command Topic 정의
@@ -457,6 +669,7 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 | `C-003` | `doosan/robot/req/emc` | `Operator UI` | `AMR, Cobot` | `doosan/robot/resp/emc` | `10sec` | `10sec` | `timestamp 피드백 값 확인` |
 | `C-004` | `doosan/robot/req/job_clear` | `Operator UI` | `AMR, Cobot` | `doosan/robot/resp/job_clear` | `10sec` | `10sec` | `timestamp 피드백 값 확인` |
 | `C-005` | `doosan/robot/req/job_cmd` | `Operator UI` | `AMR, Cobot` | `doosan/robot/resp/job_cmd` | `10sec` | `10sec` | `timestamp 피드백 값 확인` |
+
 
 
 ### 5.1 Command Payload 권장 항목
