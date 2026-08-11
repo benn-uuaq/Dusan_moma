@@ -17,7 +17,7 @@ try:  # ROS가 설치되지 않은 환경에서도 화면은 그대로 동작해
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.node import Node
-    from std_msgs.msg import Float32MultiArray
+    from std_msgs.msg import Float32MultiArray, Int32, String
 
     ROS_AVAILABLE = True
 except ImportError:  # pragma: no cover - ROS 미설치 환경에서만 실행된다.
@@ -27,8 +27,28 @@ except ImportError:  # pragma: no cover - ROS 미설치 환경에서만 실행�
 class RosTopics:
     """robot_control_node가 발행하는 Topic 이름."""
 
+    ROBOT_MODE = "robot/status/robot_mode"
+    CONTROL_METHOD = "robot/status/control_method"
+    OPERATION_MODE = "robot/status/operation_mode"
     TCP_POSE = "robot/status/tcp_pose"
     TCP_POSE_ZERO = "robot/status/tcp_pose_zero"
+    ALARMS = "robot/status/alarms"
+
+
+# 레지스터 원값을 운영자가 읽을 수 있는 문구로 바꾼다. 값 구분은
+# ws_elt의 robot_gui_dashboard가 쓰던 것을 그대로 따르되, 콘솔 폭이
+# 1280 px로 고정되어 있어 상태 행에서 잘리지 않도록 문구를 줄였다.
+ROBOT_MODE_NAMES = {
+    0: "DISCONNECTED", 1: "CONFIRM_SAFETY", 2: "BOOTING", 3: "POWER_OFF",
+    4: "POWER_ON", 5: "IDLE", 6: "BACKDRIVE", 7: "RUNNING",
+    8: "UPDATING_FW", 9: "WAIT_CALIB",
+}
+CONTROL_METHOD_NAMES = {
+    0: "원격 미개방", 1: "로컬 제어", 2: "원격 제어",
+}
+OPERATION_MODE_NAMES = {
+    -1: "지정 안 됨", 0: "자동", 1: "수동",
+}
 
 
 class RosStatusClient(QObject):
@@ -37,6 +57,11 @@ class RosStatusClient(QObject):
     # [X, Y, Z, Rx, Ry, Rz] 순서의 6개 값을 그대로 전달한다.
     tcp_pose_changed = pyqtSignal(list)
     tcp_pose_zero_changed = pyqtSignal(list)
+    # 상태는 (원값, 표시 문구)로 함께 전달해 화면이 다시 해석하지 않게 한다.
+    robot_mode_changed = pyqtSignal(int, str)
+    control_method_changed = pyqtSignal(int, str)
+    operation_mode_changed = pyqtSignal(int, str)
+    alarm_received = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
 
     POSE_LENGTH = 6
@@ -74,6 +99,18 @@ class RosStatusClient(QObject):
             )
             self._node.create_subscription(
                 Float32MultiArray, RosTopics.TCP_POSE_ZERO, self._on_tcp_pose_zero, 10
+            )
+            self._node.create_subscription(
+                Int32, RosTopics.ROBOT_MODE, self._on_robot_mode, 10
+            )
+            self._node.create_subscription(
+                Int32, RosTopics.CONTROL_METHOD, self._on_control_method, 10
+            )
+            self._node.create_subscription(
+                Int32, RosTopics.OPERATION_MODE, self._on_operation_mode, 10
+            )
+            self._node.create_subscription(
+                String, RosTopics.ALARMS, self._on_alarm, 10
             )
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
@@ -123,6 +160,30 @@ class RosStatusClient(QObject):
 
     def _on_tcp_pose_zero(self, msg) -> None:
         self._emit_pose(msg, self.tcp_pose_zero_changed)
+
+    def _on_robot_mode(self, msg) -> None:
+        self._emit_code(msg, ROBOT_MODE_NAMES, self.robot_mode_changed)
+
+    def _on_control_method(self, msg) -> None:
+        self._emit_code(msg, CONTROL_METHOD_NAMES, self.control_method_changed)
+
+    def _on_operation_mode(self, msg) -> None:
+        self._emit_code(msg, OPERATION_MODE_NAMES, self.operation_mode_changed)
+
+    def _on_alarm(self, msg) -> None:
+        text = str(msg.data).strip()
+        if text:
+            self.alarm_received.emit(text)
+
+    @staticmethod
+    def _emit_code(msg, names: dict[int, str], signal) -> None:
+        """레지스터 값과 그에 대응하는 문구를 함께 전달한다.
+
+        정의에 없는 값도 버리지 않는다. 운영자가 원값을 보고 판단할 수
+        있어야 하므로 알 수 없음으로 표시한다.
+        """
+        code = int(msg.data)
+        signal.emit(code, names.get(code, f"알 수 없음 ({code})"))
 
     def _emit_pose(self, msg, signal) -> None:
         """길이가 맞는 자세만 전달해 화면에 일부 값만 반영되는 일을 막는다."""

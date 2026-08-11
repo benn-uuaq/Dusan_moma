@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout,
@@ -72,6 +74,24 @@ class ManualScreen(BaseScreen):
         alert.setObjectName("StatusWarn"); self.body.addWidget(alert)
 
 
+class StatusBlock(QWidget):
+    """항목명 아래에 값을 두는 좁은 상태 표시 블록.
+
+    `MetricRow`는 항목명과 값을 한 줄에 놓아 값이 길면 항목명을 덮는다.
+    상태 문구는 길어질 수 있으므로 여기서는 두 줄로 나눈다.
+    """
+
+    def __init__(self, label: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout=QVBoxLayout(self); layout.setContentsMargins(0,0,0,0); layout.setSpacing(2)
+        name=QLabel(label); name.setObjectName("MetricLabel")
+        self.value_label=QLabel("-"); self.value_label.setObjectName("MetricValue")
+        layout.addWidget(name); layout.addWidget(self.value_label)
+
+    def set_value(self, value: str) -> None:
+        self.value_label.setText(value)
+
+
 class CobotManualScreen(BaseScreen):
     """엘리트 협동로봇의 연결, 전원, 프로그램 제어와 상태를 다루는 화면.
 
@@ -87,6 +107,9 @@ class CobotManualScreen(BaseScreen):
     _POWER = (("전원 ON", "power_on"), ("전원 OFF", "power_off"), ("브레이크 해제", "brake_release"))
     _PROGRAM = (("재생", "play"), ("일시정지", "pause"), ("정지", "stop"))
     _MOTION = (("홈 이동", "home"),)
+
+    # 알람은 계속 쌓이므로 표시 개수를 제한한다.
+    MAX_ALARMS = 50
 
     # TCP 자세를 구성하는 6개 성분. 위치와 회전 성분의 단위가 서로 다르므로
     # 표시 순서와 단위를 이 한 곳에서만 정의한다.
@@ -128,23 +151,26 @@ class CobotManualScreen(BaseScreen):
 
         alarms,al=self.surface("알람")
         self.alarm_list=QListWidget(); self.alarm_list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.alarm_list.setMinimumHeight(48)
+        self.alarm_list.setMinimumHeight(44)
         al.addWidget(self.alarm_list,1)
-        top.addWidget(alarms,1,0)
+        # 알람 문구는 길어서 좁은 열에서는 읽을 수 없다. 아래 행을 상태와
+        # 절반씩 나눠 쓴다.
+        top.addWidget(alarms,1,0,1,2)
 
         status,s=self.surface("로봇 상태")
         self.metrics={
-            "robot_mode": MetricRow("로봇 모드","-"),
-            "control_method": MetricRow("제어 방식","-"),
-            "operation_mode": MetricRow("운전 모드","-"),
+            "robot_mode": StatusBlock("로봇 모드"),
+            "control_method": StatusBlock("제어 방식"),
+            "operation_mode": StatusBlock("운전 모드"),
         }
         # 세로로 쌓으면 아래 카드를 밀어내므로 세 항목을 가로로 배치한다.
         status_row=QHBoxLayout(); status_row.setSpacing(12)
-        for row in self.metrics.values():
-            status_row.addWidget(row,1)
+        # 로봇 모드 값(CONFIRM_SAFETY 등)이 가장 길어 폭을 더 준다.
+        for row,stretch in zip(self.metrics.values(),(3,2,2)):
+            status_row.addWidget(row,stretch)
         s.addLayout(status_row)
         s.addStretch()
-        top.addWidget(status,1,1,1,3)
+        top.addWidget(status,1,2,1,2)
         # 버튼 수와 문구 길이가 열마다 다르므로 너비를 같게 나누지 않는다.
         for column,stretch in enumerate((3,4,4,2)):
             top.setColumnStretch(column,stretch)
@@ -156,6 +182,7 @@ class CobotManualScreen(BaseScreen):
         self.activity_label=QLabel("장비에 연결되어 있지 않습니다. 화면 동작만 확인할 수 있습니다.")
         self.activity_label.setObjectName("Muted"); self.activity_label.setWordWrap(True)
         self.body.addWidget(self.activity_label)
+        self._alarm_empty = True
         self.set_endpoint("192.168.227.134")
         self.set_alarms([])
 
@@ -185,7 +212,7 @@ class CobotManualScreen(BaseScreen):
         """명령 버튼을 한 줄로 배치하고 눌림을 시그널로 전달한다."""
         row=QHBoxLayout()
         for text,command in items:
-            button=QPushButton(text); button.setMinimumHeight(56)
+            button=QPushButton(text); button.setMinimumHeight(52)
             # command를 기본 인자로 고정하지 않으면 모든 버튼이 반복문의
             # 마지막 명령만 전달하게 된다.
             button.clicked.connect(lambda _,key=command,label=text:self._request(key,label))
@@ -229,9 +256,22 @@ class CobotManualScreen(BaseScreen):
                 row.set_value(values[axis])
 
     def set_alarms(self, alarms: list[str]) -> None:
-        """수집된 알람 목록을 표시한다."""
+        """알람 목록 전체를 지정한 내용으로 교체한다."""
         self.alarm_list.clear()
+        self._alarm_empty = not alarms
         self.alarm_list.addItems(alarms or ["활성 알람 없음"])
+
+    def add_alarm(self, text: str) -> None:
+        """수신한 알람을 최신 항목이 위에 오도록 추가한다."""
+        if self._alarm_empty:
+            # 비어 있음 안내 문구를 실제 알람과 섞이지 않게 먼저 지운다.
+            self.alarm_list.clear()
+            self._alarm_empty = False
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self.alarm_list.insertItem(0, f"{stamp}  {text}")
+        while self.alarm_list.count() > self.MAX_ALARMS:
+            self.alarm_list.takeItem(self.alarm_list.count() - 1)
+        self.alarm_list.scrollToTop()
 
 
 class RunScreen(BaseScreen):

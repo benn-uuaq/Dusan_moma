@@ -16,6 +16,8 @@
     - 화면 아래쪽 영역은 TCP 자세 표시에 사용한다. `TCP 현재값`과 `제로점 기준`을 나누어 각각 6개 성분을 개별 행으로 보여준다. 위치 성분 X, Y, Z는 mm, 회전 성분 RX, RY, RZ는 mrad 단위이며, 성분과 단위의 대응은 `_POSE_AXES` 한 곳에서만 정의한다.
     - 값 갱신은 `apply_tcp()`와 `apply_zero_point()`를 사용하며, 키는 `x`, `y`, `z`, `rx`, `ry`, `rz`이다. 전달하지 않은 성분은 이전 값을 유지한다. 값에는 단위를 붙이지 않는다. 단위는 항목명에 이미 표시된다.
     - 두 자세 값은 `services/ros_status_client.py`가 `robot/status/tcp_pose`와 `robot/status/tcp_pose_zero` 토픽에서 받아 `OperatorWindow`를 거쳐 전달한다. 원본은 `robot_control_node`가 읽는 Modbus 레지스터 260~265와 280~285이다.
+    - 로봇 모드·제어 방식·운전 모드는 `apply_status()`로, 알람은 `add_alarm()`으로 받는다. 알람은 최신 항목이 위에 오도록 쌓이며 `MAX_ALARMS`개를 넘으면 오래된 것부터 지운다. 전체를 교체할 때는 `set_alarms()`를 쓴다.
+    - 상태 값은 `MetricRow`가 아니라 `StatusBlock`으로 표시한다. `MetricRow`는 항목명과 값을 한 줄에 두어 값이 길면 항목명을 덮기 때문이다.
 - `info_screen.py`
   - 제목과 설명만 필요한 간단한 보조 화면을 제공한다.
 - `__init__.py`

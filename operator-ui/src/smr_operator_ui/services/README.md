@@ -39,11 +39,21 @@
 
 ### `ros_status_client.py`
 
-- `elite_robot_controller`의 `robot_control_node`가 발행하는 자세 토픽을 구독합니다.
-- `robot/status/tcp_pose`(현재 절대 TCP)와 `robot/status/tcp_pose_zero`(원점 기준 상대 pose)를 받습니다.
-- 값은 `[X, Y, Z, Rx, Ry, Rz]` 순서이며 위치는 mm, 회전은 mrad 단위입니다.
-- 구독 콜백은 ROS 실행기 스레드에서 실행되므로 값은 `tcp_pose_changed`, `tcp_pose_zero_changed` 시그널로만 전달합니다.
-- 성분이 6개가 아니면 화면에 일부 값만 반영되지 않도록 버리고 `error_occurred`를 보냅니다.
+- `elite_robot_controller`의 `robot_control_node`가 발행하는 상태 토픽을 구독합니다.
+
+| Topic | 시그널 | 내용 |
+| --- | --- | --- |
+| `robot/status/tcp_pose` | `tcp_pose_changed(list)` | 현재 절대 TCP |
+| `robot/status/tcp_pose_zero` | `tcp_pose_zero_changed(list)` | 원점 기준 상대 pose |
+| `robot/status/robot_mode` | `robot_mode_changed(int, str)` | 로봇 모드 |
+| `robot/status/control_method` | `control_method_changed(int, str)` | 제어 방식 |
+| `robot/status/operation_mode` | `operation_mode_changed(int, str)` | 운전 모드 |
+| `robot/status/alarms` | `alarm_received(str)` | 알람 문구 |
+
+- 자세 값은 `[X, Y, Z, Rx, Ry, Rz]` 순서이며 위치는 mm, 회전은 mrad 단위입니다. 성분이 6개가 아니면 화면에 일부 값만 반영되지 않도록 버리고 `error_occurred`를 보냅니다.
+- 상태 토픽은 레지스터 원값과 표시 문구를 함께 전달합니다. 화면이 값을 다시 해석하지 않아도 되고, 정의에 없는 값도 `알 수 없음 (원값)`으로 표시해 버리지 않습니다.
+- 표시 문구는 `ROBOT_MODE_NAMES`, `CONTROL_METHOD_NAMES`, `OPERATION_MODE_NAMES`에 있습니다. 값 구분은 `ws_elt`의 `robot_gui_dashboard`를 따르되, 콘솔 폭이 1280 px로 고정되어 있어 상태 행에서 잘리지 않도록 문구를 줄였습니다.
+- 구독 콜백은 ROS 실행기 스레드에서 실행되므로 값은 Qt 시그널로만 전달합니다.
 - **rclpy는 선택 의존성입니다.** ROS가 없는 환경에서는 `available`이 `False`가 되고 화면은 그대로 동작합니다. Windows 배포본에서 ROS 없이 실행할 수 있어야 하므로 이 구조를 유지합니다.
 - `rclpy.init()`을 이 서비스가 호출한 경우에만 `rclpy.shutdown()`을 수행합니다.
 

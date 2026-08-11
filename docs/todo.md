@@ -53,7 +53,7 @@
 - [x] TCP 현재값 및 제로점 기준값의 Modbus 레지스터 주소 확인 (절대 260~265, 원점 기준 280~285)
 - [ ] 위치 환산 계수 실장비 검증 (`POSITION_SCALE = 0.1`이 맞는지, 레지스터가 0.1 mm 단위인지)
 - [x] 운영 UI를 `robot/status/tcp_pose`, `robot/status/tcp_pose_zero` 토픽에 연결
-- [ ] 로봇 모드·제어 방식·운전 모드·알람 토픽도 UI에 연결 (현재는 TCP 자세만 연결)
+- [x] 로봇 모드·제어 방식·운전 모드·알람 토픽 UI 연결
 - [ ] 이식 코드(`robot_driver.py`, `robot_control_node.py`)의 flake8/pep257 위반 일괄 정리
 - [x] TCP 위치·회전 성분의 단위 확정 (위치 mm, 회전 mrad) 및 화면 표기
 - [ ] 연결 설정값을 MqttServer 및 장비 어댑터의 실제 접속 정보로 반영

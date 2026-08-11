@@ -161,6 +161,16 @@ class OperatorWindow(QMainWindow):
         self.ros_status = RosStatusClient(parent=self)
         self.ros_status.tcp_pose_changed.connect(self._show_tcp_pose)
         self.ros_status.tcp_pose_zero_changed.connect(self._show_tcp_pose_zero)
+        self.ros_status.robot_mode_changed.connect(
+            lambda _code, name: self.cobot_manual_screen.apply_status({"robot_mode": name})
+        )
+        self.ros_status.control_method_changed.connect(
+            lambda _code, name: self.cobot_manual_screen.apply_status({"control_method": name})
+        )
+        self.ros_status.operation_mode_changed.connect(
+            lambda _code, name: self.cobot_manual_screen.apply_status({"operation_mode": name})
+        )
+        self.ros_status.alarm_received.connect(self.cobot_manual_screen.add_alarm)
         self.ros_status.error_occurred.connect(self._show_ros_error)
         if start_ros:
             self.ros_status.start()
