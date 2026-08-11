@@ -440,9 +440,9 @@ class IOStatusScreen(BaseScreen):
     )
 
     def __init__(self) -> None:
-        super().__init__("I/O 상태", "입력 신호는 조회만 하고, 출력 신호는 직접 켜고 끌 수 있습니다.")
-        table=QTableWidget(len(self._ROWS),6)
-        table.setHorizontalHeaderLabels(["주소","신호명","방향","값","상태","조작"])
+        super().__init__("I/O 상태", "표는 조회 전용입니다. 출력 신호는 아래 출력 제어에서 켜고 끕니다.")
+        table=QTableWidget(len(self._ROWS),5)
+        table.setHorizontalHeaderLabels(["주소","신호명","방향","값","상태"])
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.value_items: dict[str, QTableWidgetItem] = {}
         for r,row in enumerate(self._ROWS):
@@ -450,33 +450,57 @@ class IOStatusScreen(BaseScreen):
                 item=QTableWidgetItem(v); table.setItem(r,c,item)
                 if c == 3:
                     self.value_items[row[0]]=item
-            # 입력 신호는 PLC가 정하는 값이라 조작 대상이 아니다.
-            if row[2] == "OUT":
-                table.setCellWidget(r,5,self._output_buttons(row[0]))
-                # QSS가 버튼 최소 높이를 66 px로 잡으므로 여백까지 더해 행을 키운다.
-                table.setRowHeight(r,78)
-        table.horizontalHeader().setStretchLastSection(False)
-        table.resizeColumnsToContents()
+        # 신호명이 가장 길므로 남는 폭을 그 열에 준다.
         header=table.horizontalHeader()
+        table.resizeColumnsToContents()
+        header.setStretchLastSection(False)
         header.setSectionResizeMode(1, header.ResizeMode.Stretch)
         self.body.addWidget(table,1)
+
+        # 조작 버튼을 표 칸 안에 두면 행이 답답해지므로 표 밖으로 뺀다.
+        # 입력 신호는 PLC가 정하는 값이라 조작 대상이 아니다.
+        controls,cl=self.surface("출력 제어")
+        row=QHBoxLayout(); row.setSpacing(16)
+        self.output_state_labels: dict[str, QLabel] = {}
+        for address,name,direction,value,_status in self._ROWS:
+            if direction != "OUT":
+                continue
+            row.addWidget(self._output_block(address,name,value))
+        row.addStretch()
+        cl.addLayout(row)
+        self.body.addWidget(controls)
+
         self.activity_label=QLabel("출력 신호를 바꾸면 PLC에 요청을 보냅니다.")
         self.activity_label.setObjectName("Muted"); self.activity_label.setWordWrap(True)
         self.body.addWidget(self.activity_label)
 
-    def _output_buttons(self, address: str) -> QWidget:
-        """한 출력 신호의 ON/OFF 버튼 쌍을 만든다."""
-        holder=QWidget(); layout=QHBoxLayout(holder)
-        layout.setContentsMargins(4,4,4,4); layout.setSpacing(6)
+    def _output_block(self, address: str, name: str, value: str) -> QWidget:
+        """출력 신호 하나의 이름, 현재 값, ON/OFF 버튼을 한 카드에 묶는다.
+
+        신호가 여러 개일 때 어느 버튼이 어느 신호의 것인지 헷갈리지 않도록
+        테두리로 구분한다.
+        """
+        card=QFrame(); card.setObjectName("SequenceStep")
+        layout=QHBoxLayout(card)
+        layout.setContentsMargins(14,8,14,8); layout.setSpacing(14)
+
+        names=QVBoxLayout(); names.setSpacing(0)
+        title=QLabel(f"{address}  {name}"); title.setObjectName("MetricLabel")
+        state=QLabel(f"현재  {value}"); state.setObjectName("MetricValue")
+        self.output_state_labels[address]=state
+        names.addWidget(title); names.addWidget(state)
+        layout.addLayout(names)
+        layout.addStretch()
+
         for text,turn_on in (("ON",True),("OFF",False)):
-            button=QPushButton(text); button.setMinimumHeight(44); button.setMinimumWidth(72)
+            button=QPushButton(text); button.setMinimumWidth(88)
             # address와 turn_on을 기본 인자로 고정하지 않으면 모든 버튼이
             # 반복문의 마지막 값을 전달하게 된다.
             button.clicked.connect(
                 lambda _,a=address,on=turn_on: self._request_output(a,on)
             )
             layout.addWidget(button)
-        return holder
+        return card
 
     def _request_output(self, address: str, turn_on: bool) -> None:
         """조작 요청을 기록하고 상위 계층에 전달한다."""
@@ -486,10 +510,13 @@ class IOStatusScreen(BaseScreen):
         self.output_requested.emit(address, turn_on)
 
     def set_value(self, address: str, value: str) -> None:
-        """PLC가 알려준 현재 값을 표에 반영한다."""
+        """PLC가 알려준 현재 값을 표와 출력 제어에 함께 반영한다."""
         item=self.value_items.get(address)
         if item is not None:
             item.setText(value)
+        state=self.output_state_labels.get(address)
+        if state is not None:
+            state.setText(f"현재  {value}")
 
 
 class FormScreen(BaseScreen):

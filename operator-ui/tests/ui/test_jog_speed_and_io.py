@@ -23,20 +23,41 @@ def test_mode_slot_buttons_are_not_clipped(qtbot) -> None:
     window.close()
 
 
-def test_io_screen_controls_only_outputs(qtbot) -> None:
-    """입력 신호에는 조작 버튼을 두지 않는다."""
+def test_io_controls_are_outside_the_table(qtbot) -> None:
+    """조작 버튼은 표 칸이 아니라 별도 출력 제어 영역에 둔다."""
     window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     screen = window.screens["io"]
     table = screen.findChild(QTableWidget)
 
-    for row, entry in enumerate(screen._ROWS):
-        widget = table.cellWidget(row, 5)
-        if entry[2] == "OUT":
-            assert widget is not None, f"{entry[0]}에 조작 버튼이 없습니다"
-        else:
-            assert widget is None, f"{entry[0]}는 입력인데 조작 버튼이 있습니다"
+    assert table.columnCount() == 5
+    embedded = [
+        (r, c)
+        for r in range(table.rowCount())
+        for c in range(table.columnCount())
+        if table.cellWidget(r, c) is not None
+    ]
+    assert embedded == []
     window.close()
+
+
+def test_io_screen_controls_only_outputs(qtbot) -> None:
+    """입력 신호에는 조작 버튼을 두지 않는다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.screens["io"]
+
+    outputs = {row[0] for row in screen._ROWS if row[2] == "OUT"}
+    inputs = {row[0] for row in screen._ROWS if row[2] != "OUT"}
+    assert set(screen.output_state_labels) == outputs
+    assert not (set(screen.output_state_labels) & inputs)
+    window.close()
+
+
+def _output_buttons(screen, address):
+    """해당 출력 신호 카드 안의 ON/OFF 버튼을 찾는다."""
+    card = screen.output_state_labels[address].parent()
+    return card.findChildren(QPushButton)
 
 
 def test_io_output_buttons_emit_address_and_state(qtbot) -> None:
@@ -46,14 +67,27 @@ def test_io_output_buttons_emit_address_and_state(qtbot) -> None:
     screen = window.screens["io"]
     received: list[tuple[str, bool]] = []
     screen.output_requested.connect(lambda a, on: received.append((a, on)))
-    table = screen.findChild(QTableWidget)
 
-    holder = table.cellWidget(5, 5)  # Y000 AMR Drive Enable
-    on_button, off_button = holder.findChildren(QPushButton)
+    on_button, off_button = _output_buttons(screen, "Y000")
     qtbot.mouseClick(on_button, Qt.MouseButton.LeftButton)
     qtbot.mouseClick(off_button, Qt.MouseButton.LeftButton)
+    # 다른 신호의 버튼이 섞이지 않아야 한다.
+    other_on, _ = _output_buttons(screen, "Y010")
+    qtbot.mouseClick(other_on, Qt.MouseButton.LeftButton)
 
-    assert received == [("Y000", True), ("Y000", False)]
+    assert received == [("Y000", True), ("Y000", False), ("Y010", True)]
+    window.close()
+
+
+def test_io_value_update_reaches_table_and_controls(qtbot) -> None:
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.screens["io"]
+
+    screen.set_value("Y000", "ON")
+
+    assert screen.value_items["Y000"].text() == "ON"
+    assert "ON" in screen.output_state_labels["Y000"].text()
     window.close()
 
 
