@@ -49,6 +49,16 @@ def main() -> int:
     with zipfile.ZipFile(out_real, "w", zipfile.ZIP_DEFLATED) as z:
         for root, dirs, files in os.walk(WS):
             dirs[:] = sorted(d for d in dirs if d not in EXCLUDE_DIRS)
+
+            # 빈 디렉터리도 항목으로 기록한다. gc 이후 `.git/refs/heads`처럼
+            # 비어 있는 디렉터리가 빠지면 푼 저장소를 git이 인식하지 못한다.
+            if not dirs and not files and root != WS:
+                rel = os.path.relpath(root, WS) + "/"
+                info = zipfile.ZipInfo(rel)
+                info.external_attr = (0o40755 << 16) | 0x10
+                info.flag_bits |= 0x800
+                z.writestr(info, b"")
+
             for fname in sorted(files):
                 if should_skip_file(fname):
                     continue
