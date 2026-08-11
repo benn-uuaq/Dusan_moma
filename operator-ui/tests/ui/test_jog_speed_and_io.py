@@ -226,3 +226,59 @@ def test_speed_ratio_is_limited_to_robot_range(qtbot) -> None:
     assert widget.minimum() == 2
     assert widget.maximum() == 100
     window.close()
+
+
+def test_saved_poses_are_shown_on_start(qtbot, tmp_path, monkeypatch) -> None:
+    """저장 파일이 있으면 UI를 다시 열어도 기준 위치가 보여야 한다."""
+    import json
+
+    monkeypatch.setenv("SMR_ROBOT_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "reference_poses.json").write_text(
+        json.dumps({
+            "home_joint": {"values": [207.0, -1466.0, -1875.0, -1371.0, 1570.0, 207.0],
+                           "saved_at": "2026-08-11T16:42:08"},
+        }),
+        encoding="utf-8",
+    )
+
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+
+    home = window.cobot_jog_screen.saved_labels["save_home_pose"].text()
+    assert "J1 207.0" in home
+    assert "2026-08-11 16:42" in home
+    window.close()
+
+
+def test_reconnect_rewrites_volatile_registers(qtbot, tmp_path, monkeypatch) -> None:
+    """레지스터는 전원을 내리면 사라지므로 연결될 때 다시 써야 한다."""
+    import json
+
+    monkeypatch.setenv("SMR_ROBOT_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "reference_poses.json").write_text(
+        json.dumps({
+            "home_joint": {"values": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "saved_at": "x"},
+            "start_pose": {"values": [10.0, 20.0, 30.0, 0.0, 0.0, 0.0], "saved_at": "x"},
+        }),
+        encoding="utf-8",
+    )
+
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    poses: list[tuple[str, list]] = []
+    values: list[tuple[str, int]] = []
+    window.ros_status.send_pose = lambda name, v: poses.append((name, list(v))) or True
+    window.ros_status.send_value = lambda name, v: values.append((name, v)) or True
+
+    # 끊긴 상태에서는 아무것도 보내지 않는다.
+    window.ros_status.connected_changed.emit(False)
+    assert poses == [] and values == []
+
+    window.ros_status.connected_changed.emit(True)
+
+    assert ("home_joint", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) in poses
+    assert ("start_pose", [10.0, 20.0, 30.0, 0.0, 0.0, 0.0]) in poses
+    # 속도 설정도 같은 이유로 다시 올린다.
+    assert ("linear_speed", 150) in values
+    assert ("speed_ratio", 100) in values
+    window.close()

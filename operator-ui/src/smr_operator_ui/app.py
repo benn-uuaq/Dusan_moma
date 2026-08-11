@@ -36,7 +36,10 @@ from smr_operator_ui.services import (
     RosStatusClient,
     SettingsService,
 )
-from smr_operator_ui.services.reference_poses import save_reference_poses
+from smr_operator_ui.services.reference_poses import (
+    load_reference_poses,
+    save_reference_poses,
+)
 from smr_operator_ui.styles import load_stylesheet
 
 # 저장 문구에 쓰는 축 이름. 홈은 관절, 시작 포즈는 TCP 좌표다.
@@ -158,9 +161,13 @@ class OperatorWindow(QMainWindow):
         self.settings_service.loaded.connect(self._apply_stored_settings)
         self.settings_service.saved.connect(self._mark_settings_saved)
         self.settings_service.failed.connect(self._show_settings_error)
-        self._saved_poses: dict[str, str] = {}
-        for scope in (*self._settings_screens.keys(), "inspection_target", self.POSE_SCOPE):
+        for scope in (*self._settings_screens.keys(), "inspection_target"):
             self.settings_service.load(scope)
+
+        # 기준 위치의 원본은 로봇 쪽 설정 파일이다. 레지스터는 휘발성이라
+        # 연결될 때마다 이 값을 다시 올린다.
+        self._reference_poses: dict[str, dict] = {}
+        self._load_reference_poses()
 
         # Paho 네트워크 스레드에서 수신한 명령은 Qt 시그널을 통해 GUI
         # 스레드의 이 처리기로 전달된다.
@@ -182,6 +189,7 @@ class OperatorWindow(QMainWindow):
         self.ros_status.joint_position_changed.connect(self._remember_joint)
         self.ros_status.command_result.connect(self._show_command_result)
         self.ros_status.connected_changed.connect(self.cobot_manual_screen.set_connected)
+        self.ros_status.connected_changed.connect(self._restore_robot_settings)
         self.cobot_jog_screen.jog_pressed.connect(self._send_jog)
         self.cobot_jog_screen.jog_released.connect(self._stop_jog)
         self.cobot_jog_screen.command_requested.connect(self._save_reference_pose)
@@ -202,11 +210,6 @@ class OperatorWindow(QMainWindow):
 
     def _apply_stored_settings(self, scope: str, values: dict) -> None:
         """DB 조회 결과를 해당 설정 범위의 소유 화면으로 전달한다."""
-        if scope == self.POSE_SCOPE:
-            self._saved_poses = {str(k): str(v) for k, v in values.items()}
-            for command, text in self._saved_poses.items():
-                self.cobot_jog_screen.set_saved_pose(command, text)
-            return
         if scope == "inspection_target":
             if "diameter_m" in values and "height_m" in values:
                 self.main_screen.orbit_view.set_target_dimensions(
@@ -341,32 +344,75 @@ class OperatorWindow(QMainWindow):
         axes = ("x", "y", "z", "rx", "ry", "rz")
         return {axis: f"{value:.1f}" for axis, value in zip(axes, values)}
 
-    # 저장한 기준 위치는 설정 저장소에 남겨 다시 열어도 보이게 한다.
-    POSE_SCOPE = "cobot_poses"
+    # 저장 버튼과 실제 저장 항목, 그리고 표시에 쓸 축 이름.
+    # 홈은 movej로 가므로 관절값을, 시작 포즈는 TCP 좌표를 쓴다.
+    POSE_TARGETS = {
+        "save_home_pose": ("home_joint", _JOINT_LABELS),
+        "save_start_pose": ("start_pose", _POSE_LABELS),
+    }
 
     def _save_reference_pose(self, command: str) -> None:
-        """현재 자세를 기준 위치로 기록하고 로봇에도 저장을 요청한다.
-
-        로봇 쪽 레지스터 주소가 없으면 화면 기록만 남긴다. 주소를 모른 채
-        쓰면 엉뚱한 레지스터를 건드리기 때문이다.
-        """
-        # 홈은 movej로 가므로 관절값을, 시작 포즈는 TCP 좌표를 저장한다.
-        if command == "save_home_pose":
-            target, values, labels = "home_joint", getattr(self, "_last_joint", None), _JOINT_LABELS
-        else:
-            target, values, labels = "start_pose", getattr(self, "_last_tcp_pose", None), _POSE_LABELS
-
+        """현재 자세를 기준 위치로 기록하고 로봇 레지스터에도 쓴다."""
+        target, labels = self.POSE_TARGETS.get(command, (None, ()))
+        if target is None:
+            return
+        values = (
+            getattr(self, "_last_joint", None) if target == "home_joint"
+            else getattr(self, "_last_tcp_pose", None)
+        )
         if not values:
             self.cobot_jog_screen.show_result("로봇에서 현재 값을 아직 받지 못했습니다.")
             return
 
-        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        text = "  ".join(f"{name} {value:.1f}" for name, value in zip(labels, values))
-        self._saved_poses[command] = f"{text}\n{stamp}"
-        self.cobot_jog_screen.set_saved_pose(command, self._saved_poses[command])
-        self.settings_service.save(self.POSE_SCOPE, self._saved_poses)
-        save_reference_poses({target: list(values)})
+        entry = {"values": [float(v) for v in values],
+                 "saved_at": datetime.now().isoformat(timespec="seconds")}
+        self._reference_poses[target] = entry
+        self._show_saved_pose(command, entry)
+        if save_reference_poses({target: entry["values"]}) is None:
+            self.cobot_jog_screen.show_result("기준 위치 파일을 저장하지 못했습니다.")
         self.ros_status.send_pose(target, values)
+
+    def _show_saved_pose(self, command: str, entry: dict) -> None:
+        """저장된 값을 축 이름과 함께 보여준다."""
+        _target, labels = self.POSE_TARGETS[command]
+        values = entry.get("values") or []
+        text = "  ".join(f"{name} {value:.1f}" for name, value in zip(labels, values))
+        stamp = str(entry.get("saved_at", "")).replace("T", " ")[:16]
+        self.cobot_jog_screen.set_saved_pose(command, f"{text}\n{stamp}" if text else "")
+
+    def _load_reference_poses(self) -> None:
+        """파일에 남아 있는 기준 위치를 읽어 화면에 표시한다."""
+        self._reference_poses = load_reference_poses()
+        for command, (target, _labels) in self.POSE_TARGETS.items():
+            entry = self._reference_poses.get(target)
+            if isinstance(entry, dict) and entry.get("values"):
+                self._show_saved_pose(command, entry)
+
+    def _restore_robot_settings(self, connected: bool) -> None:
+        """로봇에 붙으면 저장해 둔 값을 레지스터에 다시 쓴다.
+
+        레지스터는 전원을 내리면 사라진다. 파일에 남은 기준 위치와 설정
+        화면의 속도를 다시 올려야 태스크가 같은 값으로 동작한다.
+        """
+        if not connected:
+            return
+
+        restored = []
+        for target, entry in self._reference_poses.items():
+            values = entry.get("values") if isinstance(entry, dict) else None
+            if values and self.ros_status.send_pose(target, values):
+                restored.append(target)
+
+        cobot = self.screens["cobot"]
+        for value, name in ((cobot.linear_speed(), "linear_speed"),
+                            (cobot.speed_ratio(), "speed_ratio")):
+            if self.ros_status.send_value(name, int(value)):
+                restored.append(name)
+
+        if restored:
+            self.cobot_manual_screen.activity_label.setText(
+                f"저장된 설정을 로봇에 다시 적용했습니다: {', '.join(restored)}"
+            )
 
     def _available_writes(self) -> list[str]:
         """주소가 정해져 실제로 보낼 수 있는 명령 이름을 모은다."""
