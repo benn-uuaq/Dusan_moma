@@ -145,6 +145,12 @@ class OperatorWindow(QMainWindow):
                 "inspection_target", {"diameter_m": diameter, "height_m": height}
             )
         )
+        self.main_screen.work_area_changed.connect(
+            lambda width, height, scan_h, overlap: self.settings_service.save(
+                "work_area", {"width_mm": width, "height_mm": height,
+                              "scan_h_mm": scan_h, "overlap_mm": overlap}
+            )
+        )
         self.simulator.snapshot_changed.connect(self.main_screen.update_snapshot)
         self.simulator.activity.connect(self.main_screen.show_activity)
         self.main_screen.update_snapshot(self.simulator.snapshot)
@@ -161,7 +167,7 @@ class OperatorWindow(QMainWindow):
         self.settings_service.loaded.connect(self._apply_stored_settings)
         self.settings_service.saved.connect(self._mark_settings_saved)
         self.settings_service.failed.connect(self._show_settings_error)
-        for scope in (*self._settings_screens.keys(), "inspection_target"):
+        for scope in (*self._settings_screens.keys(), "inspection_target", "work_area"):
             self.settings_service.load(scope)
 
         # 기준 위치의 원본은 로봇 쪽 설정 파일이다. 레지스터는 휘발성이라
@@ -215,6 +221,11 @@ class OperatorWindow(QMainWindow):
                 self.main_screen.orbit_view.set_target_dimensions(
                     float(values["diameter_m"]), float(values["height_m"])
                 )
+            return
+        if scope == "work_area":
+            keys = ("width_mm", "height_mm", "scan_h_mm", "overlap_mm")
+            if all(k in values for k in keys):
+                self.main_screen.set_work_area(*(float(values[k]) for k in keys))
             return
         screen = self._settings_screens.get(scope)
         if screen is not None:
@@ -332,8 +343,12 @@ class OperatorWindow(QMainWindow):
         self.cobot_jog_screen.apply_position(formatted)
 
     def _show_tcp_pose_zero(self, values: list) -> None:
-        """원점 기준 상대 자세를 Cobot 수동 제어 화면에 표시한다."""
+        """원점 기준 상대 자세를 수동 제어 화면과 사각형 작업 모델에 표시한다."""
         self.cobot_manual_screen.apply_zero_point(self._format_pose(values))
+        if len(values) >= 3:
+            # 로봇 태스크(dus_init.script)가 베이스 좌표계로 cur-zero를 낸다.
+            # 가로 = -Y(오른쪽 +), 세로 = +Z(위 +). register_map.txt 4항 참고.
+            self.main_screen.apply_wall_position(-values[1], values[2])
 
     @staticmethod
     def _format_pose(values: list) -> dict[str, str]:

@@ -20,8 +20,8 @@ python -m venv .venv
 
 | 토픽 | 화면 표시 |
 | --- | --- |
-| `robot/status/tcp_pose` | TCP 현재값 |
-| `robot/status/tcp_pose_zero` | 제로점 기준 |
+| `robot/status/tcp_pose` | Cobot 수동 제어의 TCP 현재값 |
+| `robot/status/tcp_pose_zero` | Cobot 수동 제어의 제로점 기준 값 + 메인 화면 사각형 작업 모델의 현재 위치 |
 
 값은 `dusan_ws`의 `elite_robot_controller` 패키지가 Modbus에서 읽어 발행합니다. UI를 실행하기 전에 해당 노드를 띄우고 UI도 ROS 2가 소싱된 셸에서 실행해야 합니다.
 

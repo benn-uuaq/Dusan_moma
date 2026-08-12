@@ -16,8 +16,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from smr_operator_ui.components import MetricRow, OrbitView, SequenceStep
-from smr_operator_ui.keypad import TouchDoubleSpinBox
+from smr_operator_ui.components import MetricRow, OrbitView, RectWorkView, SequenceStep
+from smr_operator_ui.keypad import TouchDoubleSpinBox, TouchSpinBox
 from smr_operator_ui.state import AppSnapshot, CyclePhase
 
 
@@ -31,6 +31,8 @@ class MainScreen(QWidget):
     manual_requested = pyqtSignal()
     settings_requested = pyqtSignal()
     target_dimensions_changed = pyqtSignal(float, float)
+    # 너비/높이/스캐너 높이/겹침. Modbus 256~259와 같은 mm 단위다.
+    work_area_changed = pyqtSignal(float, float, float, float)
 
     _phase_order = (
         CyclePhase.SECURING,
@@ -86,22 +88,9 @@ class MainScreen(QWidget):
         self.orbit_view = OrbitView()
         self.orbit_view.target_clicked.connect(self._edit_target_dimensions)
         workspace.addWidget(self.orbit_view, 1)
-        metrics = QVBoxLayout()
-        metrics.setSpacing(0)
-        self.lift = MetricRow("리프트 높이", "1.20 m")
-        self.tcp = MetricRow("TCP 위치", "X 0.00 / Y 0.00 / Z 0.00 m")
-        self.velocity = MetricRow("이동 속도", "0.0 m/s")
-        self.mode = MetricRow("모드", "수동")
-        self.state = MetricRow("상태", "대기")
-        self.safety = MetricRow("안전 상태", "정상")
-        for item in (self.lift, self.tcp, self.velocity, self.mode, self.state, self.safety):
-            metrics.addWidget(item)
-        metrics.addStretch()
-        metric_frame = QFrame()
-        metric_frame.setObjectName("Surface")
-        metric_frame.setLayout(metrics)
-        metric_frame.setMinimumWidth(265)
-        workspace.addWidget(metric_frame)
+        self.rect_view = RectWorkView()
+        self.rect_view.target_clicked.connect(self._edit_work_area)
+        workspace.addWidget(self.rect_view, 1)
         content.addLayout(workspace, 1)
 
         rail = QFrame()
@@ -198,6 +187,57 @@ class MainScreen(QWidget):
         """외부 설정 또는 사용자 입력으로 검사 대상 크기를 변경한다."""
         self.orbit_view.set_target_dimensions(diameter_m, height_m)
 
+    def _edit_work_area(self) -> None:
+        """터치 전용 숫자 필드로 작업 영역 치수를 입력받는다. 단위는 mm이다."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("작업 영역 설정")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(360)
+
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        width_mm, height_mm, scan_h_mm, overlap_mm = self.rect_view.work_area()
+
+        def mm_field(value: float, title: str) -> TouchSpinBox:
+            field = TouchSpinBox()
+            field.dialog_title = title
+            field.setRange(1, 20000)
+            field.setSuffix(" mm")
+            field.setValue(int(value))
+            return field
+
+        width_input = mm_field(width_mm, "작업 영역 너비 입력")
+        height_input = mm_field(height_mm, "작업 영역 높이 입력")
+        scan_h_input = mm_field(scan_h_mm, "스캐너 세로 유효높이 입력")
+        overlap_input = mm_field(overlap_mm, "세로 겹침 입력")
+
+        form.addRow("너비", width_input)
+        form.addRow("높이", height_input)
+        form.addRow("스캐너 높이", scan_h_input)
+        form.addRow("겹침", overlap_input)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            values = (width_input.value(), height_input.value(),
+                      scan_h_input.value(), overlap_input.value())
+            self.set_work_area(*values)
+            self.work_area_changed.emit(*(float(v) for v in values))
+
+    def set_work_area(self, width_mm: float, height_mm: float, scan_h_mm: float, overlap_mm: float) -> None:
+        """외부 설정 또는 사용자 입력으로 작업 영역 치수를 변경한다."""
+        self.rect_view.set_work_area(width_mm, height_mm, scan_h_mm, overlap_mm)
+
+    def apply_wall_position(self, horizontal_mm: float, vertical_mm: float) -> None:
+        """원점 기준 상대좌표(가로/세로)를 사각형 작업 모델에 표시한다."""
+        self.rect_view.set_position(horizontal_mm, vertical_mm)
+
     def _hero_box(self, label: str, value: QLabel, suffix: str = "") -> QFrame:
         """대시보드 상단에서 재사용할 요약 카드를 만든다."""
         frame = QFrame()
@@ -224,12 +264,6 @@ class MainScreen(QWidget):
         self.progress_label.setText(f"{cycle.progress_percent} %")
         self.phase_label.setText(cycle.phase.value)
         self.orbit_view.set_state(cycle)
-        self.lift.set_value(f"{cycle.lift_height_m:.2f} m")
-        self.tcp.set_value(f"X {cycle.tcp_x_m:.2f} / Y {cycle.tcp_y_m:.2f} / Z {cycle.tcp_z_m:.2f} m")
-        self.velocity.set_value(f"{cycle.velocity_mps:.1f} m/s")
-        self.mode.set_value("자동" if cycle.running else "수동")
-        self.state.set_value(cycle.phase.value)
-        self.safety.set_value("정상" if cycle.safe else "안전 정지")
         self.current.set_value(f"{cycle.current_segment:02d} / {cycle.total_segments}")
         self.summary_progress.set_value(f"{cycle.progress_percent} %")
         self.completed.set_value(str(cycle.completed_segments))
