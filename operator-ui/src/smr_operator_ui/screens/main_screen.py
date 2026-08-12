@@ -238,6 +238,10 @@ class MainScreen(QWidget):
         """원점 기준 상대좌표(가로/세로)를 사각형 작업 모델에 표시한다."""
         self.rect_view.set_position(horizontal_mm, vertical_mm)
 
+    def set_work_cell_label(self, text: str) -> None:
+        """현재 스캔 중인 격자 이름(예: "A0 (1/9)")을 표시한다."""
+        self.rect_view.set_cell_label(text)
+
     def _hero_box(self, label: str, value: QLabel, suffix: str = "") -> QFrame:
         """대시보드 상단에서 재사용할 요약 카드를 만든다."""
         frame = QFrame()

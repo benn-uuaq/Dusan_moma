@@ -260,8 +260,21 @@ class MqttServer(QObject):
         height: str | int | float,
         thickness: str | int | float,
         target_distance: str | int | float,
+        cell_id: str,
+        segment_index: str | int,
+        segment_count: str | int,
+        grid_index: str | int,
+        grid_count: str | int,
+        grid_width: str | int | float,
+        grid_height: str | int | float,
+        scan_h: str | int | float,
+        overlap: str | int | float,
     ) -> bool:
-        """검사 대상 정보가 포함된 새 Job 명령을 발행한다."""
+        """검사 대상과 격자 위치 정보가 포함된 새 Job 명령을 발행한다.
+
+        원통이 커서 AMR 원주 구역(segment)과 Cobot 세로 격자(grid)로 나눠
+        스캔한다. cell_id는 보통 "A0"처럼 구역 문자 + 격자 번호다.
+        """
         payload = {
             "timestamp": _utc_epoch_ms(),
             "job_id": job_id,
@@ -270,6 +283,17 @@ class MqttServer(QObject):
                 "height": str(height).strip(),
                 "thickness": str(thickness).strip(),
                 "target_distance": str(target_distance).strip(),
+            },
+            "grid": {
+                "cell_id": str(cell_id).strip(),
+                "segment_index": str(segment_index).strip(),
+                "segment_count": str(segment_count).strip(),
+                "grid_index": str(grid_index).strip(),
+                "grid_count": str(grid_count).strip(),
+                "width": str(grid_width).strip(),
+                "height": str(grid_height).strip(),
+                "scan_h": str(scan_h).strip(),
+                "overlap": str(overlap).strip(),
             },
         }
         validate_command_payload(MqttTopics.JOB_COMMAND, payload)
@@ -501,6 +525,28 @@ def validate_command_payload(topic: str, payload: dict[str, Any]) -> None:
         if missing:
             raise MqttPayloadError(
                 f"job_info 필드가 없거나 비어 있습니다: {', '.join(missing)}"
+            )
+
+        # grid: 원통이 커서 AMR 원주 구역 + Cobot 세로 격자로 나눠 스캔하기
+        # 위한 정보다. cell_id만 문자열이고 나머지는 job_info와 같은 규칙으로
+        # 숫자를 담은 문자열이다.
+        grid = payload.get("grid")
+        if not isinstance(grid, dict):
+            raise MqttPayloadError("grid는 JSON object여야 합니다.")
+        if not isinstance(grid.get("cell_id"), str) or not grid["cell_id"].strip():
+            raise MqttPayloadError("grid.cell_id가 없거나 비어 있습니다.")
+        grid_required = (
+            "segment_index", "segment_count", "grid_index", "grid_count",
+            "width", "height", "scan_h", "overlap",
+        )
+        grid_missing = [
+            name
+            for name in grid_required
+            if not isinstance(grid.get(name), str) or not grid[name].strip()
+        ]
+        if grid_missing:
+            raise MqttPayloadError(
+                f"grid 필드가 없거나 비어 있습니다: {', '.join(grid_missing)}"
             )
         return
 

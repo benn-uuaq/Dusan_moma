@@ -163,6 +163,18 @@ class McMqttTestApp:
         self.thickness_var = tk.StringVar(value="500")
         self.target_distance_var = tk.StringVar(value="8560")
 
+        # 원통이 커서 AMR 원주 구역(segment) + Cobot 세로 격자(grid)로
+        # 나눠 스캔한다. cell_id 예: 구역 A(segment_index=1)의 격자 0.
+        self.cell_id_var = tk.StringVar(value="A0")
+        self.segment_index_var = tk.StringVar(value="1")
+        self.segment_count_var = tk.StringVar(value="12")
+        self.grid_index_var = tk.StringVar(value="0")
+        self.grid_count_var = tk.StringVar(value="9")
+        self.grid_width_var = tk.StringVar(value="600")
+        self.grid_height_var = tk.StringVar(value="800")
+        self.scan_h_var = tk.StringVar(value="150")
+        self.overlap_var = tk.StringVar(value="20")
+
         self.custom_topic_var = tk.StringVar(value=ROBOT_STATE)
 
         self._build_ui()
@@ -299,6 +311,15 @@ class McMqttTestApp:
             ("Height (mm)", self.height_var),
             ("Thickness (mm)", self.thickness_var),
             ("Target distance (mm)", self.target_distance_var),
+            ("Cell ID", self.cell_id_var),
+            ("Segment index", self.segment_index_var),
+            ("Segment count", self.segment_count_var),
+            ("Grid index", self.grid_index_var),
+            ("Grid count", self.grid_count_var),
+            ("Grid width (mm)", self.grid_width_var),
+            ("Grid height (mm)", self.grid_height_var),
+            ("Scan height (mm)", self.scan_h_var),
+            ("Overlap (mm)", self.overlap_var),
         )
         for row, (label, variable) in enumerate(fields):
             ttk.Label(job, text=label).grid(row=row, column=0, sticky=tk.W)
@@ -630,18 +651,27 @@ class McMqttTestApp:
         )
 
     def _publish_job_command(self) -> None:
-        """입력한 검사 대상 정보로 신규 Job 명령을 발행한다."""
+        """입력한 검사 대상·격자 정보로 신규 Job 명령을 발행한다."""
         values = {
             "job_id": self.job_id_var.get().strip(),
             "diameter": self.diameter_var.get().strip(),
             "height": self.height_var.get().strip(),
             "thickness": self.thickness_var.get().strip(),
             "target_distance": self.target_distance_var.get().strip(),
+            "cell_id": self.cell_id_var.get().strip(),
+            "segment_index": self.segment_index_var.get().strip(),
+            "segment_count": self.segment_count_var.get().strip(),
+            "grid_index": self.grid_index_var.get().strip(),
+            "grid_count": self.grid_count_var.get().strip(),
+            "grid_width": self.grid_width_var.get().strip(),
+            "grid_height": self.grid_height_var.get().strip(),
+            "scan_h": self.scan_h_var.get().strip(),
+            "overlap": self.overlap_var.get().strip(),
         }
         if any(not value for value in values.values()):
             messagebox.showwarning(
                 "입력 누락",
-                "Job 정보의 모든 값을 입력해 주세요.",
+                "Job 정보와 격자 정보의 모든 값을 입력해 주세요.",
             )
             return
         payload = {
@@ -652,6 +682,17 @@ class McMqttTestApp:
                 "height": values["height"],
                 "thickness": values["thickness"],
                 "target_distance": values["target_distance"],
+            },
+            "grid": {
+                "cell_id": values["cell_id"],
+                "segment_index": values["segment_index"],
+                "segment_count": values["segment_count"],
+                "grid_index": values["grid_index"],
+                "grid_count": values["grid_count"],
+                "width": values["grid_width"],
+                "height": values["grid_height"],
+                "scan_h": values["scan_h"],
+                "overlap": values["overlap"],
             },
         }
         self._publish(JOB_COMMAND, payload)

@@ -9,7 +9,9 @@
     "쓰기 주소는 로봇 태스크가 읽는 범용 레지스터(256~383)에 맞춘다.",
     "조그와 홈 이동은 레지스터가 아니라 30001 스크립트로 처리하므로 여기에 없다.",
     "kind는 단위 환산 방법이다. pose는 앞 3개를 위치, 뒤 3개를 회전으로 보고,",
-    "angle은 6개 모두 회전으로 본다. 관절 각도는 6축 전부 mrad이므로 angle이다."
+    "angle은 6개 모두 회전으로 본다. 관절 각도는 6축 전부 mrad이므로 angle이다.",
+    "raw는 값을 그대로 정수로 저장한다(소수점 하위 단위가 없다). work_area가",
+    "여기 해당한다 — app_width/height/scan_h/overlap은 0.1mm 아니라 mm 그대로다."
   ],
   "scale": {
     "position_per_count": 0.1,
@@ -29,6 +31,8 @@
     "speed_ratio": { "address": 307, "count": 1 },
     "pose_src": { "address": 308, "count": 1 },
     "home_joint": { "address": 310, "count": 6, "kind": "angle" },
-    "start_pose": { "address": 316, "count": 6, "kind": "pose" }
+    "start_pose": { "address": 316, "count": 6, "kind": "pose" },
+    "work_area": { "address": 256, "count": 4, "kind": "raw" },
+    "param_src": { "address": 266, "count": 1 }
   }
 }

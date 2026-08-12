@@ -52,6 +52,7 @@ class RosTopics:
     SPEED_RATIO = "robot/command/speed_ratio"
     HOME_JOINT = "robot/command/home_joint"
     START_POSE = "robot/command/start_pose"
+    WORK_AREA = "robot/command/work_area"
     JOG_JOINT = "robot/command/jog_joint"
     JOG_TCP = "robot/command/jog_tcp"
 
@@ -188,6 +189,8 @@ class RosStatusClient(QObject):
                     Float32MultiArray, RosTopics.HOME_JOINT, 10),
                 "start_pose": self._node.create_publisher(
                     Float32MultiArray, RosTopics.START_POSE, 10),
+                "work_area": self._node.create_publisher(
+                    Float32MultiArray, RosTopics.WORK_AREA, 10),
             }
             self._clients = {
                 key: self._node.create_client(Trigger, service)

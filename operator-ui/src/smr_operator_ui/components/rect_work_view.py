@@ -63,6 +63,7 @@ class RectWorkView(QWidget):
         self._pos_h_mm = 0.0
         self._pos_v_mm = 0.0
         self._has_position = False
+        self._cell_label = ""
         self.setMinimumSize(500, 330)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("작업 영역을 클릭하여 크기를 설정하세요.")
@@ -83,6 +84,11 @@ class RectWorkView(QWidget):
         """원점 기준 현재 위치를 표시한다. 가로 + = 오른쪽, 세로 + = 위."""
         self._pos_h_mm, self._pos_v_mm = horizontal_mm, vertical_mm
         self._has_position = True
+        self.update()
+
+    def set_cell_label(self, text: str) -> None:
+        """현재 스캔 중인 격자 이름을 표시한다. 예: "A0 (1/9)"."""
+        self._cell_label = text
         self.update()
 
     def clear_position(self) -> None:
@@ -129,9 +135,10 @@ class RectWorkView(QWidget):
         title_rect = QRectF(0, 8, self.width(), 60)
         painter.setPen(QColor(COLORS["text"]))
         painter.setFont(QFont("Malgun Gothic", 12, 600))
+        title = f"작업 영역  {self._cell_label}" if self._cell_label else "작업 영역"
         painter.drawText(
             title_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
-            "작업 영역\n"
+            f"{title}\n"
             f"{plan['width']:.0f} × {plan['height']:.0f} mm  "
             f"(스캐너 {plan['scan_h']:.0f} / 겹침 {plan['overlap']:.0f} mm)\n"
             f"피치 {plan['pitch']:.0f} mm  {plan['rows']} 행",

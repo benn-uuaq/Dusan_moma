@@ -68,6 +68,9 @@ class RegisterMap:
 
     def scales_for(self, entry: "RegisterEntry") -> list[float]:
         """항목의 성분별 환산 계수를 순서대로 돌려준다."""
+        if entry.kind == "raw":
+            # 이미 정수 mm/개수 등으로 저장되는 값. 소수점 하위 단위가 없다.
+            return [1.0] * entry.count
         if entry.kind == "angle":
             return [self.rotation_scale] * entry.count
         # pose는 위치 3개와 회전 3개로 나뉜다.

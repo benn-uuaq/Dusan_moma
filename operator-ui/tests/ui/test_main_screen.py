@@ -91,6 +91,75 @@ def test_mqtt_job_command_updates_target_dimensions(qtbot, monkeypatch) -> None:
     window.close()
 
 
+def test_mqtt_job_command_applies_grid_cell(qtbot, monkeypatch) -> None:
+    """원통이 커서 AMR 구역 + Cobot 세로 격자로 나눠 스캔한다.
+
+    grid 블록이 오면 OrbitView의 AMR 위치, RectWorkView의 격자 치수·이름이
+    갱신되고, 값이 로봇(ROS)과 저장소(DB) 양쪽으로 전달되어야 한다.
+    """
+    mqtt_server = MqttServer()
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    saved: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        window.settings_service, "save",
+        lambda scope, values: saved.append((scope, values)),
+    )
+    sent_poses: list[tuple[str, list]] = []
+    monkeypatch.setattr(
+        window.ros_status, "send_pose",
+        lambda name, values: sent_poses.append((name, list(values))) or True,
+    )
+
+    mqtt_server.command_received.emit(
+        MqttTopics.JOB_COMMAND,
+        {
+            "timestamp": "1784727779111",
+            "job_id": "jb00000001",
+            "job_info": {
+                "diameter": "2500", "height": "6000",
+                "thickness": "500", "target_distance": "8560",
+            },
+            "grid": {
+                "cell_id": "A0", "segment_index": "1", "segment_count": "12",
+                "grid_index": "0", "grid_count": "9",
+                "width": "600", "height": "800", "scan_h": "150", "overlap": "20",
+            },
+        },
+    )
+
+    assert window.simulator.snapshot.cycle.current_segment == 1
+    assert window.simulator.snapshot.cycle.total_segments == 12
+    assert window.main_screen.rect_view.work_area() == (600.0, 800.0, 150.0, 20.0)
+    assert "A0" in window.main_screen.rect_view._cell_label
+    assert ("work_area", {"width_mm": 600.0, "height_mm": 800.0,
+                          "scan_h_mm": 150.0, "overlap_mm": 20.0}) in saved
+    assert sent_poses == [("work_area", [600.0, 800.0, 150.0, 20.0])]
+    window.close()
+
+
+def test_mqtt_job_command_without_grid_keeps_previous_cell(qtbot) -> None:
+    """옛 payload(격자 없음)를 받아도 검사대상 처리는 계속 되고 죽지 않는다."""
+    mqtt_server = MqttServer()
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+
+    mqtt_server.command_received.emit(
+        MqttTopics.JOB_COMMAND,
+        {
+            "timestamp": "1784727779111",
+            "job_id": "jb00000001",
+            "job_info": {
+                "diameter": "2500", "height": "6000",
+                "thickness": "500", "target_distance": "8560",
+            },
+        },
+    )
+
+    assert window.main_screen.orbit_view.target_dimensions() == (2.5, 6.0)
+    window.close()
+
+
 def test_mqtt_amr_run_starts_inspection(qtbot) -> None:
     mqtt_server = MqttServer()
     window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)

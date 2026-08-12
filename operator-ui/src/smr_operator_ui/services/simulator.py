@@ -75,6 +75,21 @@ class InspectionSimulator(QObject):
         cycle = replace(self.snapshot.cycle, running=False, paused=False, phase=CyclePhase.IDLE, velocity_mps=0.0)
         self._publish(cycle, "사이클을 정지했습니다.")
 
+    def set_segment_position(self, current_segment: int, total_segments: int) -> None:
+        """AMR의 실제 원주 구역 위치를 반영한다.
+
+        MQTT job_cmd로 구역 위치가 들어오면 여기로 반영한다. 구간 수 자체가
+        바뀔 수 있어 total_segments도 함께 받는다. 진행 단계(안전 순서)는
+        건드리지 않고 위치 표시만 바꾼다.
+        """
+        cycle = self.snapshot.cycle
+        cycle = replace(
+            cycle,
+            total_segments=max(1, total_segments),
+            current_segment=max(1, min(current_segment, max(1, total_segments))),
+        )
+        self._publish(cycle, f"AMR 위치: {cycle.current_segment:02d} / {cycle.total_segments} 구역")
+
     def _advance(self) -> None:
         """검사 단계를 한 번 진행하고 필요하면 다음 구간으로 이동한다."""
         cycle = self.snapshot.cycle

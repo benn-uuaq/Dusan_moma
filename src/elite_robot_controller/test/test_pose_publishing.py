@@ -421,3 +421,56 @@ def test_connected_status_is_republished_every_cycle():
     node.update_robot_loop()
 
     assert node.pub_connected.messages == [True, True, True]  # connect() 1회 + loop 2회
+
+
+def test_work_area_register_is_raw_mm():
+    """work_area는 0.1mm 아니라 정수 mm 그대로 저장된다."""
+    registers = register_map.load()
+    entry = registers.write_entry("work_area")
+
+    assert entry.address == 256
+    assert entry.count == 4
+    assert entry.kind == "raw"
+    assert registers.scales_for(entry) == [1.0, 1.0, 1.0, 1.0]
+    assert registers.write_entry("param_src").address == 266
+
+
+def test_work_area_write_sets_param_src_flag():
+    """작업 영역을 쓰면 256~259와 param_src(266)=1이 함께 나가야 한다."""
+    node = make_node(map_data={
+        "scale": {"position_per_count": 0.1, "rotation_per_count": 1.0},
+        "read": {},
+        "write": {
+            "work_area": {"address": 256, "count": 4, "kind": "raw"},
+            "param_src": {"address": 266, "count": 1},
+        },
+    })
+
+    node._write_pose_topic(
+        "work_area", FakeMessageList([600.0, 800.0, 150.0, 20.0]), flag_name="param_src"
+    )
+
+    assert node.robot_modbus.writes == [
+        (256, 600), (257, 800), (258, 150), (259, 20), (266, 1),
+    ]
+
+
+def test_work_area_write_skipped_without_param_src_address():
+    """flag 레지스터 주소가 없으면 값은 쓰되 플래그는 세우지 않는다."""
+    node = make_node(map_data={
+        "scale": {"position_per_count": 0.1, "rotation_per_count": 1.0},
+        "read": {},
+        "write": {"work_area": {"address": 256, "count": 4, "kind": "raw"}},
+    })
+
+    node._write_pose_topic(
+        "work_area", FakeMessageList([600.0, 800.0, 150.0, 20.0]), flag_name="param_src"
+    )
+
+    assert node.robot_modbus.writes == [(256, 600), (257, 800), (258, 150), (259, 20)]
+    assert node.get_logger().warnings
+
+
+class FakeMessageList:
+    def __init__(self, data):
+        self.data = data

@@ -407,6 +407,18 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
         "height" : " 6000",
         "thickness" : "500",
         "target_distance" : "8560"
+    },
+    "grid" :
+    {
+        "cell_id" : "A0",
+        "segment_index" : "1",
+        "segment_count" : "12",
+        "grid_index" : "0",
+        "grid_count" : "9",
+        "width" : "600",
+        "height" : "800",
+        "scan_h" : "150",
+        "overlap" : "20"
     }
 }
 ```
@@ -418,10 +430,24 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 | `timestamp` | `string` | `Y` | `ms` | UTC Unix Epoch 밀리초로 추정 | 명령 생성 시각 | `"1784727720000"` |
 | `job_id` | `string` | `Y` | - | `id` | 새로운 job의 id | `"jb00000001"` |
 | `job_info` | `dictionary` | `Y` | - | `key` | job information | `"diameter", "height","thickness","target_distance"등 값의 대분류 ` |
-| `diameter` | `string` | `Y` | - | `mm` | 검사 대상체 지름 | `"2500"` |
-| `height` | `string` | `Y` | - | `mm` | 검사 대상체 높이 | `"6000"` |
+| `diameter` | `string` | `Y` | - | `mm` | 검사 대상체(원통) 지름 | `"2500"` |
+| `height` | `string` | `Y` | - | `mm` | 검사 대상체(원통) 높이 | `"6000"` |
 | `thickness` | `string` | `Y` | - | `mm` | 검사 대상체 두께 | `"500"` |
 | `target_distance` | `string` | `Y` | - | `mm` | 이동할 거리 | `"300"` |
+| `grid` | `dictionary` | `Y` | - | `key` | 원통이 커서 AMR 원주 구역과 Cobot 세로 격자로 나눠 스캔하기 위한 정보 | 아래 9개 필드 |
+| `grid.cell_id` | `string` | `Y` | - | 예: `"A0"`, `"A1"`, `"B0"` | 구역 문자 + 격자 번호로 만든 격자 이름. 문자=구역(`segment_index`), 숫자=격자(`grid_index`, 0부터) | `"A0"` |
+| `grid.segment_index` | `string` | `Y` | - | `1` ~ `segment_count` | AMR이 현재 위치한 원주 구역 번호(1부터) | `"1"` |
+| `grid.segment_count` | `string` | `Y` | - | `1` 이상 | 원주를 나눈 전체 구역 수. 원통 크기에 따라 12보다 늘어날 수 있다 | `"12"` |
+| `grid.grid_index` | `string` | `Y` | - | `0` ~ `grid_count - 1` | 이번에 Cobot이 스캔할 세로 격자 번호(0부터). 구역 안에서 리프트로 높이를 바꿔가며 0, 1, 2... 순서로 올라간다 | `"0"` |
+| `grid.grid_count` | `string` | `Y` | - | `1` 이상 | 이 구역의 전체 세로 격자 수 | `"9"` |
+| `grid.width` | `string` | `Y` | - | `mm` | 이번 격자의 가로 폭. 로봇 태스크의 `app_width`(레지스터 256)로 전달 | `"600"` |
+| `grid.height` | `string` | `Y` | - | `mm` | 이번 격자의 세로 높이. 로봇 태스크의 `app_height`(레지스터 257)로 전달 | `"800"` |
+| `grid.scan_h` | `string` | `Y` | - | `mm` | UT 스캐너가 한 자리에서 훑는 세로 유효높이. 로봇 태스크의 `scan_h`(레지스터 258)로 전달 | `"150"` |
+| `grid.overlap` | `string` | `Y` | - | `mm`, `0` 이상 `scan_h` 미만 | 세로 겹침. 로봇 태스크의 `overlap`(레지스터 259)로 전달 | `"20"` |
+
+**격자 개념:** 원통이 한 번에 스캔하기엔 너무 크므로 AMR이 원주를 `segment_count`개 구역(`segment_index` = 1, 2, 3...)으로 나눠 이동하고, 각 구역 안에서는 Cobot이 닿을 수 있는 높이만큼만 스캔하므로 세로로 다시 `grid_count`개 격자(`grid_index` = 0, 1, 2...)로 나눈다. 예: 구역 A(`segment_index=1`)의 격자는 `A0, A1, ..., A8`처럼 나열된다.
+
+동작 순서는 다음과 같다: AMR이 구역에 도착 → Cobot이 격자 0을 ㄹ자로 스캔 → 완료 후 Cobot이 홈 위치로 복귀 → 리프트가 상승해 다음 격자 높이로 이동 → Cobot이 격자 1을 스캔 → (해당 구역의 마지막 격자까지 반복) → AMR이 다음 구역으로 이동 → 위 과정을 반복.
 #### 명령값 정리
 
 | 대상 | 명령값 | 의미 |

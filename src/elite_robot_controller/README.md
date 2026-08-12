@@ -66,6 +66,8 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 | `write.pose_src` | 308 | 1이면 태스크가 310~321의 기준 위치를 쓴다 |
 | `write.home_joint` | 310~315 | 홈 관절값 [mrad] |
 | `write.start_pose` | 316~321 | 시작 포즈 (길이 0.1 mm, 회전 mrad) |
+| `write.work_area` | 256~259 | 작업 영역 [너비, 높이, 스캐너높이, 겹침] mm. **정수 mm 그대로** 저장한다(`kind: "raw"`, 0.1mm 아님) |
+| `write.param_src` | 266 | 1이면 태스크가 256~259의 작업 영역을 쓴다 |
 
 쓰기 주소는 로봇 태스크가 읽는 범용 레지스터 대역(256~383)에 맞췄습니다. 태스크가 이미 쓰는 256~305는 피했습니다.
 
@@ -97,6 +99,7 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 | 토픽 (`std_msgs/Int32`) | `robot/command/speed_ratio` | `speed_ratio` |
 | 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/home_joint` | `home_joint` |
 | 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/start_pose` | `start_pose` |
+| 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/work_area` | `work_area` (성공 시 `param_src`도 1로 세운다) |
 | 토픽 (`std_msgs/Int32`) | `robot/command/jog_joint` | 없음 (30001 스크립트) |
 | 토픽 (`std_msgs/Int32`) | `robot/command/jog_tcp` | 없음 (30001 스크립트) |
 
@@ -122,6 +125,7 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 
 `t`(`jog_hold_time`)는 **짧게 둡니다.** 매뉴얼상 로봇은 `t` 동안 계속 움직이므로, 길게 주면 정지 명령이 실패했을 때 그 시간만큼 멈추지 않습니다. 대신 운영 UI가 버튼을 누르고 있는 동안 명령을 되풀이해 보내고(150 ms 간격), 화면이 멈추거나 통신이 끊기면 되풀이가 끊겨 로봇도 `t` 안에 섭니다.
 - `robot/command/move_home`은 `home_lift_z`까지 `movel`로 올린 뒤 310~315에 저장된 관절값으로 `movej` 합니다. 태스크의 `move_home` 노드와 같은 순서입니다.
+- `robot/command/work_area`는 원통이 커서 AMR 원주 구역 + Cobot 세로 격자로 나눠 스캔할 때, MQTT `job_cmd`의 `grid` 블록에서 온 이번 격자의 너비/높이/스캐너높이/겹침을 전달한다. `work_area` 항목은 `kind: "raw"`라 다른 자세 항목과 달리 값을 그대로 정수 mm로 저장한다(0.1mm 단위 아님).
 
 > `speedj`/`speedl`은 컨트롤러의 속도 백분율 설정에 영향을 받습니다(스크립트 매뉴얼 3.1.26/3.1.27). 100 %가 아니면 실제 속도가 그만큼 줄어듭니다.
 

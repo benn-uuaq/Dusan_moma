@@ -86,6 +86,11 @@ class RobotControlNode(Node):
         self.create_subscription(Float32MultiArray, 'robot/command/home_joint', self.cb_home_joint, 10)
         self.create_subscription(Float32MultiArray, 'robot/command/start_pose', self.cb_start_pose, 10)
 
+        # 작업 영역: [너비, 높이, 스캐너높이, 겹침] mm. MQTT job_cmd의 grid
+        # 블록이 UI를 거쳐 여기로 온다. 256~259에 쓰고 266(param_src)을
+        # 1로 세워야 태스크가 이 값을 읽는다.
+        self.create_subscription(Float32MultiArray, 'robot/command/work_area', self.cb_work_area, 10)
+
         # 10Hz 주기로 모드버스 데이터 갱신 및 30001 알람 수집
         self.timer = self.create_timer(0.1, self.update_robot_loop)
         self.get_logger().info("[DEBUG]] ELITE Robot 제어 ROS2 노드가 활성화되었습니다.")
@@ -261,21 +266,31 @@ class RobotControlNode(Node):
                 return False, f"[{name}] 레지스터 {entry.address + offset} 쓰기 실패"
         return True, f"[{name}] 레지스터 {entry.address}~{entry.address + entry.count - 1} 갱신"
 
-    def _write_pose_topic(self, name, msg):
+    def _write_pose_topic(self, name, msg, flag_name='pose_src'):
+        """값 N개를 레지스터에 쓰고, 태스크가 읽도록 플래그 레지스터를 1로 세운다.
+
+        home_joint/start_pose는 pose_src(308)를, work_area는 param_src(266)를
+        쓴다. 플래그 이름이 다를 뿐 동작은 같다.
+        """
         success, message = self.write_pose(name, list(msg.data))
-        if success:
-            # 태스크가 레지스터 값을 쓰도록 알린다.
-            self.robot_modbus.set_register(
-                self.registers.write_entry('pose_src').address or 308, 1
-            )
-        else:
+        if not success:
             self.get_logger().warn(message)
+            return
+        flag_entry = self.registers.write_entry(flag_name)
+        if flag_entry.available:
+            self.robot_modbus.set_register(flag_entry.address, 1)
+        else:
+            self.get_logger().warn(f"[{name}] {flag_name} 주소가 설정되지 않았습니다.")
 
     def cb_home_joint(self, msg):
         self._write_pose_topic('home_joint', msg)
 
     def cb_start_pose(self, msg):
         self._write_pose_topic('start_pose', msg)
+
+    def cb_work_area(self, msg):
+        # [너비, 높이, 스캐너높이, 겹침] mm -> 256~259, 성공하면 266=1.
+        self._write_pose_topic('work_area', msg, flag_name='param_src')
 
     # ---------------------------------------------------------------- 조그
     def _jog_vector(self, code, count=6):

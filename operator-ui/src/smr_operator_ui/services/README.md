@@ -32,6 +32,7 @@
 - `docs/mqtt_topic_form.md`에 정의된 로봇 MQTT Topic을 관리합니다.
 - 외부 MQTT Broker에 비동기로 연결하고 명령, 상태, 응답, Heartbeat Topic을 구독합니다.
 - AMR/Cobot 동작, 리셋, 비상정지, Job 초기화 및 신규 Job 명령 발행 API를 제공합니다.
+- `job_cmd`는 검사 대상(`job_info`) 정보 외에 격자 위치(`grid`)도 함께 받습니다. 원통이 너무 커서 AMR이 원주를 구역(segment)으로, 각 구역을 다시 Cobot이 닿는 높이만큼 세로 격자(grid)로 나눠 스캔하기 때문입니다. `app.py`의 `_apply_mqtt_grid()`가 이 블록을 받아 메인 화면의 AMR 위치·사각형 작업 모델을 갱신하고, `robot/command/work_area` 토픽으로 로봇에도 전달합니다.
 - 수신 Command의 JSON 구조, 허용값, 유효시간과 중복 `timestamp`를 검사합니다.
 - 연결 상태와 수신 결과를 Qt 시그널로 화면에 전달합니다.
 - 기본 Broker는 `127.0.0.1:1883`이며 `SMR_MQTT_*` 환경 변수로 변경할 수 있습니다.

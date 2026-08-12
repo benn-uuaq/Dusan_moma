@@ -56,8 +56,10 @@
 - [x] 현재 TCP는 384~389(기본 프레임)로 확정. 260~265는 사용하지 않음
 - [x] 원점 기준 상대좌표(280~285) Z 부호 수정, state==4일 때만 발행하도록 게이트 (dus_init.script)
 - [x] 메인 화면 우측에 사각형 작업 모델(RectWorkView) 추가 — 너비/높이/스캐너높이/겹침 입력, ㄹ자 경로, 실시간 위치
-- [ ] **작업 영역(너비/높이/스캐너높이/겹침)을 MQTT로 받아 로봇에 전달하는 경로 결정** — job_cmd 확장 vs 새 토픽 분리, 결정 대기중
-- [ ] 로봇 write 레지스터 256~259(작업 영역)+266(param_src)를 modbus_registers.json과 robot_control_node에 추가 (UI→로봇 전달용)
+- [x] job_cmd 토픽에 grid 블록(cell_id/segment_index/segment_count/grid_index/grid_count/width/height/scan_h/overlap) 확장 — mqtt_topic_form.md 갱신
+- [x] 로봇 write 레지스터 256~259(작업 영역)+266(param_src) 추가, robot/command/work_area 토픽으로 UI→로봇 전달 완료
+- [x] AMR 원주 구역 수를 12 고정에서 MQTT로 가변으로 (InspectionSimulator.set_segment_position)
+- [ ] AMR 구역 순회 실제 완료 시 다음 구역/격자로 자동 진행하는 로직 (현재는 MQTT job_cmd 수신 때만 위치 갱신, 자동 시퀀싱은 MC 쪽 책임인지 확인 필요)
 - [ ] robot_task/scripts/dus_init.script 재적용 필요 (오늘 수정한 pub_rel 반영) — 로봇에 넣기만 하면 됨
 - [ ] 조그 값 인코딩 확인 (축 번호와 방향을 한 레지스터에 담는 방식)
 - [ ] I/O 출력 ON/OFF를 실제 PLC 경로에 연결 (현재는 `output_requested` 시그널까지만)

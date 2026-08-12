@@ -320,6 +320,45 @@ class OperatorWindow(QMainWindow):
             "MQTT Job 정보를 검사대상 설정에 적용했습니다. "
             f"(지름 {diameter_m:.2f} m, 높이 {height_m:.2f} m)"
         )
+        self._apply_mqtt_grid(payload.get("grid"))
+
+    def _apply_mqtt_grid(self, grid: Any) -> None:
+        """원통을 나눈 격자(구역+세로칸) 위치와 이번 칸 치수를 반영한다.
+
+        원통이 커서 AMR이 원주를 구역(segment)으로 나눠 이동하고, 각 구역
+        안에서는 Cobot이 세로 격자(grid)를 하나씩 스캔한다. 이 정보가
+        없으면(옛 payload 등) 화면 갱신만 건너뛰고 나머지는 그대로 둔다.
+        """
+        if not isinstance(grid, dict):
+            return
+        try:
+            cell_id = str(grid["cell_id"]).strip()
+            segment_index = int(str(grid["segment_index"]).strip())
+            segment_count = int(str(grid["segment_count"]).strip())
+            grid_index = int(str(grid["grid_index"]).strip())
+            grid_count = int(str(grid["grid_count"]).strip())
+            width_mm = float(str(grid["width"]).strip())
+            height_mm = float(str(grid["height"]).strip())
+            scan_h_mm = float(str(grid["scan_h"]).strip())
+            overlap_mm = float(str(grid["overlap"]).strip())
+            values_mm = (width_mm, height_mm, scan_h_mm, overlap_mm)
+            if not cell_id or any(not isfinite(v) or v <= 0 for v in values_mm):
+                raise ValueError("격자 치수는 0보다 큰 유한한 값이어야 합니다.")
+        except (KeyError, TypeError, ValueError) as exc:
+            self.main_screen.show_activity(f"MQTT 격자 정보 적용 실패: {exc}")
+            return
+
+        # AMR 원주 위치는 기존 검사 사이클 모델(OrbitView)에 그대로 반영한다.
+        self.simulator.set_segment_position(segment_index, segment_count)
+        self.main_screen.set_work_cell_label(f"{cell_id} ({grid_index + 1}/{grid_count})")
+        self.main_screen.set_work_area(width_mm, height_mm, scan_h_mm, overlap_mm)
+        self.settings_service.save(
+            "work_area",
+            {"width_mm": width_mm, "height_mm": height_mm,
+             "scan_h_mm": scan_h_mm, "overlap_mm": overlap_mm},
+        )
+        # 로봇 태스크가 이 값을 읽어 ㄹ자 스캔을 하도록 전달한다.
+        self.ros_status.send_pose("work_area", list(values_mm))
 
     def _show_mqtt_connection_state(self, connected: bool) -> None:
         """MQTT Broker 연결 상태를 메인 화면 활동 문구로 표시한다."""
