@@ -16,6 +16,8 @@ class RobotControlNode(Node):
 
         self.declare_parameter('robot_ip', '192.168.227.134')
         self.declare_parameter('register_map', '')
+        # 502는 리눅스에서 권한이 필요해 시뮬레이터 시험용으로 바꿀 수 있게 뺐다.
+        self.declare_parameter('modbus_port', 502)
         # 조그 속도는 레지스터 307(속도 비율 %)을 그대로 쓴다. 단위가 달라서
         # 아래 값을 100 % 기준으로 두고 비율만큼 줄인다.
         #   speedj  qd [rad/s], a [rad/s^2]   (스크립트 매뉴얼 3.1.26)
@@ -36,7 +38,8 @@ class RobotControlNode(Node):
         self.robot_ip = robot_ip
         self.robot_dash = Robot_29999(robot_ip, 29999)
         self.robot_primary = Robot_30001(robot_ip, 30001)
-        self.robot_modbus = Robot_modbus(robot_ip, 502)
+        modbus_port = self.get_parameter('modbus_port').get_parameter_value().integer_value
+        self.robot_modbus = Robot_modbus(robot_ip, modbus_port)
         self.alarm_mgr = AlarmManager()
         self.connected = False
         # 로봇 자체 속도 비율 [%]. 조그 속도도 이 값을 따른다.
@@ -142,9 +145,11 @@ class RobotControlNode(Node):
         return res
 
     def update_robot_loop(self):
-        # 연결 전에 소켓을 건드리면 예외가 난다. 상태만 알리고 넘어간다.
+        # 매 주기 발행한다. 상태가 바뀔 때만 보내면 UI가 나중에 구독했을 때
+        # (또는 재시작했을 때) 이미 지나간 값을 영영 받지 못한다.
+        self.publish_connected()
+        # 연결 전에 소켓을 건드리면 예외가 난다.
         if not self.connected:
-            self.publish_connected()
             return
 
         self.publish_code('robot_mode', self.pub_robot_mode)

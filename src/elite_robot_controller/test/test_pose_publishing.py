@@ -400,3 +400,24 @@ def test_jog_stop_uses_dashboard_stop():
 class FakeMessageInt:
     def __init__(self, data):
         self.data = data
+
+
+def test_connected_status_is_republished_every_cycle():
+    """상태가 바뀌지 않아도 매 주기 발행해야 늦게 구독해도 값을 받는다."""
+    node = make_connectable_node()
+    node.connect_all_servers()
+    node.pub_robot_mode = FakePublisher()
+    node.pub_control_method = FakePublisher()
+    node.pub_op_mode = FakePublisher()
+    node.pub_tcp_pose = FakePublisher()
+    node.pub_tcp_pose_zero = FakePublisher()
+    node.pub_joint_position = FakePublisher()
+    node.pub_alarm = FakePublisher()
+    node.alarm_mgr = type("M", (), {"process": lambda self, a: False})()
+    node.robot_primary.get_data = lambda: None
+    node.robot_primary.alarm_queue = type("Q", (), {"empty": lambda self: True})()
+
+    node.update_robot_loop()
+    node.update_robot_loop()
+
+    assert node.pub_connected.messages == [True, True, True]  # connect() 1회 + loop 2회

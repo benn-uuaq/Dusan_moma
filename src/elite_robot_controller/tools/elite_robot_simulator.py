@@ -1,0 +1,362 @@
+#!/usr/bin/env python3
+"""Elite CS612 없이 elite_robot_controller를 시험하기 위한 가짜 로봇.
+
+29999(Dashboard), 30001(Primary), Modbus TCP 세 채널을 흉내 낸다.
+레지스터 주소는 `config/modbus_registers.json`을 그대로 읽으므로 노드와
+시뮬레이터가 서로 다른 주소를 쓰는 일이 없다.
+
+## 실행
+
+```bash
+python3 tools/elite_robot_simulator.py
+```
+
+기본으로 127.0.0.1:29999 / 30001 / 5502 에서 대기한다. 502는 리눅스에서
+권한이 필요해 기본값을 5502로 뒀다. 노드는 다음처럼 띄운다.
+
+```bash
+ros2 run elite_robot_controller robot_control_node --ros-args \\
+    -p robot_ip:=127.0.0.1 -p modbus_port:=5502
+```
+
+## 흉내 내는 동작
+
+- **연결**: 세 포트 모두 접속을 받아준다. 여러 번 연결·해제해도 된다.
+- **Dashboard 명령**: robotMode/status/robotControl -on|off/brakeRelease/
+  play/pause/stop 에 짧은 텍스트로 응답한다. stop 은 조그 속도도 0으로 만든다.
+- **조그**: 30001 로 들어오는 `speedj(...)`/`speedl(...)` 스크립트를 읽어
+  해당 속도로 관절(73~78)과 TCP(384~389) 레지스터를 계속 갱신한다.
+  `stop` 명령이나 연결 해제로 멈춘다. 목표 속도까지 도달하지 않으면
+  기존 값을 계속 쓰지 않도록 처리한다.
+- **홈 이동**: `movej(...)` 스크립트를 읽으면 짧은 지연 후 관절 레지스터를
+  목표값으로 옮긴다.
+- **쓰기 레지스터**: UI가 306(작업 속도), 307(속도 비율), 308(pose_src),
+  310~321(기준 위치)에 쓴 값을 그대로 저장하고 돌려준다.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import socket
+import struct
+import sys
+import threading
+import time
+
+# 소스 트리에서 바로 실행해도 패키지를 찾도록 경로를 보정한다.
+_PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PACKAGE_ROOT not in sys.path:
+    sys.path.insert(0, _PACKAGE_ROOT)
+
+from elite_robot_controller import register_map  # noqa: E402
+
+
+def to_unsigned16(value: int) -> int:
+    return value & 0xFFFF
+
+
+def to_signed16(value: int) -> int:
+    value &= 0xFFFF
+    return value - 0x10000 if value > 0x7FFF else value
+
+
+class RegisterBank:
+    """레지스터 값을 보관하고 잠금으로 여러 스레드의 접근을 보호한다."""
+
+    def __init__(self, registers: register_map.RegisterMap):
+        self.registers = registers
+        self._lock = threading.Lock()
+        self._values: dict[int, int] = {}
+        self._seed_defaults()
+
+    def _seed_defaults(self) -> None:
+        defaults = {
+            "robot_mode": [7],                          # RUNNING
+            "control_method": [2],                       # 원격 제어
+            "operation_mode": [0],                        # 자동
+            "joint_position": [207, -1466, -1875, -1371, 1570, 207],
+            "tcp_absolute": [6368, -473, 5810, 3141, 0, -1570],
+            "tcp_zero_relative": [0, 0, 1000, 0, 0, 0],
+        }
+        for name, values in defaults.items():
+            entry = self.registers.read_entry(name)
+            if not entry.available:
+                continue
+            for offset, value in enumerate(values):
+                self._values[entry.address + offset] = value
+        for name in self.registers.write.keys():
+            entry = self.registers.write_entry(name)
+            for offset in range(entry.count):
+                self._values.setdefault(entry.address + offset, 0)
+
+    def read(self, address: int, count: int) -> list[int]:
+        with self._lock:
+            return [self._values.get(address + i, 0) for i in range(count)]
+
+    def write(self, address: int, value: int) -> None:
+        with self._lock:
+            self._values[address] = value
+
+    def write_many(self, address: int, values: list[int]) -> None:
+        with self._lock:
+            for offset, value in enumerate(values):
+                self._values[address + offset] = value
+
+    def entry_by_address(self, target: str) -> register_map.RegisterEntry:
+        return self.registers.read_entry(target)
+
+
+class ModbusServer(threading.Thread):
+    """FC3(읽기)/FC6·FC16(쓰기)만 지원하는 최소 Modbus TCP 서버."""
+
+    def __init__(self, bank: RegisterBank, host: str, port: int):
+        super().__init__(daemon=True)
+        self.bank = bank
+        self.host, self.port = host, port
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind((host, port))
+        self._sock.listen(4)
+
+    def run(self) -> None:
+        print(f"[Modbus] {self.host}:{self.port} 에서 대기")
+        while True:
+            conn, addr = self._sock.accept()
+            threading.Thread(target=self._handle, args=(conn, addr), daemon=True).start()
+
+    def _handle(self, conn: socket.socket, addr) -> None:
+        with conn:
+            while True:
+                header = self._recv_exact(conn, 7)
+                if header is None:
+                    return
+                tx_id, proto_id, length, unit_id = struct.unpack(">HHHB", header)
+                pdu = self._recv_exact(conn, length - 1)
+                if pdu is None:
+                    return
+                response_pdu = self._handle_pdu(pdu)
+                resp_header = struct.pack(">HHHB", tx_id, proto_id, len(response_pdu) + 1, unit_id)
+                conn.sendall(resp_header + response_pdu)
+
+    @staticmethod
+    def _recv_exact(conn: socket.socket, size: int) -> bytes | None:
+        buf = b""
+        while len(buf) < size:
+            chunk = conn.recv(size - len(buf))
+            if not chunk:
+                return None
+            buf += chunk
+        return buf
+
+    def _handle_pdu(self, pdu: bytes) -> bytes:
+        func = pdu[0]
+        if func == 0x03:  # Read Holding Registers
+            address, count = struct.unpack(">HH", pdu[1:5])
+            values = [to_unsigned16(v) for v in self.bank.read(address, count)]
+            payload = struct.pack(">B", count * 2) + b"".join(struct.pack(">H", v) for v in values)
+            return struct.pack(">B", 0x03) + payload
+        if func == 0x06:  # Write Single Register
+            address, value = struct.unpack(">HH", pdu[1:5])
+            self.bank.write(address, to_signed16(value))
+            return pdu[:5]
+        if func == 0x10:  # Write Multiple Registers
+            address, count, byte_count = struct.unpack(">HHB", pdu[1:6])
+            raw = pdu[6:6 + byte_count]
+            values = [to_signed16(v) for v, in struct.iter_unpack(">H", raw)]
+            self.bank.write_many(address, values)
+            return struct.pack(">BHH", 0x10, address, count)
+        # 지원하지 않는 기능 코드: 예외 응답(0x01 illegal function)
+        return struct.pack(">BB", func | 0x80, 0x01)
+
+
+class DashboardServer(threading.Thread):
+    """29999 텍스트 명령 서버."""
+
+    def __init__(self, bank: RegisterBank, motion: "MotionSim", host: str, port: int):
+        super().__init__(daemon=True)
+        self.bank, self.motion = bank, motion
+        self.host, self.port = host, port
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind((host, port))
+        self._sock.listen(4)
+
+    def run(self) -> None:
+        print(f"[Dashboard 29999] {self.host}:{self.port} 에서 대기")
+        while True:
+            conn, addr = self._sock.accept()
+            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+
+    def _handle(self, conn: socket.socket) -> None:
+        with conn:
+            try:
+                conn.sendall(b"Connected: Elite Robot Dashboard Simulator\n")
+                buf = b""
+                while True:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        return
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        self._respond(conn, line.decode("utf-8", "ignore").strip())
+            except (ConnectionError, OSError):
+                return
+
+    def _respond(self, conn: socket.socket, command: str) -> None:
+        replies = {
+            "robotMode": "Robotmode: RUNNING",
+            "status": "Status: RUNNING",
+            "robotControl -on": "Powering on",
+            "robotControl -off": "Powering off",
+            "brakeRelease": "Brake releasing",
+            "play": "Starting program",
+            "pause": "Pausing program",
+        }
+        if command == "stop":
+            self.motion.stop_all()
+            reply = "Stopping program"
+        else:
+            reply = replies.get(command, f"ok: {command}")
+        print(f"[Dashboard] {command!r} -> {reply!r}")
+        conn.sendall((reply + "\n").encode("utf-8"))
+
+
+class MotionSim:
+    """speedj/speedl 로 받은 속도를 레지스터에 반영하는 물리 루프."""
+
+    RATE_HZ = 20
+
+    def __init__(self, bank: RegisterBank):
+        self.bank = bank
+        self._lock = threading.Lock()
+        self._joint_velocity = [0.0] * 6   # rad/s
+        self._tcp_velocity = [0.0] * 6      # [m/s]*3 + [rad/s]*3
+        self._joint_entry = bank.registers.read_entry("joint_position")
+        self._tcp_entry = bank.registers.read_entry("tcp_absolute")
+        self._joint_pos = [float(v) for v in bank.read(self._joint_entry.address, 6)]
+        self._tcp_pos = [float(v) for v in bank.read(self._tcp_entry.address, 6)]
+
+    def set_joint_velocity(self, qd: list[float]) -> None:
+        with self._lock:
+            self._joint_velocity = list(qd)
+
+    def set_tcp_velocity(self, xd: list[float]) -> None:
+        with self._lock:
+            self._tcp_velocity = list(xd)
+
+    def stop_all(self) -> None:
+        with self._lock:
+            self._joint_velocity = [0.0] * 6
+            self._tcp_velocity = [0.0] * 6
+
+    def move_joint_to(self, joints_rad: list[float]) -> None:
+        """movej 목표로 즉시(짧은 지연 후) 옮긴다."""
+        def apply():
+            time.sleep(0.8)
+            with self._lock:
+                self._joint_pos = [v * 1000.0 for v in joints_rad]  # rad -> mrad(raw)
+            print(f"[Motion] 홈 관절값으로 이동 완료: {joints_rad}")
+        threading.Thread(target=apply, daemon=True).start()
+
+    def run_forever(self) -> None:
+        dt = 1.0 / self.RATE_HZ
+        joint_scale = self.bank.registers.scales_for(self._joint_entry)
+        tcp_scale = self.bank.registers.scales_for(self._tcp_entry)
+        while True:
+            time.sleep(dt)
+            with self._lock:
+                jv, tv = list(self._joint_velocity), list(self._tcp_velocity)
+                for i in range(6):
+                    # rad/s 또는 m·rad/s -> milli 단위 -> 레지스터 카운트
+                    self._joint_pos[i] += (jv[i] * 1000.0 / joint_scale[i]) * dt
+                    self._tcp_pos[i] += (tv[i] * 1000.0 / tcp_scale[i]) * dt
+                joint_raw = [int(round(v)) for v in self._joint_pos]
+                tcp_raw = [int(round(v)) for v in self._tcp_pos]
+            self.bank.write_many(self._joint_entry.address, joint_raw)
+            self.bank.write_many(self._tcp_entry.address, tcp_raw)
+
+
+_SPEEDJ_RE = re.compile(r"speedj\((\[[^\]]*\])")
+_SPEEDL_RE = re.compile(r"speedl\((\[[^\]]*\])")
+_MOVEJ_RE = re.compile(r"movej\((\[[^\]]*\])")
+
+
+class PrimaryServer(threading.Thread):
+    """30001 스크립트 수신 서버. 조그와 홈 이동 스크립트를 해석한다."""
+
+    def __init__(self, motion: MotionSim, host: str, port: int):
+        super().__init__(daemon=True)
+        self.motion = motion
+        self.host, self.port = host, port
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind((host, port))
+        self._sock.listen(4)
+
+    def run(self) -> None:
+        print(f"[Primary 30001] {self.host}:{self.port} 에서 대기")
+        while True:
+            conn, addr = self._sock.accept()
+            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+
+    def _handle(self, conn: socket.socket) -> None:
+        with conn:
+            buf = ""
+            try:
+                while True:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        return
+                    buf += chunk.decode("utf-8", "ignore")
+                    if len(buf) > 8192:
+                        buf = buf[-4096:]
+                    self._scan(buf)
+            except (ConnectionError, OSError):
+                self.motion.stop_all()
+                return
+
+    def _scan(self, buf: str) -> None:
+        m = _SPEEDJ_RE.search(buf)
+        if m:
+            self.motion.set_joint_velocity(eval(m.group(1)))  # noqa: S307 - 신뢰 가능한 내부 스크립트
+        m = _SPEEDL_RE.search(buf)
+        if m:
+            self.motion.set_tcp_velocity(eval(m.group(1)))  # noqa: S307
+        m = _MOVEJ_RE.search(buf)
+        if m:
+            self.motion.move_joint_to(eval(m.group(1)))  # noqa: S307
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--dash-port", type=int, default=29999)
+    parser.add_argument("--primary-port", type=int, default=30001)
+    parser.add_argument("--modbus-port", type=int, default=5502)
+    args = parser.parse_args()
+
+    registers = register_map.load()
+    bank = RegisterBank(registers)
+    motion = MotionSim(bank)
+
+    ModbusServer(bank, args.host, args.modbus_port).start()
+    DashboardServer(bank, motion, args.host, args.dash_port).start()
+    PrimaryServer(motion, args.host, args.primary_port).start()
+
+    print(
+        f"실행 준비 완료. 다음처럼 노드를 띄우세요:\n"
+        f"  ros2 run elite_robot_controller robot_control_node --ros-args "
+        f"-p robot_ip:={args.host} -p modbus_port:={args.modbus_port}\n"
+        f"Ctrl+C 로 종료합니다."
+    )
+    try:
+        motion.run_forever()
+    except KeyboardInterrupt:
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -25,6 +25,8 @@ Elite CS612 협동로봇을 ROS 2에서 제어하기 위한 패키지입니다. 
 | 이름 | 기본값 | 설명 |
 | --- | --- | --- |
 | `robot_ip` | `192.168.227.134` | Elite 컨트롤러 IP |
+| `modbus_port` | `502` | Modbus TCP 포트. 리눅스에서 502는 권한이 필요해 시뮬레이터 시험 시 바꿀 수 있게 뺐다 |
+| `jog_joint_speed_max` 등 | — | 조그·홈 이동 관련 파라미터. 아래 "조그와 홈 이동" 절 참고 |
 
 **발행 토픽**
 
@@ -141,6 +143,24 @@ Dashboard 명령은 29999 소켓으로 나가므로 레지스터 주소와 무�
 ```bash
 ros2 run elite_robot_controller robot_control_node --ros-args -p robot_ip:=192.168.227.134
 ```
+
+### 로봇 없이 시험 (시뮬레이터)
+
+실제 로봇 없이 UI와 노드를 함께 시험하려면 [`tools/elite_robot_simulator.py`](tools/elite_robot_simulator.py)를 먼저 띄운다. 29999/30001/Modbus 세 채널을 흉내 내고, 조그 명령을 받으면 관절·TCP 레지스터가 실제로 움직인다.
+
+```bash
+# 터미널 1: 가짜 로봇
+python3 src/elite_robot_controller/tools/elite_robot_simulator.py
+
+# 터미널 2: 노드 (502 대신 시뮬레이터의 5502로 접속)
+ros2 run elite_robot_controller robot_control_node --ros-args \
+    -p robot_ip:=127.0.0.1 -p modbus_port:=5502
+
+# 터미널 3: 운영 UI
+cd operator-ui && python -m smr_operator_ui
+```
+
+세 채널 모두 정상 연결되고, Cobot 조그 화면에서 버튼을 누르면 관절·TCP 값이 실시간으로 움직인다. 시뮬레이터는 레지스터 주소를 `config/modbus_registers.json`에서 그대로 읽으므로 노드와 다른 주소를 쓰는 일이 없다.
 
 ```bash
 ros2 launch elite_robot_controller elite_cs612.launch.py robot_ip:=192.168.227.134
