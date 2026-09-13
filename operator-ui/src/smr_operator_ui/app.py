@@ -39,6 +39,7 @@ from smr_operator_ui.state import CyclePhase
 from smr_operator_ui.services.mqtt_server import SPEED_MAX, SPEED_MIN
 from smr_operator_ui.services import (
     DummyMotionAdapter,
+    MarkRunner,
     ErutClient,
     ErutSession,
     GridPlan,
@@ -524,6 +525,18 @@ class OperatorWindow(QMainWindow):
         self.erut_session.motion_state = self.motion_state
         # 원점에서 멈춰 선 로봇을 ERUT 의 "작업 시작"으로 풀어 준다.
         self.erut_session.scan_go_requested.connect(self._release_scan_gate)
+        # 마킹: 점마다 차량 -> 고정 -> 리프트 -> 로봇(마킹 태스크) -> 복귀.
+        self.mark_runner = MarkRunner(
+            self.amr, self.lift, self.outrigger, self.retractor,
+            send_target=lambda u, v: self.ros_status.send_pose("mark_target", [u, v]),
+            start_mark_task=self._start_mark_task,
+            restore_scan_task=lambda: self.ros_status.call_command("load_scan_task"),
+            parent=self,
+        )
+        self.mark_runner.activity.connect(self.main_screen.show_activity)
+        self.mark_runner.finished.connect(self.erut_session.finish_mark)
+        self.erut_session.mark_requested.connect(self._start_marking)
+        self.ros_status.scan_state_changed.connect(self.mark_runner.handle_scan_state)
         self.erut_session.resume_requested.connect(self.sequencer.resume)
         self.erut_session.abort_requested.connect(self._abort_job)
         self.erut_session.speed_requested.connect(
@@ -858,6 +871,26 @@ class OperatorWindow(QMainWindow):
         # 돌아가므로 셀마다 켜 준다.
         self.ros_status.call_command("remote_control_on")
         self.ros_status.call_command("stop")
+        QTimer.singleShot(
+            ROBOT_RESTART_DELAY_MS,
+            lambda: self.ros_status.call_command("play"),
+        )
+
+    def _start_marking(self, points: list) -> None:
+        """ERUT 마킹 점들을 돈다. 격자 크기는 지금 작업 영역을 쓴다."""
+        width, height, _scan_h, _overlap = self.main_screen.rect_view.work_area()
+        self.mark_runner.start(points, width, height)
+
+    def _start_mark_task(self) -> None:
+        """마킹 태스크로 바꿔 끼우고 튼다.
+
+        스캔 때처럼 원격 제어를 켜고 세운 뒤, 29999 `task -p` 로 마킹
+        태스크를 불러와 play 한다. 다 끝나면 MarkRunner 가 스캔 태스크를
+        다시 불러 둔다.
+        """
+        self.ros_status.call_command("remote_control_on")
+        self.ros_status.call_command("stop")
+        self.ros_status.call_command("load_mark_task")
         QTimer.singleShot(
             ROBOT_RESTART_DELAY_MS,
             lambda: self.ros_status.call_command("play"),
@@ -1442,7 +1475,8 @@ class OperatorWindow(QMainWindow):
     _JOG_COMMANDS = ("save_home_pose", "save_start_pose")
 
     #: 스캔을 띄우고 멈추는 명령. 실패가 메인 화면에도 보여야 한다.
-    _SCAN_COMMANDS = ("play", "stop", "remote_control_on")
+    _SCAN_COMMANDS = ("play", "stop", "remote_control_on",
+                      "load_mark_task", "load_scan_task")
 
     def _show_command_result(self, name: str, success: bool, message: str) -> None:
         """명령 결과를 요청한 화면의 안내 문구로 보여준다."""

@@ -7,6 +7,7 @@ from .job_sequencer import (
     SequencerState,
     cell_label,
 )
+from .mark_runner import MarkRunner
 from .motion_adapters import DummyMotionAdapter
 from .mqtt_server import MqttConfig, MqttServer, MqttTopics
 from .reference_poses import load_reference_poses, save_reference_poses
@@ -19,6 +20,7 @@ __all__ = [
     "RobotNodeSupervisor",
     "CellStatus",
     "DummyMotionAdapter",
+    "MarkRunner",
     "ErutClient",
     "ErutConfig",
     "ErutSession",

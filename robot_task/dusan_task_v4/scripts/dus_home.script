@@ -1,0 +1,19 @@
+# =============================================================================
+#  dus_home.script — dusan_v4
+#  홈 높이만큼 먼저 올라간 뒤 moveJ 로 홈 자세로 간다
+#
+#  마킹 태스크의 마지막 노드. 펜던트의 move_home 노드와 같은 순서지만
+#  스크립트로 두어 끝나고 상태를 알린다:
+#    290 = 13  홈으로 가는 중
+#    290 = 12  홈 도착 = 마킹 작업 끝 (RCS 가 이걸 보고 다음 점으로 간다)
+#
+#  ※ def main() 으로 감싸지 말 것
+# =============================================================================
+write_port_register(290, 13)
+if (get_actual_tcp_pose()[2] < Home_pose[2] - 0.001):
+  hm_up = get_actual_tcp_pose()
+  hm_up[2] = Home_pose[2]
+  movel(hm_up, a = a_l, v = v_l)
+end
+movej(Home_joint, a = a_j, v = v_j)
+write_port_register(290, 12)

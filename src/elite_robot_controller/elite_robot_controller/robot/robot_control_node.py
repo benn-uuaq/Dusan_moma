@@ -1,3 +1,5 @@
+import time
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool, String, Int32, Int32MultiArray, Float32MultiArray
@@ -108,6 +110,15 @@ class RobotControlNode(Node):
         self.create_subscription(Float32MultiArray, 'robot/command/work_area', self.cb_work_area, 10)
         # 스캔 시작 허가(267). 로봇이 원점에서 멈춰 기다리는 것을 풀어 준다.
         self.create_subscription(Int32, 'robot/command/scan_go', self.cb_scan_go, 10)
+        # 마킹 자리 [u, v] mm (268~269). 마킹 태스크를 틀기 전에 쓴다.
+        self.create_subscription(
+            Float32MultiArray, 'robot/command/mark_target', self.cb_mark_target, 10)
+        # 태스크 바꿔 끼우기. 마킹은 스캔과 다른 태스크라 29999 로 불러온다.
+        # 경로는 컨트롤러 안의 실제 위치라 현장에서 한 번 확인해야 한다.
+        self.declare_parameter('mark_task_path', 'Dusan/dusan_v4/dusan_v4_mark.task')
+        self.declare_parameter('scan_task_path', 'Dusan/dusan_v4/dusan_v4.task')
+        self.create_service(Trigger, 'robot/dashboard/load_mark_task', self.cb_load_mark_task)
+        self.create_service(Trigger, 'robot/dashboard/load_scan_task', self.cb_load_scan_task)
 
         # 10Hz 주기로 모드버스 데이터 갱신 및 30001 알람 수집
         self.timer = self.create_timer(0.1, self.update_robot_loop)
@@ -369,6 +380,34 @@ class RobotControlNode(Node):
         # [너비, 높이, 스캐너높이, 겹침] mm -> 256~259, 성공하면 266=1.
         self._write_pose_topic('work_area', msg, flag_name='param_src')
 
+    def cb_mark_target(self, msg):
+        """마킹 자리 [u, v] (mm)를 268~269 에 쓴다."""
+        success, message = self.write_pose('mark_target', list(msg.data))
+        if not success:
+            self.get_logger().warn(message)
+
+    def _load_task(self, param_name, response):
+        """29999 `task -p <경로>` 로 태스크를 불러온다.
+
+        경로는 파라미터(mark_task_path / scan_task_path)다. 센서가 없을 때는
+        scan_task_path 를 dusan_v4_nosensor_seq.task, mark_task_path 를
+        dusan_v4_nosensor_mark.task 로 바꿔 띄운다.
+        """
+        path = self._param_str(param_name, '')
+        if not path:
+            response.success = False
+            response.message = f"[task -p] {param_name} 파라미터가 비어 있습니다."
+            return response
+        return self._execute_dash_cmd(
+            lambda: self.robot_dash.send_command_29999(f"task -p {path}"),
+            f"task -p {path}", response)
+
+    def cb_load_mark_task(self, req, res):
+        return self._load_task('mark_task_path', res)
+
+    def cb_load_scan_task(self, req, res):
+        return self._load_task('scan_task_path', res)
+
     def cb_scan_go(self, msg):
         """스캔 시작 허가(267)를 쓴다.
 
@@ -508,10 +547,22 @@ class RobotControlNode(Node):
             "  movej(tgt_j, a=1.4, v=0.5)\n"
             "end"
         )
+        # 돌고 있는 태스크(스캔·마킹)를 **먼저 세운다.** 태스크가 도는 채로
+        # 30001 로 스크립트를 보내면 컨트롤러가 거부하거나 태스크와 뒤섞인다.
+        # 홈 이동은 언제 불러도(ERUT·RCS) 따로 돌아야 한다.
+        stop_reply = self.robot_dash.robot_stop()
+        if stop_reply is None:
+            self.get_logger().warn(
+                f"[move_home] 태스크 정지 응답 없음 — {self.robot_dash.last_error}")
+        time.sleep(self._HOME_AFTER_STOP_S)
         ok = self.robot_primary.send_script(script)
         res.success = bool(ok)
         res.message = "[move_home] 홈 이동을 요청했습니다." if ok else "[move_home] 스크립트 전송 실패"
         return res
+
+    #: 태스크를 세운 뒤 스크립트를 보내기까지 기다리는 시간 [s].
+    #: 정지가 끝나기 전에 보내면 컨트롤러가 "실행 중"으로 거부한다.
+    _HOME_AFTER_STOP_S = 0.5
 
     #: 대시보드가 **답은 했지만 거절한** 응답에 들어가는 말들.
     #: 예) "Failed to execute: play", "... not supported in local control mode"

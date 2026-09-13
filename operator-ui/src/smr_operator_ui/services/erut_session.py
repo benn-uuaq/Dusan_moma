@@ -67,6 +67,8 @@ class ErutSession(QObject):
     # ERUT 가 도착 통보(evt/ready, stage=at_origin)를 받고 "작업 시작"을
     # 다시 보내면 여기로 온다.
     scan_go_requested = pyqtSignal()
+    # 마킹 점들을 돌아 달라는 요청. [{id, x, y}, ...] (검사면 좌표 mm)
+    mark_requested = pyqtSignal(list)
 
     def __init__(self, client: ErutClient, sequencer,
                  parent: QObject | None = None) -> None:
@@ -84,6 +86,9 @@ class ErutSession(QObject):
         self.motion_state: Callable[[], dict] = dict
         # 원점 도착 시 evt/ready 를 낼 prepare 요청의 req_id.
         self._ready_req_id = ""
+        # 마킹 중인 요청의 req_id 와 진행 여부.
+        self._mark_req_id = ""
+        self._marking = False
         # 같은 req_id 를 다시 받으면 재실행하지 않고 이전 응답을 되돌려준다(탭2 중요사항).
         self._handled: dict[str, tuple[int, str]] = {}
         self._pending: dict[str, QTimer] = {}
@@ -130,6 +135,8 @@ class ErutSession(QObject):
         """
         if self._at_origin:
             return "ready"
+        if self._marking:
+            return "running"         # 마킹도 장치가 움직이는 작업이다
         return _STATE_MAP.get(self.sequencer.state, "idle")
 
     # ------------------------------------------------------------ 요청 처리
@@ -419,15 +426,53 @@ class ErutSession(QObject):
 
     # ---- mark : TEST --------------------------------------------------------
     def _do_mark(self, req_id: str, content: dict) -> None:
+        """결함 자리 마킹 (규격 탭3 ⑤). 점마다 차량·리프트·로봇이 실제로 간다.
+
+        점은 {id, x, y} — area 와 같은 검사면 좌표다. 받으면 202 로 답하고
+        RCS(MarkRunner)가 점을 차례로 돈다. 다 끝나면 finish_mark() 가
+        evt/complete {marked[], failed[]} 를 낸다(탭5 action 표).
+
+        마킹 동작 자체(스프레이/마커)는 아직 TODO 다 — 로봇은 그 자리에
+        붙었다가 홈으로 돌아온다.
+        """
         points = content.get("points")
-        if not isinstance(points, list):
+        if not isinstance(points, list) or not points:
             self._reply(req_id, "mark", 400, "INVALID_POINTS")
             return
-        ids = [str(p.get("id", "")) for p in points if isinstance(p, dict)]
+        clean = []
+        for pt in points:
+            try:
+                clean.append({"id": str(pt["id"]), "x": float(pt["x"]),
+                              "y": float(pt["y"])})
+            except (KeyError, TypeError, ValueError):
+                self._reply(req_id, "mark", 400, "INVALID_POINTS")
+                return
+        if self._needs_calibration(req_id, "mark"):
+            return
+        # 스캔 구간이 도는 중이면 받지 않는다 — 차량·로봇을 둘이 같이 쓸 수 없다.
+        if self.sequencer.state not in (
+            SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED
+        ) or self._marking:
+            self._reply(req_id, "mark", 409, "BUSY")
+            return
         self._reply(req_id, "mark", 202, "ACCEPTED")
-        self.activity.emit(f"ERUT 마킹 요청 {len(ids)}점 (시험용 — 실제 마킹 없음)")
-        self._after(TEST_WORK_MS, lambda: self.client.publish_event(
-            "complete", req_id, "mark", marked=ids, failed=[]))
+        self._mark_req_id = req_id
+        self._marking = True
+        self.activity.emit(f"ERUT 마킹 요청 {len(clean)}점 — 차례로 이동합니다.")
+        self.mark_requested.emit(clean)
+
+    def finish_mark(self, marked: list, failed: list) -> None:
+        """마킹을 다 돌았다. 규격대로 evt/complete 를 낸다."""
+        req_id, self._mark_req_id = self._mark_req_id, ""
+        self._marking = False
+        if not req_id:
+            return
+        code, message = (200, "OK") if not failed else (500, "INTERNAL_ERROR")
+        self.client.publish_event("complete", req_id, "mark", code=code,
+                                  message=message, marked=list(marked),
+                                  failed=list(failed))
+        self.activity.emit(
+            f"ERUT 마킹 완료를 발행했습니다 (성공 {len(marked)}, 실패 {len(failed)}).")
 
     # ------------------------------------------------------------ 장애
     def raise_error(self, fields: dict) -> None:

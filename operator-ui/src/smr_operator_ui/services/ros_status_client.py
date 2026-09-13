@@ -63,6 +63,8 @@ class RosTopics:
     JOG_JOINT = "robot/command/jog_joint"
     # 스캔 시작 허가(레지스터 267). 로봇이 원점에서 기다리는 것을 푼다.
     SCAN_GO = "robot/command/scan_go"
+    # 마킹 자리 [u, v] mm (레지스터 268~269).
+    MARK_TARGET = "robot/command/mark_target"
     JOG_TCP = "robot/command/jog_tcp"
 
     MOVE_HOME = "robot/command/move_home"
@@ -142,6 +144,9 @@ class RosStatusClient(QObject):
         # 태스크는 펜던트/로봇 쪽에서 고정이라 여기서 고르지 않는다 —
         # 지금 뭐가 올라가 있는지만 29999 "task -s"로 물어 보여준다.
         "task_status": (f"{RosTopics.DASHBOARD}/task_status", None),
+        # 마킹은 스캔과 다른 태스크다. 29999 `task -p` 로 바꿔 끼운다.
+        "load_mark_task": (f"{RosTopics.DASHBOARD}/load_mark_task", None),
+        "load_scan_task": (f"{RosTopics.DASHBOARD}/load_scan_task", None),
     }
 
     def __init__(self, node_name: str = "smr_operator_ui", parent: QObject | None = None) -> None:
@@ -241,6 +246,8 @@ class RosStatusClient(QObject):
                     Float32MultiArray, RosTopics.START_POSE, 10),
                 "work_area": self._node.create_publisher(
                     Float32MultiArray, RosTopics.WORK_AREA, 10),
+                "mark_target": self._node.create_publisher(
+                    Float32MultiArray, RosTopics.MARK_TARGET, 10),
             }
             self._clients = {
                 key: self._node.create_client(Trigger, service)

@@ -114,6 +114,20 @@ ROBOT/
 | `dusan_v4_nosensor_seq` | `scripts_nosensor/` + `scripts_nosensor_seq/dus_goto_zero.script` | **MQTT 대기** | 센서 없이 **시퀀스 전체**를 실기처럼 |
 | `dusan_v4_nosensor_loop` | `scripts_nosensor/` | 팝업 | 반복 내구 확인 |
 
+| `dusan_v4_mark` | `scripts/` (+ `dus_mark_point`, `dus_home`) | — | **마킹**: 프로브 3점 → 마킹 자리 → 홈 (한 번 돌고 끝) |
+| `dusan_v4_nosensor_mark` | `scripts_nosensor/dus_mark_point` + `scripts/dus_home` | — | 마킹, 센서 없이 계산한 접점으로 |
+
+**마킹 태스크**는 `tools/make_mark_task.py` 가 스캔 태스크에서 만든다(프로브 3점까지
+똑같고 그 뒤를 `dus_mark_point → dus_home` 으로 바꾼다, 반복 끔). RCS 가 29999
+`task -p` 로 바꿔 끼워 틀고, 다 돌면 스캔 태스크를 다시 불러 둔다. 로봇 쪽 입력은
+레지스터 268(u: 원점에서 호를 따라 간 거리 mm)·269(v: 원점 높이에서 위로 mm),
+상태는 290 = 10 이동 중 → 11 벽에 붙음 → 13 홈으로 → **12 끝**. 마킹 동작(스프레이/
+마커)은 아직 TODO 다. 태스크 경로는 노드 파라미터 `mark_task_path` / `scan_task_path`
+(현장에서 실제 경로 확인 필요).
+
+스크립트를 고친 뒤에는 `python3 tools/sync_task_cache.py` 로 태스크 캐시를 꼭 채운다
+(안 하면 펜던트가 옛 본문으로 돈다). `tools/check_scripts.py` 는 end 균형을 본다.
+
 `nosensor_seq` 는 `dus_goto_zero.script` **한 파일만** 따로 두고 나머지 노드는
 `scripts_nosensor/` 를 그대로 가리킨다. 팝업을 띄우면 펜던트 화면이 잡아 버려
 ERUT 에서 확인 버튼을 눌러도 로봇이 그 신호를 받지 못하기 때문에, 시퀀스를

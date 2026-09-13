@@ -222,16 +222,60 @@ def test_same_req_id_is_not_run_twice(session):
     assert {r["code"] for r in client.res} == {202}
 
 
-def test_mark_reports_every_point(session, qtbot):
+def test_mark_hands_the_points_to_rcs(session):
+    """mark 는 202 로 받고, 점들을 RCS(MarkRunner)에게 넘긴다 (탭3 ⑤)."""
     s, client, _ = session
-    s.handle_request(*_req("mark", method="paint", points=[
-        {"id": "p1", "x": 1, "y": 2}, {"id": "p2", "x": 3, "y": 4}]))
+    asked = []
+    s.mark_requested.connect(asked.append)
 
-    assert client.res[0]["code"] == 202
-    qtbot.waitUntil(lambda: bool(client.events), timeout=5000)
-    _name, evt = client.events[0]
-    assert evt["marked"] == ["p1", "p2"]
-    assert evt["failed"] == []
+    s.handle_request(*_req("mark", method="paint", points=[
+        {"id": "p1", "x": 350, "y": 1200}, {"id": "p2", "x": 780, "y": 1350}]))
+
+    assert client.res[-1]["code"] == 202
+    assert asked == [[{"id": "p1", "x": 350.0, "y": 1200.0},
+                      {"id": "p2", "x": 780.0, "y": 1350.0}]]
+    assert client.events == [], "점을 돌기도 전에 완료를 냈다"
+
+
+def test_mark_complete_reports_marked_and_failed(session):
+    """다 돌면 evt/complete {marked[], failed[]} (탭5 action 표)."""
+    s, client, _ = session
+    s.handle_request(*_req("mark", points=[{"id": "p1", "x": 1, "y": 2}]))
+
+    s.finish_mark(["p1"], [])
+
+    name, evt = client.events[-1]
+    assert (name, evt["action"], evt["code"]) == ("complete", "mark", 200)
+    assert (evt["marked"], evt["failed"]) == (["p1"], [])
+
+
+def test_mark_with_failures_is_reported_as_error(session):
+    """실패한 점이 있으면 complete 를 5xx 로 낸다 (탭2: 실패도 complete)."""
+    s, client, _ = session
+    s.handle_request(*_req("mark", points=[{"id": "p1", "x": 1, "y": 2}]))
+
+    s.finish_mark([], ["p1"])
+
+    _name, evt = client.events[-1]
+    assert evt["code"] == 500 and evt["failed"] == ["p1"]
+
+
+def test_mark_is_refused_while_scanning_or_marking(session):
+    """차량·로봇을 둘이 같이 쓸 수 없다 — 409 BUSY."""
+    s, client, _ = session
+    s.handle_request(*_req("mark", points=[{"id": "p1", "x": 1, "y": 2}]))
+    s.handle_request("mark", {"req_id": "req-mark-2",
+                              "points": [{"id": "p2", "x": 1, "y": 2}]})
+
+    assert client.res[-1]["code"] == 409
+
+
+def test_mark_with_broken_points_is_refused(session):
+    """좌표가 빠진 점이 있으면 400 — 엉뚱한 데로 가지 않게."""
+    s, client, _ = session
+    s.handle_request(*_req("mark", points=[{"id": "p1", "x": 1}]))
+
+    assert client.res[-1]["code"] == 400
 
 
 def test_request_without_req_id_is_refused(session):
