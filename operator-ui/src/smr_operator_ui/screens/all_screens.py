@@ -822,11 +822,20 @@ class CobotSettingsScreen(FormScreen):
     RATIO_FIELD = "속도 비율"
 
     task_refresh_requested = pyqtSignal()
+    # 논센서 태스크를 쓸지. 센서 없이 시험할 때만 켠다(기본은 센서판).
+    nosensor_changed = pyqtSignal(bool)
 
     def __init__(self):
         # pyqtSignal은 QObject.__init__()이 돌기 전에는 바인딩되지 않으므로,
         # self.task_refresh_requested를 쓰는 connect()는 super().__init__()
         # 뒤로 미룬다. 위젯 자체를 만드는 건 상관없다.
+        #
+        # 태스크는 이제 RCS 가 29999 `task -p` 로 불러와 쓴다(마킹 태스크와
+        # 스캔 태스크를 오가야 해서). 그래서 어느 판을 불러올지 여기서 고른다.
+        # 체크 = 논센서판(dusan_v4_nosensor_seq / _nosensor_mark),
+        # 해제 = 센서판(dusan_v4 / _mark). 기본은 해제(센서판)다.
+        self.nosensor_check = QCheckBox("논센서 태스크 사용 (센서 없이 시험할 때만)")
+        self.nosensor_check.setChecked(False)
         task_row = QWidget()
         task_layout = QHBoxLayout(task_row)
         task_layout.setContentsMargins(0, 0, 0, 0)
@@ -840,6 +849,7 @@ class CobotSettingsScreen(FormScreen):
             "최대 150 mm/s 이고, 속도 비율은 로봇 전체 속도에 곱해집니다(2~100 %).",
             [
                 ("현재 태스크",task_row),
+                ("태스크 판",self.nosensor_check),
                 (self.SPEED_FIELD,spin(150,1,150)),
                 (self.RATIO_FIELD,spin(100,2,100)),
                 ("연결 상태",QLabel("● 연결됨")),
@@ -847,6 +857,13 @@ class CobotSettingsScreen(FormScreen):
             ],
         )
         refresh.clicked.connect(self.task_refresh_requested)
+        self.nosensor_check.toggled.connect(self.nosensor_changed)
+
+    def set_nosensor(self, on: bool) -> None:
+        """저장된 값으로 체크 상태를 맞춘다. 신호는 내지 않는다(불러오기용)."""
+        self.nosensor_check.blockSignals(True)
+        self.nosensor_check.setChecked(bool(on))
+        self.nosensor_check.blockSignals(False)
 
     def set_task_status(self, text: str) -> None:
         """29999 "task -s" 응답으로 현재 태스크 표시를 갱신한다."""

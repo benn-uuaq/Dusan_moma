@@ -379,6 +379,25 @@ class RosStatusClient(QObject):
         client.call_async(request)
         return True
 
+    def set_task_paths(self, scan_path: str, mark_path: str) -> bool:
+        """노드가 29999 `task -p` 로 불러올 스캔·마킹 태스크 경로를 바꾼다.
+
+        노드는 load_scan_task / load_mark_task 를 받을 때마다 이 파라미터를
+        다시 읽는다. 센서판·논센서판을 RCS 체크박스 하나로 고르기 위해서다.
+        """
+        client = getattr(self, "_param_client", None)
+        if client is None or not client.service_is_ready():
+            return False
+        request = SetParameters.Request()
+        request.parameters = [
+            Parameter(name=name, value=ParameterValue(
+                type=ParameterType.PARAMETER_STRING, string_value=str(value)))
+            for name, value in (("scan_task_path", scan_path),
+                                ("mark_task_path", mark_path))
+        ]
+        client.call_async(request)
+        return True
+
     def call_command(self, name: str) -> bool:
         """위치 저장이나 홈 이동처럼 값이 없는 명령을 서비스로 호출한다.
 

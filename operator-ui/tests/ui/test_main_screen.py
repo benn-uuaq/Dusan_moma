@@ -1458,3 +1458,86 @@ def test_origin_wait_is_ignored_when_no_section_is_running(qtbot) -> None:
 
     assert told == []
     window.close()
+
+
+def _task_spy(window):
+    """태스크 경로 설정·명령 호출을 가로챈다."""
+    pushed: list[tuple] = []
+    calls: list[str] = []
+    window.ros_status.set_task_paths = lambda scan, mark: pushed.append(
+        (scan, mark)) or True
+    window.ros_status.call_command = lambda name: calls.append(name) or True
+    return pushed, calls
+
+
+def test_sensor_tasks_are_the_default(qtbot) -> None:
+    """기본은 센서판이다 — 체크 해제 상태로 뜬다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+
+    assert window.screens["cobot"].nosensor_check.isChecked() is False
+    scan, mark = window._task_paths()
+    assert scan.endswith("/dusan_v4.task") and mark.endswith("/dusan_v4_mark.task")
+    window.close()
+
+
+def test_checking_nosensor_switches_and_loads_the_scan_task(qtbot) -> None:
+    """체크하면 논센서 경로를 노드에 넘기고, 한가하면 바로 불러온다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    pushed, calls = _task_spy(window)
+    saved: list[tuple] = []
+    window.settings_service.save = lambda scope, values: saved.append((scope, dict(values)))
+
+    window.screens["cobot"].nosensor_check.setChecked(True)
+
+    assert pushed[-1] == ("Dusan/dusan_v4/dusan_v4_nosensor_seq.task",
+                          "Dusan/dusan_v4/dusan_v4_nosensor_mark.task")
+    assert calls[-1] == "load_scan_task"
+    assert ("robot_task", {"nosensor": True}) in saved
+    window.close()
+
+
+def test_switching_mid_job_waits_for_the_next_job(qtbot) -> None:
+    """작업 중에 바꾸면 지금 구간을 흔들지 않는다 — 불러오지 않는다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    pushed, calls = _task_spy(window)
+    _scanning(window)
+
+    window.screens["cobot"].nosensor_check.setChecked(True)
+
+    assert pushed, "경로는 넘겨 둬야 다음 작업에 쓴다"
+    assert "load_scan_task" not in calls
+    window.close()
+
+
+def test_stored_nosensor_choice_is_restored(qtbot) -> None:
+    """저장해 둔 판이 다시 켤 때 그대로 돌아온다(신호 없이)."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    pushed, calls = _task_spy(window)
+
+    window._apply_stored_settings("robot_task", {"nosensor": True})
+
+    assert window.screens["cobot"].nosensor_check.isChecked() is True
+    assert pushed[-1][0].endswith("dusan_v4_nosensor_seq.task")
+    assert "load_scan_task" not in calls, "불러오기만으로 로봇을 건드리면 안 된다"
+    window.close()
+
+
+def test_erut_job_loads_the_chosen_scan_task_first(qtbot) -> None:
+    """ERUT 구간 작업은 체크한 판의 스캔 태스크를 먼저 불러 두고 시작한다."""
+    from smr_operator_ui.services import GridPlan
+
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    pushed, calls = _task_spy(window)
+    window._nosensor = True
+
+    window._start_erut_job(GridPlan(column_count=1, row_count=1,
+                                    cell_width=721.0, cell_height=500.0))
+
+    assert pushed[-1][0].endswith("dusan_v4_nosensor_seq.task")
+    assert calls[:3] == ["remote_control_on", "stop", "load_scan_task"]
+    window.close()

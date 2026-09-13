@@ -66,6 +66,15 @@ MAX_LINEAR_SPEED_MM_S = 150
 # 로봇 태스크를 stop 한 뒤 play 하기까지 두는 간격. 컨트롤러가 태스크를
 # 정리할 시간을 주지 않으면 play 가 거부된다.
 ROBOT_RESTART_DELAY_MS = 1200
+
+#: 로봇 컨트롤러 안의 태스크 폴더. 29999 `task -p` 에 붙는다. 현장에서
+#: 실제 경로를 한 번 확인해야 한다(펜던트의 태스크 목록 기준).
+ROBOT_TASK_DIR = "Dusan/dusan_v4"
+#: 태스크 판 -> (스캔 태스크, 마킹 태스크). Cobot 설정의 체크박스로 고른다.
+ROBOT_TASKS = {
+    False: ("dusan_v4.task", "dusan_v4_mark.task"),                        # 센서판
+    True: ("dusan_v4_nosensor_seq.task", "dusan_v4_nosensor_mark.task"),   # 논센서판
+}
 # abort 뒤 홈을 보내기까지 [ms]. 정지·태스크 교체가 먼저 처리되게 둔다.
 ABORT_HOME_DELAY_MS = 500
 
@@ -376,7 +385,13 @@ class OperatorWindow(QMainWindow):
         self.settings_service.loaded.connect(self._apply_stored_settings)
         self.settings_service.saved.connect(self._mark_settings_saved)
         self.settings_service.failed.connect(self._show_settings_error)
-        for scope in (*self._settings_screens.keys(), "inspection_target", "work_area"):
+        # 태스크 판(센서/논센서). 기본은 센서판 — 불러온 값이 있으면 덮는다.
+        self._nosensor = False
+        cobot_screen = self.screens.get("cobot")
+        if cobot_screen is not None:
+            cobot_screen.nosensor_changed.connect(self._set_nosensor)
+        for scope in (*self._settings_screens.keys(), "inspection_target",
+                      "work_area", "robot_task"):
             self.settings_service.load(scope)
 
         # 기준 위치의 원본은 로봇 쪽 설정 파일이다. 레지스터는 휘발성이라
@@ -597,6 +612,10 @@ class OperatorWindow(QMainWindow):
         self.simulator.begin_external(plan.column_count)
         # 구간 하나 = job 하나. prepare 가 오면 차량을 구간 x 로, 리프트를
         # 구간 y 로 정렬한 뒤 로봇이 프로브 3점을 잡고 원점에 선다.
+        # 펜던트에 무엇이 올라가 있든 **체크한 판**의 스캔 태스크로 돈다.
+        # 작업마다 한 번 — 셀마다 부르는 play 는 그대로 play 만 한다.
+        self._push_task_paths()
+        self._load_scan_task()
         self.sequencer.start(plan, scan_h_mm, base_lift_mm=plan.origin_y,
                              move_first=True)
 
@@ -863,6 +882,50 @@ class OperatorWindow(QMainWindow):
     def _on_robot_link_changed(self, connected: bool) -> None:
         self._robot_link_up = bool(connected)
         self._retry_pending_work_area()
+        if connected:
+            # 노드가 다시 뜨면 파라미터가 기본값(센서판)으로 돌아가 있다.
+            self._push_task_paths()
+
+    def _task_paths(self) -> tuple[str, str]:
+        """지금 고른 판의 (스캔, 마킹) 태스크 경로."""
+        scan, mark = ROBOT_TASKS[bool(getattr(self, "_nosensor", False))]
+        return f"{ROBOT_TASK_DIR}/{scan}", f"{ROBOT_TASK_DIR}/{mark}"
+
+    def _push_task_paths(self) -> bool:
+        """고른 판의 태스크 경로를 로봇 노드 파라미터로 넘긴다."""
+        scan, mark = self._task_paths()
+        return self.ros_status.set_task_paths(scan, mark)
+
+    def _set_nosensor(self, on: bool) -> None:
+        """Cobot 설정의 '논센서 태스크' 체크가 바뀌었다.
+
+        저장하고, 노드에 경로를 넘기고, 작업 중이 아니면 **바로 그 판의
+        스캔 태스크를 불러온다** — 펜던트에 무엇이 올라가 있든 체크한 판이
+        돌게 하려고. 작업 중이면 지금 구간을 흔들지 않고 다음 작업부터 쓴다.
+        """
+        self._nosensor = bool(on)
+        self.settings_service.save("robot_task", {"nosensor": self._nosensor})
+        pushed = self._push_task_paths()
+        label = "논센서판" if self._nosensor else "센서판"
+        busy = (self.sequencer.state not in (
+            SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED)
+            or self.mark_runner.running)
+        if not pushed:
+            self.main_screen.show_activity(
+                f"태스크 판을 {label}으로 저장했습니다 — 로봇 노드가 연결되면 적용됩니다.")
+            return
+        if busy:
+            self.main_screen.show_activity(
+                f"태스크 판을 {label}으로 바꿨습니다 — 다음 작업부터 적용됩니다.")
+            return
+        self.main_screen.show_activity(f"{label} 스캔 태스크를 불러옵니다.")
+        self._load_scan_task()
+
+    def _load_scan_task(self) -> None:
+        """고른 판의 스캔 태스크를 로봇에 불러온다(정지 -> task -p)."""
+        self.ros_status.call_command("remote_control_on")
+        self.ros_status.call_command("stop")
+        self.ros_status.call_command("load_scan_task")
 
     def _on_robot_task_state(self, state: int) -> None:
         self._robot_task_state = int(state)
@@ -1007,6 +1070,13 @@ class OperatorWindow(QMainWindow):
 
     def _apply_stored_settings(self, scope: str, values: dict) -> None:
         """DB 조회 결과를 해당 설정 범위의 소유 화면으로 전달한다."""
+        if scope == "robot_task":
+            self._nosensor = bool(values.get("nosensor", False))
+            cobot_screen = self.screens.get("cobot")
+            if cobot_screen is not None:
+                cobot_screen.set_nosensor(self._nosensor)
+            self._push_task_paths()
+            return
         if scope == "inspection_target":
             if "diameter_m" in values and "height_m" in values:
                 self.main_screen.orbit_view.set_target_dimensions(
@@ -1275,6 +1345,9 @@ class OperatorWindow(QMainWindow):
         # 시퀀서가 주도한다 — 데모 타이머로 혼자 앞서 나가면 실제 로봇이
         # 아직 1A에 있는데도 화면만 12구역까지 가버린다.
         self.simulator.begin_external(grid.column_count)
+        # 체크한 판(센서/논센서)의 스캔 태스크를 먼저 불러 둔다.
+        self._push_task_paths()
+        self._load_scan_task()
         self.sequencer.start(grid, scan_h_mm)
 
     def _apply_speed_ratio(self, raw: Any, source: str = "UI") -> None:
@@ -1516,6 +1589,9 @@ class OperatorWindow(QMainWindow):
         elif name in ("connect", "disconnect"):
             # 연결 설정 화면에서 누른 경우 결과가 거기 보여야 한다.
             self.screens["connection"].set_link_message(text)
+            self.cobot_manual_screen.activity_label.setText(text)
+        elif name in ("load_scan_task", "load_mark_task") and success:
+            self.screens["cobot"].set_task_status(message)
             self.cobot_manual_screen.activity_label.setText(text)
         elif name in self._SCAN_COMMANDS:
             # 스캔을 띄우는 명령이다. 실패하면 **작업 중인 사람이 보는 곳**
