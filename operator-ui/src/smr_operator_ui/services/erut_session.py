@@ -477,6 +477,35 @@ class ErutSession(QObject):
         self.activity.emit(f"ERUT 마킹 요청 {len(clean)}점 — 차례로 이동합니다.")
         self.mark_requested.emit(clean)
 
+    def interrupt_active_job(self) -> None:
+        """ERUT 가 시킨 작업을 **우리 쪽에서** 끊었다(작업자 정지·홈 이동).
+
+        규격 탭2: "장애로 job 실패 시에도 5xx 로 반드시 발행 (안 오면 ERUT 가
+        계속 대기)". abort 는 ERUT 가 끊은 것이라 완료를 안 내지만, 여기는
+        ERUT 가 모르는 사이에 끊겼으므로 반드시 알린다.
+          start 가 살아 있으면 -> evt/complete 500
+          prepare 만 받은 상태면 -> evt/ready 500 (prepare 의 완료 통보 자리)
+          마킹 중이면           -> evt/complete 500 {marked, failed}
+        """
+        if self._start_req_id:
+            self.client.publish_event(
+                "complete", self._start_req_id, "start", code=500,
+                message="INTERNAL_ERROR", job_id=self._job_id)
+        elif self._ready_req_id:
+            self.client.publish_event(
+                "ready", self._ready_req_id, "prepare", code=500,
+                message="INTERNAL_ERROR", job_id=self._job_id)
+        if self._mark_req_id:
+            self.client.publish_event(
+                "complete", self._mark_req_id, "mark", code=500,
+                message="INTERNAL_ERROR", marked=[], failed=[])
+        had_job = bool(self._start_req_id or self._ready_req_id or self._mark_req_id)
+        self._start_req_id = self._ready_req_id = self._mark_req_id = ""
+        self._at_origin = False
+        self._marking = False
+        if had_job:
+            self.activity.emit("ERUT 작업을 이쪽에서 중단했다고 알렸습니다(500).")
+
     def finish_mark(self, marked: list, failed: list) -> None:
         """마킹을 다 돌았다. 규격대로 evt/complete 를 낸다."""
         req_id, self._mark_req_id = self._mark_req_id, ""

@@ -712,3 +712,36 @@ def test_no_ready_goes_to_erut_for_a_job_it_did_not_ask_for(session):
 
     assert client.events == []
     assert s.robot_state() != "ready"
+
+
+def test_local_stop_of_a_started_section_tells_erut(session):
+    """ERUT 가 시킨 구간을 우리가 끊으면 complete 500 으로 알린다 (탭2)."""
+    s, client, seq = session
+    s.job_requested.connect(lambda plan: seq.start(plan, 30.0, move_first=True))
+    s.handle_request(*_req("prepare", job_id="jb1", area=AREA, scan=SCAN))
+    s.notify_at_origin()
+    s.handle_request("start", {"req_id": "r-go", "job_id": "jb1",
+                               "area": AREA, "scan": SCAN})
+
+    s.interrupt_active_job()
+
+    name, evt = client.events[-1]
+    assert (name, evt["req_id"], evt["code"]) == ("complete", "r-go", 500)
+
+
+def test_local_stop_before_ready_answers_the_prepare(session):
+    """prepare 만 받은 채 끊기면 그 prepare 에 ready 500 으로 답한다."""
+    s, client, _ = session
+    s.handle_request(*_req("prepare", job_id="jb1", area=AREA, scan=SCAN))
+
+    s.interrupt_active_job()
+
+    name, evt = client.events[-1]
+    assert (name, evt["action"], evt["code"]) == ("ready", "prepare", 500)
+
+
+def test_local_stop_without_an_erut_job_says_nothing(session):
+    """ERUT 가 시킨 작업이 없으면 아무것도 안 보낸다."""
+    s, client, _ = session
+    s.interrupt_active_job()
+    assert client.events == []

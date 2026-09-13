@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QMainWindow,
     QStackedWidget,
     QVBoxLayout,
@@ -361,6 +362,7 @@ class OperatorWindow(QMainWindow):
         self.main_screen.start_requested.connect(self._start_inspection)
         self.main_screen.pause_requested.connect(self._toggle_pause)
         self.main_screen.stop_requested.connect(self._stop_inspection)
+        self.main_screen.home_requested.connect(self._request_home)
         self.main_screen.alarm_reset_requested.connect(self._reset_alarms)
         self.main_screen.settings_requested.connect(lambda: self.navigate("settings"))
         self.main_screen.target_dimensions_changed.connect(
@@ -1000,8 +1002,58 @@ class OperatorWindow(QMainWindow):
         정지된다. `sequencer.stop()`이 `robot_stop_requested`를 내보내
         `_stop_robot_scan()`까지 이어지므로 로봇도 같이 선다.
         """
+        self._stop_job_locally()
+
+    def _job_running(self) -> bool:
+        """순회나 마킹이 돌고 있는가(일시정지 포함)."""
+        return (self.sequencer.state not in (
+            SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED)
+            or self.mark_runner.running)
+
+    def _stop_job_locally(self) -> None:
+        """작업자가 RCS 에서 작업을 끊는다(정지 버튼·홈 이동).
+
+        순회·마킹·더미 장비를 모두 멈추고, 걸려 있던 play 도 취소한다.
+        ERUT 가 시킨 작업이었으면 **ERUT 에 실패로 알린다** — 안 알리면
+        ERUT 는 오지 않을 complete 를 계속 기다린다(규격 탭2).
+        """
+        self._cancel_play()
         self.simulator.stop_cycle()
         self.sequencer.stop()
+        self.mark_runner.cancel()
+        for adapter in (self.lift, self.amr, self.outrigger, self.retractor):
+            adapter.cancel()
+        self._origin_waiting = False
+        self.erut_session.interrupt_active_job()
+
+    def _request_home(self) -> None:
+        """메인 화면 '로봇 홈' — 언제든 홈으로 보낸다.
+
+        작업 중이면 한 번 묻는다(누르면 그 작업은 끝난다). 홈 이동 자체는
+        노드가 한다: 태스크 정지 -> TCP -Z 로 물러남(홈보다 뒤로는 안 감)
+        -> 홈 높이로 상승 -> moveJ. 그래서 벽에 붙어 있어도 곡면을 긁지 않는다.
+        """
+        if self._job_running():
+            if not self._confirm_home_mid_job():
+                return
+            self._stop_job_locally()
+            self.main_screen.show_activity("작업을 멈추고 로봇을 홈으로 보냅니다.")
+            # 정지·태스크 교체가 먼저 처리되도록 잠깐 뒤에 보낸다(abort 와 같다).
+            QTimer.singleShot(ABORT_HOME_DELAY_MS,
+                              lambda: self.ros_status.call_command("home"))
+            return
+        self.main_screen.show_activity("로봇을 홈으로 보냅니다.")
+        self.ros_status.call_command("home")
+
+    def _confirm_home_mid_job(self) -> bool:
+        """작업 중 홈 이동을 한 번 확인한다."""
+        answer = QMessageBox.question(
+            self, "로봇 홈 이동",
+            "작업이 진행 중입니다.\n지금 홈으로 보내면 이 작업은 중단됩니다. 계속할까요?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def _stop_robot_scan(self) -> None:
         """로봇 태스크를 멈춘다. 장애·일시정지·정지가 모두 여기로 모인다.

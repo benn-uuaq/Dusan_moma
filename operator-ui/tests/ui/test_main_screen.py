@@ -1596,3 +1596,52 @@ def test_rcs_pause_pauses_and_resumes_the_real_job(qtbot) -> None:
     window._toggle_pause()
     assert window.sequencer.state is not SequencerState.PAUSED
     window.close()
+
+
+def test_home_button_sends_home_when_idle(qtbot) -> None:
+    """메인 화면 '로봇 홈' — 작업이 없으면 바로 홈 명령을 보낸다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    _pushed, calls = _task_spy(window)
+
+    window.main_screen.home_button.click()
+
+    assert calls == ["home"]
+    window.close()
+
+
+def test_home_mid_job_asks_first_and_can_be_declined(qtbot) -> None:
+    """작업 중에는 먼저 묻는다. 아니오면 아무것도 안 한다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    _pushed, calls = _task_spy(window)
+    _scanning(window)
+    window._confirm_home_mid_job = lambda: False
+
+    window.main_screen.home_button.click()
+    qtbot.wait(700)
+
+    assert "home" not in calls
+    assert window.sequencer.state is not None and calls == []
+    window.close()
+
+
+def test_home_mid_job_stops_the_job_then_goes_home(qtbot) -> None:
+    """예라고 하면 작업을 멈추고, 잠시 뒤 홈을 보낸다."""
+    from smr_operator_ui.services import SequencerState
+
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    _pushed, calls = _task_spy(window)
+    window._start_inspection()
+    window._confirm_home_mid_job = lambda: True
+    interrupted: list[int] = []
+    window.erut_session.interrupt_active_job = lambda: interrupted.append(1)
+
+    window.main_screen.home_button.click()
+    qtbot.wait(700)
+
+    assert window.sequencer.state is SequencerState.STOPPED
+    assert calls[-1] == "home"
+    assert interrupted == [1], "ERUT 에 중단을 알리지 않았다"
+    window.close()

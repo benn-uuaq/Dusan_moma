@@ -35,6 +35,8 @@ class MainScreen(QWidget):
     IDLE_NOTICE = "검사 시작을 기다리고 있습니다."
 
     settings_requested = pyqtSignal()
+    # 로봇을 홈 자세로 보낸다. 언제든 누를 수 있다(작업 중이면 확인 후).
+    home_requested = pyqtSignal()
     alarm_reset_requested = pyqtSignal()
     target_dimensions_changed = pyqtSignal(float, float)
     # 너비/높이/스캐너 높이/겹침. Modbus 256~259와 같은 mm 단위다.
@@ -145,9 +147,18 @@ class MainScreen(QWidget):
         # "사이클 요약"은 상단 타일(현재 구간·현재 행·원주 진행률·현재 단계)과
         # 내용이 겹쳐 뺐다. 남은 자리는 아래 알림 상자가 받는다.
         rail_layout.addSpacing(12)
+        # 홈 이동은 자주 쓰므로 메인 화면에 둔다. 설정/로그와 한 줄에 놓아
+        # 오른쪽 줄 높이를 늘리지 않는다 — 알림 상자 자리를 뺏지 않게.
+        bottom = QHBoxLayout()
+        self.home_button = QPushButton("로봇 홈")
+        self.home_button.setObjectName("HomeButton")
+        self.home_button.setToolTip("벽에서 물러난 뒤 홈 높이로 올라가 홈 자세로 갑니다.")
+        self.home_button.clicked.connect(self.home_requested)
         settings = QPushButton("설정 / 로그")
         settings.clicked.connect(self.settings_requested)
-        rail_layout.addWidget(settings)
+        bottom.addWidget(self.home_button)
+        bottom.addWidget(settings)
+        rail_layout.addLayout(bottom)
         # 알림·장애 통보 자리. 예전에는 남는 공간에 얹혀 있어 다른 항목에
         # 밀리면 글자가 잘렸다("알람 띄우는 영역이 너무 좁음"). 자리를 미리
         # 잡아 두는 상자로 만들어 메시지가 없어도 높이가 유지되게 한다.
