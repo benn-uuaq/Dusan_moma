@@ -160,18 +160,14 @@ class McMqttTestApp:
         self.job_id_var = tk.StringVar(value="jb00000001")
         self.diameter_var = tk.StringVar(value="2500")
         self.height_var = tk.StringVar(value="6000")
-        self.thickness_var = tk.StringVar(value="500")
         self.target_distance_var = tk.StringVar(value="8560")
 
-        # 원통이 커서 AMR 원주 구역(segment) + Cobot 세로 격자(grid)로
-        # 나눠 스캔한다. cell_id 예: 구역 A(segment_index=1)의 격자 0.
-        self.cell_id_var = tk.StringVar(value="A0")
-        self.segment_index_var = tk.StringVar(value="1")
+        # 원통이 커서 AMR이 원주를 segment_count개 구역으로 나눠 돌고, 각
+        # 구역 안에서는 Cobot이 세로로 ㄹ자를 그리며 스캔한다. 지금 몇 번째
+        # 구역/격자인지는 이 명령에 담지 않는다 — job_cmd 이후로는 UI/로봇
+        # 쪽이 자동으로 순회한다.
         self.segment_count_var = tk.StringVar(value="12")
-        self.grid_index_var = tk.StringVar(value="0")
-        self.grid_count_var = tk.StringVar(value="9")
-        self.grid_width_var = tk.StringVar(value="600")
-        self.grid_height_var = tk.StringVar(value="800")
+        self.scan_width_var = tk.StringVar(value="600")
         self.scan_h_var = tk.StringVar(value="150")
         self.overlap_var = tk.StringVar(value="20")
 
@@ -309,15 +305,9 @@ class McMqttTestApp:
             ("Job ID", self.job_id_var),
             ("Diameter (mm)", self.diameter_var),
             ("Height (mm)", self.height_var),
-            ("Thickness (mm)", self.thickness_var),
             ("Target distance (mm)", self.target_distance_var),
-            ("Cell ID", self.cell_id_var),
-            ("Segment index", self.segment_index_var),
             ("Segment count", self.segment_count_var),
-            ("Grid index", self.grid_index_var),
-            ("Grid count", self.grid_count_var),
-            ("Grid width (mm)", self.grid_width_var),
-            ("Grid height (mm)", self.grid_height_var),
+            ("Scan width (mm)", self.scan_width_var),
             ("Scan height (mm)", self.scan_h_var),
             ("Overlap (mm)", self.overlap_var),
         )
@@ -651,27 +641,21 @@ class McMqttTestApp:
         )
 
     def _publish_job_command(self) -> None:
-        """입력한 검사 대상·격자 정보로 신규 Job 명령을 발행한다."""
+        """입력한 검사 대상·ㄹ자 스캔 정보로 전체 작업 시작 명령을 발행한다."""
         values = {
             "job_id": self.job_id_var.get().strip(),
             "diameter": self.diameter_var.get().strip(),
             "height": self.height_var.get().strip(),
-            "thickness": self.thickness_var.get().strip(),
             "target_distance": self.target_distance_var.get().strip(),
-            "cell_id": self.cell_id_var.get().strip(),
-            "segment_index": self.segment_index_var.get().strip(),
             "segment_count": self.segment_count_var.get().strip(),
-            "grid_index": self.grid_index_var.get().strip(),
-            "grid_count": self.grid_count_var.get().strip(),
-            "grid_width": self.grid_width_var.get().strip(),
-            "grid_height": self.grid_height_var.get().strip(),
+            "scan_width": self.scan_width_var.get().strip(),
             "scan_h": self.scan_h_var.get().strip(),
             "overlap": self.overlap_var.get().strip(),
         }
         if any(not value for value in values.values()):
             messagebox.showwarning(
                 "입력 누락",
-                "Job 정보와 격자 정보의 모든 값을 입력해 주세요.",
+                "Job 정보와 스캔 정보의 모든 값을 입력해 주세요.",
             )
             return
         payload = {
@@ -680,17 +664,11 @@ class McMqttTestApp:
             "job_info": {
                 "diameter": values["diameter"],
                 "height": values["height"],
-                "thickness": values["thickness"],
                 "target_distance": values["target_distance"],
             },
-            "grid": {
-                "cell_id": values["cell_id"],
-                "segment_index": values["segment_index"],
+            "scan": {
                 "segment_count": values["segment_count"],
-                "grid_index": values["grid_index"],
-                "grid_count": values["grid_count"],
-                "width": values["grid_width"],
-                "height": values["grid_height"],
+                "width": values["scan_width"],
                 "scan_h": values["scan_h"],
                 "overlap": values["overlap"],
             },

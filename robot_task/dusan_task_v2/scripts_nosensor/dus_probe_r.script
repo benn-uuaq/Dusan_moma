@@ -1,0 +1,51 @@
+# =============================================================================
+#  dus_probe_r.script — dusan_v2
+#  Y- 끝으로 이동해 측정한다. 3점이 movec 의 시작/경유/도착이 된다
+#
+#  펜던트에서 "5_probe_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def pr_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+# 로봇 자체 레지스터 384~389 와 같은 단위.  길이 0.1mm, 회전 mRad
+def pr_w6(a, p):
+  pr_w1(a, p[0] * 10000)
+  pr_w1(a + 1, p[1] * 10000)
+  pr_w1(a + 2, p[2] * 10000)
+  pr_w1(a + 3, p[3] * 1000)
+  pr_w1(a + 4, p[4] * 1000)
+  pr_w1(a + 5, p[5] * 1000)
+end
+
+
+p_rx = p_r_pose[0]
+write_port_register(302, floor(p_rx * 10000 + 0.5))
+pr_w6(340, p_r_pose)
+
+# probe_l 과 같은 이유로, 뒤로 물러난 지점을 거쳐 목표 자세 그대로 전진한다.
+r_stand = pose_trans(p_r_pose, [0, probe_dist * 0.001, 0, 0, 0, 0])
+movel(r_stand, a = 1.2, v = v_move)
+movel(p_r_pose, a = 0.6, v = v_seek)
+
+n_probe = n_probe + 1
+write_port_register(304, n_probe)
+write_port_register(305, n_hit)
+
+# goto_zero 로 넘어가기 전에 다시 물러난다
+movel(r_stand, a = 0.6, v = v_move)
+
+# 세 점이 그대로 movec 의 시작(원점) / 경유(중앙) / 도착(Y- 끝) 이 된다.
+write_port_register(346, arc_mode)

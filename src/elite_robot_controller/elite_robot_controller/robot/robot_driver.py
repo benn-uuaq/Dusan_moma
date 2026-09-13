@@ -3,6 +3,7 @@ import socket
 import select
 import time
 import queue
+import threading
 from pyModbusTCP.client import ModbusClient
 
 DEFAULT_TIMEOUT = 10.0
@@ -222,14 +223,27 @@ class Robot_30001():
                 break
             
 class AlarmManager:
-    def __init__(self):
-        self.active_alarms = {}
+    """같은 알람을 짧은 시간 안에 중복으로만 걸러내고, 다시 발생하면 다시 알린다.
+
+    예전에는 (code, sub, msg) 키가 한 번이라도 나오면 영원히 dict 에 남아 있어서,
+    같은 알람이 나중에 또 발생해도(예: 같은 원인으로 반복되는 역기구학 실패)
+    프로세스가 떠 있는 동안은 다시는 안 알려졌다 — RCS 운영자가 재발을 놓치는
+    문제였다. 이제는 최근 본 시각만 기억해 두고, 그 시각으로부터
+    `dedup_window` 초가 지나면 같은 알람도 새로 온 것으로 다시 알린다.
+    (같은 물리적 이벤트가 한 번에 패킷 여러 개로 쪼개져 들어오는 것만 눌러 준다.)
+    """
+
+    def __init__(self, dedup_window=2.0):
+        self.dedup_window = dedup_window
+        self._last_seen = {}
 
     def process(self, alarm):
         key = (alarm.code, alarm.sub, alarm.msg)
-        if key in self.active_alarms:
+        now = time.time()
+        last = self._last_seen.get(key)
+        if last is not None and (now - last) < self.dedup_window:
             return False
-        self.active_alarms[key] = alarm
+        self._last_seen[key] = now
         print("================================")
         print("[ALARM TRIGGERED]")
         if alarm.msg:
@@ -239,53 +253,205 @@ class AlarmManager:
         print("================================")
         return True
 
+
 class Robot_29999():
+    """로봇 대시보드(29999) 클라이언트.
+
+    **끊긴 소켓을 다시 붙인다.** 예전에는 명령 하나가 예외로 실패하면
+    망가진 소켓을 그대로 들고 있어서, 그 뒤 모든 명령이 영원히 None 을
+    돌려줬다(`[play] Result: None`). 컨트롤러는 펜던트에서 태스크를 다시
+    불러오거나 전원을 껐다 켜면 이 연결을 끊는데, 그걸 다시 잇는 코드가
+    없었다. 이제는 실패하면 소켓을 버리고 새로 붙여 **한 번 더** 보낸다.
+
+    실패 사유는 `last_error` 에 남긴다 — None 만 돌려주면 받는 쪽이
+    "Result: None" 말고는 보여줄 게 없다.
+    """
+
+    #: 명령 하나의 응답을 기다리는 시간 [s]. 대시보드는 보통 즉시 답한다.
+    #: 너무 길면 노드(단일 스레드 실행기)가 그동안 Modbus 폴링까지 멈춘다.
+    RECV_TIMEOUT_S = 3.0
+    #: 붙을 때 기다리는 시간 [s].
+    CONNECT_TIMEOUT_S = 2.0
+
     def __init__(self, ip, port1):
         self.sock = None
         self.ip = ip
         self.port1 = port1
+        self.last_error = ""
+        # 명령·응답 한 쌍이 다른 명령과 섞이지 않게 한다. 하나의 소켓을
+        # 속도 변경·play·stop 이 같이 쓴다.
+        self._lock = threading.Lock()
 
     def connect_29999(self):
+        # 이미 붙어 있던 소켓은 닫고 새로 붙는다(새는 소켓이 없게).
+        self._close_quietly()
         try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(0.5)
-            self.sock.connect((self.ip, self.port1))
-            self.sock.settimeout(10.0)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(self.CONNECT_TIMEOUT_S)
+            sock.connect((self.ip, self.port1))
+            sock.settimeout(self.RECV_TIMEOUT_S)
             print(f"[DEBUG][Robot Dashboard] Connected to {self.ip} on port {self.port1}")
+            # 접속 인사말을 먼저 비워 둔다. 안 비우면 첫 명령이 인사말을
+            # 자기 응답으로 읽는다.
             try:
-                self.sock.recv(4096) 
-            except Exception: pass
+                sock.recv(4096)
+            except Exception:
+                pass
+            self.sock = sock
+            self.last_error = ""
             return self.sock
         except Exception as e:
-            print(f"[ERROR][Robot Dashboard] Connecting to {self.ip} on port {self.port1}: {e}")
+            self.last_error = f"대시보드({self.ip}:{self.port1}) 연결 실패: {e}"
+            print(f"[ERROR][Robot Dashboard] {self.last_error}")
+            self.sock = None
             return None
 
     def send_command_29999(self, command):
-        try:
-            if self.sock is None:
-                if self.connect_29999() is None:
+        """명령을 보내고 응답 한 줄을 돌려준다. 실패하면 None.
+
+        실패하면 소켓을 버리고 다시 붙여 한 번 더 시도한다. 그래도 안 되면
+        None 을 돌려주고 사유를 `last_error` 에 남긴다.
+        """
+        with self._lock:
+            for attempt in (1, 2):
+                if self.sock is None and self.connect_29999() is None:
                     return None
-            self.sock.sendall(f"{command}\n".encode("utf-8"))
-            response = self.sock.recv(4096).decode("utf-8").strip()
-            return response
-        except Exception as e:
-            print(f"[ERROR] Sending command: {e}")
+                try:
+                    self._drain()
+                    self.sock.sendall(f"{command}\n".encode("utf-8"))
+                    raw = self.sock.recv(4096)
+                    if not raw:
+                        # 컨트롤러가 연결을 닫았다. 다시 붙어 한 번 더.
+                        raise ConnectionError("대시보드가 연결을 닫았습니다")
+                    self.last_error = ""
+                    return raw.decode("utf-8", errors="replace").strip()
+                except Exception as e:
+                    self.last_error = f"'{command}' 전송 실패: {e}"
+                    print(f"[ERROR][Robot Dashboard] {self.last_error} "
+                          f"(시도 {attempt}/2)")
+                    self._close_quietly()
             return None
 
-    def disconnect_29999(self):
-        if self.sock:
-            self.sock.close()
+    def _drain(self):
+        """지난 명령의 늦은 응답이 남아 있으면 버린다.
+
+        남겨 두면 이번 명령이 그걸 자기 응답으로 읽어, 이후 응답이 한 칸씩
+        밀린다(stop 의 응답을 play 가 읽는 식).
+        """
+        if self.sock is None:
+            return
+        try:
+            self.sock.setblocking(False)
+            while True:
+                if not self.sock.recv(4096):
+                    break
+        except (BlockingIOError, InterruptedError):
+            pass
+        except OSError:
+            pass
+        finally:
+            if self.sock is not None:
+                self.sock.settimeout(self.RECV_TIMEOUT_S)
+
+    def _close_quietly(self):
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
             self.sock = None
-            print("[Robot Dashboard] Disconnect")
+
+    def disconnect_29999(self):
+        with self._lock:
+            if self.sock:
+                self._close_quietly()
+                print("[Robot Dashboard] Disconnect")
 
     def robot_mode(self): return self.send_command_29999("robotMode")
     def robot_status(self): return self.send_command_29999("status")
     def robot_power_on(self): return self.send_command_29999("robotControl -on")
     def robot_power_off(self): return self.send_command_29999("robotControl -off")
     def robot_brakeRelease(self): return self.send_command_29999("brakeRelease")
+    # play/stop 은 원격 제어 모드에서만 받는다. 로컬 제어 모드면 컨트롤러가
+    # "not supported in local control mode" 로 거부하므로 먼저 켜 줘야 한다.
+    def robot_remote_control_on(self): return self.send_command_29999("remoteControl -on")
+    def robot_remote_control_off(self): return self.send_command_29999("remoteControl -off")
+
+    def robot_set_speed(self, percent):
+        """로봇 전체 동작 속도 비율[%]을 실시간으로 바꾼다. 2~100.
+
+        레지스터 17에 직접 써도 같은 값이 되지만, 제어 경로를 29999 한
+        곳으로 모아 둔다. 읽기는 레지스터 17을 쓴다.
+        """
+        return self.send_command_29999(f"speed -set {int(percent)}")
+
     def robot_play(self): return self.send_command_29999("play")
     def robot_pause(self): return self.send_command_29999("pause")
     def robot_stop(self): return self.send_command_29999("stop")
+
+    def robot_task_status(self):
+        """지금 로봇에 올라가 있는 태스크 상태를 29999로 물어본다.
+
+        태스크는 펜던트/로봇 쪽에서 고정이라 운영 UI가 고르지 않는다 —
+        이 응답을 그대로 보여주기만 한다. 응답 형식은 컨트롤러가 주는
+        그대로다(예: "Task is running"); 잘라서 가공하지 않는다 — 잘못
+        파싱해 정보를 지우는 것보다 원문 그대로 보여주는 쪽이 안전하다.
+        """
+        return self.send_command_29999("task -s")
+
+    def set_variable(self, name, value):
+        """로봇 쪽 전역 변수를 29999로 설정한다."""
+        return self.send_command_29999(f"variable -set {name} {value}")
+
+    def get_variable(self, var_name):
+        """로봇 쪽 전역 변수 값을 29999로 읽어 파이썬 타입으로 돌려준다.
+
+        - 리스트("[1.1, 2.2]") -> list[float]
+        - 불리언("True"/"False") -> bool
+        - 숫자 -> int/float
+        - 그 외 -> str
+        값이 없거나 오류면 None, 변수를 못 찾으면 "NOT_FOUND"를 돌려준다.
+        """
+        try:
+            response = self.send_command_29999(f"variable -get {var_name}")
+            if response is None:
+                return None
+            if "Error" in response or "undefined" in response or "Can not find" in response:
+                return "NOT_FOUND"
+
+            if "[" in response and "]" in response:
+                content = response[response.find("[") + 1:response.find("]")]
+                result = []
+                for item in content.split(","):
+                    item = item.strip()
+                    if not item:
+                        continue
+                    try:
+                        result.append(float(item))
+                    except ValueError:
+                        result.append(item)
+                return result
+
+            raw = response.split(",")[-1].strip() if "," in response else response.strip()
+            if raw.lower() == "true":
+                return True
+            if raw.lower() == "false":
+                return False
+            try:
+                return int(raw)
+            except ValueError:
+                pass
+            try:
+                return float(raw)
+            except ValueError:
+                pass
+            if (raw.startswith('"') and raw.endswith('"')) or \
+               (raw.startswith("'") and raw.endswith("'")):
+                return raw[1:-1]
+            return raw
+        except Exception as e:
+            print(f"[ERROR][Robot Dashboard] variable -get {var_name}: {e}")
+            return None
     
 class Robot_modbus():       
     def __init__(self, host, port):

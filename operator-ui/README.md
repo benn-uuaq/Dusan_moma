@@ -27,8 +27,21 @@ python -m venv .venv
 
 ```bash
 ros2 launch elite_robot_controller elite_cs612.launch.py robot_ip:=192.168.227.134
-python -m smr_operator_ui
+authbind --deep python -m smr_operator_ui
 ```
+
+**`authbind --deep`가 필요한 이유:** "TPAC 설정 / TCP 인코딩" 화면이 여는 외부 제공 서버는 기본 포트가 502인데, 1024 미만 포트는 리눅스에서 일반 사용자가 열 수 없습니다(`[Errno 13] Permission denied`). `sudo setcap cap_net_bind_service=+ep`를 `python3`에 직접 걸면 이 문제는 해결되지만, 리눅스 동적 로더가 capability 있는 실행 파일에서는 `LD_LIBRARY_PATH`를 무시해 버려서 **ROS 2가 라이브러리를 못 찾고 깨집니다**(`ImportError: librcl_action.so`). `python3`는 ROS도 같이 쓰는 공유 바이너리라 이 방법은 쓰면 안 됩니다.
+
+대신 `authbind`로 이 프로세스 하나에만 502 바인드 권한을 줍니다(최초 1회 설정, `python3` 자체는 건드리지 않습니다):
+
+```bash
+sudo apt-get install -y authbind
+sudo touch /etc/authbind/byport/502
+sudo chmod 500 /etc/authbind/byport/502
+sudo chown "$(whoami)" /etc/authbind/byport/502
+```
+
+이후 UI를 authbind 없이(`python -m smr_operator_ui`) 실행해도 나머지는 다 되지만, TPAC 서버만 `[Errno 13]`으로 시작에 실패합니다 — 화면의 통신 로그에 같은 안내가 뜹니다.
 
 **rclpy는 선택 의존성입니다.** ROS 2가 없는 환경에서는 자세 값이 `-`로 남고 나머지 화면은 그대로 동작합니다. Windows 배포본을 ROS 없이 실행할 수 있도록 하기 위한 구조이므로 `pyproject.toml`의 의존성에 `rclpy`를 넣지 않습니다.
 

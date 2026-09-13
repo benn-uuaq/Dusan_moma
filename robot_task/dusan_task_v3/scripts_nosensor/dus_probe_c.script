@@ -1,0 +1,59 @@
+# =============================================================================
+#  dus_probe_c.script — dusan_v3
+#  중앙에서 전진해 벽을 찾고 pose 를 기록한 뒤 후퇴한다
+#
+#  펜던트에서 "3_probe_center" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def pc_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+# 로봇 자체 레지스터 384~389 와 같은 단위.  길이 0.1mm, 회전 mRad
+def pc_w6(a, p):
+  pc_w1(a, p[0] * 10000)
+  pc_w1(a + 1, p[1] * 10000)
+  pc_w1(a + 2, p[2] * 10000)
+  pc_w1(a + 3, p[3] * 1000)
+  pc_w1(a + 4, p[4] * 1000)
+  pc_w1(a + 5, p[5] * 1000)
+end
+
+write_port_register(290, 2)
+y_c = get_actual_tcp_pose()[1]
+z_base = get_actual_tcp_pose()[2]
+
+# 정렬 기준 자세 : 측정점 사이를 이동할 때(probe_l/r, goto_zero) 이 회전으로
+# 되돌아온다. 움직이기 전에 남겨 둔다 (센서판 probe_c 와 같은 역할).
+x_start = get_actual_tcp_pose()
+probe_rot = x_start
+
+# 중앙점 접근  [임시판 : 센서가 없으니 정해진 거리만 전진]
+# 센서판과 달리 눌림을 못 재므로 probe_dist 를 그대로 믿는다.
+# 전진은 TCP -Y (호를 그리며 손 방향이 바뀌므로 베이스 기준이면 안 된다).
+movel(pose_trans(x_start, [0, -probe_dist * 0.001, 0, 0, 0, 0]),
+      a = a_l, v = v_l / 3.0)  # 접촉 위치 진입: 천천히
+
+n_probe = n_probe + 1
+write_port_register(304, n_probe)
+write_port_register(305, n_hit)
+
+# movec 의 경유점으로 쓸 pose 전체를 남긴다
+p_c_pose = get_actual_tcp_pose()
+p_cx = p_c_pose[0]
+write_port_register(300, floor(p_cx * 10000 + 0.5))
+pc_w6(330, p_c_pose)
+
+# 벽에서 물러난다 (온 만큼 그대로 되돌아간다)
+movel(x_start, a = a_l, v = v_l)

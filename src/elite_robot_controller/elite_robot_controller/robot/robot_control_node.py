@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Bool, String, Int32, Float32MultiArray
+from std_msgs.msg import Bool, String, Int32, Int32MultiArray, Float32MultiArray
 from std_srvs.srv import Trigger
 
 from elite_robot_controller import register_map
@@ -27,10 +27,13 @@ class RobotControlNode(Node):
         self.declare_parameter('jog_tcp_rot_speed_max', 0.50)  # rad/s
         self.declare_parameter('jog_accel_max', 1.00)
         # speedj/speedl 의 t. 이 시간이 지나면 로봇이 스스로 멈춘다.
-        # UI 가 누르는 동안 명령을 되풀이하므로, 통신이 끊기면 여기서 선다.
-        self.declare_parameter('jog_hold_time', 0.5)
-        # 홈 이동 시 movej 전에 movel로 올릴 높이 [m]
-        self.declare_parameter('home_lift_z', 0.32)
+        # UI는 버튼을 누른 순간 딱 한 번만 명령을 보낸다(2026-08-31 이전에는
+        # held 동안 짧은 간격으로 되풀이했는데, 그때마다 로봇이 새 스크립트를
+        # 실행하느라 STOPPED→RUNNING을 반복해 움직임이 덜컹거렸다). 실제
+        # 정지는 손을 뗄 때 나가는 29999 stop이 맡으므로, 이 값은 "혹시 그
+        # stop 신호가 아예 안 왔을 때"의 안전 타임아웃일 뿐이다 — 평소 조그
+        # 조작을 방해하지 않을 만큼 넉넉하게 잡는다.
+        self.declare_parameter('jog_hold_time', 3.0)
         robot_ip = self.get_parameter('robot_ip').get_parameter_value().string_value
         map_path = self.get_parameter('register_map').get_parameter_value().string_value
         self.registers = register_map.load(map_path or None)
@@ -54,6 +57,14 @@ class RobotControlNode(Node):
         self.pub_joint_position = self.create_publisher(Float32MultiArray, 'robot/status/joint_position', 10)
         self.pub_alarm = self.create_publisher(String, 'robot/status/alarms', 10)
         self.pub_connected = self.create_publisher(Bool, 'robot/status/connected', 10)
+        # 로봇 태스크가 쓰는 스캔 진행 상태(290~298). 운영 UI의 격자 순회가
+        # 이 값으로 한 셀의 완료(state==5 && finished==1)를 판정한다.
+        self.pub_scan_state = self.create_publisher(Int32MultiArray, 'robot/status/scan_state', 10)
+        # 로봇 컨트롤러가 주는 태스크 상태(1 실행 중, 2 일시 중지, 3 중지됨).
+        # 29999로 물으면 매번 명령을 던져야 하므로 Modbus로 상시 읽는다.
+        self.pub_task_state = self.create_publisher(Int32, 'robot/status/task_state', 10)
+        # 로봇이 실제로 쓰고 있는 속도 비율[%]. 펜던트에서 바꿔도 여기로 나온다.
+        self.pub_speed_scale = self.create_publisher(Int32, 'robot/status/speed_scale', 10)
 
         # 연결과 해제도 서비스로 노출해 운영 UI에서 다룰 수 있게 한다.
         self.create_service(Trigger, 'robot/dashboard/connect', self.cb_connect)
@@ -66,8 +77,13 @@ class RobotControlNode(Node):
         self.create_service(Trigger, 'robot/dashboard/power_off', self.cb_dash_power_off)
         self.create_service(Trigger, 'robot/dashboard/brake_release', self.cb_dash_brake)
         self.create_service(Trigger, 'robot/dashboard/play', self.cb_dash_play)
+        self.create_service(Trigger, 'robot/dashboard/remote_control_on',
+                            self.cb_dash_remote_on)
         self.create_service(Trigger, 'robot/dashboard/pause', self.cb_dash_pause)
         self.create_service(Trigger, 'robot/dashboard/stop', self.cb_dash_stop)
+        # 태스크는 펜던트/로봇 쪽에서 고정이라 운영 UI가 고르지 않는다 —
+        # 지금 뭐가 올라가 있는지만 29999 "task -s"로 물어 보여준다.
+        self.create_service(Trigger, 'robot/dashboard/task_status', self.cb_dash_task_status)
 
         # 홈 이동은 값이 없는 한 번짜리 명령이므로 Trigger를 쓴다. 기준 위치
         # 저장은 UI가 값을 보내므로 아래 토픽으로 받는다.
@@ -90,6 +106,8 @@ class RobotControlNode(Node):
         # 블록이 UI를 거쳐 여기로 온다. 256~259에 쓰고 266(param_src)을
         # 1로 세워야 태스크가 이 값을 읽는다.
         self.create_subscription(Float32MultiArray, 'robot/command/work_area', self.cb_work_area, 10)
+        # 스캔 시작 허가(267). 로봇이 원점에서 멈춰 기다리는 것을 풀어 준다.
+        self.create_subscription(Int32, 'robot/command/scan_go', self.cb_scan_go, 10)
 
         # 10Hz 주기로 모드버스 데이터 갱신 및 30001 알람 수집
         self.timer = self.create_timer(0.1, self.update_robot_loop)
@@ -102,8 +120,38 @@ class RobotControlNode(Node):
                 "[WARN] 로봇에 연결하지 못했습니다. robot/dashboard/connect 로 다시 시도하십시오."
             )
 
+    def _param_str(self, name, fallback):
+        """파라미터를 못 읽어도 연결 자체는 진행한다(기존 주소를 그대로 쓴다)."""
+        try:
+            return self.get_parameter(name).get_parameter_value().string_value or fallback
+        except Exception:
+            return fallback
+
+    def _param_int(self, name, fallback):
+        try:
+            return self.get_parameter(name).get_parameter_value().integer_value or fallback
+        except Exception:
+            return fallback
+
     def connect_all_servers(self, robot_ip=None):
-        """세 채널을 모두 연결한다. 하나라도 실패하면 연결로 보지 않는다."""
+        """세 채널을 모두 연결한다. 하나라도 실패하면 연결로 보지 않는다.
+
+        연결할 때마다 `robot_ip` 파라미터를 다시 읽는다 — 운영 UI가 화면에서
+        주소를 고친 뒤 이 파라미터를 바꾸고 connect 를 부르면 **그 주소로**
+        붙게 하기 위해서다. 예전에는 노드를 띄울 때 읽은 주소로 소켓을
+        만들어 두고 인자도 무시해서, UI에서 IP를 아무리 바꿔도 노드는 계속
+        옛 주소로 붙었다(화면 표시와 실제 연결이 어긋나던 원인).
+        """
+        if robot_ip is None:
+            robot_ip = self._param_str('robot_ip', self.robot_ip)
+        if robot_ip and robot_ip != self.robot_ip:
+            self.get_logger().info(f"[connect] 주소 변경: {self.robot_ip} -> {robot_ip}")
+            self.disconnect_all_servers()
+            modbus_port = self._param_int('modbus_port', 502)
+            self.robot_ip = robot_ip
+            self.robot_dash = Robot_29999(robot_ip, 29999)
+            self.robot_primary = Robot_30001(robot_ip, 30001)
+            self.robot_modbus = Robot_modbus(robot_ip, modbus_port)
         try:
             d_ok = self.robot_dash.connect_29999()
             p_ok = self.robot_primary.connect_30001()
@@ -163,6 +211,9 @@ class RobotControlNode(Node):
         self.publish_pose('tcp_absolute', self.pub_tcp_pose)
         self.publish_pose('tcp_zero_relative', self.pub_tcp_pose_zero)
         self.publish_pose('joint_position', self.pub_joint_position)
+        self.publish_raw('scan_state', self.pub_scan_state)
+        self.publish_code('task_state', self.pub_task_state)
+        self.publish_code('speed_scale', self.pub_speed_scale)
 
         # 30001 포트 비동기 백그라운드 실시간 알람 스트림 처리
         self.robot_primary.get_data()
@@ -201,6 +252,22 @@ class RobotControlNode(Node):
         pose_msg.data = [value * scale for value, scale in zip(regs, scales)]
         publisher.publish(pose_msg)
 
+    def publish_raw(self, name, publisher):
+        """레지스터 여러 개를 환산 없이 정수 그대로 발행한다.
+
+        스캔 진행 상태처럼 단위가 없는 값(상태 코드, 개수, 플래그)에 쓴다.
+        환산을 거치면 부동소수 오차로 == 비교가 어긋날 수 있다.
+        """
+        entry = self.registers.read_entry(name)
+        if not entry.available:
+            return
+
+        regs = self.robot_modbus.get_all_registers(entry.address, entry.count)
+        if not regs or len(regs) != entry.count:
+            return
+
+        publisher.publish(Int32MultiArray(data=[int(value) for value in regs]))
+
     def write_register(self, name, value):
         """쓰기 레지스터에 값을 넣는다. (성공여부, 안내문구)를 돌려준다.
 
@@ -237,8 +304,18 @@ class RobotControlNode(Node):
         self._write_topic('linear_speed', msg)
 
     def cb_speed_ratio(self, msg):
-        # 태스크는 레지스터로, 조그는 이 값을 그대로 써서 속도를 줄인다.
+        """로봇 전체 동작 속도 비율[%]을 바꾼다. 2~100.
+
+        29999로 실시간 반영하는 것이 본 경로다. 레지스터 307은 태스크가
+        시작할 때 읽어 가는 값이라 함께 써 둔다(태스크 재시작 후에도 유지).
+        조그 속도도 이 값을 그대로 곱해 줄인다.
+        """
         self.speed_ratio = max(2, min(100, int(msg.data)))
+        # 실시간 반영: 돌고 있는 동작에도 바로 먹는다.
+        result = self.robot_dash.robot_set_speed(self.speed_ratio)
+        if result is None:
+            self.get_logger().warn(
+                f"[speed] 속도 비율 {self.speed_ratio} % 전송 실패")
         self._write_topic('speed_ratio', Int32(data=self.speed_ratio))
 
     def _jog_scale(self):
@@ -291,6 +368,15 @@ class RobotControlNode(Node):
     def cb_work_area(self, msg):
         # [너비, 높이, 스캐너높이, 겹침] mm -> 256~259, 성공하면 266=1.
         self._write_pose_topic('work_area', msg, flag_name='param_src')
+
+    def cb_scan_go(self, msg):
+        """스캔 시작 허가(267)를 쓴다.
+
+        로봇은 원점에 도착하면 state(290)를 7 로 두고 이 값이 1 이 될
+        때까지 멈춰 선다. 통과하면서 로봇이 스스로 0 으로 되돌리므로
+        여기서 지울 필요는 없다.
+        """
+        self._write_topic('scan_go', msg)
 
     # ---------------------------------------------------------------- 조그
     def _jog_vector(self, code, count=6):
@@ -345,42 +431,113 @@ class RobotControlNode(Node):
         hold = self.get_parameter('jog_hold_time').value
         self.robot_primary.send_script(f"speedl({xd}, {round(accel, 6)}, {hold})")
 
+    # get_variable이 실패했을 때만 쓰는 마지막 안전망. 정상 경로에서는
+    # 항상 로봇에서 29999로 직접 읽은 값을 쓴다.
+    _HOME_JOINT_FALLBACK = [0.55498, -1.00739, -2.64993, -1.05507, 1.5708, 0.55497]
+    _HOME_POSE_FALLBACK = [0.33684, -0.00001, 0.31805, 3.14159, 0, -1.57079]
+
     def cb_move_home(self, req, res):
-        """안전 높이까지 movel로 올린 뒤 movej로 홈 관절값에 간다."""
+        """안전 높이까지 movel로 올린 뒤 movej로 홈 관절값에 간다.
+
+        30001 소켓(실시간 명령 채널)에 if/else 를 최상위(top-level)로
+        그냥 보내면 한 줄씩 별개 명령으로 읽혀 실패한다("No 'if' command").
+        def 이름(): ... end 로 감싼 하나의 프로그램으로 보내야 하고,
+        보내고 나면 파싱이 끝나는 대로 바로 실행되므로 따로 호출하면
+        안 된다("move_home_now 정의 안 됨"). 이 프로그램은 태스크
+        preamble 밖에서 독립적으로 도는 별개 컨텍스트라 태스크가 저장해
+        둔 Home_joint/Home_pose 전역도 그냥은 안 보여서("정의되지
+        않았습니다") 쓸 수 없다. 대신 29999의 `variable -get`으로 로봇에
+        저장된 실제 값을 그때그때 읽어와, global 선언 뒤 이 스크립트
+        안에서 그 값을 직접 대입해 준다 — 하드코딩해 두면 태스크 쪽
+        값이 바뀔 때 둘이 어긋날 수 있어서다.
+
+        레지스터 308(pose_src)이 1일 때만 310~315 override 값을 쓰고,
+        평소(0)에는 위에서 읽어온 Home_joint/Home_pose 를 쓴다. 예전에는
+        항상 310~315를 읽었는데, 운영자가 '위치 저장'으로 한 번도 값을
+        넣지 않으면 그 레지스터가 0으로 남아 있어 movej([0,0,0,0,0,0],
+        ...) 처럼 전혀 엉뚱한 관절로 가 버렸다 — 그게 '고장 홈 위치로
+        간다'로 보인 원인이다.
+        """
         if not self.connected:
             res.success = False
             res.message = "[move_home] 로봇에 연결되어 있지 않습니다."
             return res
 
-        entry = self.registers.write_entry('home_joint')
-        regs = self.robot_modbus.get_all_registers(entry.address, entry.count) \
-            if entry.available else []
-        if len(regs) != 6:
-            res.success = False
-            res.message = "[move_home] 홈 관절값이 저장되어 있지 않습니다."
-            self.get_logger().warn(res.message)
-            return res
+        home_joint = self.robot_dash.get_variable("Home_joint")
+        home_pose = self.robot_dash.get_variable("Home_pose")
+        if not isinstance(home_joint, list) or len(home_joint) != 6:
+            self.get_logger().warn(
+                f"[move_home] Home_joint를 로봇에서 못 읽었습니다({home_joint!r}). "
+                "고정값으로 대신합니다.")
+            home_joint = self._HOME_JOINT_FALLBACK
+        if not isinstance(home_pose, list) or len(home_pose) != 6:
+            self.get_logger().warn(
+                f"[move_home] Home_pose를 로봇에서 못 읽었습니다({home_pose!r}). "
+                "고정값으로 대신합니다.")
+            home_pose = self._HOME_POSE_FALLBACK
 
-        scale = self.registers.rotation_scale
-        joints = [value * scale / 1000.0 for value in regs]   # mrad -> rad
-        lift_z = self.get_parameter('home_lift_z').value
+        # p, j 는 pose/joint 리터럴(p[..], j[..])에 쓰는 내장 이름과
+        # 충돌한다("변수 p가 내장 함수의 이름과 충돌"). 겹치지 않는
+        # 이름으로 바꾼다.
+        # 30001은 def 이름(): ... end 블록 자체를 프로그램으로 받아
+        # 파싱이 끝나면 바로 실행한다 — 따로 move_home_now() 를 호출하면
+        # 그 호출을 다시 "정의 안 된 변수"로 오해해서 실패한다.
         script = (
-            "p = get_actual_tcp_pose()\n"
-            f"if (p[2] < {lift_z}):\n"
-            f"  p[2] = {lift_z}\n"
-            "  movel(p, a=1.2, v=0.25)\n"
-            "end\n"
-            f"movej({joints}, a=1.4, v=0.5)"
+            "def move_home_now():\n"
+            "  global Home_joint\n"
+            f"  Home_joint = {home_joint}\n"
+            "  global Home_pose\n"
+            f"  Home_pose = {home_pose}\n"
+            "  if (read_port_register(308, True) == 1):\n"
+            "    tgt_j = [read_port_register(310, True) / 1000.0,\n"
+            "             read_port_register(311, True) / 1000.0,\n"
+            "             read_port_register(312, True) / 1000.0,\n"
+            "             read_port_register(313, True) / 1000.0,\n"
+            "             read_port_register(314, True) / 1000.0,\n"
+            "             read_port_register(315, True) / 1000.0]\n"
+            "    tgt_h = get_forward_kin(tgt_j)\n"
+            "  else:\n"
+            "    tgt_j = Home_joint\n"
+            "    tgt_h = Home_pose\n"
+            "  end\n"
+            "  cur_pose = get_actual_tcp_pose()\n"
+            "  if (cur_pose[2] < tgt_h[2] - 0.001):\n"
+            "    cur_pose[2] = tgt_h[2]\n"
+            "    movel(cur_pose, a=1.2, v=0.25)\n"
+            "  end\n"
+            "  movej(tgt_j, a=1.4, v=0.5)\n"
+            "end"
         )
         ok = self.robot_primary.send_script(script)
         res.success = bool(ok)
         res.message = "[move_home] 홈 이동을 요청했습니다." if ok else "[move_home] 스크립트 전송 실패"
         return res
 
+    #: 대시보드가 **답은 했지만 거절한** 응답에 들어가는 말들.
+    #: 예) "Failed to execute: play", "... not supported in local control mode"
+    _DASH_REFUSALS = ("fail", "not supported", "error", "not allowed", "can not", "cannot")
+
     def _execute_dash_cmd(self, func, name, response):
+        """대시보드 명령을 보내고 결과를 서비스 응답에 담는다.
+
+        예전에는 응답이 **오기만 하면** 성공으로 쳤다 — 컨트롤러가
+        "Failed to execute: play" 로 거절해도 RCS 는 성공으로 받았다.
+        그리고 연결이 끊겨 None 이 오면 "Result: None" 만 남아 원인을
+        알 수 없었다. 이제 거절 문구면 실패로, None 이면 끊긴 사유를
+        함께 돌려준다.
+        """
         res_str = func()
-        response.success = True if res_str is not None else False
+        if res_str is None:
+            reason = getattr(self.robot_dash, "last_error", "") or "응답 없음"
+            response.success = False
+            response.message = f"[{name}] 대시보드 응답 없음 — {reason}"
+            self.get_logger().warn(response.message)
+            return response
+        refused = any(word in res_str.lower() for word in self._DASH_REFUSALS)
+        response.success = not refused
         response.message = f"[{name}] Result: {res_str}"
+        if refused:
+            self.get_logger().warn(f"[{name}] 컨트롤러가 거절: {res_str}")
         return response
 
     def cb_dash_mode(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_mode, "robotMode", res)
@@ -389,8 +546,14 @@ class RobotControlNode(Node):
     def cb_dash_power_off(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_power_off, "robotControl -off", res)
     def cb_dash_brake(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_brakeRelease, "brakeRelease", res)
     def cb_dash_play(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_play, "play", res)
+
+    def cb_dash_remote_on(self, req, res):
+        """원격 제어 모드를 켠다. 이걸 켜야 play/stop 이 먹는다."""
+        return self._execute_dash_cmd(
+            self.robot_dash.robot_remote_control_on, "remoteControl -on", res)
     def cb_dash_pause(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_pause, "pause", res)
     def cb_dash_stop(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_stop, "stop", res)
+    def cb_dash_task_status(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_task_status, "task -s", res)
 
     def destroy_node(self):
         self.robot_dash.disconnect_29999()

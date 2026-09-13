@@ -15,6 +15,8 @@ class InspectionSimulator(QObject):
     snapshot_changed = pyqtSignal(object)
     activity = pyqtSignal(str)
 
+    # 장비 없이 화면을 돌려 보는 데모용 순서. 실제 진행은 `JobSequencer` 가
+    # `apply_external_state()` 로 넣으므로 이 순서를 타지 않는다.
     _sequence = (
         CyclePhase.SECURING,
         CyclePhase.LEVELING,
@@ -74,6 +76,47 @@ class InspectionSimulator(QObject):
         self._timer.stop()
         cycle = replace(self.snapshot.cycle, running=False, paused=False, phase=CyclePhase.IDLE, velocity_mps=0.0)
         self._publish(cycle, "사이클을 정지했습니다.")
+
+    def begin_external(self, total_segments: int) -> None:
+        """외부(`JobSequencer`)가 진행을 주도하는 사이클을 시작한다.
+
+        **자체 타이머로 단계를 넘기지 않는다.** 실제 로봇이 도는 동안 화면이
+        혼자 앞서 나가면 진행 상황이 거짓으로 보이기 때문이다. 단계와 구간은
+        `apply_external_state()`로만 바뀐다.
+        """
+        self._timer.stop()
+        self._phase_index = 0
+        cycle = replace(
+            self.snapshot.cycle,
+            total_segments=max(1, total_segments),
+            current_segment=1,
+            completed_segments=0,
+            running=True,
+            paused=False,
+            phase=self._sequence[0],
+            velocity_mps=0.0,
+        )
+        self._publish(cycle, "작업을 시작했습니다.")
+
+    def apply_external_state(
+        self,
+        phase: CyclePhase,
+        current_segment: int,
+        completed_segments: int,
+    ) -> None:
+        """외부 진행 상태를 화면에 그대로 반영한다."""
+        total = max(1, self.snapshot.cycle.total_segments)
+        cycle = replace(
+            self.snapshot.cycle,
+            phase=phase,
+            current_segment=max(1, min(current_segment, total)),
+            completed_segments=max(0, min(completed_segments, total)),
+            running=phase not in (CyclePhase.IDLE, CyclePhase.COMPLETE),
+            paused=phase is CyclePhase.PAUSED,
+            velocity_mps=0.15 if phase is CyclePhase.MOVING else 0.0,
+        )
+        self.snapshot = replace(self.snapshot, cycle=cycle)
+        self.snapshot_changed.emit(self.snapshot)
 
     def set_segment_position(self, current_segment: int, total_segments: int) -> None:
         """AMR의 실제 원주 구역 위치를 반영한다.

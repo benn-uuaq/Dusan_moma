@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import os
+import re
 import sys
 from datetime import datetime
 from importlib.resources import files
@@ -23,40 +26,119 @@ from PyQt6.QtWidgets import (
 )
 
 from smr_operator_ui.components import ConnectionBadge
+from smr_operator_ui.components.rect_work_view import (
+    MAX_PROBE_CHORD_MM, max_safe_arc_mm, probe_chord_mm,
+)
 from smr_operator_ui.screens import (
     CobotJogScreen, CobotManualScreen, CobotSettingsScreen, ConnectionSettingsScreen,
     ErrorLogScreen, IOStatusScreen, LogFilesScreen, MainScreen, ManualScreen,
     ModeSlotsScreen, RunScreen, SettingsMenuScreen, SystemSettingsScreen,
-    UTSettingsScreen,
+    TpacBridgeScreen, UTSettingsScreen,
 )
+from smr_operator_ui.state import CyclePhase
+from smr_operator_ui.services.mqtt_server import SPEED_MAX, SPEED_MIN
 from smr_operator_ui.services import (
+    DummyMotionAdapter,
+    ErutClient,
+    ErutSession,
+    GridPlan,
     InspectionSimulator,
+    JobSequencer,
     MqttServer,
     MqttTopics,
+    RobotNodeSupervisor,
     RosStatusClient,
+    SequencerState,
     SettingsService,
 )
+from smr_operator_ui.services.ros_status_client import TASK_STATE_NAMES
 from smr_operator_ui.services.reference_poses import (
     load_reference_poses,
     save_reference_poses,
 )
 from smr_operator_ui.styles import load_stylesheet
 
+# TCP 직선 속도의 안전 상한 [mm/s]. 로봇 태스크(dus_init.script)도 같은
+# 값으로 자르지만, 넘는 값을 애초에 보내지 않는다.
+MAX_LINEAR_SPEED_MM_S = 150
+
+# 로봇 태스크를 stop 한 뒤 play 하기까지 두는 간격. 컨트롤러가 태스크를
+# 정리할 시간을 주지 않으면 play 가 거부된다.
+ROBOT_RESTART_DELAY_MS = 1200
+
+# 시퀀서 상태를 화면의 "안전 순서" 5단계에 대응시킨다.
+# 5단계는 **구간(열)마다** 반복된다: 정지·고정 → 수평 보정 → Cobot 검사
+# → 안전 위치 → 다음 구간 이동. 한 열 안에서 리프트로 셀을 옮기는 것은
+# 3단계(검사) 안에서 일어나므로 표시가 뒤로 가지 않는다.
+_SEQUENCER_PHASES = {
+    SequencerState.IDLE: CyclePhase.IDLE,
+    SequencerState.SECURING: CyclePhase.SECURING,        # 1
+    SequencerState.LEVELING: CyclePhase.LEVELING,        # 2
+    # 셀과 셀 사이 리프트 이동은 아직 3단계(검사) 안이다. 2단계로 되돌리면
+    # 화면이 3 → 2 → 3 으로 뒤로 간다.
+    SequencerState.MOVING_LIFT: CyclePhase.INSPECTING,   # 3
+    SequencerState.SCANNING: CyclePhase.INSPECTING,      # 3
+    SequencerState.RETRACTING: CyclePhase.RETRACTING,    # 4
+    SequencerState.MOVING_AMR: CyclePhase.MOVING,        # 5
+    SequencerState.PAUSED: CyclePhase.PAUSED,
+    SequencerState.DONE: CyclePhase.COMPLETE,
+    SequencerState.STOPPED: CyclePhase.IDLE,
+}
+
 # 저장 문구에 쓰는 축 이름. 홈은 관절, 시작 포즈는 TCP 좌표다.
 _JOINT_LABELS = ("J1", "J2", "J3", "J4", "J5", "J6")
 _POSE_LABELS = ("X", "Y", "Z", "RX", "RY", "RZ")
 
+_PX_RE = re.compile(r"(-?\d+)px")
+
+
+def _scale_stylesheet(base_qss: str, scale: float) -> str:
+    """QSS 안의 모든 px 값(글자 크기·여백·버튼 높이 등)을 같은 비율로 늘린다.
+
+    전체화면처럼 창이 커져도 화면을 채우는 상자·그래픽만 커지고 글자·여백은
+    그대로라 작은 창과 비율이 안 맞았다("전체 화면과 작은 화면 비율이 유지가
+    되었으면 좋겠음", "작업 영역 아래의 글자는 전체 화면에 맞춰 조금 커지게").
+    폰트 크기뿐 아니라 버튼 높이·여백까지 전부 같은 비율로 늘려야 실제로
+    "화면 비율이 유지"된 것처럼 보인다.
+    """
+    def _scale_one(match: re.Match[str]) -> str:
+        base = int(match.group(1))
+        scaled = round(base * scale)
+        if scaled == 0 and base != 0:
+            # 0px로 반올림되면 (예: 음수 마진, 얇은 테두리) 그 값이
+            # 아예 사라진 것처럼 보인다 — 원래 부호를 살려 최소 1(또는
+            # -1)로 둔다.
+            scaled = 1 if base > 0 else -1
+        return f"{scaled}px"
+
+    return _PX_RE.sub(_scale_one, base_qss)
+
 
 class TopBar(QFrame):
-    """제품 정보와 시스템 요약 상태를 항상 표시하는 상단 바."""
+    """제품 정보와 시스템 요약 상태를 항상 표시하는 상단 바.
+
+    브랜드+부제+날짜/시간+배지 5개+배터리를 기본 글자 크기 그대로 다 늘어놓으면
+    1280px 폭보다 훨씬 넓어져(배지만 5개, 각각 두 줄) 창 폭이 좁을 때 글자가
+    잘렸다("상단부 글자와 날짜 잘리는 문제"). 위젯 하나하나를 눌러 찌그러뜨리는
+    대신, 실제로 필요한 폭과 지금 창 폭을 비교해 부족한 만큼 전체 글자 크기를
+    비례해서 줄인다("화면 비율에 맞춰서 글자 크기가 줄어들어야 할듯" — 사용자
+    제안 그대로).
+    """
+
+    _MIN_FONT_SCALE = 0.55
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("TopBar")
         self.setFixedHeight(68)
+        # OperatorWindow가 창 크기에 맞춰 넘겨주는 전체 UI 배율. 여기에
+        # 좁을 때만 작동하는 자체 축소 로직(shrink-to-fit)이 더해진다.
+        self._global_scale = 1.0
         layout = QHBoxLayout(self)
         layout.setContentsMargins(20, 6, 20, 6)
         layout.setSpacing(14)
+        # (라벨, 기본 폭(px)) — resizeEvent에서 이 기본값에 배율을 곱해 되돌린다.
+        self._scalable_labels: list[tuple[QLabel, int]] = []
         brand = QLabel("3S-Robotics")
         brand.setObjectName("Brand")
         product = QLabel("SMR 비파괴 검사 시스템  |  Operator Console")
@@ -68,15 +150,116 @@ class TopBar(QFrame):
         self.clock.setObjectName("TopMeta")
         self.clock.setAlignment(Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.clock)
-        for name in ("PLC", "AMR", "Cobot", "UT"):
-            layout.addWidget(ConnectionBadge(name))
+        self._register_scalable(brand, 26)
+        self._register_scalable(product, 20)
+        self._register_scalable(self.clock, 20)
+        self.badges: dict[str, ConnectionBadge] = {}
+        # PLC/AMR/UT는 아직 실제 연결 신호가 붙어 있지 않은 자리표시자라
+        # 항상 "연결됨"으로 둔다(placeholder). Cobot은 ros_status의
+        # connected_changed 신호로 실제 상태를 받으므로 TPAC과 마찬가지로
+        # "연결 안 됨"에서 시작해, 실제 연결이 확인돼야 초록으로 바뀐다
+        # (버그 리포트: "Cobot 실제로 연결 안되어 있는데 연결됨으로 뜸").
+        for name in ("PLC", "AMR"):
+            badge = ConnectionBadge(name)
+            self.badges[name] = badge
+            layout.addWidget(badge)
+        cobot_badge = ConnectionBadge("Cobot", initial_connected=False)
+        self.badges["Cobot"] = cobot_badge
+        layout.addWidget(cobot_badge)
+        ut_badge = ConnectionBadge("UT")
+        self.badges["UT"] = ut_badge
+        layout.addWidget(ut_badge)
+        # TPAC은 실제 외부 장비라 상태를 그대로 표시한다. 마찬가지로
+        # 처음엔 "연결 안 됨"에서 시작해, 실제로 값을 읽어가야 초록으로 바뀐다.
+        tpac_badge = ConnectionBadge("TPAC", initial_connected=False)
+        self.badges["TPAC"] = tpac_badge
+        layout.addWidget(tpac_badge)
+        for badge in self.badges.values():
+            for label in badge.findChildren(QLabel):
+                self._register_scalable(label, 20)
         battery = QLabel("배터리  85%")
         battery.setObjectName("Product")
         layout.addWidget(battery)
+        self._register_scalable(battery, 20)
         timer = QTimer(self)
         timer.timeout.connect(self._update_clock)
         timer.start(1000)
         self._update_clock()
+        # 창이 뜨는 도중에 오는 첫 resizeEvent는 QSS 폰트 적용이 아직
+        # 안 끝난 시점이라 sizeHint 계산이 살짝 부정확할 때가 있다.
+        # 이벤트 루프가 레이아웃/스타일 적용을 마친 다음 한 번 더
+        # 재보정해 첫 화면부터 정확히 맞게 한다.
+        QTimer.singleShot(0, self._rescale_to_fit)
+
+    def _register_scalable(self, label: QLabel, base_px: int) -> None:
+        """resizeEvent에서 배율을 적용할 대상으로 라벨을 등록한다."""
+        self._scalable_labels.append((label, base_px))
+
+    def set_global_scale(self, scale: float) -> None:
+        """OperatorWindow가 창 크기 비율에 맞춰 계산한 전체 UI 배율을 받는다.
+
+        전체화면에서 나머지 화면 글자가 커지는데 상단바만 그대로면 어색해
+        보인다. 높이도 같이 늘려야 커진 두 줄(날짜/시간)이 안 잘린다.
+        """
+        self._global_scale = scale
+        self.setFixedHeight(round(68 * scale))
+        self._rescale_to_fit()
+
+    def _apply_font_scale(self, scale: float) -> None:
+        # 창이 닫히는 중이면 Qt 가 라벨을 이미 지웠는데 이 목록에는 남아
+        # 있을 수 있다. 그대로 만지면 RuntimeError 로 죽으므로(종료 중
+        # 크래시) 살아 있는 것만 남기고 넘어간다.
+        alive = []
+        for label, base_px in self._scalable_labels:
+            try:
+                font = label.font()
+                font.setPixelSize(max(11, round(base_px * scale)))
+                label.setFont(font)
+                # setFont만으로는 레이아웃이 캐시해 둔 sizeHint가 갱신되지
+                # 않아, 그대로 두면 폰트를 줄여도 sizeHint()가 이전 값을
+                # 그대로 돌려준다 — 새 글자 크기 기준으로 다시 재도록 한다.
+                label.updateGeometry()
+            except RuntimeError:
+                continue
+            alive.append((label, base_px))
+        self._scalable_labels = alive
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._rescale_to_fit()
+
+    def _rescale_to_fit(self) -> None:
+        """실제 필요한 폭을 기본 글자 크기로 재보고, 지금 폭에 맞춰 줄인다.
+
+        배지 안쪽 여백·라벨 사이 spacing 등 글자 크기와 무관하게 고정된
+        폭이 섞여 있어, natural/available 비율 그대로 한 번만 줄이면
+        고정폭 비중만큼 살짝 못 미쳐 여전히 넘친다. 몇 번 다시 재서
+        좁혀 가면 빠르게 수렴한다.
+        """
+        # 창을 닫는 중에 예약된 호출이 뒤늦게 들어오면 이 위젯이 이미
+        # 지워져 있을 수 있다. 그때 만지면 프로세스가 죽는다.
+        try:
+            available = self.width()
+            if available <= 0:
+                return
+            self._apply_font_scale(self._global_scale)
+            self.layout().invalidate()
+            scale = self._global_scale
+            for _ in range(8):
+                natural = self.layout().sizeHint().width()
+                if natural <= available:
+                    break
+                scale *= available / natural
+                if scale <= self._MIN_FONT_SCALE:
+                    scale = self._MIN_FONT_SCALE
+                    self._apply_font_scale(scale)
+                    self.layout().invalidate()
+                    break
+                self._apply_font_scale(scale)
+                self.layout().invalidate()
+            self.layout().activate()
+        except RuntimeError:
+            return
 
     def _update_clock(self) -> None:
         """운영자에게 표시되는 현재 날짜와 시각을 갱신한다."""
@@ -87,23 +270,38 @@ class TopBar(QFrame):
 class OperatorWindow(QMainWindow):
     """화면 스택을 소유하고 UI·시뮬레이터·설정 서비스를 조정한다."""
 
+    # 1280x720이 창의 최소 크기이자 UI 배율의 기준(1.0)이다. 전체화면 등으로
+    # 창이 커지면 폭/높이 중 더 여유 없는 쪽 비율로 전체 QSS를 같이 키운다
+    # ("전체 화면과 작은 화면 비율이 유지가 되었으면 좋겠음").
+    _UI_SCALE_REFERENCE_W = 1280
+    _UI_SCALE_REFERENCE_H = 720
+    # 창이 커진 만큼 글자·버튼을 그대로 키우면(배율 = 창 배수) 전체화면에서
+    # 너무 커진다 — 1920x1080 이면 1.5배라 글자가 눈에 띄게 굵어졌다. 커지긴
+    # 하되 창 배수보다 완만하게 따라가도록 눌러 준다.
+    _UI_SCALE_DAMPING = 0.45
+    _UI_SCALE_MAX = 1.35
+
     def __init__(
         self,
         mqtt_server: MqttServer | None = None,
         *,
         start_mqtt: bool = True,
         start_ros: bool = True,
+        start_erut: bool | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("3S-Robotics | SMR Operator Console")
         self.resize(1280, 720)
         self.setMinimumSize(1280, 720)
+        self._base_qss = load_stylesheet()
+        self._current_ui_scale = 1.0
         root = QWidget()
         root.setObjectName("AppRoot")
         layout = QVBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(TopBar())
+        self.top_bar = TopBar()
+        layout.addWidget(self.top_bar)
         self.stack = QStackedWidget()
         layout.addWidget(self.stack, 1)
         self.setCentralWidget(root)
@@ -111,6 +309,14 @@ class OperatorWindow(QMainWindow):
         self.simulator = InspectionSimulator(self)
         self.settings_service = SettingsService(self)
         self.mqtt_server = mqtt_server or MqttServer(parent=self)
+        # 격자 순회. 리프트/AMR은 실제 장비가 없어 더미 어댑터가 대신한다.
+        self.sequencer = JobSequencer(self)
+        # ERUT(스테이션)와의 통신. doosan/* 규격과 봉투가 달라 접속을 따로 둔다.
+        self.erut = ErutClient(parent=self)
+        self.lift = DummyMotionAdapter("리프트", parent=self)
+        self.amr = DummyMotionAdapter("AMR", parent=self)
+        self.outrigger = DummyMotionAdapter("아웃트리거", travel_ms=700, parent=self)
+        self.retractor = DummyMotionAdapter("안전 위치", travel_ms=700, parent=self)
         self.main_screen = MainScreen()
         # 화면 키를 탐색 시그널에도 사용하여, 화면 전환 로직이 구체적인
         # QWidget 인스턴스에 직접 의존하지 않게 한다.
@@ -126,6 +332,7 @@ class OperatorWindow(QMainWindow):
             "logs": LogFilesScreen(), "modes": ModeSlotsScreen(),
             "cobot_manual": self.cobot_manual_screen,
             "cobot_jog": self.cobot_jog_screen,
+            "tpac_bridge": TpacBridgeScreen(),
         }
         self._current_screen_key = "main"
         self._navigation_history: list[str] = []
@@ -138,19 +345,18 @@ class OperatorWindow(QMainWindow):
 
         self.main_screen.start_requested.connect(self.simulator.start_cycle)
         self.main_screen.pause_requested.connect(self.simulator.toggle_pause)
-        self.main_screen.manual_requested.connect(lambda: self.navigate("manual"))
+        self.main_screen.stop_requested.connect(self._stop_inspection)
+        self.main_screen.alarm_reset_requested.connect(self._reset_alarms)
         self.main_screen.settings_requested.connect(lambda: self.navigate("settings"))
         self.main_screen.target_dimensions_changed.connect(
             lambda diameter, height: self.settings_service.save(
                 "inspection_target", {"diameter_m": diameter, "height_m": height}
             )
         )
-        self.main_screen.work_area_changed.connect(
-            lambda width, height, scan_h, overlap: self.settings_service.save(
-                "work_area", {"width_mm": width, "height_mm": height,
-                              "scan_h_mm": scan_h, "overlap_mm": overlap}
-            )
+        self.main_screen.speed_changed.connect(
+            lambda percent: self._apply_speed_ratio(percent, source="속도 바")
         )
+        self.main_screen.work_area_changed.connect(self._apply_work_area_edit)
         self.simulator.snapshot_changed.connect(self.main_screen.update_snapshot)
         self.simulator.activity.connect(self.main_screen.show_activity)
         self.main_screen.update_snapshot(self.simulator.snapshot)
@@ -192,19 +398,66 @@ class OperatorWindow(QMainWindow):
             lambda _code, name: self.cobot_manual_screen.apply_status({"operation_mode": name})
         )
         self.ros_status.alarm_received.connect(self.cobot_manual_screen.add_alarm)
+        self.ros_status.alarm_received.connect(self._handle_robot_alarm)
         self.ros_status.joint_position_changed.connect(self._remember_joint)
         self.ros_status.command_result.connect(self._show_command_result)
         self.ros_status.connected_changed.connect(self.cobot_manual_screen.set_connected)
         self.ros_status.connected_changed.connect(self._restore_robot_settings)
+        # 상단 바 Cobot 배지도 같은 신호로 실제 연결 여부를 반영한다
+        # (이전엔 항상 "연결됨"으로 고정된 자리표시자였다).
+        self.ros_status.connected_changed.connect(self.top_bar.badges["Cobot"].set_connected)
+        # robot_control_node가 이미 로봇에 Modbus로 붙어 있는데 TPAC 화면에서
+        # 또 수동으로 연결을 누르게 하는 건 불합리하다 — 그 노드의 연결
+        # 여부를 그대로 따라가게 한다. "외부에 제공" 서버는 로봇 읽기가
+        # 성공하면 TpacBridgeScreen 안에서 알아서 켠다.
+        tpac_screen = self.screens["tpac_bridge"]
+        self.ros_status.connected_changed.connect(tpac_screen.on_robot_link_changed)
+        tpac_screen.tpac_link_changed.connect(self.top_bar.badges["TPAC"].set_connected)
+        # 설정을 아직 못 불러왔더라도 시작할 때 한 번은 맞춰 둔다.
+        self._sync_cobot_endpoint()
+
+        # 로봇 IP/포트는 "연결 설정" 한 곳에서만 입력하고, **값이 바뀌는 즉시**
+        # 다른 화면으로 퍼뜨린다. 예전에는 PostgreSQL 저장에 성공했을 때만
+        # 반영해서, DB가 없는 환경(SMR_DATABASE_URL 미설정)에서는 주소를
+        # 고쳐도 다른 화면이 옛 주소를 그대로 들고 있었다.
+        conn_screen = self.screens["connection"]
+        ip_field = conn_screen.field(conn_screen.ROBOT_IP_FIELD)
+        if ip_field is not None:
+            ip_field.textChanged.connect(lambda _text: self._sync_cobot_endpoint())
+        port_field = conn_screen.field(conn_screen.ROBOT_PORT_FIELD)
+        if port_field is not None:
+            port_field.valueChanged.connect(lambda _value: self._sync_cobot_endpoint())
+        # 연결/연결 해제도 이 화면에서만 한다.
+        conn_screen.connect_requested.connect(self._connect_robot)
+        conn_screen.disconnect_requested.connect(self._disconnect_robot)
+        self.ros_status.connected_changed.connect(conn_screen.set_link_state)
         self.cobot_jog_screen.jog_pressed.connect(self._send_jog)
         self.cobot_jog_screen.jog_released.connect(self._stop_jog)
         self.cobot_jog_screen.command_requested.connect(self._save_reference_pose)
         self.cobot_manual_screen.command_requested.connect(self._handle_cobot_command)
         self.screens["cobot"].save_requested.connect(self._send_linear_speed)
-        self.cobot_jog_screen.set_enabled_commands(set(self._available_writes()))
+        self.screens["cobot"].task_refresh_requested.connect(
+            lambda: self.ros_status.call_command("task_status")
+        )
+        # 화면을 열 때마다 손으로 새로고침을 누르게 하는 대신, 로봇이
+        # 연결될 때 한 번 자동으로 물어 채워 둔다.
+        self.robot_node = RobotNodeSupervisor(self)
+        self.robot_node.activity.connect(self.main_screen.show_activity)
+        self.ros_status.connected_changed.connect(
+            lambda connected: self.ros_status.call_command("task_status") if connected else None
+        )
+        self.ros_status.connected_changed.connect(self._update_jog_enabled)
+        # 작업 영역을 실시간으로 밀어 주려면 연결·태스크 상태를 알아야 한다.
+        self.ros_status.connected_changed.connect(self._on_robot_link_changed)
+        self.ros_status.task_state_changed.connect(self._on_robot_task_state)
+        self._update_jog_enabled(False)
+        self.ros_status.speed_scale_changed.connect(self._show_speed_scale)
         self.ros_status.error_occurred.connect(self._show_ros_error)
         if start_ros:
             self.ros_status.start()
+            # 프로그램 하나만 켜면 되도록 로봇 제어 노드도 UI 가 데리고 있는다.
+            # 이미 떠 있으면(터미널에서 따로 띄웠거나) 그대로 쓴다.
+            self.robot_node.start(already_running=self.ros_status.node_is_running())
 
         self.mqtt_server.command_received.connect(self._handle_mqtt_command)
         self.mqtt_server.connected_changed.connect(
@@ -213,6 +466,481 @@ class OperatorWindow(QMainWindow):
         self.mqtt_server.error_occurred.connect(self._show_mqtt_error)
         if start_mqtt:
             self.mqtt_server.start()
+
+        self._connect_sequencer()
+        # ERUT 도 MQTT 접속이라 별도로 끄지 않으면 start_mqtt 를 따라간다.
+        # 테스트가 start_mqtt=False 로 부를 때 네트워크를 열지 않게 하기 위함이다.
+        self._connect_erut(start_mqtt if start_erut is None else start_erut)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._apply_ui_scale()
+
+    def _apply_ui_scale(self) -> None:
+        """창 크기(폭·높이 중 여유 없는 쪽 기준)에 맞춰 전체 UI 배율을 다시 잰다.
+
+        전체화면으로 커져도 글자·버튼·여백이 그대로면 상자만 커 보여 작은
+        창과 비율이 안 맞고, 특히 작업 영역 아래 안내 문구 등은 상대적으로
+        더 작아 보였다. QSS의 모든 px 값을 같은 비율로 다시 적용해 전체가
+        함께 커지게 한다.
+        """
+        width, height = self.width(), self.height()
+        if width <= 0 or height <= 0:
+            return
+        raw = min(width / self._UI_SCALE_REFERENCE_W, height / self._UI_SCALE_REFERENCE_H)
+        # 창 배수를 그대로 쓰지 않고 눌러서 반영한다(_UI_SCALE_DAMPING 참고).
+        scale = 1.0 + (raw - 1.0) * self._UI_SCALE_DAMPING
+        scale = max(1.0, min(scale, self._UI_SCALE_MAX))
+        if abs(scale - self._current_ui_scale) < 0.02:
+            return
+        self._current_ui_scale = scale
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(_scale_stylesheet(self._base_qss, scale))
+        # 상단바는 배지 개수가 많아 넓은 화면에서도 자체적으로 다시 줄일
+        # 필요가 있을 수 있어, 전체 QSS를 다시 적용한 *다음*에 불러야
+        # 상단바의 세밀한 계산이 QSS 재적용으로 덮이지 않는다.
+        self.top_bar.set_global_scale(scale)
+        # 요약 칸 값들도 같은 배율을 받는다 — 스타일시트가 키운 만큼
+        # 기준을 올려야 전체화면에서 나머지 글자와 어울린다.
+        self.main_screen.set_global_scale(scale)
+
+    def _connect_erut(self, start: bool) -> None:
+        """ERUT 요청을 로봇 순회와 잇는다.
+
+        지금은 로봇만 진짜다 — start 계열만 실제로 로봇을 움직이고,
+        캘리브레이션·마킹·배터리는 `ErutSession` 이 시험용으로 답한다.
+        """
+        self.erut_session = ErutSession(self.erut, self.sequencer, parent=self)
+        self.erut_session.activity.connect(self.main_screen.show_activity)
+        self.erut.activity.connect(self.main_screen.show_activity)
+        self.erut.error_occurred.connect(self.main_screen.show_activity)
+
+        # ERUT 요청 → 로봇 (진짜)
+        self.erut_session.job_requested.connect(self._start_erut_job)
+        self.erut_session.pause_requested.connect(self.sequencer.pause)
+        self.erut_session.robot_stop_requested.connect(self._stop_robot_scan)
+        # 가상 차량·리프트 값을 ERUT 응답에 실어 보낸다 (규격 탭5).
+        self.erut_session.motion_state = self.motion_state
+        # 원점에서 멈춰 선 로봇을 ERUT 의 "작업 시작"으로 풀어 준다.
+        self.erut_session.scan_go_requested.connect(self._release_scan_gate)
+        self.erut_session.resume_requested.connect(self.sequencer.resume)
+        self.erut_session.abort_requested.connect(self._abort_job)
+        self.erut_session.speed_requested.connect(
+            lambda percent: self._apply_speed_ratio(percent, source="ERUT")
+        )
+
+        # 로봇 진행 → ERUT
+        self.sequencer.cell_changed.connect(self.erut_session.on_cell_changed)
+        self.sequencer.job_complete.connect(self.erut_session.on_job_complete)
+
+        if start:
+            self.erut.start()
+            self.erut_session.start()
+
+    def _scan_band_mm(self, plan) -> float:
+        """한 줄이 덮는 세로 밴드 높이 [mm].
+
+        EOAT 를 골랐으면 **그 유효 세로 커버가 곧 스캐너 밴드**다 — 몸통도,
+        프로브 뭉치 전체 크기도 아니라 **한 번 지날 때 실제로 검사되는
+        범위**다(5축 30, 8축 167.5 — services/job_sequencer 의
+        PROBE_COVERAGE_MM). 그래서 이 값이 곧 ㄹ자 up 동작의 최대 상승량이
+        된다. 로봇도 같은 규칙을 쓴다(dus_init 의 `if eoat_h > 0:
+        scan_h = eoat_h`).
+
+        EOAT 를 안 골랐으면 예전처럼 로컬 설정의 스캐너 높이를 쓴다.
+        """
+        _w, h = plan.eoat_size
+        if h > 0:
+            return h
+        return self.main_screen.rect_view.work_area()[2]
+
+    def _fill_from_local_setup(self, plan):
+        """ERUT 가 안 준 장비 값(반지름·두께·EOAT)을 RCS 설정으로 채운다.
+
+        기준 규격 20260812 의 prepare/start 에는 area 와 scan 만 있다.
+        반지름·두께·검사장비 종류는 규격에 없는 **우리 쪽 장비 값**이라
+        ERUT 가 보내지 않는다. 그대로 두면 0 이 되어 로봇이 굽은 벽을
+        평면으로 보고 직선으로 훑고(반지름 0), 프로브 커버도 모른다
+        (EOAT 0). 게다가 _send_work_area 가 그 0 을 **설정에 저장**까지
+        해서 다음 작업에서도 틀린 값이 남았다.
+        """
+        extra = self._work_area_extra
+        changes = {}
+        if plan.radius <= 0 and float(extra.get("radius_mm", 0) or 0) > 0:
+            changes["radius"] = float(extra["radius_mm"])
+        if plan.thickness <= 0 and float(extra.get("thickness_mm", 0) or 0) > 0:
+            changes["thickness"] = float(extra["thickness_mm"])
+        if plan.eoat_probes <= 0 and float(extra.get("eoat_type", 0) or 0) > 0:
+            changes["eoat_probes"] = int(float(extra["eoat_type"]))
+        return replace(plan, **changes) if changes else plan
+
+    def _start_erut_job(self, plan) -> None:
+        """ERUT 가 준 계획으로 격자 순회를 시작한다. 로봇이 실제로 움직인다."""
+        plan = self._fill_from_local_setup(plan)
+        scan_h_mm = self._scan_band_mm(plan)
+        self.simulator.begin_external(plan.column_count)
+        # 구간 하나 = job 하나. prepare 가 오면 차량을 구간 x 로, 리프트를
+        # 구간 y 로 정렬한 뒤 로봇이 프로브 3점을 잡고 원점에 선다.
+        self.sequencer.start(plan, scan_h_mm, base_lift_mm=plan.origin_y,
+                             move_first=True)
+
+    def _abort_job(self) -> None:
+        """ERUT 중단 요청. 순회와 더미 장비를 모두 멈춘다."""
+        self.sequencer.stop()
+        for adapter in (self.lift, self.amr, self.outrigger, self.retractor):
+            adapter.cancel()
+        self.simulator.stop_cycle()
+
+    def _connect_sequencer(self) -> None:
+        """격자 순회를 로봇·리프트·AMR·화면·MQTT에 잇는다.
+
+        시퀀서는 어느 셀인지만 판단하고, 실제 동작은 전부 시그널로 넘긴다.
+        나중에 실제 PLC/AMR이 생기면 더미 어댑터만 갈아끼우면 된다.
+        """
+        seq = self.sequencer
+        seq.activity.connect(self.main_screen.show_activity)
+        self.lift.activity.connect(self.main_screen.show_activity)
+        self.amr.activity.connect(self.main_screen.show_activity)
+        self.lift.position_changed.connect(self._show_motion_position)
+        self.amr.position_changed.connect(self._show_motion_position)
+        self.outrigger.activity.connect(self.main_screen.show_activity)
+        self.retractor.activity.connect(self.main_screen.show_activity)
+
+        # 이동 요청 → 더미 어댑터 → 도착 신호 → 시퀀서
+        seq.lift_target_requested.connect(lambda mm: self.lift.move_to(mm, " mm"))
+        # AMR 은 시퀀서가 **열 번호**로 부르는데, 바깥에는 이동 거리(mm)를
+        # 알려야 한다(ERUT 규격 탭5 progress.moved). 열 간격으로 환산해
+        # 어댑터에는 거리를 주고, 화면 문구에만 열 번호를 남긴다.
+        seq.amr_move_requested.connect(self._move_amr_to_column)
+        self.lift.arrived.connect(seq.lift_arrived)
+        self.amr.arrived.connect(seq.amr_arrived)
+        # 아웃트리거 고정(1단계)과 안전 위치 복귀(4단계)도 아직 더미다.
+        seq.secure_requested.connect(lambda: self.outrigger.move_to(1, " 고정"))
+        seq.retract_requested.connect(lambda: self.retractor.move_to(1, " 복귀"))
+        self.outrigger.arrived.connect(seq.secured)
+        self.retractor.arrived.connect(seq.retracted)
+
+        # 로봇: 셀 치수는 한 번만, play는 셀마다.
+        seq.work_area_requested.connect(self._send_work_area)
+        seq.robot_start_requested.connect(self._start_robot_scan)
+        seq.robot_stop_requested.connect(self._stop_robot_scan)
+        self.ros_status.scan_state_changed.connect(seq.handle_scan_state)
+        self.ros_status.scan_state_changed.connect(self._handle_probe_error)
+        self.ros_status.scan_state_changed.connect(self._handle_alive)
+        self.ros_status.scan_state_changed.connect(self._handle_origin_wait)
+
+        # 화면과 외부 MQTT
+        seq.state_changed.connect(self._show_sequencer_state)
+        seq.cell_changed.connect(self._show_sequencer_cell)
+        seq.cell_status_changed.connect(self._publish_cell_status)
+        seq.job_complete.connect(self._finish_job)
+
+    def _show_motion_position(self, _value: float) -> None:
+        """가상 차량·리프트가 움직일 때마다 화면 값을 갱신한다."""
+        self.main_screen.set_motion_values(self.lift.position, self.amr.position)
+
+    def _move_amr_to_column(self, column: int) -> None:
+        """열 번호를 이동 거리로 바꿔 AMR 더미에 넘긴다."""
+        plan = self.sequencer.plan
+        pitch = plan.column_pitch if plan is not None else 0.0
+        origin = plan.origin_x if plan is not None else 0.0
+        # 구간 원점(ERUT area.start.x)에서 열 간격만큼 더 간다.
+        distance = origin + max(0, int(column) - 1) * pitch
+        self.amr.move_to(distance, " mm", label=f"{column}구역 ({distance:.0f} mm)")
+
+    def motion_state(self) -> dict:
+        """가상 차량·리프트의 현재 값. ERUT 응답에 실어 나간다.
+
+        규격 탭5 에 이미 자리가 있는 값들이다 — query 응답의 `lift_height`
+        (리프트 있는 장치만, 화면 표시용)와 evt/progress 의 `moved`(mm,
+        선택, 표시용). 새 필드를 만드는 게 아니라 비어 있던 자리를 채운다.
+
+        실제 PLC/AMR 이 붙으면 DummyMotionAdapter 만 갈아끼우면 되고
+        여기는 그대로다.
+        """
+        return {
+            "lift_height": round(self.lift.position, 1),
+            "moved": round(self.amr.position, 1),
+        }
+
+    def _clamp_work_width(self, width_mm: float, radius_mm: float,
+                          thickness_mm: float, eoat_w_mm: float) -> float:
+        """호 길이를 충돌 안전 한계로 자르고, 잘렸으면 알린다.
+
+        호를 길게 잡을수록 좌우 프로브 사이 **현**이 길어지는데, 굽은 벽에서
+        이 값이 한계를 넘으면 프로브가 벽에 닿는다. 로봇은 자기 안전 한계
+        안에서만 움직이므로, 그보다 긴 값을 그대로 그리면 **로봇이 따라올 수
+        없는 경로를 화면에만 그리게 된다**(마커가 경로 끝에 못 닿는다).
+        """
+        # 한계의 근거는 **좌우 프로브 사이** 거리다. EOAT 를 안 고르면
+        # (eoat_w = 0) 옆으로 벌어진 프로브 자체가 없어 이 제약이 성립하지
+        # 않는다 — 그때는 자르지 않는다.
+        if eoat_w_mm <= 0:
+            return width_mm
+        limit = max_safe_arc_mm(radius_mm, thickness_mm, eoat_w_mm)
+        if limit <= 0 or width_mm <= limit:
+            return width_mm
+
+        chord = probe_chord_mm(width_mm - eoat_w_mm, radius_mm, thickness_mm)
+        message = (f"작업 호 길이 {width_mm:.0f} mm 는 최대 작업 길이를 넘습니다 — "
+                   f"로봇 좌우 이동 거리가 {chord:.0f} mm 로 한계"
+                   f"({MAX_PROBE_CHORD_MM:.0f} mm)를 초과합니다. "
+                   f"가능한 최대는 {limit:.0f} mm 이며, 그 값으로 진행합니다.")
+        self.main_screen.show_activity(message)
+        self.cobot_manual_screen.add_alarm(message)
+        self.erut_session.raise_error({
+            "code": "E-ARC-LIMIT", "message": "작업 호 길이가 최대 작업 길이 초과",
+            "level": "warning", "recovery": "auto", "detail": message,
+        })
+        return limit
+
+    def _send_work_area(
+        self, width_mm: float, height_mm: float, scan_h_mm: float,
+        overlap_mm: float, radius_mm: float = 0.0, thickness_mm: float = 0.0,
+        eoat_w_mm: float = 0.0, eoat_h_mm: float = 0.0,
+        eoat_type: float = 0.0,
+    ) -> None:
+        """셀 치수와 호 정보를 로봇(레지스터 256~261)과 저장소에 반영한다.
+
+        `width_mm` 은 **호 길이**다(현이 아니다). 로봇이 반지름과 함께
+        현을 계산해 호 세 점을 만든다.
+
+        반지름·두께만 0.1mm 단위로 보낸다. 반지름이 834.6 처럼 소수라
+        정수 mm 로는 호 모양이 눈에 띄게 틀어지기 때문이다. 레지스터는
+        16bit 라 3276.7mm 까지 담긴다.
+        """
+        # 다이얼로그는 너비/높이/스캐너/겹침만 묻는다. 나머지는 여기서
+        # 기억해 뒀다가 그때 이어 붙인다(_apply_work_area_edit 참고).
+        self._work_area_extra = {
+            "radius_mm": radius_mm, "thickness_mm": thickness_mm,
+            "eoat_w_mm": eoat_w_mm, "eoat_h_mm": eoat_h_mm,
+            "eoat_type": eoat_type,
+        }
+        width_mm = self._clamp_work_width(width_mm, radius_mm, thickness_mm, eoat_w_mm)
+        self.main_screen.set_work_area(width_mm, height_mm, scan_h_mm, overlap_mm,
+                                       eoat_w_mm, radius_mm, thickness_mm)
+        # 검사 대상 원(orbit_view)의 지름에는 두께를 안 섞고 따로 보여준다.
+        self.main_screen.orbit_view.set_target_thickness_mm(thickness_mm)
+        self.settings_service.save(
+            "work_area",
+            {"width_mm": width_mm, "height_mm": height_mm,
+             "scan_h_mm": scan_h_mm, "overlap_mm": overlap_mm,
+             "radius_mm": radius_mm, "thickness_mm": thickness_mm,
+             "eoat_w_mm": eoat_w_mm, "eoat_h_mm": eoat_h_mm,
+             "eoat_type": eoat_type},
+        )
+        self._push_work_area_to_robot(width_mm, height_mm, scan_h_mm, overlap_mm,
+                                      radius_mm, thickness_mm, eoat_w_mm, eoat_h_mm,
+                                      eoat_type)
+
+    # 로봇 컨트롤러가 주는 태스크 상태(레지스터 500). 1 = 실행 중.
+    _TASK_STATE_RUNNING = 1
+    # 작업 영역 중 다이얼로그가 안 묻는 값들. 화면에서 고칠 때 이어 붙인다.
+    _work_area_extra: dict = {
+        "radius_mm": 0.0, "thickness_mm": 0.0,
+        "eoat_w_mm": 0.0, "eoat_h_mm": 0.0, "eoat_type": 0.0,
+    }
+
+    def _apply_work_area_edit(self, width_mm: float, height_mm: float,
+                              scan_h_mm: float, overlap_mm: float) -> None:
+        """화면에서 고친 작업 영역을 저장하고 **로봇에도 보낸다**.
+
+        예전에는 저장만 해서, 겹침을 바꿔도 로봇은 옛 값으로 계속 돌았다.
+        게다가 네 항목만 저장해 반지름·두께·EOAT 가 통째로 지워졌고, 다음에
+        불러올 때 반지름 0(=평면)으로 로봇에 내려가 굽은 벽을 직선으로
+        훑을 뻔했다. 다이얼로그가 안 묻는 값은 지금 값을 그대로 잇는다.
+        """
+        extra = dict(self._work_area_extra)
+        self._send_work_area(width_mm, height_mm, scan_h_mm, overlap_mm, **extra)
+
+    def _work_area_block_reason(self) -> str:
+        """지금 작업 영역을 로봇에 못 보내는 이유. 보낼 수 있으면 빈 문자열.
+
+        도는 중에 작업 계획을 바꾸면 안 된다 — 진행 중인 검사가 중간에
+        다른 격자로 바뀐다. Modbus 가 끊겨 있으면 애초에 쓸 통로가 없다.
+        어느 쪽이든 보류해 뒀다가 조건이 풀리면 자동으로 다시 보낸다.
+        """
+        if not getattr(self, "_robot_link_up", False):
+            return "로봇 Modbus 연결이 없습니다"
+        state = getattr(self, "_robot_task_state", None)
+        if state == self._TASK_STATE_RUNNING:
+            return "로봇 태스크가 실행 중입니다"
+        return ""
+
+    def _push_work_area_to_robot(
+        self, width_mm: float, height_mm: float, scan_h_mm: float,
+        overlap_mm: float, radius_mm: float, thickness_mm: float,
+        eoat_w_mm: float, eoat_h_mm: float, eoat_type: float = 0.0,
+    ) -> None:
+        """작업 영역을 로봇 레지스터(256~264)에 쓰고 param_src(266)를 세운다.
+
+        값은 **아홉 개**여야 한다 — 하나라도 모자라면 노드가 통째로
+        거부한다(레지스터 264 = EOAT 종류).
+
+        보낼 수 없는 상황이면(태스크 실행 중·연결 없음) 조용히 넘어가지 않고
+        사유를 알린다. 안 그러면 화면 값과 로봇 값이 말없이 어긋난다.
+        """
+        # 소수가 나오는 자리(스캐너 높이·반지름·두께·EOAT)는 0.1mm 단위로
+        # 보낸다 — 커버 167.5, 반지름 834.6 처럼 정수 mm 로 반올림하면
+        # 호 모양과 줄 간격이 눈에 띄게 틀어진다. 로봇 쪽 dus_init 이 같은
+        # 자리에 0.1 을 곱해 되돌린다. 16bit 라 3276.7mm 까지 담긴다.
+        values = [width_mm, height_mm, round(scan_h_mm * 10), overlap_mm,
+                  round(radius_mm * 10), round(thickness_mm * 10),
+                  round(eoat_w_mm * 10), round(eoat_h_mm * 10), eoat_type]
+        self._pending_work_area = values
+
+        reason = self._work_area_block_reason()
+        if reason:
+            message = (f"작업 영역을 로봇에 보내지 못했습니다 — {reason}"
+                       f"{self._task_state_note()}. "
+                       f"조건이 풀리면 자동으로 다시 보냅니다.")
+            self.main_screen.show_activity(message)
+            self.cobot_manual_screen.add_alarm(message)
+            self.erut_session.raise_error({
+                "code": "E-AREA-SEND", "message": f"작업 영역 전송 보류 — {reason}",
+                "level": "warning", "recovery": "auto", "detail": message,
+            })
+            return
+
+        if self.ros_status.send_pose("work_area", values):
+            self._pending_work_area = None
+            self.main_screen.show_activity("작업 영역을 로봇에 반영했습니다.")
+
+    def _task_state_note(self) -> str:
+        """막힌 이유를 따질 수 있게 로봇이 보고한 태스크 상태를 덧붙인다.
+
+        화면에서는 "실행 중이 아닌데 왜 안 나가냐"로 보이는데 로봇이 1 을
+        주고 있는 경우가 있어, 값을 그대로 보여 줘야 어디가 어긋났는지
+        가려낼 수 있다.
+        """
+        state = getattr(self, "_robot_task_state", None)
+        if state is None:
+            return " (로봇 태스크 상태 수신 전)"
+        return f" (로봇 보고 태스크 상태 = {state}: {TASK_STATE_NAMES.get(state, '알 수 없음')})"
+
+    def _retry_pending_work_area(self) -> None:
+        """보류해 둔 작업 영역이 있으면 조건이 풀렸을 때 다시 보낸다."""
+        values = getattr(self, "_pending_work_area", None)
+        if values is None or self._work_area_block_reason():
+            return
+        if self.ros_status.send_pose("work_area", values):
+            self._pending_work_area = None
+            self.main_screen.show_activity("작업 영역을 로봇에 반영했습니다.")
+
+
+    def _on_robot_link_changed(self, connected: bool) -> None:
+        self._robot_link_up = bool(connected)
+        self._retry_pending_work_area()
+
+    def _on_robot_task_state(self, state: int) -> None:
+        self._robot_task_state = int(state)
+        self.cobot_manual_screen.apply_status({
+            "task_state": TASK_STATE_NAMES.get(self._robot_task_state,
+                                               f"알 수 없음({self._robot_task_state})"),
+        })
+        self._retry_pending_work_area()
+
+    def _start_robot_scan(self) -> None:
+        """로봇 태스크를 멈췄다가 제로점에서 다시 재생한다.
+
+        **stop 없이 play만 보내면 안 된다.** 로봇 태스크는 한 셀을 끝낸 뒤에도
+        RUNNING 상태로 남아 있어서, play를 다시 보내면 컨트롤러가
+        `Failed to execute: play`로 거부한다. 게다가 `dus_init`은 **태스크가
+        시작될 때 한 번만** 작업 영역(레지스터 256~259)을 읽으므로, 멈췄다
+        켜지 않으면 이전 값으로 계속 돈다.
+
+        play 명령의 응답값으로 성공을 판단하지 않는다. 실제 진행 여부는
+        로봇이 레지스터에 쓰는 상태(`robot/status/scan_state`)로만 본다.
+        """
+        # 원격 제어 모드가 아니면 컨트롤러가 play/stop 을 모두 거부한다
+        # ("not supported in local control mode"). 펜던트를 만지면 로컬로
+        # 돌아가므로 셀마다 켜 준다.
+        self.ros_status.call_command("remote_control_on")
+        self.ros_status.call_command("stop")
+        QTimer.singleShot(
+            ROBOT_RESTART_DELAY_MS,
+            lambda: self.ros_status.call_command("play"),
+        )
+
+    def _stop_inspection(self) -> None:
+        """주요 제어의 '정지' 버튼. 화면 시뮬레이터와 실제 순회·로봇을 모두 멈춘다.
+
+        시뮬레이터는 데모 사이클(장비 없이 화면만 도는 경로)이고 순회는
+        실제 MQTT/ERUT 작업이다 — 둘 중 어느 쪽이 돌고 있어도 이 하나로
+        정지된다. `sequencer.stop()`이 `robot_stop_requested`를 내보내
+        `_stop_robot_scan()`까지 이어지므로 로봇도 같이 선다.
+        """
+        self.simulator.stop_cycle()
+        self.sequencer.stop()
+
+    def _stop_robot_scan(self) -> None:
+        """로봇 태스크를 멈춘다. 장애·일시정지·정지가 모두 여기로 모인다.
+
+        순회(시퀀서)를 멈추는 것만으로는 로봇이 서지 않는다 — 로봇은 자기
+        태스크를 계속 돌리기 때문이다. 장애가 로봇 자신이 아니라 차량·리프트·
+        배터리 쪽에서 나도 팔은 계속 벽을 훑게 되므로, 멈춤은 반드시 로봇까지
+        내려가야 한다.
+
+        `pause` 가 아니라 `stop` 을 쓴다. 재개는 `_start_robot_scan()` 이
+        제로점부터 다시 play 하는 방식이라, 태스크를 중간에 붙들고 있을
+        이유가 없다. 원격 제어 모드가 아니면 컨트롤러가 stop 을 거부하므로
+        (`not supported in local control mode`) 먼저 켜 준다.
+
+        같은 정지가 여러 경로로 겹쳐 들어올 수 있는데(장애 + 순회 일시정지),
+        `stop` 은 멱등이라 여러 번 나가도 문제없다.
+        """
+        self.ros_status.call_command("remote_control_on")
+        self.ros_status.call_command("stop")
+
+    def _show_sequencer_cell(
+        self, column: int, row: int, label: str, ordinal: int
+    ) -> None:
+        """현재 셀을 메인 화면(AMR 위치 + 격자 이름표)에 반영한다."""
+        plan = self.sequencer.plan
+        total = plan.total_cells if plan is not None else 0
+        self.main_screen.set_work_cell_label(f"{label} ({ordinal}/{total})")
+        if plan is not None:
+            self.main_screen.set_grid_position(
+                column + 1, plan.column_count, row + 1, plan.row_count)
+            # "총 구간 수"는 MQTT(ERUT)가 보낸 열 수 × 행 수를 그대로 따른다.
+            self.main_screen.set_total_cells(total)
+        self._sync_cycle_display()
+
+    def _show_sequencer_state(self, _state_name: str) -> None:
+        """시퀀서 상태가 바뀔 때마다 화면 진행 단계를 맞춘다."""
+        self._sync_cycle_display()
+
+    def _sync_cycle_display(self) -> None:
+        """화면의 구간/단계 표시를 시퀀서의 실제 진행에 맞춘다.
+
+        예전에는 `InspectionSimulator`가 자체 타이머로 단계를 넘겼는데,
+        그러면 로봇이 아직 첫 셀에 있어도 화면만 마지막 구간까지 가버린다.
+        진행 표시의 출처는 시퀀서 하나뿐이어야 한다.
+        """
+        seq = self.sequencer
+        plan = seq.plan
+        if plan is None:
+            return
+        column = seq.cell_ordinal() - 1
+        column_index = column // plan.row_count if plan.row_count else 0
+        self.simulator.apply_external_state(
+            _SEQUENCER_PHASES.get(seq.state, CyclePhase.INSPECTING),
+            current_segment=column_index + 1,
+            completed_segments=column_index,
+        )
+
+    def _publish_cell_status(self, cell_id: str, state: str) -> None:
+        """셀 진행 상태를 외부(MC)에 알린다. job_id가 곧 격자 이름이다."""
+        try:
+            self.mqtt_server.publish_job_state(cell_id, state)
+        except Exception as exc:  # noqa: BLE001 - 발행 실패로 순회를 멈추지 않는다.
+            self.main_screen.show_activity(f"Job 상태 발행 실패: {exc}")
+
+    def _finish_job(self) -> None:
+        """전체 격자를 다 돌면 검사 사이클도 함께 멈춘다."""
+        self.simulator.stop_cycle()
+        self.main_screen.show_activity("전체 격자 스캔을 완료했습니다.")
 
     def _apply_stored_settings(self, scope: str, values: dict) -> None:
         """DB 조회 결과를 해당 설정 범위의 소유 화면으로 전달한다."""
@@ -225,7 +953,35 @@ class OperatorWindow(QMainWindow):
         if scope == "work_area":
             keys = ("width_mm", "height_mm", "scan_h_mm", "overlap_mm")
             if all(k in values for k in keys):
-                self.main_screen.set_work_area(*(float(values[k]) for k in keys))
+                eoat_w_mm = values.get("eoat_w_mm")
+                self.main_screen.set_work_area(
+                    *(float(values[k]) for k in keys),
+                    eoat_w_mm=float(eoat_w_mm) if eoat_w_mm is not None else None,
+                    radius_mm=float(values["radius_mm"]) if values.get("radius_mm") is not None else None,
+                    thickness_mm=float(values["thickness_mm"]) if values.get("thickness_mm") is not None else None,
+                )
+                thickness_mm = values.get("thickness_mm")
+                if thickness_mm is not None:
+                    self.main_screen.orbit_view.set_target_thickness_mm(float(thickness_mm))
+                # 화면만 맞추면 로봇은 예전 레지스터 값으로 계속 돈다
+                # (겹침을 바꿨는데 로봇이 옛 행 수로 도는 원인이었다).
+                # 저장된 값을 로봇에도 그대로 밀어 준다.
+                self._work_area_extra = {
+                    "radius_mm": float(values.get("radius_mm") or 0.0),
+                    "thickness_mm": float(values.get("thickness_mm") or 0.0),
+                    "eoat_w_mm": float(values.get("eoat_w_mm") or 0.0),
+                    "eoat_h_mm": float(values.get("eoat_h_mm") or 0.0),
+                    "eoat_type": float(values.get("eoat_type") or 0.0),
+                }
+                self._push_work_area_to_robot(
+                    float(values["width_mm"]), float(values["height_mm"]),
+                    float(values["scan_h_mm"]), float(values["overlap_mm"]),
+                    float(values.get("radius_mm") or 0.0),
+                    float(values.get("thickness_mm") or 0.0),
+                    float(values.get("eoat_w_mm") or 0.0),
+                    float(values.get("eoat_h_mm") or 0.0),
+                    float(values.get("eoat_type") or 0.0),
+                )
             return
         screen = self._settings_screens.get(scope)
         if screen is not None:
@@ -233,22 +989,59 @@ class OperatorWindow(QMainWindow):
             if scope == "connection":
                 self._sync_cobot_endpoint()
 
+    def _connect_robot(self) -> None:
+        """"연결 설정" 화면의 주소로 로봇에 붙는다.
+
+        붙어야 하는 경로가 둘이다 — 대시보드(로봇 제어)와 TPAC 브리지의
+        Modbus 폴러. 예전에는 화면마다 따로 눌러야 했는데, 같은 로봇에
+        같은 주소로 붙는 것이라 한 번에 같이 건다.
+
+        **주소를 먼저 제어 노드에 심고** 연결한다. 예전에는 노드를 띄울 때
+        읽은 주소로만 붙어서, 화면에 적힌 IP와 실제 붙은 IP가 달랐다.
+        """
+        conn = self.screens["connection"]
+        ip, port = conn.robot_ip(), conn.robot_port()
+        conn.set_link_message(f"{ip} 로 연결하는 중…")
+        if not self.ros_status.set_robot_endpoint(ip, port):
+            conn.set_link_message(
+                "로봇 제어 노드가 응답하지 않습니다. 노드가 떠 있는지 확인하세요.")
+            return
+        self._handle_cobot_command("connect")
+        tpac_screen = self.screens["tpac_bridge"]
+        if tpac_screen.poller is None:
+            tpac_screen._start_robot()
+
+    def _disconnect_robot(self) -> None:
+        """연결한 경로를 같이 끊는다."""
+        tpac_screen = self.screens["tpac_bridge"]
+        if tpac_screen.poller is not None:
+            tpac_screen._stop_robot()
+        self._handle_cobot_command("disconnect")
+        self.screens["connection"].set_link_message("연결을 끊었습니다.")
+
     def _sync_cobot_endpoint(self) -> None:
-        """연결 설정의 협동로봇 주소를 Cobot 수동 제어 화면에 반영한다."""
+        """연결 설정의 협동로봇 주소를 로봇 주소가 필요한 모든 화면에 반영한다.
+
+        로봇 IP는 "연결 설정" 한 곳에서만 입력한다 — 예전에는 Cobot 수동
+        제어, TPAC 설정이 각자 IP 칸을 따로 갖고 있어 같은 로봇 주소를
+        화면마다 다시 입력해야 했고, 한 곳만 고치면 서로 어긋났다.
+        """
         values = self.screens["connection"].values()
         ip = str(values.get("협동로봇 IP", "")).strip()
+        port = values.get("Modbus 포트")
         if ip:
             self.cobot_manual_screen.set_endpoint(ip)
+        self.screens["tpac_bridge"].set_robot_endpoint(ip, port)
 
     def _mark_settings_saved(self, scope: str) -> None:
-        """PostgreSQL 저장 완료 후 해당 화면의 상태를 갱신한다."""
+        """저장 완료 후 해당 화면의 상태를 갱신한다."""
         screen = self._settings_screens.get(scope)
         if screen is not None:
             screen.mark_saved()
             if scope == "connection":
                 self._sync_cobot_endpoint()
         elif scope == "inspection_target":
-            self.main_screen.show_activity("검사 대상 크기를 PostgreSQL에 저장했습니다.")
+            self.main_screen.show_activity("검사 대상 크기를 저장했습니다.")
 
     def _show_settings_error(self, scope: str, message: str) -> None:
         """Python 스택 추적을 노출하지 않고 저장소 오류를 표시한다."""
@@ -263,20 +1056,49 @@ class OperatorWindow(QMainWindow):
         topic: str,
         payload: dict[str, Any],
     ) -> None:
-        """수신 MQTT 명령을 검사대상 설정과 검사 사이클에 반영한다."""
+        """수신 MQTT 명령을 검사대상 설정과 검사 사이클에 반영한다.
+
+        외부(MC)에서 오는 명령은 전체 작업 시작(`job_cmd`)/일시정지·정지
+        (`mc_cmd`)/중단(`job_clear`) 뿐이다. 구역(segment)과 격자(grid)를
+        하나씩 순회하는 자동 진행은 여기서 다루지 않고 UI/로봇 쪽이 맡는다.
+        """
         if topic == MqttTopics.JOB_COMMAND:
+            # job_cmd 자체가 "전체 작업 시작" 명령이다. 대상 치수와 ㄹ자 스캔
+            # 값을 반영한 뒤 검사 사이클을 시작한다.
             self._apply_mqtt_job_info(payload)
+            return
+
+        if topic == MqttTopics.SPEED:
+            self._apply_speed_ratio(payload.get("speed"), source="MQTT")
+            return
+
+        if topic == MqttTopics.PROBE_ACK:
+            self._handle_probe_ack(payload)
+            return
+
+        if topic == MqttTopics.JOB_CLEAR:
+            # 전체 작업 정지(중단). 진행 중인 사이클과 격자 순회를 멈춘다.
+            self.sequencer.stop()
+            for adapter in (self.lift, self.amr, self.outrigger, self.retractor):
+                adapter.cancel()
+            self.simulator.stop_cycle()
+            self.main_screen.show_activity("MQTT 요청으로 작업을 정지했습니다.")
             return
 
         if topic != MqttTopics.MC_COMMAND:
             return
 
         amr_command = payload.get("amr")
-        if amr_command == "run":
+        cobot_command = payload.get("cobot")
+        if amr_command == "run" or cobot_command == "run":
+            # 일시정지 후 재개도 이 명령을 그대로 쓴다.
             self.simulator.start_cycle()
-        elif amr_command in {"stop", "ems"}:
+            self.sequencer.resume()
+        elif amr_command in {"stop", "ems"} or cobot_command in {"stop", "ems"}:
+            self.sequencer.pause()
             # MQTT 명령은 재전송될 수 있으므로 토글이 아닌 멱등적인
-            # 일시정지 API를 사용한다.
+            # 일시정지 API를 사용한다. ems(비상정지)도 우선 일시정지로 반영하고,
+            # 실제 하드웨어 비상정지는 `doosan/robot/req/ems` 토픽이 담당한다.
             self.simulator.pause_cycle()
 
     def _apply_mqtt_job_info(self, payload: dict[str, Any]) -> None:
@@ -285,18 +1107,22 @@ class OperatorWindow(QMainWindow):
             job_info = payload["job_info"]
             diameter_mm = float(str(job_info["diameter"]).strip())
             height_mm = float(str(job_info["height"]).strip())
-            thickness_mm = float(str(job_info["thickness"]).strip())
             target_distance_mm = float(
                 str(job_info["target_distance"]).strip()
             )
-            values_mm = (
-                diameter_mm,
-                height_mm,
-                thickness_mm,
-                target_distance_mm,
-            )
-            if any(not isfinite(value) or value <= 0 for value in values_mm):
-                raise ValueError("검사대상 치수는 0보다 큰 유한한 값이어야 합니다.")
+            # 지름·높이는 실제 치수라 0 이면 성립하지 않는다.
+            for name, value in (("지름", diameter_mm), ("높이", height_mm)):
+                if not isfinite(value) or value <= 0:
+                    raise ValueError(
+                        f"{name}는 0보다 큰 값이어야 합니다 (받은 값 {value:g}).")
+            # 이동거리도 실제로 있어야 하는 값이다 (차량이 검사 대상까지
+            # 가는 거리). 다만 예전에는 지름·높이와 뭉뚱그려
+            # "검사대상 치수는 0보다 큰 값이어야" 라고만 해서, 화면만 보고는
+            # 셋 중 무엇이 0 인지 알 수 없었다 — 그래서 이름을 붙여 준다.
+            if not isfinite(target_distance_mm) or target_distance_mm <= 0:
+                raise ValueError(
+                    f"이동거리는 0보다 큰 값이어야 합니다 "
+                    f"(받은 값 {target_distance_mm:g}).")
         except (KeyError, TypeError, ValueError) as exc:
             self.main_screen.show_activity(
                 f"MQTT Job 정보 적용 실패: {exc}"
@@ -312,7 +1138,6 @@ class OperatorWindow(QMainWindow):
                 "job_id": str(payload.get("job_id", "")),
                 "diameter_m": diameter_m,
                 "height_m": height_m,
-                "thickness_m": thickness_mm / 1000.0,
                 "target_distance_m": target_distance_mm / 1000.0,
             },
         )
@@ -320,45 +1145,101 @@ class OperatorWindow(QMainWindow):
             "MQTT Job 정보를 검사대상 설정에 적용했습니다. "
             f"(지름 {diameter_m:.2f} m, 높이 {height_m:.2f} m)"
         )
-        self._apply_mqtt_grid(payload.get("grid"))
+        self._apply_mqtt_plan(payload.get("plan"))
 
-    def _apply_mqtt_grid(self, grid: Any) -> None:
-        """원통을 나눈 격자(구역+세로칸) 위치와 이번 칸 치수를 반영한다.
+    def _apply_mqtt_plan(self, plan: Any) -> None:
+        """작업 계획(격자 분할)을 반영하고 첫 셀(1A)부터 작업을 시작한다.
 
-        원통이 커서 AMR이 원주를 구역(segment)으로 나눠 이동하고, 각 구역
-        안에서는 Cobot이 세로 격자(grid)를 하나씩 스캔한다. 이 정보가
-        없으면(옛 payload 등) 화면 갱신만 건너뛰고 나머지는 그대로 둔다.
+        원통을 편 직사각형을 격자로 나눈다. 열(1~12)은 AMR이 정차하는 원주
+        구역, 행(A~F)은 리프트 높이다. **ㄹ자는 셀 하나(`cell_width` ×
+        `cell_height`)만 그린다.** 원통 전체 높이(`job_info.height`)를 셀
+        높이로 쓰면 안 된다 — 그건 로봇이 한 번에 닿지 못하는 높이다.
+
+        스캐너 유효높이(`scan_h`)는 장비 고유값이라 MQTT로 받지 않고 로컬
+        설정(작업 영역 대화상자에서 입력한 값)을 그대로 쓴다.
+        `plan`이 없으면(옛 payload 등) 화면 갱신과 사이클 시작 모두 건너뛴다.
+        자세한 모델은 `docs/grid_sequencer_design.md` 참고.
         """
-        if not isinstance(grid, dict):
+        if not isinstance(plan, dict):
             return
         try:
-            cell_id = str(grid["cell_id"]).strip()
-            segment_index = int(str(grid["segment_index"]).strip())
-            segment_count = int(str(grid["segment_count"]).strip())
-            grid_index = int(str(grid["grid_index"]).strip())
-            grid_count = int(str(grid["grid_count"]).strip())
-            width_mm = float(str(grid["width"]).strip())
-            height_mm = float(str(grid["height"]).strip())
-            scan_h_mm = float(str(grid["scan_h"]).strip())
-            overlap_mm = float(str(grid["overlap"]).strip())
-            values_mm = (width_mm, height_mm, scan_h_mm, overlap_mm)
-            if not cell_id or any(not isfinite(v) or v <= 0 for v in values_mm):
-                raise ValueError("격자 치수는 0보다 큰 유한한 값이어야 합니다.")
+            overlap = float(str(plan["overlap"]).strip())
+            grid = GridPlan(
+                column_count=int(str(plan["column_count"]).strip()),
+                row_count=int(str(plan["row_count"]).strip()),
+                cell_width=float(str(plan["cell_width"]).strip()),
+                cell_height=float(str(plan["cell_height"]).strip()),
+                # 받는 겹침은 **격자끼리**의 겹침이다 — 한 격자 안 ㄹ자 줄
+                # 겹침이 아니다. 이 값만큼 차량과 리프트가 덜 이동해서
+                # 옆·위 격자와 겹치고, 로봇은 그 겹친 자리에서 다시 영점을
+                # 잡는다(ERUT 화면의 "오버랩 간격"과 같은 값이다).
+                # 가로·세로 모두 같은 값을 쓴다 — 규격에 하나로 온다.
+                # 격자 안 줄 간격은 로봇이 프로브 커버로 스스로 정하므로
+                # scan_overlap 은 건드리지 않는다.
+                scan_overlap=0.0, pitch_x=overlap, pitch_y=overlap,
+                # 로봇이 호를 계산하는 데 쓴다. 없으면 0 -> 평면(직선 스캔).
+                # cell_width 는 **호 길이**로 해석한다(현이 아니다).
+                radius=float(str(plan.get("radius", 0)).strip() or 0),
+                thickness=float(str(plan.get("thickness", 0)).strip() or 0),
+                # 검사장비 종류. 프로브 축 수(5 또는 8)로 고른다.
+                eoat_probes=int(float(str(plan.get("eoat", 0)).strip() or 0)),
+            )
+            if grid.column_count <= 0 or grid.row_count <= 0:
+                raise ValueError("열/행 수는 1 이상이어야 합니다.")
+            # EOAT 를 골랐으면 그 세로가 스캐너 밴드가 된다.
+            scan_h_mm = self._scan_band_mm(grid)
+            # 어느 값이 문제인지 짚어 준다 — 뭉뚱그리면 화면만 보고는
+            # 무엇을 고쳐야 할지 알 수 없다.
+            for name, value in (("셀 가로", grid.cell_width),
+                                ("셀 세로", grid.cell_height),
+                                ("스캐너 높이", scan_h_mm)):
+                if not isfinite(value) or value <= 0:
+                    raise ValueError(
+                        f"{name}는 0보다 큰 값이어야 합니다 (받은 값 {value:g}).")
+            # 겹침은 0 이어도 된다(격자를 딱 붙여 놓는 경우). 다만 격자보다
+            # 크면 차량·리프트가 뒤로 가거나 제자리를 맴돈다.
+            if not isfinite(overlap) or overlap < 0:
+                raise ValueError("겹침은 0 이상이어야 합니다.")
+            if overlap >= min(grid.cell_width, grid.cell_height):
+                raise ValueError(
+                    f"겹침 {overlap:g} mm 가 격자({grid.cell_width:g} x "
+                    f"{grid.cell_height:g} mm)보다 큽니다.")
         except (KeyError, TypeError, ValueError) as exc:
-            self.main_screen.show_activity(f"MQTT 격자 정보 적용 실패: {exc}")
+            self.main_screen.show_activity(f"MQTT 작업 계획 적용 실패: {exc}")
             return
 
-        # AMR 원주 위치는 기존 검사 사이클 모델(OrbitView)에 그대로 반영한다.
-        self.simulator.set_segment_position(segment_index, segment_count)
-        self.main_screen.set_work_cell_label(f"{cell_id} ({grid_index + 1}/{grid_count})")
-        self.main_screen.set_work_area(width_mm, height_mm, scan_h_mm, overlap_mm)
-        self.settings_service.save(
-            "work_area",
-            {"width_mm": width_mm, "height_mm": height_mm,
-             "scan_h_mm": scan_h_mm, "overlap_mm": overlap_mm},
-        )
-        # 로봇 태스크가 이 값을 읽어 ㄹ자 스캔을 하도록 전달한다.
-        self.ros_status.send_pose("work_area", list(values_mm))
+        # job_cmd 자체가 "전체 작업 시작" 명령이다. 화면의 진행 표시는
+        # 시퀀서가 주도한다 — 데모 타이머로 혼자 앞서 나가면 실제 로봇이
+        # 아직 1A에 있는데도 화면만 12구역까지 가버린다.
+        self.simulator.begin_external(grid.column_count)
+        self.sequencer.start(grid, scan_h_mm)
+
+    def _apply_speed_ratio(self, raw: Any, source: str = "UI") -> None:
+        """로봇 전체 동작 속도 비율[%]을 로봇에 보낸다. 2~100.
+
+        노드가 29999 `speed -set` 으로 실시간 반영한다. 돌고 있는 동작에도
+        바로 먹으므로 스캔 중에 줄여도 된다.
+        """
+        try:
+            percent = int(str(raw).strip())
+        except (TypeError, ValueError):
+            self.main_screen.show_activity(f"{source} 속도 값을 읽지 못했습니다: {raw!r}")
+            return
+        if not SPEED_MIN <= percent <= SPEED_MAX:
+            self.main_screen.show_activity(
+                f"속도 비율은 {SPEED_MIN}~{SPEED_MAX} % 여야 합니다: {percent}"
+            )
+            return
+        self.ros_status.send_value("speed_ratio", percent)
+        self.main_screen.show_activity(f"{source} 속도 비율 {percent} % 를 로봇에 보냈습니다.")
+
+    def _show_speed_scale(self, percent: int) -> None:
+        """로봇이 실제로 쓰고 있는 속도 비율을 화면에 표시한다.
+
+        펜던트에서 직접 바꿔도 이 값으로 들어온다. Modbus 레지스터 17을
+        노드가 읽어 발행한 것이다.
+        """
+        self.main_screen.set_speed_scale(percent)
 
     def _show_mqtt_connection_state(self, connected: bool) -> None:
         """MQTT Broker 연결 상태를 메인 화면 활동 문구로 표시한다."""
@@ -382,12 +1263,37 @@ class OperatorWindow(QMainWindow):
         self.cobot_jog_screen.apply_position(formatted)
 
     def _show_tcp_pose_zero(self, values: list) -> None:
-        """원점 기준 상대 자세를 수동 제어 화면과 사각형 작업 모델에 표시한다."""
+        """원점 기준 상대 자세를 화면에 표시하고 외부(MC)로 내보낸다.
+
+        이 좌표가 스캐너 관리 시스템으로 나가는 실제 데이터다. 베이스 프레임
+        좌표(`tcp_pose`)는 모니터링용이라 내보내지 않는다.
+        """
         self.cobot_manual_screen.apply_zero_point(self._format_pose(values))
         if len(values) >= 3:
             # 로봇 태스크(dus_init.script)가 베이스 좌표계로 cur-zero를 낸다.
-            # 가로 = -Y(오른쪽 +), 세로 = +Z(위 +). register_map.txt 4항 참고.
-            self.main_screen.apply_wall_position(-values[1], values[2])
+            # v3부터 원점이 Y+ 에서 Y- 로 바뀌어(dus_probe_l.script), 첫 패스가
+            # Y- 에서 Y+ 로 움직인다 — cur-zero(rel_y)를 부호 그대로 넘긴다.
+            # 화면에서 어느 쪽이 되는지는 RectWorkView.to_px()가 정한다(원점을
+            # 오른쪽 끝에 그리도록 뒤집어 둠). 가로 = Y, 세로 = +Z(위 +).
+            # register_map.txt 4항 참고.
+            # 현재 위치는 **항상** 그린다. 스캔 중이 아니면 로봇이 0 을
+            # 보내므로 점이 영점에 가만히 서 있게 된다 — 표시가 생겼다
+            # 없어졌다 하는 것보다 그쪽이 읽기 쉽고, 같은 값을 받는 TPAC
+            # 쪽과도 어긋나지 않는다.
+            self.main_screen.apply_wall_position(values[1], values[2])
+        self._publish_tcp(values)
+
+    def _publish_tcp(self, values: list) -> None:
+        """제로점 좌표에 현재 격자 이름을 붙여 발행한다.
+
+        좌표만으로는 원통 어디인지 알 수 없다. 격자를 아는 것은 시퀀서
+        뿐이므로 여기서 둘을 합친다. 10 Hz로 나가는 값이라 발행 실패를
+        화면 문구로 쏟아내지 않고, 스캔도 멈추지 않는다.
+        """
+        try:
+            self.mqtt_server.publish_tcp(values, self.sequencer.current_cell())
+        except Exception:  # noqa: BLE001 - 발행 실패로 스캔을 멈추지 않는다.
+            pass
 
     @staticmethod
     def _format_pose(values: list) -> dict[str, str]:
@@ -458,6 +1364,10 @@ class OperatorWindow(QMainWindow):
                 restored.append(target)
 
         cobot = self.screens["cobot"]
+        # 속도 바가 % 를 mm/s 로 환산할 기준값도 함께 맞춘다.
+        self.main_screen.set_base_speed(
+            min(int(cobot.linear_speed()), MAX_LINEAR_SPEED_MM_S)
+        )
         for value, name in ((cobot.linear_speed(), "linear_speed"),
                             (cobot.speed_ratio(), "speed_ratio")):
             if self.ros_status.send_value(name, int(value)):
@@ -469,10 +1379,26 @@ class OperatorWindow(QMainWindow):
             )
 
     def _available_writes(self) -> list[str]:
-        """주소가 정해져 실제로 보낼 수 있는 명령 이름을 모은다."""
-        names = ("jog_joint", "jog_tcp", "save_home_pose", "save_start_pose",
-                 "move_home", "linear_speed")
+        """주소가 정해져 실제로 보낼 수 있는 명령 이름을 모은다.
+
+        조그(jog_joint/jog_tcp)는 여기 넣지 않는다 — Modbus 레지스터가
+        아니라 30001 소켓의 speedj/speedl로 나가므로 레지스터 주소 유무와
+        무관하다. 조그 버튼의 활성화는 `_update_jog_enabled()`가 로봇
+        연결 여부로 따로 관리한다.
+        """
+        names = ("save_home_pose", "save_start_pose", "move_home", "linear_speed")
         return [name for name in names if self.ros_status.writable(name)]
+
+    def _update_jog_enabled(self, connected: bool) -> None:
+        """로봇 연결 여부로 조그 버튼을 잠그거나 연다.
+
+        레지스터 주소로 잠그면(예전 방식) 조그는 레지스터를 안 쓰므로
+        항상 잠긴 채로 남는다 — 실제 연결과 무관한 기준이었다.
+        """
+        names = set(self._available_writes())
+        if connected:
+            names |= {"jog_joint", "jog_tcp"}
+        self.cobot_jog_screen.set_enabled_commands(names)
 
     def _send_jog(self, kind: str, axis: int, direction: int) -> None:
         """조그 시작을 알린다. 노드가 30001로 speedj/speedl을 보낸다."""
@@ -495,24 +1421,221 @@ class OperatorWindow(QMainWindow):
         """Cobot 설정을 저장할 때 작업 속도를 로봇에도 반영한다."""
         if scope != "cobot":
             return
-        for field, name in (
-            (CobotSettingsScreen.SPEED_FIELD, "linear_speed"),
-            (CobotSettingsScreen.RATIO_FIELD, "speed_ratio"),
-        ):
-            value = values.get(field)
-            if value is not None and self.ros_status.writable(name):
-                self.ros_status.send_value(name, int(value))
+        # 작업 속도(movel v)는 안전 기준상 150 mm/s 를 넘길 수 없다. 로봇
+        # 태스크도 같은 값으로 자르지만, 넘는 값을 아예 보내지 않는다.
+        speed = values.get(CobotSettingsScreen.SPEED_FIELD)
+        if speed is not None and self.ros_status.writable("linear_speed"):
+            capped = min(int(speed), MAX_LINEAR_SPEED_MM_S)
+            if capped != int(speed):
+                self.main_screen.show_activity(
+                    f"작업 속도를 안전 상한 {MAX_LINEAR_SPEED_MM_S} mm/s 로 제한했습니다."
+                )
+            self.ros_status.send_value("linear_speed", capped)
+            self.main_screen.set_base_speed(capped)
+
+        # 속도 비율은 29999로 실시간 반영되는 경로를 탄다.
+        ratio = values.get(CobotSettingsScreen.RATIO_FIELD)
+        if ratio is not None:
+            self._apply_speed_ratio(ratio, source="설정")
 
     # 위치 저장은 조그 화면에서, 나머지는 수동 제어 화면에서 요청한다.
     _JOG_COMMANDS = ("save_home_pose", "save_start_pose")
+
+    #: 스캔을 띄우고 멈추는 명령. 실패가 메인 화면에도 보여야 한다.
+    _SCAN_COMMANDS = ("play", "stop", "remote_control_on")
 
     def _show_command_result(self, name: str, success: bool, message: str) -> None:
         """명령 결과를 요청한 화면의 안내 문구로 보여준다."""
         text = message if success else f"실패: {message}"
         if name in self._JOG_COMMANDS:
             self.cobot_jog_screen.show_result(text)
+        elif name in ("connect", "disconnect"):
+            # 연결 설정 화면에서 누른 경우 결과가 거기 보여야 한다.
+            self.screens["connection"].set_link_message(text)
+            self.cobot_manual_screen.activity_label.setText(text)
+        elif name in self._SCAN_COMMANDS:
+            # 스캔을 띄우는 명령이다. 실패하면 **작업 중인 사람이 보는 곳**
+            # 에도 띄운다 — 예전에는 코봇 수동 화면에만 남아서, 메인 화면
+            # 에서는 "로봇 스캔을 시작합니다" 만 뜨고 로봇은 가만히 있는데
+            # 이유를 알 수 없었다.
+            self.cobot_manual_screen.activity_label.setText(text)
+            if not success:
+                self.main_screen.show_activity(f"로봇 {name} 실패: {message}")
+                self.cobot_manual_screen.add_alarm(f"로봇 {name} 실패: {message}")
+        elif name == "task_status":
+            # _execute_dash_cmd가 "[task -s] Result: ..." 로 감싸 보내므로
+            # 표시용으로는 결과값만 뽑아 보여준다.
+            if success:
+                text = message.split("Result: ", 1)[-1]
+            self.screens["cobot"].set_task_status(text)
         else:
             self.cobot_manual_screen.activity_label.setText(text)
+
+    # scan_state 의 4번째 값(레지스터 293) — 로봇의 발행 스레드가 주기마다
+    # 1 씩 올리는 생존 카운터다. 태스크가 멈추면 이 값이 그대로 굳는다.
+    # 그때 마지막 좌표를 화면에 남겨 두면 지금도 거기 있는 것처럼 보이므로,
+    # 잠시 안 바뀌면 현재 위치를 대기 자리로 되돌린다.
+    _ALIVE_INDEX = 3
+    _ALIVE_STALL_LIMIT = 10        # 10Hz 기준 약 1 초
+
+    def _handle_alive(self, values: list) -> None:
+        """로봇이 좌표 발행을 멈췄는지 생존 카운터로 본다."""
+        if len(values) <= self._ALIVE_INDEX:
+            return
+        alive = int(values[self._ALIVE_INDEX])
+        if alive != getattr(self, "_last_alive", None):
+            self._last_alive = alive
+            self._alive_stall = 0
+            return
+        self._alive_stall = getattr(self, "_alive_stall", 0) + 1
+        if self._alive_stall == self._ALIVE_STALL_LIMIT:
+            self.main_screen.rect_view.park_position()
+
+    # scan_state(레지스터 290~299)의 10번째 값 — 센서판 probe_c/l/r 이
+    # 벽 접촉을 못 찾고 halt() 하기 직전에 남긴다(config/modbus_registers.json
+    # 참고). 0=정상, 그 외는 실패 코드.
+    _PROBE_ERROR_INDEX = 9
+    _PROBE_ERROR_MESSAGES = {
+        1: ("E-PROBE-C", "센터 프로브 벽 접촉 실패"),
+        2: ("E-PROBE-L", "좌측(원점) 프로브 벽 접촉 실패"),
+        3: ("E-PROBE-R", "우측 프로브 벽 접촉 실패"),
+        4: ("E-ARC-ZERO", "호 길이/반지름이 0 — 작업 영역 값을 확인하세요"),
+    }
+
+    def _handle_probe_error(self, values: list) -> None:
+        """작업면(벽) 감지 실패를 알람 목록 + MQTT evt/error 로 내보낸다.
+
+        로봇이 halt() 전에 레지스터 299에 코드를 남기고, 다시 dus_init이
+        돌 때만 0으로 되돌린다 — 그래서 값이 **바뀔 때만** 알린다(같은
+        코드가 10Hz로 계속 들어와도 알람이 반복해서 쌓이지 않게).
+        erut_session.raise_error()는 이미 있는 경로를 그대로 쓴다 — level이
+        "stop"이면 로봇도 같이 세우고(halt()로 이미 서 있어 중복이지만
+        멱등하다), MQTT evt/error 로 나간다.
+        """
+        if len(values) <= self._PROBE_ERROR_INDEX:
+            return
+        code = int(values[self._PROBE_ERROR_INDEX])
+        prev_code = getattr(self, "_last_probe_error_code", 0)
+        if code == prev_code:
+            return
+        self._last_probe_error_code = code
+
+        if code == 0:
+            if prev_code in self._PROBE_ERROR_MESSAGES:
+                err_code, _ = self._PROBE_ERROR_MESSAGES[prev_code]
+                self.erut_session.raise_error({
+                    "code": f"{err_code}-CLEAR", "message": "작업면 감지 실패 해제",
+                    "level": "warning", "recovery": "auto",
+                })
+            return
+
+        err_code, message = self._PROBE_ERROR_MESSAGES.get(
+            code, (f"E-PROBE-{code}", "작업면 감지 실패"))
+        self.main_screen.show_activity(f"{message} (레지스터 299={code})")
+        self.cobot_manual_screen.add_alarm(message)
+        self.erut_session.raise_error({
+            "code": err_code, "message": message,
+            "level": "stop", "recovery": "manual",
+            "detail": "로봇이 계산된 위치에서 벽 접촉을 찾지 못해 정지했습니다.",
+        })
+
+    # 스캔 진행 상태(290)에서 "원점 도착, 시작 신호 대기"를 뜻하는 값.
+    # dus_goto_zero.script 가 세우고, 레지스터 267 에 1 이 들어오면 푼다.
+    _SCAN_STATE_INDEX = 0
+    _STATE_AT_ORIGIN = 7
+
+    def _handle_origin_wait(self, values: list) -> None:
+        """로봇이 원점에 도착해 멈춰 서면 ERUT 에 알린다.
+
+        프로브가 벽에 제대로 붙었는지는 로봇이 알 수 없어서, 원점에서
+        한 번 멈춰 세우고 ERUT 의 확인을 받는다. 10Hz 로 같은 값이 계속
+        들어오므로 **상태가 바뀔 때만** 알린다.
+        """
+        if not values:
+            return
+        waiting = int(values[self._SCAN_STATE_INDEX]) == self._STATE_AT_ORIGIN
+        if waiting == getattr(self, "_origin_waiting", False):
+            return
+        self._origin_waiting = waiting
+        if self.mqtt_server is not None:
+            self.mqtt_server.publish_probe_gate(
+                waiting, self.sequencer.current_cell())
+        if not waiting:
+            self.erut_session.clear_at_origin()
+            return
+        self.main_screen.show_activity(
+            "로봇이 원점에 도착했습니다 — 프로브 확인(ERUT 의 작업 시작 또는"
+            " MQTT probe_ack)을 기다립니다.")
+        self.erut_session.notify_at_origin()
+
+    def _handle_probe_ack(self, payload: dict) -> None:
+        """바깥(MC)에서 온 프로브 눌림 확인을 받아 로봇을 풀어 준다.
+
+        `pressed` 가 참이면 스캔으로 넘어가고, 거짓이면 풀지 않고 알람만
+        남긴다 — 프로브가 안 붙은 채로 훑으면 검사가 성립하지 않는다.
+        `reason` 을 같이 주면 그대로 보여 준다.
+        """
+        pressed = payload.get("pressed")
+        if isinstance(pressed, str):
+            pressed = pressed.strip().lower() in ("true", "1", "ok", "yes")
+        if not getattr(self, "_origin_waiting", False):
+            self.main_screen.show_activity(
+                "프로브 확인을 받았지만 로봇이 원점 대기 중이 아닙니다 — 무시합니다.")
+            return
+        if not pressed:
+            reason = str(payload.get("reason", "") or "프로브 눌림 확인 실패")
+            self.cobot_manual_screen.add_alarm(f"프로브 확인 거부: {reason}")
+            self.main_screen.show_activity(
+                f"프로브 확인이 거부되었습니다 — {reason}. 원점에서 계속 대기합니다.")
+            return
+        self.main_screen.show_activity("프로브 눌림 확인을 받았습니다 — 적심 후 스캔.")
+        self._release_scan_gate()
+
+    def _release_scan_gate(self) -> bool:
+        """스캔 시작 허가(레지스터 267 = 1)를 로봇에 보낸다.
+
+        로봇은 이 값을 보고 적심(비비기) -> 스캔으로 넘어가며, 통과하면서
+        스스로 0 으로 되돌린다 — 다음 사이클에 지난 허가가 남아 확인 없이
+        통과하는 것을 막기 위해서다.
+        """
+        sent = self.ros_status.send_value("scan_go", 1)
+        if sent:
+            self._origin_waiting = False
+            self.erut_session.clear_at_origin()
+            self.main_screen.show_activity("스캔 시작 허가를 보냈습니다 — 적심 후 스캔.")
+        else:
+            self.cobot_manual_screen.add_alarm(
+                "스캔 시작 허가를 보내지 못했습니다 — 로봇 연결을 확인하세요.")
+        return sent
+
+    def _handle_robot_alarm(self, text: str) -> None:
+        """로봇(30001 포트) 실시간 알람 스트림을 MQTT evt/error 로도 내보낸다.
+
+        ROS 쪽 AlarmManager가 이미 짧은 시간 창(기본 2초) 안에서만 중복을
+        누르고 그 창이 지나 다시 발생한 알람은 새로 흘려보내므로, 여기서는
+        받은 그대로 한 번 raise_error 한다. probe_error(레지스터 299)와
+        달리 이 알람은 레지스터에 남아 계속 폴링되는 '상태'가 아니라
+        그 순간 로봇이 찍어 보낸 로그성 이벤트라서 "-CLEAR" 짝이 따로
+        필요 없다 — cobot_manual_screen.add_alarm 쪽 목록 표시와는 별개로,
+        여기서는 MQTT 전달만 담당한다.
+        """
+        self.erut_session.raise_error({
+            "code": "E-ROBOT-ALARM", "message": text,
+            "level": "warning", "recovery": "manual",
+        })
+
+    def _reset_alarms(self) -> None:
+        """화면에 남은 알림·알람을 지우고, 걸려 있던 장애도 해제한다.
+
+        예전에는 장애 통보가 뜨면 지울 방법이 없어 문구가 계속 남았다.
+        ERUT 가 `req/reset` 을 보냈을 때와 같은 해제를 운영자가 화면에서도
+        할 수 있게 한다 — 현장에서 스테이션 조작을 기다릴 수 없다.
+        """
+        cleared = self.erut_session.clear_errors()
+        self.cobot_manual_screen.set_alarms([])
+        self.main_screen.clear_activity()
+        if cleared:
+            self.main_screen.show_activity(f"장애 해제: {', '.join(cleared)}")
 
     def _show_ros_error(self, message: str) -> None:
         """ROS 수신 오류를 메인 화면에 간단한 운영 메시지로 표시한다."""
@@ -554,6 +1677,9 @@ class OperatorWindow(QMainWindow):
         """창 종료 전에 MQTT 네트워크 루프와 ROS 구독을 정리한다."""
         self.mqtt_server.stop()
         self.ros_status.stop()
+        self.screens["tpac_bridge"].shutdown()
+        # 우리가 띄운 노드만 거둔다(따로 띄운 노드는 남의 것이다).
+        self.robot_node.stop()
         super().closeEvent(event)
 
 

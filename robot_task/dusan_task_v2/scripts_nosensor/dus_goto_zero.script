@@ -1,0 +1,46 @@
+# =============================================================================
+#  dus_goto_zero.script — dusan_v2
+#  측정이 끝난 뒤 원점(Y+ 끝)으로 돌아가 스캔을 시작할 준비를 한다
+#
+#  펜던트에서 "6_goto_zero" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def gz_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+def gz_w6(a, p):
+  gz_w1(a, p[0] * 10000)
+  gz_w1(a + 1, p[1] * 10000)
+  gz_w1(a + 2, p[2] * 10000)
+  gz_w1(a + 3, p[3] * 1000)
+  gz_w1(a + 4, p[4] * 1000)
+  gz_w1(a + 5, p[5] * 1000)
+end
+
+
+write_port_register(290, 3)
+
+# 현재 TCP 자세를 기준으로 가면 안 된다 — 직전 지점(p_r_pose)의 회전이
+# 그대로 남아 있어 zero_pose 의 회전과 다르고, 그 채로 위치만 옮기면
+# 볼록한 곡면을 가로질러 충돌한다. probe_l/r 과 같은 방식으로, zero_pose
+# 자세 그대로 뒤로 물러난 지점까지 먼저 이동한 뒤 그 자세로 전진해 들어간다.
+z_stand = pose_trans(zero_pose, [0, probe_dist * 0.001, 0, 0, 0, 0])
+movel(z_stand, a = 1.2, v = v_move)
+movel(zero_pose, a = 0.6, v = v_seek)
+
+gz_w6(270, zero_pose)      # 원점 pose (스캔 중 변하지 않는다)
+write_port_register(294, 1)
+path_len = 0
+write_port_register(290, 4)

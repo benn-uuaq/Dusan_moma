@@ -1,0 +1,47 @@
+# =============================================================================
+#  dus_pass_l.script — dusan_v4
+#  반대쪽 끝에서 원점으로 한 줄. 중앙을 경유점으로 하는 movec 원호
+#
+#  펜던트에서 "8_pass_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def pl2_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+# p_r_pose -> 원점 으로 한 줄 — movec 원호 하나.
+# 반시계 방향이라 베이스 Y 는 **늘어나는** 쪽이다.
+# 스캔 동작에 들어섰다고 알린다(6 = 스캔 중). 이 값이 6 인 동안에만
+# 제로점 기준 좌표(280~285)가 나간다 — dus_init 의 pub_rel 참고.
+# 스캔 동작마다 세워 둬야, 사이클이 반복되며 goto_zero 를 다시 지나지
+# 않는 구성에서도 좌표가 끊기지 않는다.
+write_port_register(290, 6)
+
+z_now = get_actual_tcp_pose()[2]
+via_pose = p_c_pose.copy()
+via_pose[2] = z_now
+to_pose = zero_pose.copy()
+to_pose[2] = z_now
+movec(via_pose, to_pose, a = a_scan, v = v_scan, r = 0, mode = 1)
+
+row_idx = row_idx + 1
+dir_sign = 1
+pass_done = 1
+# movec 는 호를 따라가므로 실제 지난 거리는 현이 아니라 호 길이다.
+# 총 작업 거리는 TCP 가 실제로 움직인 길이다. EOAT 폭만큼 짧으므로
+# 덮는 길이(app_arc)가 아니라 arc_run 을 더한다.
+path_len = path_len + arc_run
+write_port_register(291, row_idx)
+pl2_w1(297, path_len * 0.1)
+pl2_w1(298, row_idx * 100.0 / rows)

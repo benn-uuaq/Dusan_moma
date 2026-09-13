@@ -1,0 +1,23 @@
+# =============================================================================
+#  dus_move_start_waypoint.script — dusan_v4
+#  dus_move_start.script 와 같되 **블렌드 반경(r_l)** 을 걸고 지나간다
+#
+#  펜던트의 Waypoint(경유점) 기능 대신 쓰는 스크립트다. 마지막 movel 에
+#  r = r_l 을 주면 로봇이 start_pose 에 정확히 서지 않고 반경 r_l 안에서
+#  둥글게 스치며 다음 동작으로 이어진다 — 프로브 사이를 오갈 때 매번
+#  완전히 정지했다 다시 가속하는 것을 없애 사이클이 짧아진다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  블렌드를 걸면 **그 자리에 정확히 서지 않는다**. 그래서 다음 동작이
+#  접촉 탐색(probe_c)처럼 시작점 정밀도를 요구하는 자리에는 쓰지 않고,
+#  프로브 사이 이동처럼 지나가기만 하면 되는 자리에만 쓴다.
+#  Z 올림(첫 movel)은 벽·바닥을 피하는 동작이라 블렌드를 걸지 않는다.
+if (get_actual_tcp_pose()[2] < start_pose[2] - 0.001):
+  z_up = get_actual_tcp_pose()
+  z_up[2] = start_pose[2]
+  movel(z_up, a = a_l, v = v_l)
+end
+movel(start_pose, a = a_l, v = v_l, r = r_l)

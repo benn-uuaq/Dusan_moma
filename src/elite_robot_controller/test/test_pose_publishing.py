@@ -4,6 +4,8 @@
 RobotControlNode.__init__은 세 채널 연결을 요구하므로 우회한다.
 """
 
+from unittest.mock import patch
+
 from elite_robot_controller import register_map
 from elite_robot_controller.robot.robot_control_node import RobotControlNode
 
@@ -42,8 +44,15 @@ class FakePublisher:
 class FakeLogger:
     def __init__(self):
         self.warnings = []
+        self.infos = []
 
     def warn(self, message):
+        self.warnings.append(message)
+
+    def info(self, message):
+        self.infos.append(message)
+
+    def error(self, message):
         self.warnings.append(message)
 
 
@@ -412,6 +421,9 @@ def test_connected_status_is_republished_every_cycle():
     node.pub_tcp_pose = FakePublisher()
     node.pub_tcp_pose_zero = FakePublisher()
     node.pub_joint_position = FakePublisher()
+    node.pub_scan_state = FakePublisher()
+    node.pub_task_state = FakePublisher()
+    node.pub_speed_scale = FakePublisher()
     node.pub_alarm = FakePublisher()
     node.alarm_mgr = type("M", (), {"process": lambda self, a: False})()
     node.robot_primary.get_data = lambda: None
@@ -429,9 +441,10 @@ def test_work_area_register_is_raw_mm():
     entry = registers.write_entry("work_area")
 
     assert entry.address == 256
-    assert entry.count == 4
+    # 256~264: 호 길이, 높이, 스캐너 높이, 겹침, 반지름, 두께, EOAT 가로/세로, EOAT 종류.
+    assert entry.count == 9
     assert entry.kind == "raw"
-    assert registers.scales_for(entry) == [1.0, 1.0, 1.0, 1.0]
+    assert registers.scales_for(entry) == [1.0] * 9
     assert registers.write_entry("param_src").address == 266
 
 
@@ -474,3 +487,48 @@ def test_work_area_write_skipped_without_param_src_address():
 class FakeMessageList:
     def __init__(self, data):
         self.data = data
+
+
+def test_connect_rebuilds_channels_when_ip_changes():
+    """운영 UI가 robot_ip 파라미터를 바꾸면 그 주소로 다시 붙어야 한다.
+
+    예전에는 노드를 띄울 때 읽은 주소로 만든 소켓을 계속 써서, UI에서
+    IP를 아무리 고쳐도 옛 주소로만 붙었다(화면 표시와 실제 연결이 어긋남).
+    """
+    node = make_connectable_node()
+    node.robot_ip = "10.0.0.9"
+    built = []
+
+    class _Chan:
+        def __init__(self, *args):
+            built.append(args)
+
+        def connect(self):
+            return True
+
+        connect_29999 = connect_30001 = connect
+
+        def disconnect(self):
+            return True
+
+        disconnect_29999 = disconnect_30001 = disconnect
+
+    with patch.multiple(
+        "elite_robot_controller.robot.robot_control_node",
+        Robot_29999=_Chan, Robot_30001=_Chan, Robot_modbus=_Chan,
+    ):
+        node.connect_all_servers("192.168.1.101")
+
+    assert node.robot_ip == "192.168.1.101"
+    assert built, "새 주소로 채널을 다시 만들지 않았다"
+    assert all(args[0] == "192.168.1.101" for args in built)
+
+
+def test_connect_keeps_channels_when_ip_is_unchanged():
+    """같은 주소면 굳이 소켓을 새로 만들지 않는다(불필요한 끊김 방지)."""
+    node = make_connectable_node()
+    node.robot_ip = "10.0.0.9"
+    dash_before = node.robot_dash
+
+    assert node.connect_all_servers("10.0.0.9") is True
+    assert node.robot_dash is dash_before

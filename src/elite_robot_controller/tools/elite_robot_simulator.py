@@ -171,12 +171,117 @@ class ModbusServer(threading.Thread):
         return struct.pack(">BB", func | 0x80, 0x01)
 
 
+class ScanTaskSim(threading.Thread):
+    """`play` 를 받으면 로봇 태스크(dusan_v1)의 한 셀 스캔을 흉내 낸다.
+
+    실제 태스크가 레지스터 290~298에 쓰는 진행 상태를 같은 순서로 채운다.
+    운영 UI의 격자 순회가 이 값으로 셀 완료를 판정하므로, 이게 없으면
+    첫 셀에서 영영 넘어가지 못한다.
+
+    ㄹ자 경로를 실제로 그리지는 않고 단계와 줄 수만 흉내 낸다. 순회 로직을
+    검증하는 게 목적이지 로봇 기구학을 재현하는 게 아니다.
+    """
+
+    # 레지스터 290~298. 로봇 태스크의 dus_*.script 와 같은 뜻이다.
+    STATE, ROW_IDX, ROWS, ALIVE = 290, 291, 292, 293
+    ZERO_OK, FINISHED, PITCH, PROGRESS = 294, 295, 296, 298
+    # 작업 영역(256~259). 태스크가 읽어 ㄹ자 줄 수를 계산한다.
+    APP_WIDTH, APP_HEIGHT, SCAN_H, OVERLAP = 256, 257, 258, 259
+
+    STEP_SECONDS = 0.35
+
+    def __init__(self, bank: RegisterBank):
+        super().__init__(daemon=True)
+        self.bank = bank
+        self._start_requested = threading.Event()
+        self._abort = threading.Event()
+        self._alive_count = 0
+
+    def play(self) -> None:
+        """제로점에서 프로그램을 다시 재생한다."""
+        self._abort.set()          # 돌고 있으면 먼저 접는다
+        self._start_requested.set()
+
+    def stop(self) -> None:
+        self._abort.set()
+        self._start_requested.clear()
+        self._set(self.STATE, 0)
+        self._set(self.FINISHED, 0)
+
+    def _set(self, address: int, value: int) -> None:
+        self.bank.write(address, int(value))
+
+    def _tick(self, seconds: float) -> bool:
+        """지정한 시간만큼 대기한다. 중단 요청이 오면 False."""
+        end = time.time() + seconds
+        while time.time() < end:
+            if self._abort.is_set():
+                return False
+            self._alive_count = (self._alive_count + 1) % 30000
+            self._set(self.ALIVE, self._alive_count)
+            time.sleep(0.05)
+        return True
+
+    def _planned_rows(self) -> int:
+        """작업 영역으로 ㄹ자 줄 수를 센다. 로봇 태스크와 같은 규칙이다."""
+        height = self.bank.read(self.APP_HEIGHT, 1)[0]
+        scan_h = self.bank.read(self.SCAN_H, 1)[0] or 150
+        overlap = self.bank.read(self.OVERLAP, 1)[0]
+        pitch = max(scan_h - overlap, 1)
+        rows = 1
+        while (rows - 1) * pitch + scan_h < height:
+            rows += 1
+            if rows > 200:      # 값이 이상해도 무한 루프에 빠지지 않는다
+                break
+        return rows
+
+    def run(self) -> None:
+        while True:
+            self._start_requested.wait()
+            self._start_requested.clear()
+            self._abort.clear()
+            self._run_once()
+
+    def _run_once(self) -> None:
+        rows = self._planned_rows()
+        pitch = max(
+            self.bank.read(self.SCAN_H, 1)[0] - self.bank.read(self.OVERLAP, 1)[0], 1
+        )
+        self._set(self.FINISHED, 0)
+        self._set(self.ROWS, rows)
+        self._set(self.PITCH, pitch)
+        self._set(self.PROGRESS, 0)
+        self._set(self.ZERO_OK, 0)
+
+        # 탐색 → probe → 원점 복귀 (state 1, 2, 3)
+        for state in (1, 2, 3):
+            self._set(self.STATE, state)
+            if not self._tick(self.STEP_SECONDS):
+                return
+        self._set(self.ZERO_OK, 1)
+
+        # ㄹ자 스캔 (state 4). 줄마다 row_idx 와 진행률을 올린다.
+        self._set(self.STATE, 4)
+        for row in range(rows):
+            self._set(self.ROW_IDX, row)
+            self._set(self.PROGRESS, int((row + 1) / rows * 100))
+            if not self._tick(self.STEP_SECONDS):
+                return
+
+        # 피니시 (state 5). 운영 UI 는 이 값으로 셀 완료를 판정한다.
+        self._set(self.STATE, 5)
+        self._set(self.FINISHED, 1)
+        self._set(self.PROGRESS, 100)
+        print(f"[Task] 셀 스캔 완료 ({rows} 행)")
+
+
 class DashboardServer(threading.Thread):
     """29999 텍스트 명령 서버."""
 
-    def __init__(self, bank: RegisterBank, motion: "MotionSim", host: str, port: int):
+    def __init__(self, bank: RegisterBank, motion: "MotionSim",
+                 task: "ScanTaskSim", host: str, port: int):
         super().__init__(daemon=True)
-        self.bank, self.motion = bank, motion
+        self.bank, self.motion, self.task = bank, motion, task
         self.host, self.port = host, port
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -212,11 +317,15 @@ class DashboardServer(threading.Thread):
             "robotControl -on": "Powering on",
             "robotControl -off": "Powering off",
             "brakeRelease": "Brake releasing",
-            "play": "Starting program",
             "pause": "Pausing program",
         }
-        if command == "stop":
+        if command == "play":
+            # 실제 로봇처럼 제로점에서 태스크를 처음부터 다시 돌린다.
+            self.task.play()
+            reply = "Starting program"
+        elif command == "stop":
             self.motion.stop_all()
+            self.task.stop()
             reply = "Stopping program"
         else:
             reply = replies.get(command, f"ok: {command}")
@@ -341,9 +450,11 @@ def main() -> int:
     registers = register_map.load()
     bank = RegisterBank(registers)
     motion = MotionSim(bank)
+    task = ScanTaskSim(bank)
+    task.start()
 
     ModbusServer(bank, args.host, args.modbus_port).start()
-    DashboardServer(bank, motion, args.host, args.dash_port).start()
+    DashboardServer(bank, motion, task, args.host, args.dash_port).start()
     PrimaryServer(motion, args.host, args.primary_port).start()
 
     print(

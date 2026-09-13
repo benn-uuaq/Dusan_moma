@@ -59,7 +59,37 @@
 - [x] job_cmd 토픽에 grid 블록(cell_id/segment_index/segment_count/grid_index/grid_count/width/height/scan_h/overlap) 확장 — mqtt_topic_form.md 갱신
 - [x] 로봇 write 레지스터 256~259(작업 영역)+266(param_src) 추가, robot/command/work_area 토픽으로 UI→로봇 전달 완료
 - [x] AMR 원주 구역 수를 12 고정에서 MQTT로 가변으로 (InspectionSimulator.set_segment_position)
-- [ ] AMR 구역 순회 실제 완료 시 다음 구역/격자로 자동 진행하는 로직 (현재는 MQTT job_cmd 수신 때만 위치 갱신, 자동 시퀀싱은 MC 쪽 책임인지 확인 필요)
+- [x] 구역/격자 자동 순회는 MC가 아니라 Operator UI/로봇 쪽 책임으로 확정. job_cmd를 job_info+scan(segment_count/width/scan_h/overlap)만 담는 "전체 작업 시작" 명령으로 단순화(cell_id/segment_index/grid_index 제거), mc_cmd=일시정지·재개, job_clear=정지로 매핑
+- [x] 격자 자동 진행 상태 머신 설계 완료 — `docs/grid_sequencer_design.md`. 열(1~12)=AMR 정차 구역, 행(A~F)=리프트 높이. 리프트가 오르면 로봇 좌표계도 함께 올라가므로 로봇은 셀마다 같은 동작을 반복한다(작업 영역 256~259는 1회만 기록). 리프트/AMR은 더미 어댑터로 두고 1A~12F 전체 순회 검증 가능
+- [x] 1단계: `job_cmd`를 작업 계획(`plan`: column_count/row_count/cell_width/cell_height/overlap)으로 정리, `mqtt_test` 도구 갱신. **ㄹ자는 셀 하나(cell_height)만 그린다 — job_info.height(원통 전체 높이)를 셀 높이로 쓰던 버그 수정**
+- [x] 2단계: `scan_h`(스캐너 장비 고유값)를 MQTT에서 빼고 로컬 설정(작업 영역 대화상자) 값을 사용하도록 변경
+- [x] 3단계: `scan_state`(290~298) 읽기 → `robot/status/scan_state` 발행 → `ros_status_client` 구독. 셀 완료 판정은 `290==5 && 295==1`
+- [x] 4단계: 리프트/AMR 더미 어댑터(`motion_adapters.py`) + `JobSequencer` 신설, 1A~12F 셀 순회 완성
+- [x] 5단계: 셀마다 제로점에서 29999 play로 로봇 재시작 (param_src 재기록 아님)
+- [x] 6단계: 제로점 기준 TCP 좌표(280~285)에 격자 번호를 붙여 `doosan/robot/tcp`(T-008)로 발행. 격자별 상태는 `doosan/robot/job_state`(T-009)로 발행 — job_id가 곧 격자 이름
+- [ ] 7단계: 실제 PLC/차량 확보 후 리프트·AMR 더미 어댑터 교체 (`motion_adapters.py`만 교체, JobSequencer는 무수정)
+- [x] 실장비(VM) 확인: 셀마다 제로점 재시작이 되는지 → **`remoteControl -on` → `stop` → (1.2초) → `play`** 순서로 확인 완료. 원격 제어 모드가 아니면 play/stop 전부 거부됨, 이미 RUNNING 이면 play 거부됨
+- [x] 태스크 상태 레지스터 500 추가 (1 실행중/2 일시중지/3 중지됨). **input register(0x04)** 로 읽힘. `robot/status/task_state` 로 발행
+- [x] `play` 응답 문자열이 아니라 상태 레지스터로 진행을 판단하도록 변경
+- [ ] 실장비에서 리프트 실제 상승 연동 (현재 더미)
+- [x] ERUT 인터페이스 구현 — `erut_client.py`(전송) + `erut_session.py`(9개 동작). 봉투가 doosan 규격과 달라(content 래퍼, 숫자 timestamp) 접속을 따로 둠. `evt/status`(retained+LWT, 접속 시 + 30~60초 주기 재발행)로 생존 감시 — telemetry 는 규격에 없어 제거
+- [x] ERUT 시뮬레이터 `mqtt_test/erut_sim.py` — 규격 탭3 시나리오 자동 진행
+- [x] ERUT 시퀀스 ①~⑤ 검증 (로봇 시뮬레이터 기준). 진행률 1A(25%)→1B(50%)→2A(75%)→2B(100%)
+- [ ] **실장비(VM) ERUT 시퀀스 재검증** — ①②③⑤는 통과했으나 ④ 도중 VM 이 내려가 미완
+- [x] ERUT 규격 20260818 반영 — `area` 가 셀 크기를 정하고 겹침이 셋으로 갈림(`pitch_scan`=ㄹ자 줄→로봇 259, `pitch_y`=리프트 상승, `pitch_x`=AMR 이동). `GridPlan` 에서 분리
+- [x] `evt/error` 봉투를 규격대로 수정 — `code`·`message` 는 최상위, `level`·`recovery`·`detail` 은 content 안
+- [x] 장애·알람 조작판 `mqtt_test/alarm_sim.py` — 버튼으로 RCS 를 찔러 RCS 가 evt/error 를 발행. stop/estop 이면 자동 일시정지, reset 으로 해제
+- [x] `mqtt_job_sim.py` 가 오가는 MQTT 를 전부 표시 (`doosan/#`·`erut/#`·`3s/test/#`). tcp 는 한 줄로 접음
+- [ ] ERUT 항목 중 아직 시험용인 것 실제화: 캘리브레이션, 마킹, 배터리·충전, 장애 수집(현재는 alarm_sim 주입)
+- [ ] **겹침 계산 확정 대기** — 마지막 행/열 나머지 처리(설계안 C: 천장 맞춤), `pitch_scan` 부호, `surface_length` 의미. 스캔업체 회신 후 적용
+- [ ] start 가 prepare 와 값이 겹치는 건에 대한 협의 (규격 20260818 탭3 12행 3S 검토 요청)
+- [x] 안전 순서 5단계를 시퀀서에 대응 — 1 정지·고정(SECURING) / 2 수평 보정(LEVELING) / 3 Cobot 검사(SCANNING·MOVING_LIFT) / 4 안전 위치(RETRACTING) / 5 다음 구간 이동(MOVING_AMR). 5단계는 구간(열)마다 반복되며 열 안의 셀 이동은 3단계 안이다. 차량이 이미 1구역에 있으므로 1번부터 시작
+- [x] 로봇 속도 조절 UI — RCS 메인 화면 오른쪽 세로 바(SpeedBar), MQTT 시뮬레이터 슬라이더+프리셋
+- [x] TCP 속도 안전 상한 150 mm/s 를 로봇 태스크(dus_init.script)와 UI 양쪽에 적용
+- [x] 로봇 동작 속도 비율(2~100 %) 실시간 제어 — 29999 `speed -set N` 으로 전송, Modbus 레지스터 17 로 읽기, MQTT `doosan/robot/req/speed`(T-010) 및 Cobot 설정 화면에서 조절
+- [x] 속도가 바뀌었다 100 으로 되돌아가던 버그 수정 — `robot/status/connected` 가 10 Hz 로 계속 오는데 `_on_connected` 가 그대로 흘려보내, `_restore_robot_settings()` 가 초당 열 번 저장값(100 %)을 다시 밀어 넣고 있었다. 연결 상태가 **바뀔 때만** 알리도록 수정
+- [ ] **실장비 확인 필요: `speed -set N` 이 로봇에 반영되지 않음.** 명령은 `setting speed to N` 으로 응답하는데 레지스터 17 이 100 에서 안 바뀜(원격 제어 모드·safety NORMAL·태스크 정지 상태에서도 동일). 초기 1회는 정상 반영됐었음. 태스크 실행/정지·원격 제어 모드·safety NORMAL 어느 조합에서도 동일하고, 로봇 태스크 스크립트에도 속도를 되돌리는 코드는 없음. 펜던트에서 속도 슬라이더가 잠겨 있는지, operationMode 가 NONE 인 것이 원인인지 확인 필요
+- [x] `dusan_ws/mqtt_test/`에 MC 대역 시뮬레이션 MQTT 도구 작성 (tkinter, Operator UI와 독립)
 - [ ] robot_task/scripts/dus_init.script 재적용 필요 (오늘 수정한 pub_rel 반영) — 로봇에 넣기만 하면 됨
 - [ ] 조그 값 인코딩 확인 (축 번호와 방향을 한 레지스터에 담는 방식)
 - [ ] I/O 출력 ON/OFF를 실제 PLC 경로에 연결 (현재는 `output_requested` 시그널까지만)

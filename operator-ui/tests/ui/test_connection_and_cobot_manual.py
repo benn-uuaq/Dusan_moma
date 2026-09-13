@@ -61,8 +61,9 @@ def test_cobot_manual_buttons_emit_dashboard_commands(qtbot) -> None:
     screen.command_requested.connect(received.append)
 
     by_text = {b.text(): b for b in screen.findChildren(QPushButton)}
+    # "연결"/"연결 해제"는 이 화면에서 빠졌다 — 연결 설정 화면이 맡는다.
+    assert "연결" not in by_text
     for label, command in (
-        ("연결", "connect"),
         ("전원 ON", "power_on"),
         ("브레이크 해제", "brake_release"),
         ("정지", "stop"),
@@ -85,6 +86,61 @@ def test_cobot_manual_status_updates(qtbot) -> None:
     assert screen.alarm_list.count() == 1
     screen.set_alarms([])
     assert screen.alarm_list.item(0).text() == "활성 알람 없음"
+    window.close()
+
+
+def test_cobot_badge_reflects_real_connection_state(qtbot) -> None:
+    """PLC/AMR/UT는 아직 자리표시자라 항상 "연결됨"이지만, Cobot은
+
+    실제 장비라 TPAC처럼 처음엔 "연결 안 됨"에서 시작해 ros_status의
+    connected_changed로만 초록으로 바뀌어야 한다(예전엔 다른 셋과
+    똑같이 항상 "연결됨"으로 고정돼 있었다).
+    """
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    cobot_badge = window.top_bar.badges["Cobot"]
+    assert "연결 안 됨" in cobot_badge.state_label.text()
+
+    window.ros_status.connected_changed.emit(True)
+    assert "연결됨" in cobot_badge.state_label.text()
+    assert "안 됨" not in cobot_badge.state_label.text()
+
+    window.ros_status.connected_changed.emit(False)
+    assert "연결 안 됨" in cobot_badge.state_label.text()
+    window.close()
+
+
+def test_top_bar_shrinks_font_to_fit_narrow_width(qtbot) -> None:
+    """상단바 내용(브랜드+부제+날짜/시간+배지 5개+배터리)을 기본 글자
+
+    크기 그대로 늘어놓으면 좁은 창에서는 다 안 들어가 잘렸다("상단부
+    글자와 날짜 잘리는 문제"). 개별 라벨을 눌러 찌그러뜨리는 대신,
+    필요한 폭이 실제 폭보다 크면 전체 글자 크기를 비례해서 줄여
+    무엇 하나 잘리지 않게 해야 한다.
+    """
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    top_bar = window.top_bar
+
+    # 넉넉한 폭에서는 기본(등록해 둔) 글자 크기 그대로 유지돼야 한다.
+    top_bar.resize(3000, top_bar.height())
+    top_bar._rescale_to_fit()
+    base_px = top_bar.clock.font().pixelSize()
+    assert base_px == 20
+
+    # 실제 배포 최소 폭(OperatorWindow.setMinimumSize)에서는 잘리는 대신
+    # 전체 글자 크기가 줄어야 하고, 그 결과 실제 필요한 폭이 지금 폭
+    # 안에 들어와야 한다(=잘림 없음).
+    top_bar.resize(1280, top_bar.height())
+    top_bar._rescale_to_fit()
+    narrow_px = top_bar.clock.font().pixelSize()
+    assert narrow_px < base_px
+    assert top_bar.layout().sizeHint().width() <= top_bar.width()
+
+    # 다시 넉넉해지면 원래 크기로 돌아와야 한다.
+    top_bar.resize(3000, top_bar.height())
+    top_bar._rescale_to_fit()
+    assert top_bar.clock.font().pixelSize() == base_px
     window.close()
 
 
@@ -140,4 +196,104 @@ def test_cobot_manual_layout_fits_fixed_console_height(qtbot) -> None:
         if b.width() < b.minimumSizeHint().width()
     ]
     assert clipped == []
+    window.close()
+
+
+def test_robot_ip_propagates_without_database_save(qtbot) -> None:
+    """로봇 IP는 "연결 설정" 한 곳에서만 입력하고 즉시 다른 화면에 퍼져야 한다.
+
+    예전에는 PostgreSQL 저장에 성공했을 때만 반영해서, DB가 없는 환경
+    (SMR_DATABASE_URL 미설정)에서는 주소를 고쳐도 TPAC 설정·Cobot 수동
+    제어가 옛 주소를 그대로 들고 있었다.
+    """
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    conn = window.screens["connection"]
+
+    conn.field(conn.ROBOT_IP_FIELD).setText("192.168.1.101")
+    conn.field(conn.ROBOT_PORT_FIELD).setValue(1502)
+
+    tpac = window.screens["tpac_bridge"]
+    assert tpac.robot_ip.text() == "192.168.1.101"
+    assert tpac.robot_port.value() == 1502
+    assert "192.168.1.101" in window.cobot_manual_screen.endpoint_label.text()
+    # 다른 화면에서는 고칠 수 없어야 한 곳 관리가 지켜진다.
+    assert tpac.robot_ip.isEnabled() is False
+    window.close()
+
+
+def test_connection_screen_owns_connect_buttons(qtbot) -> None:
+    """연결/연결 해제는 "연결 설정" 화면에만 있고, 다른 화면은 그리로 보낸다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    conn = window.screens["connection"]
+
+    assert hasattr(conn, "connect_btn") and hasattr(conn, "disconnect_btn")
+    # 연결 전에는 해제가 잠겨 있고, 연결되면 뒤바뀐다.
+    conn.set_link_state(False)
+    assert conn.connect_btn.isEnabled() and not conn.disconnect_btn.isEnabled()
+    conn.set_link_state(True)
+    assert not conn.connect_btn.isEnabled() and conn.disconnect_btn.isEnabled()
+
+    # 예전에 연결 버튼을 갖고 있던 화면들에는 더 이상 없어야 한다.
+    assert not hasattr(window.screens["tpac_bridge"], "robot_connect_btn")
+    window.close()
+
+
+def test_cobot_manual_links_to_connection_screen(qtbot) -> None:
+    """연결 버튼 대신 "연결 설정" 버튼이 그 화면으로 보내야 한다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    window.show()
+    screen = window.cobot_manual_screen
+    goto = {b.text(): b for b in screen.findChildren(QPushButton)}["연결 설정"]
+    qtbot.mouseClick(goto, Qt.MouseButton.LeftButton)
+    assert window.stack.currentWidget() is window.screens["connection"]
+    window.close()
+
+
+def test_settings_fields_never_overlap_at_any_scale(qtbot) -> None:
+    """배율이 커져도 입력칸끼리 겹치면 안 된다.
+
+    입력칸 min-height 가 배율에 따라 같이 커지는데 세로가 모자라면 예전에는
+    위젯이 서로 겹쳐 글자가 반씩 잘려 보였다. 이제는 모자라면 스크롤된다.
+    """
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    conn = window.screens["connection"]
+    names = ["협동로봇 IP", "Dashboard 포트", "Primary 포트", "Modbus 포트"]
+
+    for size in ((1280, 720), (1920, 1080), (2000, 1057)):
+        window.resize(*size)
+        window.show()
+        window.navigate("connection")
+        spans = []
+        for name in names:
+            widget = conn.field(name)
+            top = widget.mapTo(conn, widget.rect().topLeft()).y()
+            spans.append((top, top + widget.height()))
+        for (_top_a, bottom_a), (top_b, _bottom_b) in zip(spans, spans[1:]):
+            assert top_b >= bottom_a, f"{size}에서 입력칸이 겹친다"
+    window.close()
+
+
+def test_task_state_is_shown_on_the_status_card(qtbot) -> None:
+    """로봇이 보고하는 태스크 상태가 화면에 보여야 한다.
+
+    작업 영역 전송이 "태스크 실행 중"이면 막히는데, 값이 안 보이면
+    "실행 중이 아닌데 왜 안 나가냐"를 가려낼 수가 없다.
+    """
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    window.show()
+    window.navigate("cobot_manual")
+    block = window.cobot_manual_screen.metrics["task_state"]
+
+    for state, label in ((1, "실행 중"), (2, "일시 중지"), (3, "중지됨")):
+        window.ros_status.task_state_changed.emit(state)
+        assert block.value_label.text() == label
+    # 모르는 값도 숨기지 않고 그대로 보여 준다.
+    window.ros_status.task_state_changed.emit(7)
+    assert "7" in block.value_label.text()
+    assert block.isVisible(), "항목이 레이아웃에서 빠졌다"
     window.close()

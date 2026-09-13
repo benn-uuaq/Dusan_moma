@@ -1,13 +1,15 @@
-"""동기 PostgreSQL 저장소를 비동기로 호출하는 Qt 서비스."""
+"""설정 저장소(PostgreSQL 또는 로컬 JSON 파일)를 비동기로 호출하는 Qt 서비스."""
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from typing import Any
 
 from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal
 
 from .settings_repository import PostgreSQLSettingsRepository
+from .settings_repository_file import JsonFileSettingsRepository
 
 
 class _WorkerSignals(QObject):
@@ -26,11 +28,24 @@ class _DatabaseWorker(QRunnable):
         self.signals = _WorkerSignals()
 
     def run(self) -> None:
-        """작업을 실행하고 예외를 실패 시그널로 변환한다."""
+        """작업을 실행하고 예외를 실패 시그널로 변환한다.
+
+        프로그램을 닫는 중이면 결과를 받을 쪽(_WorkerSignals)이 이미 지워져
+        있을 수 있다. 그때 emit 하면 RuntimeError 가 나고, 스레드에서 터지는
+        예외라 프로세스가 죽기도 한다 — 조용히 접는다.
+        """
         try:
-            self.signals.succeeded.emit(self.operation())
+            result = self.operation()
         except Exception as exc:  # 사용자에게 표시할 서비스 오류로 변환한다.
-            self.signals.failed.emit(str(exc))
+            try:
+                self.signals.failed.emit(str(exc))
+            except RuntimeError:
+                pass
+            return
+        try:
+            self.signals.succeeded.emit(result)
+        except RuntimeError:
+            pass
 
 
 class SettingsService(QObject):
@@ -40,9 +55,17 @@ class SettingsService(QObject):
     saved = pyqtSignal(str)
     failed = pyqtSignal(str, str)
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(self, parent: QObject | None = None, repository=None) -> None:
         super().__init__(parent)
-        self._repository = PostgreSQLSettingsRepository()
+        # DB가 준비된 현장에서는 여러 대가 설정을 공유해야 하니 PostgreSQL을
+        # 쓰고, DSN이 없으면 로컬 JSON 파일에 저장한다. 예전에는 DSN이 없으면
+        # 저장이 통째로 실패해서 **껐다 켜면 매번 기본값**으로 돌아갔다.
+        if repository is not None:
+            self._repository = repository
+        elif os.getenv("SMR_DATABASE_URL", ""):
+            self._repository = PostgreSQLSettingsRepository()
+        else:
+            self._repository = JsonFileSettingsRepository()
         self._pool = QThreadPool.globalInstance()
         self._workers: set[_DatabaseWorker] = set()
 

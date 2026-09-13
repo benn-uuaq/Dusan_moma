@@ -83,6 +83,7 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 | `T-007` | `doosan/robot/error` | `status` | `mc` | `Operator UI` | `1` | `N` | `사용자 또는 제어 로직에서 명령 발생 시` | `Y` |
 | `T-008` | `doosan/robot/tcp` | `status` | `mc` | `Operator UI` | `1` | `N` | `상시 출력` | `Y` |
 | `T-009` | `doosan/robot/job_state` | `status` | `mc` | `Operator UI` | `1` | `N` | `상시 출력` | `Y` |
+| `T-010` | `doosan/robot/req/speed` | `command` | `mc` | `Operator UI` | `1` | `N` | `속도 변경이 필요할 때` | `Y` |
 
 ---
 
@@ -405,19 +406,14 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
     {
         "diameter" : "2500",
         "height" : " 6000",
-        "thickness" : "500",
         "target_distance" : "8560"
     },
-    "grid" :
+    "plan" :
     {
-        "cell_id" : "A0",
-        "segment_index" : "1",
-        "segment_count" : "12",
-        "grid_index" : "0",
-        "grid_count" : "9",
-        "width" : "600",
-        "height" : "800",
-        "scan_h" : "150",
+        "column_count" : "12",
+        "row_count" : "6",
+        "cell_width" : "600",
+        "cell_height" : "800",
         "overlap" : "20"
     }
 }
@@ -429,23 +425,34 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 |---|---|---|---|---|---|---|
 | `timestamp` | `string` | `Y` | `ms` | UTC Unix Epoch 밀리초로 추정 | 명령 생성 시각 | `"1784727720000"` |
 | `job_id` | `string` | `Y` | - | `id` | 새로운 job의 id | `"jb00000001"` |
-| `job_info` | `dictionary` | `Y` | - | `key` | job information | `"diameter", "height","thickness","target_distance"등 값의 대분류 ` |
+| `job_info` | `dictionary` | `Y` | - | `key` | job information | `"diameter", "height", "target_distance" 등 값의 대분류` |
 | `diameter` | `string` | `Y` | - | `mm` | 검사 대상체(원통) 지름 | `"2500"` |
-| `height` | `string` | `Y` | - | `mm` | 검사 대상체(원통) 높이 | `"6000"` |
-| `thickness` | `string` | `Y` | - | `mm` | 검사 대상체 두께 | `"500"` |
+| `height` | `string` | `Y` | - | `mm` | 검사 대상체(원통) **전체** 높이. 격자 여러 행이 합쳐 덮는 높이이며, **셀 하나의 높이가 아니다** | `"6000"` |
 | `target_distance` | `string` | `Y` | - | `mm` | 이동할 거리 | `"300"` |
-| `grid` | `dictionary` | `Y` | - | `key` | 원통이 커서 AMR 원주 구역과 Cobot 세로 격자로 나눠 스캔하기 위한 정보 | 아래 9개 필드 |
-| `grid.cell_id` | `string` | `Y` | - | 예: `"A0"`, `"A1"`, `"B0"` | 구역 문자 + 격자 번호로 만든 격자 이름. 문자=구역(`segment_index`), 숫자=격자(`grid_index`, 0부터) | `"A0"` |
-| `grid.segment_index` | `string` | `Y` | - | `1` ~ `segment_count` | AMR이 현재 위치한 원주 구역 번호(1부터) | `"1"` |
-| `grid.segment_count` | `string` | `Y` | - | `1` 이상 | 원주를 나눈 전체 구역 수. 원통 크기에 따라 12보다 늘어날 수 있다 | `"12"` |
-| `grid.grid_index` | `string` | `Y` | - | `0` ~ `grid_count - 1` | 이번에 Cobot이 스캔할 세로 격자 번호(0부터). 구역 안에서 리프트로 높이를 바꿔가며 0, 1, 2... 순서로 올라간다 | `"0"` |
-| `grid.grid_count` | `string` | `Y` | - | `1` 이상 | 이 구역의 전체 세로 격자 수 | `"9"` |
-| `grid.width` | `string` | `Y` | - | `mm` | 이번 격자의 가로 폭. 로봇 태스크의 `app_width`(레지스터 256)로 전달 | `"600"` |
-| `grid.height` | `string` | `Y` | - | `mm` | 이번 격자의 세로 높이. 로봇 태스크의 `app_height`(레지스터 257)로 전달 | `"800"` |
-| `grid.scan_h` | `string` | `Y` | - | `mm` | UT 스캐너가 한 자리에서 훑는 세로 유효높이. 로봇 태스크의 `scan_h`(레지스터 258)로 전달 | `"150"` |
-| `grid.overlap` | `string` | `Y` | - | `mm`, `0` 이상 `scan_h` 미만 | 세로 겹침. 로봇 태스크의 `overlap`(레지스터 259)로 전달 | `"20"` |
+| `plan` | `dictionary` | `Y` | - | `key` | 원통을 편 직사각형의 격자 분할 계획. 이 명령이 곧 "전체 작업 시작"이다 | 아래 5개 필드 |
+| `plan.column_count` | `string` | `Y` | - | `1` 이상 | 열 수 = AMR이 원주를 돌며 정차하는 구역 수. 원통 크기에 따라 12보다 늘어날 수 있다 | `"12"` |
+| `plan.row_count` | `string` | `Y` | - | `1` 이상 | 행 수 = 리프트 높이 단계 수(A, B, … F) | `"6"` |
+| `plan.cell_width` | `string` | `Y` | - | `mm` | **셀 하나**의 가로 폭. 로봇 태스크의 `app_width`(레지스터 256)로 전달 | `"600"` |
+| `plan.cell_height` | `string` | `Y` | - | `mm` | **셀 하나**의 세로 높이. 로봇 태스크의 `app_height`(레지스터 257)로 전달. 리프트 상승 피치(`cell_height - overlap`) 계산에도 쓴다 | `"800"` |
+| `plan.overlap` | `string` | `Y` | - | `mm` | 겹침 허용. 로봇 태스크의 `overlap`(레지스터 259)로 전달 | `"20"` |
 
-**격자 개념:** 원통이 한 번에 스캔하기엔 너무 크므로 AMR이 원주를 `segment_count`개 구역(`segment_index` = 1, 2, 3...)으로 나눠 이동하고, 각 구역 안에서는 Cobot이 닿을 수 있는 높이만큼만 스캔하므로 세로로 다시 `grid_count`개 격자(`grid_index` = 0, 1, 2...)로 나눈다. 예: 구역 A(`segment_index=1`)의 격자는 `A0, A1, ..., A8`처럼 나열된다.
+**격자 개념:** 원통을 편 직사각형을 격자로 나눈다. **열(1~12)은 AMR이 정차하는 원주 구역, 행(A~F)은 리프트 높이**다. 셀 하나(예: `1A`)가 Cobot이 ㄹ자로 훑는 영역이며, `1A → 1B → … → 1F → 2A → … → 12F` 순으로 진행한다.
+
+> **⚠️ `job_info.height`와 `plan.cell_height`를 혼동하지 말 것.** `height`(예: 6000 mm)는 원통 **전체** 높이이고, Cobot이 한 번에 닿는 높이가 아니다. ㄹ자는 `cell_height`(예: 800 mm)짜리 **셀 하나**에만 그린다. 전체 높이를 셀 높이로 쓰면 ㄹ자 패스가 수십 행으로 늘어나 로봇이 실행할 수 없는 경로가 된다.
+
+**`scan_h`는 이 payload에 없다.** UT 스캐너가 한 자리에서 훑는 세로 유효높이는 **장비 고유값**이라 작업 계획이 아니다. 수신 측(Operator UI)의 로컬 설정값을 그대로 써서 로봇의 레지스터 258로 전달한다.
+
+**자동 진행:** 셀을 하나씩 넘어가는 것은 MC가 아니라 Operator UI/로봇 쪽 책임이다. 그래서 이 payload에는 지금 몇 번째 셀인지 담지 않는다. 상세 설계는 [`grid_sequencer_design.md`](grid_sequencer_design.md) 참고.
+
+이 명령을 받은 뒤 구역과 격자를 하나씩 넘어가며 스캔을 이어가는 것은 **MC가 아니라 Operator UI/로봇 쪽의 책임**이다. MC는 `job_cmd`로 전체 작업을 한 번 시작시키고, 이후에는 `mc_cmd`(일시정지/재개)와 `job_clear`(정지)로만 개입한다. 즉 MC → Operator UI 방향으로 오가는 것은 ① 전체 작업 시작/일시정지/정지, ② 로봇이 ㄹ자를 그리기 위한 값(`job_info`, `scan`) 뿐이며, 지금 몇 번째 구역/격자를 스캔 중인지는 Operator UI가 내부적으로 추적한다(화면에는 `RectWorkView`의 격자 이름표로 표시).
+
+**시작/일시정지/정지 매핑** (새 Topic을 만들지 않고 기존 Topic을 재사용한다):
+
+| 동작 | Topic | 비고 |
+|---|---|---|
+| 전체 작업 시작 | `doosan/robot/req/job_cmd` | `job_info` + `scan` 값을 함께 실어 보낸다 |
+| 일시정지 / 재개 | `doosan/robot/req/mc_cmd` | `cobot`(또는 `amr`) `"stop"` = 일시정지, `"run"` = 재개 |
+| 정지(중단) | `doosan/robot/req/job_clear` | 진행 중인 작업을 완전히 멈추고 정리한다 |
 
 동작 순서는 다음과 같다: AMR이 구역에 도착 → Cobot이 격자 0을 ㄹ자로 스캔 → 완료 후 Cobot이 홈 위치로 복귀 → 리프트가 상승해 다음 격자 높이로 이동 → Cobot이 격자 1을 스캔 → (해당 구역의 마지막 격자까지 반복) → AMR이 다음 구역으로 이동 → 위 과정을 반복.
 #### 명령값 정리
@@ -455,7 +462,6 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 | job_id | `jb00000001` | 새로운 job의 id |
 | job_info-diameter | `2500` | 검사 대상체 지름 |
 | job_info-height | `6000` |  검사 대상체 높이 |
-| job_info-thickness | `500` | 검사 대상체 두께 |
 | job_info-target_distance | `300` | 이동할 거리 |
 
 
@@ -643,13 +649,12 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 
 ```json
 {
-    {
     "timestamp": "1784727779111",
+    "cell" : "1A",
     "x" : "1205",
     "y" : "852",
     "z" : "1208",
-    "angle" : "-1214"
-}
+    "yaw" : "-1.214"
 }
 ```
 
@@ -658,10 +663,15 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 | 필드 경로 | 자료형 | 필수 | 단위 | 허용값/범위 | 설명 | 값 예시 |
 |---|---|---|---|---|---|---|
 | `timestamp` | `string` | `Y` | `ms` | UTC Unix Epoch 밀리초로 추정 | 명령 생성 시각 | `"1784727720000"` |
-| `x` | `string` | `Y` | mm | `0~1000000000` | x 좌표 | `"1000"` |
-| `y` | `string` | `Y` | mm | `0~1000000000` | y 좌표 | `"1000"` |
-| `z` | `string` | `Y` | mm | `0~1000000000` | z 좌표 | `"1000"` |
-| `yaw` | `string` | `Y` | radian | +,- 3.14 | yaw theta| `"1.257"` |
+| `cell` | `string` | `Y` | - | `1A` ~ `12F` | **이 좌표를 잰 격자 이름.** 열(AMR 정차 구역) + 행(리프트 높이). 작업 중이 아니면 빈 문자열 | `"1A"` |
+| `x` | `string` | `Y` | mm | - | **제로점 기준** x 좌표 | `"1205"` |
+| `y` | `string` | `Y` | mm | - | **제로점 기준** y 좌표 | `"852"` |
+| `z` | `string` | `Y` | mm | - | **제로점 기준** z 좌표 | `"1208"` |
+| `yaw` | `string` | `Y` | radian | +,- 3.14 | yaw theta. 로봇은 mrad으로 주므로 1000으로 나눠 보낸다 | `"-1.214"` |
+
+> **⚠️ 여기 실리는 좌표는 제로점 기준이다.** 이 값이 스캐너 관리 시스템으로 나가는 실제 데이터다(Modbus 280~285). 로봇의 베이스 프레임 좌표(384~389)는 운영 화면 모니터링용이라 여기 오지 않는다.
+>
+> 좌표만으로는 원통 어디를 잰 값인지 알 수 없으므로 `cell`을 함께 싣는다. 지금 어느 격자인지 아는 것은 `JobSequencer` 뿐이라, 이 결합은 Operator UI에서만 할 수 있다.
 
 #### 명령값 정리
 
@@ -682,6 +692,97 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 | 중복 메시지 수신 | `timestamp 확인하여 중복 메세지 확인 및 최신 메세지 우선` |
 | 오래된 메시지 수신 | `timestamp 확인하여 중복 메세지 확인 및 최신 메세지 우선` |
 | 처리 성공/실패 확인 | 응답 Topic이 정의되지 않아 별도 정의 필요 |
+---
+
+### T-009: 격자별 작업 상태
+
+격자(셀) 하나가 대기 → 작업중 → 완료를 거칠 때마다 외부(MC)에 알린다. 어느 영역이 끝났는지 외부가 추적할 수 있게 하기 위한 Topic이다.
+
+#### 기본 정보
+
+| 항목 | 입력값 |
+|---|---|
+| Topic | `doosan/robot/job_state` |
+| 목적 | 격자별 작업 진행 상태 통지 |
+| 분류 | `status` |
+| 발행자 | `Operator UI` |
+| 구독자 | `MC` |
+| 발행 조건 | 셀 상태가 바뀔 때 (셀마다 3회) |
+| 발행 주기 | 상태 변화 시 1회 |
+| QoS | `1` |
+| Retain | `N` |
+| 중요도 | `중요` |
+
+#### Payload 형식
+
+| 항목 | 입력값 |
+|---|---|
+| 데이터 형식 | `JSON` |
+| 문자 인코딩 | `UTF-8` |
+| Timestamp 기준 | `UTC Unix Epoch 밀리초` |
+
+```json
+{
+    "timestamp": "1784727779111",
+    "job_id" : "1A",
+    "state" : "executing"
+}
+```
+
+#### Payload 필드
+
+| 필드 경로 | 자료형 | 필수 | 단위 | 허용값/범위 | 설명 | 값 예시 |
+|---|---|---|---|---|---|---|
+| `timestamp` | `string` | `Y` | `ms` | UTC Unix Epoch 밀리초 | 상태 발생 시각 | `"1784727720000"` |
+| `job_id` | `string` | `Y` | - | `1A` ~ `12F` | **격자 이름.** 열(AMR 정차 구역) + 행(리프트 높이) | `"1A"` |
+| `state` | `string` | `Y` | - | `waiting`, `executing`, `completed` | 이 격자의 진행 상태 | `"executing"` |
+
+#### 상태값 정리
+
+| 상태 | 의미 | 발행 시점 |
+|---|---|---|
+| `waiting` | 작업 대기 | 이 셀로 진입해 리프트/AMR 이동을 시작할 때 |
+| `executing` | 작업 중 | 이동이 끝나 로봇을 제로점에서 play한 직후 |
+| `completed` | 작업 완료 | 로봇이 ㄹ자 스캔을 마쳤을 때 (레지스터 `290==5 && 295==1`) |
+
+`1A → 1B → … → 1F → 2A → … → 12F` 순으로 진행하며, 셀마다 위 세 상태가 순서대로 나간다. 순회는 Operator UI의 `JobSequencer`가 자동으로 진행한다 — 자세한 내용은 [`grid_sequencer_design.md`](grid_sequencer_design.md) 참고.
+
+### T-010: 로봇 동작 속도 비율
+
+로봇 전체 동작 속도를 실시간으로 조절한다. 작업 중에도 바로 반영된다.
+
+#### 기본 정보
+
+| 항목 | 입력값 |
+|---|---|
+| Topic | `doosan/robot/req/speed` |
+| 목적 | 로봇 동작 속도 비율 조절 |
+| 분류 | `command` |
+| 발행자 | `MC` |
+| 구독자 | `Operator UI` |
+| 발행 조건 | 속도 변경이 필요할 때 |
+| QoS | `1` |
+| Retain | `N` |
+| 중요도 | `중요` |
+
+```json
+{
+    "timestamp": "1784727779111",
+    "speed" : "40"
+}
+```
+
+#### Payload 필드
+
+| 필드 경로 | 자료형 | 필수 | 단위 | 허용값/범위 | 설명 | 값 예시 |
+|---|---|---|---|---|---|---|
+| `timestamp` | `string` | `Y` | `ms` | UTC Unix Epoch 밀리초 | 명령 생성 시각 | `"1784727720000"` |
+| `speed` | `string` | `Y` | `%` | `2` ~ `100` | 로봇 전체 동작 속도 비율 | `"40"` |
+
+**동작:** Operator UI 가 받아 `robot/command/speed_ratio` 로 넘기면, 노드가 29999 `speed -set <N>` 으로 로봇에 실시간 전달한다. 로봇이 실제로 쓰고 있는 값은 Modbus **레지스터 17**(읽기)로 확인하며 `robot/status/speed_scale` 토픽으로 나온다. 펜던트에서 직접 바꿔도 이 토픽으로 들어온다.
+
+> **속도 상한:** TCP 직선 속도는 안전 기준상 **150 mm/s** 를 넘지 않는다. 로봇 태스크(`dus_init.script`)가 비율을 곱하기 전에 `v_move`/`v_scan`/`v_seek` 를 0.150 m/s 로 자르므로, 비율 100 % 가 곧 150 mm/s 다. 여기의 `speed` 는 그 위에 곱해지는 비율이라 상한을 넘길 수 없다.
+
 ---
 
 ## 5. Command Topic 정의

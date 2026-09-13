@@ -1,0 +1,57 @@
+<VariablesManager>
+  <Variable name="Home_joint" value="[0.55498, -1.00739, -2.64993, -1.05507, 1.5708, 0.55497]" remarks="" favorite="false"/>
+  <Variable name="Home_pose" value="[0.33684, -0.00001, 0.31805, 3.14159, 0, -1.57079]" remarks="" favorite="false"/>
+  <Variable name="start_pose" value="[0.33684, -0.00001, 0.31805, 3.14159, 0, -1.57079]" remarks="시작 포즈 (입력레지스터 316~321). UI가 저장한 값" favorite="false"/>
+  <Variable name="pose_src" value="0" remarks="0=이 변수값 사용, 1=Modbus 310~321 사용 (레지스터 308)" favorite="false"/>
+  <Variable name="spd_in" value="0" remarks="작업 속도 입력 [mm/s] (입력레지스터 306). 0이면 v_move 유지" favorite="false"/>
+  <Variable name="spd_ratio" value="100" remarks="로봇 자체 속도 비율 [%] 2~100 (입력레지스터 307)" favorite="false"/>
+  <Variable name="param_src" value="0" remarks="0=이 변수값 사용, 1=Modbus 256~259 사용 (레지스터 266)" favorite="false"/>
+  <Variable name="sensor_di1" value="0" remarks="접촉 센서 1 디지털 입력 번호" favorite="false"/>
+  <Variable name="sensor_di2" value="1" remarks="접촉 센서 2 디지털 입력 번호 (둘 다 ON 이면 검출)" favorite="false"/>
+  <Variable name="seek_limit" value="400" remarks="전진 최대 거리 [mm]. 센서가 없으면 여기까지 가고 멈춘다" favorite="false"/>
+  <Variable name="probe_dist" value="300" remarks="[임시판 전용] 센서 없이 전진할 고정 거리 [mm]" favorite="false"/>
+  <Variable name="probe_bow" value="0" remarks="[임시판 전용] 중앙만 추가로 더 전진할 거리 [mm]. 휜 벽 흉내" favorite="false"/>
+  <Variable name="back_off" value="100" remarks="측정 후 후퇴 거리 [mm]" favorite="false"/>
+  <Variable name="seg_len" value="50" remarks="가로 패스를 나누는 구간 길이 [mm]. 작을수록 X 보정이 촘촘하다" favorite="false"/>
+  <Variable name="v_move" value="0.15" remarks="일반 이송 속도 [m/s]" favorite="false"/>
+  <Variable name="v_scan" value="0.1" remarks="스캔 이송 속도 [m/s]" favorite="false"/>
+  <Variable name="v_seek" value="0.05" remarks="전진 탐색 속도 [m/s]" favorite="false"/>
+  <Variable name="app_width" value="600" remarks="작업 영역 좌우 너비 [mm] (입력레지스터 256)" favorite="false"/>
+  <Variable name="app_height" value="800" remarks="작업 영역 높이 [mm] (입력레지스터 257)" favorite="false"/>
+  <Variable name="scan_h" value="150" remarks="스캐너 세로 유효높이 [mm] (입력레지스터 258)" favorite="false"/>
+  <Variable name="overlap" value="20" remarks="세로 겹침 [mm] (입력레지스터 259)" favorite="false"/>
+  <Variable name="pitch" value="130" remarks="상승 피치 = scan_h - overlap [mm] (고정)" favorite="false"/>
+  <Variable name="rows" value="6" remarks="가로 패스 수" favorite="false"/>
+  <Variable name="row_idx" value="6" remarks="완료한 가로 패스 수" favorite="false"/>
+  <Variable name="dir_sign" value="1" remarks="1=오른쪽(Y-) 차례, -1=왼쪽(Y+) 차례" favorite="false"/>
+  <Variable name="pass_done" value="1" remarks="" favorite="false"/>
+  <Variable name="n_probe" value="3" remarks="측정 완료한 점 수 (0~3)" favorite="false"/>
+  <Variable name="n_hit" value="0" remarks="센서로 검출된 점 수" favorite="false"/>
+  <Variable name="p_cx" value="0.63684" remarks="중앙 측정 X [m]" favorite="false"/>
+  <Variable name="p_lx" value="0.63684" remarks="Y+ 끝 측정 X [m]" favorite="false"/>
+  <Variable name="p_rx" value="0.63684" remarks="Y- 끝 측정 X [m]" favorite="false"/>
+  <Variable name="y_c" value="-0.00001" remarks="중앙 Y [m]" favorite="false"/>
+  <Variable name="y_l" value="0.29999" remarks="" favorite="false"/>
+  <Variable name="y_r" value="-0.30001" remarks="" favorite="false"/>
+  <Variable name="half" value="0.3" remarks="너비의 절반 [m]" favorite="false"/>
+  <Variable name="qa" value="-0.00002" remarks="벽면 2차식 계수 : x = qa*dy^2 + qb*dy + qc, dy = Y - y_c" favorite="false"/>
+  <Variable name="qb" value="0" remarks="벽면 2차식 1차항" favorite="false"/>
+  <Variable name="qc" value="0.63684" remarks="벽면 2차식 상수항 (= 중앙 X)" favorite="false"/>
+  <Variable name="zero_ok" value="True" remarks="" favorite="false"/>
+  <Variable name="x_start" value="0.33684" remarks="" favorite="false"/>
+  <Variable name="z_base" value="0.32105" remarks="" favorite="false"/>
+  <Variable name="zero_pose" value="[0.63684, 0.29999, 0.32105, 3.14159, -0, -1.57079]" remarks="원점 = Y+ 끝 측정 위치" favorite="false"/>
+  <Variable name="zero_inv" value="[0.29998, 0.63684, 0.32105, -3.14159, 0, -1.57079]" remarks="pose_inv(zero_pose)" favorite="false"/>
+  <Variable name="cur_pose" value="[0.33684, -0.00001, 0.32105, 3.14159, 0, -1.57079]" remarks="현재 절대 TCP (260~265 로 발행)" favorite="false"/>
+  <Variable name="rel_pose" value="[-0.1, -0.00001, 0.65001, -6.28315, 0.00014, -0.0004]" remarks="원점 기준 상대 pose (280~285 로 발행)" favorite="false"/>
+  <Variable name="tgt_pose" value="[0.53684, 0.29998, 0.97106, -3.14156, 0.00014, -1.57118]" remarks="현재 구간 목표 pose" favorite="false"/>
+  <Variable name="dy" value="0.3" remarks="" favorite="false"/>
+  <Variable name="y_from" value="-0.30002" remarks="" favorite="false"/>
+  <Variable name="y_to" value="0.29999" remarks="" favorite="false"/>
+  <Variable name="n_seg" value="12" remarks="" favorite="false"/>
+  <Variable name="i_seg" value="13" remarks="" favorite="false"/>
+  <Variable name="path_len" value="4250" remarks="누적 이동거리 [mm]" favorite="false"/>
+  <Variable name="alive" value="362" remarks="워치독 카운터" favorite="false"/>
+  <Variable name="mv_h" value="0" remarks="이동 스레드 핸들" favorite="false"/>
+  <Variable name="pub_h" value="-1312819648" remarks="발행 스레드 핸들" favorite="false"/>
+</VariablesManager>

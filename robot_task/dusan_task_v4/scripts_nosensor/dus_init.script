@@ -1,0 +1,391 @@
+# =============================================================================
+#  dus_init.script — dusan_v4
+#  파라미터를 읽고 피치·행수를 계산한다. 실시간 발행 스레드를 띄운다
+#
+#  펜던트에서 "1_init" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def ini_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+# 로봇 자체 레지스터 384~389 와 같은 단위.  길이 0.1mm, 회전 mRad
+def ini_w6(a, p):
+  ini_w1(a, p[0] * 10000)
+  ini_w1(a + 1, p[1] * 10000)
+  ini_w1(a + 2, p[2] * 10000)
+  ini_w1(a + 3, p[3] * 1000)
+  ini_w1(a + 4, p[4] * 1000)
+  ini_w1(a + 5, p[5] * 1000)
+end
+
+
+# 절대 TCP(260~265) 는 항상 발행한다. 원점기준 상대좌표(280~285)와 호
+# 위치(286/287)는 원점(zero_pose)이 잡혀 있으면(zero_ok/arc_ok) 항상
+# 내보낸다 — TPAC 의 "Plane" 이 실제 TCP 이동거리를 보여줘야 하므로 ㄹ자
+# 스캔 중(state=4)만이 아니라 3점측정 후 원점복귀·다음 줄 이동 중에도
+# 값이 살아 있어야 한다. 원점이 아직 없으면(zero_ok==False) [0,0,0,0,0,0]
+# 을 쏜다.
+#
+# 위치는 베이스 좌표계 그대로 빼서 쓴다(cur - zero). 원래는
+# pose_trans(zero_inv, cur_pose)로 툴 좌표계 기준값을 냈는데, 툴이
+# 벽을 비스듬히 보고 있으면 베이스 Z+ 로 올라가도 이 값의 Z 성분이
+# 음수로 커지는 문제가 있었다. register_map.txt 4항의 역변환 공식
+# base = R_zero * rel_tcp 은 rel_tcp = R_zero^T * (cur-zero) 이므로
+# 결국 cur - zero 와 정확히 같다(회전행렬을 걸었다 다시 푸는 셈).
+# 그러니 처음부터 베이스 좌표계로 빼면 회전행렬 없이 같은 결과이고,
+# 세로(Z)가 위로 갈수록 커지도록 직관과도 맞는다.
+def pub_rel():
+  global cur_pose
+  global rel_pose
+  global alive
+  global arc_s
+  cur_pose = get_actual_tcp_pose()
+  ini_w6(260, cur_pose)
+  # 스캔 구간인지는 **상태 레지스터 290** 하나로만 판단한다(6 = 스캔 중).
+  # 예전에는 scan_on 이라는 스크립트 변수를 썼는데, 값을 켜는 곳(다른 스크립트
+  # 노드)과 읽는 곳(이 발행 스레드)이 달라 전달을 신뢰할 수 없었다.
+  # 레지스터는 로봇 안에 하나뿐이라 그런 문제가 없고, RCS 도 같은 값을 본다.
+  if (zero_ok == True and read_port_register(290, True) == 6):
+    rel_pose = [cur_pose[0] - zero_pose[0],
+          cur_pose[1] - zero_pose[1],
+          cur_pose[2] - zero_pose[2],
+          cur_pose[3] - zero_pose[3],
+          cur_pose[4] - zero_pose[4],
+          cur_pose[5] - zero_pose[5]]
+    # 좌표계 기준은 **가운데 프로브 중심**이다(십자형·직사각형 모두).
+    # TCP 자체가 그 중심이라 보정할 것이 없다.
+    #
+    # 여기서 **Rz 180 도**로 뒤집어 내보낸다. 반시계 방향으로 훑도록
+    # 바꾸면서 원점이 베이스 Y 가 큰 쪽 끝이 되었는데, 그대로 빼면
+    # Y 가 계속 음수로 나간다. 제로점 좌표계를 180 도 돌려 놓으면
+    # 훑는 방향이 반대여도 Y 는 0 에서 + 로만 커진다.
+    #   x' = -x,  y' = -y,  z' = z   (Z 축 회전이라 높이는 그대로)
+    rel_pose[0] = -rel_pose[0]
+    rel_pose[1] = -rel_pose[1]
+    ini_w6(280, rel_pose)
+  else:
+    ini_w6(280, [0, 0, 0, 0, 0, 0])
+  end
+  # ---- 호 위 위치 (TPAC 스캔 축) ----------------------------------
+  # 좌표를 그대로 주면 현(1031.8)으로 7% 눌리고 호 위치에 비례하지도
+  # 않는다. 원점부터 호를 따라 실제로 지난 거리를 계산해서 내보낸다.
+  #   286 = 이번 줄의 호 위 거리 [0.1mm]  (0 ~ 11100)
+  #   287 = 완료된 줄까지 더한 누적 [mm]
+  if (arc_ok == True):
+    adx = cur_pose[0] - arc_ox
+    ady = cur_pose[1] - arc_oy
+    aph = atan2(ady, adx) - arc_phi0
+    # atan2 는 ±pi 로 감기므로 한 바퀴 보정한다
+    if (aph > 3.14159265):
+      aph = aph - 6.28318531
+    end
+    if (aph < -3.14159265):
+      aph = aph + 6.28318531
+    end
+    if (aph < 0):
+      aph = -aph
+    end
+    arc_s = aph * scan_radius
+    ini_w1(286, arc_s * 10)
+    ini_w1(287, path_len + arc_s)
+  else:
+    arc_s = 0
+    ini_w1(286, 0)
+    ini_w1(287, path_len)
+  end
+
+  alive = alive + 1
+  if (alive > 30000):
+    alive = 0
+  end
+  write_port_register(293, alive)
+end
+
+
+# 제어주기마다 도는 발행 스레드. 이 뒤로는 평범한 movel 을 써도
+# 이동 중 좌표가 계속 나간다.
+def pub_thread():
+  while (True):
+    pub_rel()
+    sync()
+  end
+end
+
+
+# ------------------------------------------------------------------ 본문
+# 266 = 1 이면 외부(Modbus)가 준 값을, 0 이면 펜던트 변수값을 쓴다
+#   256 호 길이 [mm]      257 격자 높이 [mm]   258 스캐너 높이 [0.1mm]
+#   259 격자간 겹침 [mm]  260 반지름 [0.1mm]   261 두께 [0.1mm]
+#   262 프로브 유효 가로 [0.1mm]  263 프로브 유효 세로 [0.1mm]
+#   264 그리퍼 종류(eoat_type) — 0=없음, 5=5축, 8=8축
+# 258/260/261/262/263 이 0.1mm 인 이유: 반지름 834.6, 유효 커버 167.5
+# 처럼 소수가 나오는 값들이라 정수 mm 로 반올림하면 호 모양과 줄 간격이
+# 눈에 띄게 틀어진다. 호 길이·격자 높이·겹침은 1mm 로 충분하다.
+if (read_port_register(266, True) == 1):
+  app_arc = read_port_register(256, True)
+  app_height = read_port_register(257, True)
+  scan_h = read_port_register(258, True) * 0.1
+  overlap = read_port_register(259, True)   # 격자끼리의 겹침. 기록용
+  app_radius = read_port_register(260, True) * 0.1
+  app_thick = read_port_register(261, True) * 0.1
+  eoat_w = read_port_register(262, True) * 0.1
+  eoat_h = read_port_register(263, True) * 0.1
+  eoat_type = read_port_register(264, True)
+end
+
+# ---- 프로브 유효 커버 -----------------------------------------------------
+# 262/263 으로 받는 값은 EOAT 몸통 크기가 아니라 **한 번 지날 때 실제로
+# 검사되는 커버**(가로합/세로합)다. 좌우 끝과 상승 모두 **가운데 프로브
+# 중심**을 기준으로 잡으므로, TCP 는 작업 영역 좌우 끝까지 그대로 간다 —
+# 예전처럼 EOAT 폭의 절반씩 안쪽으로 물리지 않는다.
+#   5축 십자형 : 가로 30    세로 30     (가운데 프로브 센서 지름)
+#   8축 직사각 : 가로 75    세로 167.5  (좌우합 / 상하합)
+# 세로값(eoat_h)이 곧 한 줄이 덮는 밴드 높이이자 ㄹ자 up 동작의 **최대
+# 상승량**이다. 나중에 십자의 위·아래 프로브까지 유효로 치기로 하면
+# RCS 쪽 상수(PROBE_COVERAGE_MM)의 세로값만 167.5 로 고치면 된다.
+if (eoat_h > 0):
+  scan_h = eoat_h
+end
+arc_run = app_arc
+
+if (app_arc <= 0):
+  app_arc = 1000
+end
+if (app_radius < 0):
+  app_radius = 0
+end
+
+# ---- 훑는 면의 반지름 -----------------------------------------------------
+# 도면 반지름은 안쪽(오목) 면 기준이고 로봇은 바깥(볼록) 면을 훑으므로
+# 두께를 더해야 실제로 손이 닿는 면의 반지름이 된다 (834.6 + 10 = 844.6).
+# **결과를 app_radius 에 덮어쓰면 안 된다.** 이 스크립트는 사이클마다 다시
+# 도는데(루프판), 그때마다 두께가 또 더해져 값이 계속 커진다
+# (834.6 -> 844.6 -> 854.6 ...). app_radius 는 받은 도면값 그대로 두고,
+# 훑는 면 반지름은 scan_radius 에 따로 담는다.
+if (app_radius > 0):
+  scan_radius = app_radius + app_thick
+else:
+  scan_radius = 0
+end
+
+# ---- 호 기하 --------------------------------------------------------------
+# 받은 값은 **호 길이**다(현이 아니다). 반각 t = L/(2R), 현 c = 2R*sin(t).
+#   시험 벽: L=1110, R=844.6 -> t=0.6571 rad(37.6deg), c=1031.8
+# 로봇이 실제로 지나는 길이는 movec 가 호를 따라가므로 호 길이(1110) 다.
+if (scan_radius > 0):
+  arc_half = arc_run / (2.0 * scan_radius)
+  app_width = 2.0 * scan_radius * sin(arc_half)
+else:
+  arc_half = 0
+  app_width = arc_run
+end
+
+if (app_height < 0):
+  app_height = 0
+end
+if (scan_h <= 0):
+  scan_h = 200
+end
+if (overlap < 0):
+  overlap = 0
+end
+
+# ---- 속도/가속도 : 전역 변수로 관리한다 ----------------------------------
+#   movel(스캔 제외)       : a_l, v_l
+#   movej(홈 복귀 등)      : a_j, v_j
+#   스캔 movel/movec       : a_scan, v_scan  (고정 스펙 100 mm/s / 400 mm/s^2)
+# 필요하면 각 스크립트가 그 자리에서 값을 바꿔 써도 된다 — 예를 들어
+# 접촉 위치 진입처럼 더 천천히 움직여야 할 때는 v_l 을 따로 두지 않고
+# `v_l / 3.0` 처럼 그 movel 호출 하나에만 적용한다(전역값 자체는 안 바뀜).
+#
+# 안전 규정: 스캔 외 동작은 150 mm/s 를 넘으면 안 된다. 관절 이동의
+# 각속도도 여기에 맞춰 조그와 같은 상한(0.50 rad/s)을 넘지 않게 자른다.
+# 306 = 작업 속도 [mm/s]. v_l 로 쓴다. 0 이면 변수값을 유지한다.
+# 307 = 로봇 자체 속도 비율 [%] 2~100. 모든 이송 속도에 곱한다.
+spd_in = read_port_register(306, True)
+if (spd_in > 0):
+  v_l = spd_in / 1000.0
+end
+
+# ---- 안전 상한 : 비율(307)을 곱하기 전에 자르므로 100 % 가 곧 이 값이다 --
+v_l_limit = 0.150
+if (v_l > v_l_limit):
+  v_l = v_l_limit
+end
+v_j_limit = 0.50
+if (v_j > v_j_limit):
+  v_j = v_j_limit
+end
+
+spd_ratio = read_port_register(307, True)
+if (spd_ratio < 2):
+  spd_ratio = 100
+end
+if (spd_ratio > 100):
+  spd_ratio = 100
+end
+v_l = v_l * spd_ratio / 100.0
+v_j = v_j * spd_ratio / 100.0
+v_scan = v_scan * spd_ratio / 100.0
+
+# ---- 기준 위치 : 308 이 1 이면 310~321 의 값을 쓴다 --------------------
+# 310~315 홈 관절값 [mRad], 316~321 그리퍼 기준점 pose(길이 0.1mm, 회전 mRad)
+# — 316~321 은 툴플랜지가 아니라 실제 장착된 그리퍼(EOAT) 기준점 목표다.
+# 아래에서 eoat_type 에 맞는 오프셋을 빼 플랜지 기준 start_pose 를 만든다.
+if (read_port_register(308, True) == 1):
+  Home_joint = [read_port_register(310, True) / 1000.0,
+         read_port_register(311, True) / 1000.0,
+         read_port_register(312, True) / 1000.0,
+         read_port_register(313, True) / 1000.0,
+         read_port_register(314, True) / 1000.0,
+         read_port_register(315, True) / 1000.0]
+  gripper_target_pose = [read_port_register(316, True) / 10000.0,
+         read_port_register(317, True) / 10000.0,
+         read_port_register(318, True) / 10000.0,
+         read_port_register(319, True) / 1000.0,
+         read_port_register(320, True) / 1000.0,
+         read_port_register(321, True) / 1000.0]
+  Home_pose = get_forward_kin(Home_joint)
+end
+
+# ---- 그리퍼(EOAT) 기준점 -> 툴플랜지 pose 역계산 ------------------------
+# 그리퍼가 플랜지 로컬 좌표로 (ox,oy,oz) 만큼 앞에 붙어 있다고 보면
+#   그리퍼 pose = pose_trans(플랜지 pose, [ox,oy,oz,0,0,0])
+# 이므로 반대로 플랜지 pose 를 구하려면 부호를 뒤집어 그리퍼 pose 에
+# 적용한다(회전은 그대로 — 그리퍼가 플랜지에 고정 장착되어 상대 회전이
+# 없다고 본다). eoat_type 이 0(그리퍼 없음)이면 오프셋 없이 그대로 쓴다.
+# 매 작업(dus_init 실행)마다 다시 계산하므로, 그리퍼를 5축<->8축으로
+# 바꿔 달아도 티칭을 다시 안 하고 eoat_type 만 바꾸면 된다.
+if (eoat_type == 8):
+  eoat_ox = eoat8_offset_x
+  eoat_oy = eoat8_offset_y
+  eoat_oz = eoat8_offset_z
+else:
+  if (eoat_type == 5):
+    eoat_ox = eoat5_offset_x
+    eoat_oy = eoat5_offset_y
+    eoat_oz = eoat5_offset_z
+  else:
+    eoat_ox = 0
+    eoat_oy = 0
+    eoat_oz = 0
+  end
+end
+gripper_touch_flange = pose_trans(gripper_target_pose, [-eoat_ox, -eoat_oy, -eoat_oz, 0, 0, 0])
+
+# ---- 그리퍼를 작업면에 딱 붙인 티칭 지점에서 물러난 곳이 start_pose ------
+# gripper_target_pose 는 그리퍼를 작업면 중앙에 접촉시켜 놓고 티칭한
+# 값이다(위 gripper_touch_flange 는 그 순간의 플랜지 pose). 거기 그대로
+# 두면 각 프로브 사이 이동 때마다 작업면에 닿아 있는 자세라 위험하니,
+# probe_l/r/goto_zero 의 대기 지점(l_stand/r_stand/z_stand)과 같은 방식
+# 으로 TCP 기준 -Z 로 probe_dist 만큼 물러난 지점을 실제 start_pose 로
+# 쓴다(다음엔 그 자리에서 TCP +Z 로 전진해 다시 붙이면 된다).
+start_pose = pose_trans(gripper_touch_flange, [0, 0, -probe_dist * 0.001, 0, 0, 0])
+
+# ---- 상승 피치와 줄 수 -----------------------------------------------------
+# 십자(+) 프로브는 **가운데 프로브**가 검사면을 훑는다. 그래서 맨 아랫줄은
+# ㅗ 자세로 밑면(높이 0)을, 맨 윗줄은 ㅜ 자세로 윗면(app_height)을 가운데
+# 프로브가 직접 지나가야 한다. 줄 위치는 0..app_height 를 균등 분할한
+# 자리로 먼저 정해지고, **겹침은 그 결과로 나온다**.
+#
+# 피치(= ㄹ자 up 동작의 상승 높이)는 프로브 유효 세로 커버(scan_h) 를
+# **넘을 수 없다** — 넘으면 줄과 줄 사이에 검사 안 된 띠가 남는다.
+#   5축 십자 : scan_h 30    -> 500mm 샘플이면 17칸 -> 18줄, 피치 29.4
+#   8축 직사 : scan_h 167.5 -> 500mm 샘플이면  3칸 ->  4줄, 피치 166.7
+# **259 로 받은 겹침은 여기에 안 쓴다.** 그 값은 격자 **안**의 줄 겹침이
+# 아니라 **격자끼리**의 겹침 허용도다 — 이 격자와 다음 격자가 얼마나
+# 겹치는지, 즉 리프트가 다음 줄로 올라갈 때 얼마를 덜 올라가는지다.
+# 그건 RCS 가 리프트 상승량에서 빼서 처리하고, 로봇은 자기 격자 안만
+# 책임진다. 그래서 격자 안 피치는 프로브 유효 커버(scan_h) 하나로 정한다.
+# (예전에는 259 를 격자 안 최소 겹침으로 써서, 바깥에서 20 을 주면
+#  격자 안 줄이 쓸데없이 촘촘해졌다.)
+
+if (app_height <= 0):
+  rows = 1
+  pitch = 0
+else:
+  gaps = ceil(app_height * 1.0 / scan_h)
+  if (gaps < 1):
+    gaps = 1
+  end
+  rows = gaps + 1
+  pitch = app_height * 1.0 / gaps
+end
+
+# 격자 **안**의 줄 겹침은 계산 결과다(화면/기록용).
+# 259 로 받은 격자간 겹침과는 다른 값이라 여기서 덮어쓴다.
+overlap = scan_h - pitch
+if (overlap < 0):
+  overlap = 0
+end
+if (rows > 400):
+  popup(s = "ROWS OVER LIMIT(400). CHECK HEIGHT/SCAN_H/OVERLAP", title = "dusan_v4", blocking = True)
+  write_port_register(290, 9)
+  halt()
+end
+
+row_idx = 0
+dir_sign = 1
+# 호 기준은 probe_l 이 매 사이클 다시 잡는다. 여기서 내려두지 않으면
+# 지난 사이클 값(arc_ox/arc_oy/arc_phi0)으로 286/287 이 계속 나간다.
+arc_ok = False
+pass_done = 0
+path_len = 0
+alive = 0
+zero_ok = False
+n_probe = 0
+n_hit = 0
+qa = 0
+qb = 0
+qc = 0
+
+write_port_register(290, 0)
+write_port_register(291, 0)
+ini_w1(292, rows)
+write_port_register(293, 0)
+write_port_register(294, 0)
+write_port_register(295, 0)
+ini_w1(296, pitch)
+write_port_register(297, 0)
+write_port_register(298, 0)
+write_port_register(299, 0)  # probe_error: 0=정상, 1/2/3=probe_c/l/r 접촉 실패
+write_port_register(304, 0)
+write_port_register(305, 0)
+
+# 실시간 발행 스레드 기동
+# 발행 스레드는 태스크 한 번에 **하나만** 띄운다.
+# 이 스크립트는 Robot Main Task 가 반복될 때마다 다시 실행되는데(루프판),
+# 그때마다 새로 띄우면 pub_thread 가 while(True) 라 끝나지 않고 detached 라
+# 회수도 안 되어 스레드가 쌓인다 -> 20 번째 사이클에서
+# "Thread over the max size: 20" 으로 태스크가 멈춘다.
+# pub_started 는 "Init Variables Value" 가 시작마다 0 으로 되돌려 주는
+# 것을 전제로 한다. 그런데 그 노드가 비어 있으면(태스크 XML 의
+# <InitVariables/> 에 항목이 없으면) 값이 1 로 남고, 스레드는 죽었는데
+# 다시 띄우지 않아 **260~285 가 전부 멈춘다**. 펜던트 설정에 기대지
+# 말고 워치독(293)으로 직접 확인한다 — 스레드가 살아 있으면 제어주기
+# 마다 alive 를 올려 쓰므로, 두 주기 동안 값이 그대로면 죽은 것이다.
+# (293 은 바로 위에서 0 으로 지웠다. 살아 있으면 곧 큰 값으로 덮인다.)
+pub_a = read_port_register(293, True)
+sync()
+sync()
+pub_b = read_port_register(293, True)
+if (pub_a == pub_b):
+  pub_started = 0
+end
+
+if (pub_started == 0):
+  pub_h = start_thread(pub_thread, (), detach_mode = True)
+  pub_started = 1
+end

@@ -20,11 +20,18 @@ class MqttTopics:
     EMS = "doosan/robot/req/ems"
     JOB_CLEAR = "doosan/robot/req/job_clear"
     JOB_COMMAND = "doosan/robot/req/job_cmd"
+    SPEED = "doosan/robot/req/speed"
+    # 원점에서 프로브 눌림 확인을 받고 스캔을 시작해도 된다는 회신 (MC -> RCS).
+    # ERUT 규격의 req/start 게이트와 같은 자리이고, 사내 MC 규격 쪽 통로다.
+    PROBE_ACK = "doosan/robot/req/probe_ack"
 
     ROBOT_STATE = "doosan/robot/robot_state"
     ERROR = "doosan/robot/error"
     TCP = "doosan/robot/tcp"
     JOB_STATE = "doosan/robot/job_state"
+    # 로봇이 원점에 서서 프로브 확인을 기다린다 / 풀렸다 (RCS -> MC).
+    # ERUT 규격의 evt/ready(stage=at_origin)와 같은 뜻이다.
+    PROBE_GATE = "doosan/robot/probe_gate"
 
     MC_COMMAND_RESPONSE = "doosan/robot/resp/mc_cmd"
     RESET_RESPONSE = "doosan/robot/resp/reset"
@@ -41,12 +48,15 @@ class MqttTopics:
         EMS,
         JOB_CLEAR,
         JOB_COMMAND,
+        SPEED,
+        PROBE_ACK,
     )
     STATUSES = (
         ROBOT_STATE,
         ERROR,
         TCP,
         JOB_STATE,
+        PROBE_GATE,
     )
     RESPONSES = (
         MC_COMMAND_RESPONSE,
@@ -110,6 +120,14 @@ class MqttConfig:
 
 class MqttPayloadError(ValueError):
     """수신 Payload가 Topic 명세를 위반했을 때 발생하는 오류."""
+
+
+# 로봇 동작 속도 비율[%]의 허용 범위. 로봇 컨트롤러가 정한 값이다.
+SPEED_MIN, SPEED_MAX = 2, 100
+
+# `job_state`의 상태 값. 셀 하나가 거치는 세 단계다.
+# `services/job_sequencer.py`의 `CellStatus`와 값이 같아야 한다.
+JOB_STATES = frozenset({"waiting", "executing", "completed"})
 
 
 class MqttServer(QObject):
@@ -258,22 +276,23 @@ class MqttServer(QObject):
         *,
         diameter: str | int | float,
         height: str | int | float,
-        thickness: str | int | float,
         target_distance: str | int | float,
-        cell_id: str,
-        segment_index: str | int,
-        segment_count: str | int,
-        grid_index: str | int,
-        grid_count: str | int,
-        grid_width: str | int | float,
-        grid_height: str | int | float,
-        scan_h: str | int | float,
+        column_count: str | int,
+        row_count: str | int,
+        cell_width: str | int | float,
+        cell_height: str | int | float,
         overlap: str | int | float,
     ) -> bool:
-        """검사 대상과 격자 위치 정보가 포함된 새 Job 명령을 발행한다.
+        """전체 작업 시작 명령을 발행한다 (검사 대상 + 격자 분할 계획).
 
-        원통이 커서 AMR 원주 구역(segment)과 Cobot 세로 격자(grid)로 나눠
-        스캔한다. cell_id는 보통 "A0"처럼 구역 문자 + 격자 번호다.
+        원통을 편 직사각형을 격자로 나눈다. 열(`column_count`)은 AMR이
+        정차하는 원주 구역, 행(`row_count`)은 리프트 높이다. Cobot은 셀
+        하나(`cell_width` × `cell_height`)만 ㄹ자로 스캔한다 — 원통 전체
+        높이를 한 번에 훑는 게 아니다.
+
+        셀을 하나씩 순회하는 것은 이 명령 이후 UI/로봇 쪽이 자동으로
+        진행하므로, 지금 몇 번째 셀인지는 담지 않는다. 스캐너 유효높이
+        (`scan_h`)는 장비 고유값이라 여기 없고 수신 측 로컬 설정을 쓴다.
         """
         payload = {
             "timestamp": _utc_epoch_ms(),
@@ -281,23 +300,96 @@ class MqttServer(QObject):
             "job_info": {
                 "diameter": str(diameter).strip(),
                 "height": str(height).strip(),
-                "thickness": str(thickness).strip(),
                 "target_distance": str(target_distance).strip(),
             },
-            "grid": {
-                "cell_id": str(cell_id).strip(),
-                "segment_index": str(segment_index).strip(),
-                "segment_count": str(segment_count).strip(),
-                "grid_index": str(grid_index).strip(),
-                "grid_count": str(grid_count).strip(),
-                "width": str(grid_width).strip(),
-                "height": str(grid_height).strip(),
-                "scan_h": str(scan_h).strip(),
+            "plan": {
+                "column_count": str(column_count).strip(),
+                "row_count": str(row_count).strip(),
+                "cell_width": str(cell_width).strip(),
+                "cell_height": str(cell_height).strip(),
                 "overlap": str(overlap).strip(),
             },
         }
         validate_command_payload(MqttTopics.JOB_COMMAND, payload)
         return self.publish(MqttTopics.JOB_COMMAND, payload)
+
+    def publish_speed(self, percent: int) -> bool:
+        """로봇 전체 동작 속도 비율[%]을 바꾸라고 요청한다. 2~100."""
+        payload = {"timestamp": _utc_epoch_ms(), "speed": str(int(percent))}
+        validate_command_payload(MqttTopics.SPEED, payload)
+        return self.publish(MqttTopics.SPEED, payload)
+
+    def publish_job_state(self, cell_id: str, state: str) -> bool:
+        """셀 하나의 진행 상태를 외부(MC)에 알린다.
+
+        `job_id`에는 `1A`, `12F`처럼 격자 이름이 들어간다. 원통을 편
+        직사각형을 열(AMR 정차 구역) × 행(리프트 높이)으로 나눈 좌표이며,
+        외부는 이걸로 어느 영역이 끝났는지 추적한다.
+        """
+        if state not in JOB_STATES:
+            raise MqttPayloadError(
+                f"허용되지 않은 Job 상태입니다: {state!r} "
+                f"(가능: {', '.join(sorted(JOB_STATES))})"
+            )
+        return self.publish(
+            MqttTopics.JOB_STATE,
+            {
+                "timestamp": _utc_epoch_ms(),
+                "job_id": str(cell_id).strip(),
+                "state": state,
+            },
+        )
+
+    def publish_probe_gate(self, waiting: bool, cell_id: str = "") -> bool:
+        """원점에서 프로브 확인을 기다리는지 외부(MC)에 알린다.
+
+        로봇은 3점 측정을 마치고 원점에 서면 멈춰서 기다린다(레지스터 290 = 7).
+        프로브가 벽에 제대로 눌렸는지는 로봇이 알 수 없어서, 확인은 바깥이
+        한다. 확인이 끝나면 `req/probe_ack` 로 회신해 주면 로봇이 적심(비비기)
+        후 스캔으로 넘어간다.
+
+        ERUT 규격에서는 이 자리가 `evt/ready`(stage=at_origin) -> `req/start`
+        다. 사내 MC 규격에는 대응하는 동작이 없어 통로를 따로 둔다.
+        """
+        return self.publish(
+            MqttTopics.PROBE_GATE,
+            {
+                "timestamp": _utc_epoch_ms(),
+                "state": "waiting" if waiting else "released",
+                "job_id": str(cell_id).strip(),
+            },
+        )
+
+    def publish_tcp(self, values: list, cell_id: str = "") -> bool:
+        """제로점 기준 TCP 좌표를 격자 번호와 함께 외부(MC)에 알린다.
+
+        이 값이 스캐너 관리 시스템으로 나가는 실제 데이터다. 좌표만으로는
+        원통 어디인지 알 수 없으므로 지금 스캔 중인 격자 이름(`1A`, `12F`)을
+        함께 싣는다. 격자를 아는 것은 `JobSequencer` 뿐이라 이 결합은
+        RCS에서만 할 수 있다.
+
+        베이스 프레임 좌표(레지스터 384~389)는 모니터링용이라 여기 오지
+        않는다. 여기 오는 값은 제로점 기준(280~285)이다.
+        """
+        if len(values) < 6:
+            raise MqttPayloadError(
+                f"TCP 자세는 6개 성분이 필요합니다: {len(values)}개"
+            )
+        x, y, z, _rx, _ry, rz = (float(value) for value in values[:6])
+        return self.publish(
+            MqttTopics.TCP,
+            {
+                "timestamp": _utc_epoch_ms(),
+                "cell": str(cell_id).strip(),
+                "x": f"{x:.1f}",
+                "y": f"{y:.1f}",
+                "z": f"{z:.1f}",
+                # 회전은 mrad으로 들어오므로 규격의 radian으로 바꾼다.
+                "yaw": f"{rz / 1000.0:.3f}",
+            },
+            qos=0,
+            retain=False,
+        )
 
     def publish_heartbeat(self, status: str = "ONLINE") -> bool:
         """필요할 때 로봇 Heartbeat Topic에 상태를 발행한다."""
@@ -499,6 +591,30 @@ def validate_command_payload(topic: str, payload: dict[str, Any]) -> None:
             raise MqttPayloadError(f"허용되지 않은 Cobot 명령입니다: {cobot!r}")
         return
 
+    if topic == MqttTopics.SPEED:
+        raw = payload.get("speed")
+        if not isinstance(raw, str) or not raw.strip():
+            raise MqttPayloadError("비어 있지 않은 문자열 speed가 필요합니다.")
+        try:
+            value = int(raw.strip())
+        except ValueError as exc:
+            raise MqttPayloadError(f"speed는 정수여야 합니다: {raw!r}") from exc
+        if not SPEED_MIN <= value <= SPEED_MAX:
+            raise MqttPayloadError(
+                f"speed는 {SPEED_MIN}~{SPEED_MAX} 범위여야 합니다: {value}"
+            )
+        return
+
+    if topic == MqttTopics.PROBE_ACK:
+        pressed = payload.get("pressed")
+        if isinstance(pressed, str):
+            pressed = pressed.strip().lower()
+            if pressed not in {"true", "false", "1", "0", "yes", "no", "ok"}:
+                raise MqttPayloadError(f"허용되지 않은 pressed 값입니다: {pressed!r}")
+        elif not isinstance(pressed, bool):
+            raise MqttPayloadError("pressed 는 참/거짓이어야 합니다.")
+        return
+
     if topic in {MqttTopics.RESET, MqttTopics.EMS, MqttTopics.JOB_CLEAR}:
         if "request" not in payload:
             raise MqttPayloadError("request 필드가 필요합니다.")
@@ -515,7 +631,7 @@ def validate_command_payload(topic: str, payload: dict[str, Any]) -> None:
         job_info = payload.get("job_info")
         if not isinstance(job_info, dict):
             raise MqttPayloadError("job_info는 JSON object여야 합니다.")
-        required = ("diameter", "height", "thickness", "target_distance")
+        required = ("diameter", "height", "target_distance")
         missing = [
             name
             for name in required
@@ -527,26 +643,24 @@ def validate_command_payload(topic: str, payload: dict[str, Any]) -> None:
                 f"job_info 필드가 없거나 비어 있습니다: {', '.join(missing)}"
             )
 
-        # grid: 원통이 커서 AMR 원주 구역 + Cobot 세로 격자로 나눠 스캔하기
-        # 위한 정보다. cell_id만 문자열이고 나머지는 job_info와 같은 규칙으로
-        # 숫자를 담은 문자열이다.
-        grid = payload.get("grid")
-        if not isinstance(grid, dict):
-            raise MqttPayloadError("grid는 JSON object여야 합니다.")
-        if not isinstance(grid.get("cell_id"), str) or not grid["cell_id"].strip():
-            raise MqttPayloadError("grid.cell_id가 없거나 비어 있습니다.")
-        grid_required = (
-            "segment_index", "segment_count", "grid_index", "grid_count",
-            "width", "height", "scan_h", "overlap",
+        # plan: 원통을 편 직사각형의 격자 분할 계획이다. 열=AMR 정차 구역,
+        # 행=리프트 높이이며 Cobot은 셀 하나만 ㄹ자로 스캔한다. 셀을 하나씩
+        # 순회하는 것은 UI/로봇 쪽 책임이라 지금 몇 번째 셀인지는 담지 않는다.
+        # 스캐너 유효높이(scan_h)는 장비 고유값이라 여기 없다.
+        plan = payload.get("plan")
+        if not isinstance(plan, dict):
+            raise MqttPayloadError("plan은 JSON object여야 합니다.")
+        plan_required = (
+            "column_count", "row_count", "cell_width", "cell_height", "overlap",
         )
-        grid_missing = [
+        plan_missing = [
             name
-            for name in grid_required
-            if not isinstance(grid.get(name), str) or not grid[name].strip()
+            for name in plan_required
+            if not isinstance(plan.get(name), str) or not plan[name].strip()
         ]
-        if grid_missing:
+        if plan_missing:
             raise MqttPayloadError(
-                f"grid 필드가 없거나 비어 있습니다: {', '.join(grid_missing)}"
+                f"plan 필드가 없거나 비어 있습니다: {', '.join(plan_missing)}"
             )
         return
 

@@ -1,0 +1,80 @@
+<VariablesManager>
+  <Variable name="Home_joint" value="[0.55498, -1.00739, -2.64993, -1.05507, 1.5708, 0.55497]" remarks="" favorite="false"/>
+  <Variable name="Home_pose" value="[0.33684, -0.00001, 0.31805, 3.14159, 0, -1.57079]" remarks="" favorite="false"/>
+  <Variable name="start_pose" value="[0.33684, -0.00001, 0.31805, 3.14159, 0, -1.57079]" remarks="시작 포즈 (입력레지스터 316~321). UI가 저장한 값" favorite="false"/>
+  <Variable name="pose_src" value="0" remarks="0=이 변수값 사용, 1=Modbus 310~321 사용 (레지스터 308)" favorite="false"/>
+  <Variable name="spd_in" value="0" remarks="작업 속도 입력 [mm/s] (입력레지스터 306). 0이면 v_move 유지" favorite="false"/>
+  <Variable name="spd_ratio" value="100" remarks="로봇 자체 속도 비율 [%] 2~100 (입력레지스터 307)" favorite="false"/>
+  <Variable name="param_src" value="0" remarks="0=이 변수값 사용, 1=Modbus 256~259 사용 (레지스터 266)" favorite="false"/>
+  <Variable name="di_touch" value="0" remarks="중앙 접촉 센서 1차 — ON 이면 적정 눌림 위치" favorite="false"/>
+  <Variable name="di_limit" value="1" remarks="중앙 접촉 센서 2차 — ON 이면 눌림 한계. TCP +Y 로 후퇴한다" favorite="false"/>
+  <Variable name="app_radius" value="904.59998" remarks="도면 반지름(안쪽 면) [mm]. 레지스터 260 을 0.1mm 로 받고, dus_init 이 두께를 더해 훑는 면 반지름으로 바꾼다" favorite="false"/>
+  <Variable name="app_thick" value="10" remarks="제품 두께 [mm]. 레지스터 261 을 0.1mm 단위로 받는다. UT 기록용" favorite="false"/>
+  <Variable name="app_arc" value="1110" remarks="격자 가로 = 호 길이 [mm] (레지스터 256). 로봇이 실제로 지나는 거리. 현이 아니다" favorite="false"/>
+  <Variable name="eoat_w" value="257" remarks="EOAT 가로(호 방향) [mm]. 레지스터 262. 5축 X형 257 / 8축 직사각 186" favorite="false"/>
+  <Variable name="eoat_h" value="257" remarks="EOAT 세로 [mm]. 레지스터 263. 5축 257 / 8축 316(세로로 길게). 스캐너 밴드 높이로 쓴다" favorite="false"/>
+  <Variable name="arc_run" value="853" remarks="TCP 가 실제로 움직일 호 길이 [mm] = app_arc - eoat_w. dus_init 이 계산" favorite="false"/>
+  <Variable name="arc_ox" value="1.54144" remarks="곡률 중심 X [m]. probe_l 이 계산" favorite="false"/>
+  <Variable name="arc_oy" value="0" remarks="곡률 중심 Y [m]. probe_l 이 계산" favorite="false"/>
+  <Variable name="arc_phi0" value="2.67012" remarks="원점(zero_pose)이 곡률 중심에서 보이는 각 [rad]" favorite="false"/>
+  <Variable name="arc_ok" value="True" remarks="호 기준이 잡혔는지. True 여야 호 위치를 발행한다" favorite="false"/>
+  <Variable name="arc_s" value="0" remarks="원점부터 지금까지의 호 위 거리 [mm]. 레지스터 286 으로 발행" favorite="false"/>
+  <Variable name="arc_half" value="0.47148" remarks="호 반각 [rad] = app_arc/(2*app_radius). dus_init 이 계산" favorite="false"/>
+  <Variable name="press_off" value="0" remarks="센서로 잰 적정 눌림 보정량 [m]. 계산한 3점을 TCP -Y 로 이만큼 더 민다" favorite="false"/>
+  <Variable name="seek_step" value="2" remarks="자세 보정 중 한 걸음 전진/후퇴 거리 [mm]" favorite="false"/>
+  <Variable name="seek_tries" value="80" remarks="전진·회전 되풀이 최대 횟수. 넘으면 포기하고 진행" favorite="false"/>
+  <Variable name="seek_limit" value="400" remarks="전진 최대 거리 [mm]. 센서가 없으면 여기까지 가고 멈춘다" favorite="false"/>
+  <Variable name="probe_dist" value="300" remarks="[임시판 전용] 센서 없이 전진할 고정 거리 [mm]" favorite="false"/>
+  <Variable name="probe_bow" value="0" remarks="[임시판 전용] 중앙이 가장자리보다 더 전진할 거리 [mm]. 0 이면 app_diameter 로 자동 계산(바깥 볼록면이라 음수가 나온다). 손으로 넣으려면 0 이 아닌 값을 준다" favorite="false"/>
+  <Variable name="app_diameter" value="1669" remarks="[임시판 전용] 원통 지름 [mm]. probe_bow 가 0 일 때 호의 볼록량을 이 값으로 계산한다 (센서가 붙으면 필요 없다)" favorite="false"/>
+  <Variable name="back_off" value="100" remarks="측정 후 후퇴 거리 [mm]" favorite="false"/>
+  <Variable name="seg_len" value="50" remarks="가로 패스를 나누는 구간 길이 [mm]. 작을수록 X 보정이 촘촘하다" favorite="false"/>
+  <Variable name="v_move" value="0.15" remarks="일반 이송 속도 [m/s]" favorite="false"/>
+  <Variable name="v_scan" value="0.1" remarks="스캔 이송 속도 [m/s]" favorite="false"/>
+  <Variable name="v_seek" value="0.05" remarks="전진 탐색 속도 [m/s]" favorite="false"/>
+  <Variable name="app_width" value="821.74683" remarks="작업 영역 좌우 너비 [mm] (입력레지스터 256)" favorite="false"/>
+  <Variable name="app_height" value="500" remarks="작업 영역 높이 [mm] (입력레지스터 257)" favorite="false"/>
+  <Variable name="scan_h" value="257" remarks="스캐너 세로 유효높이 [mm] (입력레지스터 258)" favorite="false"/>
+  <Variable name="overlap" value="20" remarks="세로 겹침 [mm] (입력레지스터 259)" favorite="false"/>
+  <Variable name="pitch" value="237" remarks="상승 피치 = scan_h - overlap [mm] (고정)" favorite="false"/>
+  <Variable name="rows" value="3" remarks="가로 패스 수" favorite="false"/>
+  <Variable name="row_idx" value="3" remarks="완료한 가로 패스 수" favorite="false"/>
+  <Variable name="dir_sign" value="-1" remarks="1=오른쪽(Y-) 차례, -1=왼쪽(Y+) 차례" favorite="false"/>
+  <Variable name="pass_done" value="1" remarks="" favorite="false"/>
+  <Variable name="n_probe" value="3" remarks="측정 완료한 점 수 (0~3)" favorite="false"/>
+  <Variable name="n_hit" value="0" remarks="센서로 검출된 점 수" favorite="false"/>
+  <Variable name="p_cx" value="0.63684" remarks="중앙 측정 X [m]" favorite="false"/>
+  <Variable name="p_lx" value="0.73553" remarks="Y+ 끝 측정 X [m]" favorite="false"/>
+  <Variable name="p_rx" value="0.73554" remarks="Y- 끝 측정 X [m]" favorite="false"/>
+  <Variable name="y_c" value="-0.00001" remarks="중앙 Y [m]" favorite="false"/>
+  <Variable name="y_l" value="0.30185" remarks="" favorite="false"/>
+  <Variable name="y_r" value="-0.29815" remarks="" favorite="false"/>
+  <Variable name="half" value="0.3" remarks="너비의 절반 [m]" favorite="false"/>
+  <Variable name="qa" value="0" remarks="벽면 2차식 계수 : x = qa*dy^2 + qb*dy + qc, dy = Y - y_c" favorite="false"/>
+  <Variable name="qb" value="0" remarks="벽면 2차식 1차항" favorite="false"/>
+  <Variable name="qc" value="0" remarks="벽면 2차식 상수항 (= 중앙 X)" favorite="false"/>
+  <Variable name="zero_ok" value="True" remarks="" favorite="false"/>
+  <Variable name="x_start" value="[0.33684, -0.00001, 0.32105, 3.14159, 0.00001, -1.57079]" remarks="" favorite="false"/>
+  <Variable name="z_base" value="0.32105" remarks="" favorite="false"/>
+  <Variable name="zero_pose" value="[0.73553, 0.41087, 0.32105, -3.14159, 0.00001, -2.04227]" remarks="원점 = Y+ 끝 측정 위치" favorite="false"/>
+  <Variable name="zero_inv" value="[0.70012, 0.46867, 0.32104, 3.14158, -0, -2.04227]" remarks="pose_inv(zero_pose)" favorite="false"/>
+  <Variable name="cur_pose" value="[0.33684, -0.00001, 0.32105, 3.14159, 0.00001, -1.57079]" remarks="현재 절대 TCP (260~265 로 발행)" favorite="false"/>
+  <Variable name="rel_pose" value="[-0.09999, -0.82175, 0.474, 0, -0, 0.94296]" remarks="원점 기준 상대 pose (280~285 로 발행)" favorite="false"/>
+  <Variable name="tgt_pose" value="[0.63554, -0.41088, 0.79505, -3.14159, 0.00001, -1.09931]" remarks="현재 구간 목표 pose" favorite="false"/>
+  <Variable name="dy" value="0.3" remarks="" favorite="false"/>
+  <Variable name="y_from" value="-0.30001" remarks="" favorite="false"/>
+  <Variable name="y_to" value="0.29999" remarks="" favorite="false"/>
+  <Variable name="n_seg" value="12" remarks="" favorite="false"/>
+  <Variable name="i_seg" value="13" remarks="" favorite="false"/>
+  <Variable name="path_len" value="3033" remarks="누적 이동거리 [mm]" favorite="false"/>
+  <Variable name="alive" value="25491" remarks="워치독 카운터" favorite="false"/>
+  <Variable name="mv_h" value="0" remarks="이동 스레드 핸들" favorite="false"/>
+  <Variable name="pub_h" value="855631424" remarks="발행 스레드 핸들" favorite="false"/>
+  <Variable name="probe_rot" value="[0.33684, -0.00001, 0.31805, 3.14159, 0, -1.57079]" remarks="정렬 전 기준 자세. 측정점 사이를 이동할 때 여기로 되돌린다 (probe_c 가 채운다)" favorite="false"/>
+  <Variable name="arc_mode" value="0" remarks="movec 의 mode. 0 = 자세 고정" favorite="false"/>
+  <Variable name="p_c_pose" value="[0.63684, -0.00001, 0.32105, -3.14159, 0.00001, -1.57079]" remarks="중앙 측정 pose — movec 의 경유점 (330~335 로 발행)" favorite="false"/>
+  <Variable name="p_r_pose" value="[0.73554, -0.41088, 0.32105, -3.14159, 0.00001, -1.09931]" remarks="Y- 끝 측정 pose — movec 의 도착점 (340~345 로 발행)" favorite="false"/>
+  <Variable name="via_pose" value="[0.63684, -0.00001, 0.79505, -3.14159, 0.00001, -1.57079]" remarks="movec 경유점 (현재 높이로 갈아끼운 것)" favorite="false"/>
+  <Variable name="to_pose" value="[0.73554, -0.41088, 0.79505, -3.14159, 0.00001, -1.09931]" remarks="movec 도착점 (현재 높이로 갈아끼운 것)" favorite="false"/>
+  <Variable name="z_now" value="0.79505" remarks="가로 패스 시작 시점의 Z [m]" favorite="false"/>
+</VariablesManager>

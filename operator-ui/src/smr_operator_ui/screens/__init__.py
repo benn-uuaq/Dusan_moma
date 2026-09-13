@@ -6,5 +6,6 @@ from .all_screens import (
     ManualScreen, ModeSlotsScreen, RunScreen, SettingsMenuScreen,
     StatusBlock, SystemSettingsScreen, UTSettingsScreen,
 )
+from .tpac_bridge_screen import TpacBridgeScreen
 
-__all__ = ["InfoScreen", "MainScreen", "ManualScreen", "CobotManualScreen", "CobotJogScreen", "RunScreen", "SettingsMenuScreen", "IOStatusScreen", "ConnectionSettingsScreen", "SystemSettingsScreen", "UTSettingsScreen", "CobotSettingsScreen", "ErrorLogScreen", "LogFilesScreen", "ModeSlotsScreen", "StatusBlock"]
+__all__ = ["InfoScreen", "MainScreen", "ManualScreen", "CobotManualScreen", "CobotJogScreen", "RunScreen", "SettingsMenuScreen", "IOStatusScreen", "ConnectionSettingsScreen", "SystemSettingsScreen", "UTSettingsScreen", "CobotSettingsScreen", "ErrorLogScreen", "LogFilesScreen", "ModeSlotsScreen", "StatusBlock", "TpacBridgeScreen"]

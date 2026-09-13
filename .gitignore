@@ -15,3 +15,11 @@ erounsolution_project.zip
 # Windows / WSL
 *:Zone.Identifier
 Thumbs.db
+
+# 오피스 잠금 파일 (엑셀을 연 채로 두면 생긴다)
+~$*
+
+# 협력사(이로운솔루션/ERUT) 규격 원본 — 공개 저장소에 올리지 않는다.
+# 코드와 문서는 파일 이름으로만 가리킨다. 필요하면 사내 공유 경로에서 받는다.
+mqtt_test/ERUT-3S_*.xlsx
+mqtt_test/ERUT-3S_*.pdf

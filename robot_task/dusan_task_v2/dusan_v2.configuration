@@ -1,0 +1,227 @@
+<ConfigurationSettings robotType="6212" toolType="1" robotTypeName="CS612" robotSN="09252312420001" savedTime="2026-08-19 16:43:24">
+  <versionInfo>
+    <lastSavedVersion project="RT ROBOT" major="2" minor="14" bugfix="3" commitHashInfo="a6e8c3aA" additionalInfo="" buildDate="2025-08-22 08:51:45"/>
+    <createdVersion project="RT ROBOT" major="2" minor="15" bugfix="0" commitHashInfo="00cb5e6" additionalInfo="" buildDate="2026-01-16 06:45:14"/>
+  </versionInfo>
+  <ToolIoConfig enabled="false" baudRate="BAUD_115200" parity="NONE" stopBits="ONE" usageMode="SCRIPT" modbusRTUMode="false" rxIdleChars="1.5" txIdleChars="3.5" toolAnalogInputDomain="0" toolAnalogOutputDomain="0" toolAnalogWorkMode="3" toolDigitalWorkMode="0" toolOutputVoltage="TOOL_VOLTAGE_0V">
+    <digitalIO index="0" enabled="false" output="false" outputMode="0"/>
+    <digitalIO index="1" enabled="false" output="false" outputMode="0"/>
+    <digitalIO index="2" enabled="false" output="false" outputMode="0"/>
+    <digitalIO index="3" enabled="false" output="false" outputMode="0"/>
+  </ToolIoConfig>
+  <ControlConfig/>
+  <ToolsManager Active="f0f9df2b-4070-4fcb-a8ea-ce2e61798a1d">
+    <TcpTool name="TCP" uuid="f0f9df2b-4070-4fcb-a8ea-ce2e61798a1d">
+      <ToolShape value="0.0, 0.0, 0.0, 0.0, 0.0, 0.0"/>
+    </TcpTool>
+  </ToolsManager>
+  <StartupConfigsManager>
+    <config taskName="" taskPath="" needAutoLoad="false" nameOfIoToAutoRunTask="" triggerValueToRunTask="false" nameOfIoToInit="" triggerValueToInit="false"/>
+  </StartupConfigsManager>
+  <PeriodicPulseConfigManger/>
+  <PayloadConfigManager Active="e9221440-48d7-4bc9-b6bc-2baf2643507d">
+    <PayloadConfig name="페이로드" uuid="e9221440-48d7-4bc9-b6bc-2baf2643507d" Mass="0.0" InertiaBox="false" CoG="0.0, 0.0, 0.0" InertiaMatrix="0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0"/>
+  </PayloadConfigManager>
+  <ModbusManager/>
+  <IOConfig>
+    <preserveSignalAtProgramStop value="true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true"/>
+    <setSignalLow value="false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false"/>
+    <ProgramStateMode value="false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false"/>
+    <DigitalInputNames value=", , , , , , , , , , , , , , , "/>
+    <DigitalOutputNames value=", , , , , , , , , , , , , , , "/>
+    <ToolDigitalInputNames value=", , , "/>
+    <ToolDigitalOutputNames value=", , , "/>
+    <ToolAnalogInputNames value=""/>
+    <ToolAnalogOutputNames value=""/>
+    <AnalogInputNames value=", "/>
+    <AnalogOutputNames value=", "/>
+    <ConfigurableInputNames value=", , , , , , , "/>
+    <ConfigurableOutputNames value=", , , , , , , "/>
+    <outputSignalOptions value="0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0"/>
+    <analogInputRange value="1, 1, 0"/>
+    <analogOutputDomain value="0, 0, 0"/>
+    <DigitalInputActions value="NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE"/>
+    <ToolDigitalInputActions value="NONE, NONE, NONE, NONE"/>
+    <ConfigurableInputActions value="NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE"/>
+    <GeneralPurposeBooleanRegisterInputNames value=", , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , "/>
+    <GeneralPurposeBooleanRegisterOutputNames value=", , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , "/>
+    <GeneralPurposeIntRegisterInputNames value=", , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , "/>
+    <GeneralPurposeIntRegisterOutputNames value=", , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , "/>
+    <GeneralPurposeFloatRegisterInputNames value=", , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , "/>
+    <GeneralPurposeFloatRegisterOutputNames value=", , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , "/>
+    <GeneralPurposeBooleanRegisterInputActions value="NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE"/>
+    <GeneralPurposeBooleanRegisterOutputActions value="NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE"/>
+  </IOConfig>
+  <HomesManager Active="733a29ad-ac22-4c9f-8b8c-ab9b8efd5ee5">
+    <cn.elibot.robot.configuration.data.home.ZeroHomePosition name="홈_오프셋xHome_Offsetx" uuid="733a29ad-ac22-4c9f-8b8c-ab9b8efd5ee5">
+      <position value="0.0, -1.570796327, 0.0, -1.570796327, 1.570796327, 0.0"/>
+    </cn.elibot.robot.configuration.data.home.ZeroHomePosition>
+  </HomesManager>
+  <FramesManager>
+    <CameraFrame name="Ctrl_view_frame" isValid="true" isVariable="false" uuid="2bcba2ce-0b9b-4843-b285-fed3b858eda8">
+      <MountingAngle Base="0.0" Tilt="0.0"/>
+    </CameraFrame>
+    <RobotBaseFrame name="Ctrl_base_frame" isValid="true" isVariable="false" uuid="9f2b2bac-968d-4294-96a9-f4b99b83e4d7"/>
+    <ToolFrame name="Ctrl_tool_frame" isValid="true" isVariable="false" uuid="c43fffc4-a4e4-4c0e-9597-e73d1492e338"/>
+  </FramesManager>
+  <ConveyorConfig>
+    <Conveyor>
+      <id>0</id>
+      <enabled>false</enabled>
+      <encoderType>Undefined</encoderType>
+      <modeType>Undefined</modeType>
+      <aPin>8</aPin>
+      <bPin>8</bPin>
+      <modbusIO></modbusIO>
+      <conveyorType>Undefined</conveyorType>
+      <ticksPerMinute>0</ticksPerMinute>
+      <invertDirection>false</invertDirection>
+      <ticksPerRotation>0</ticksPerRotation>
+      <rotateTool>false</rotateTool>
+      <frame></frame>
+      <axis>X</axis>
+    </Conveyor>
+    <Conveyor>
+      <id>1</id>
+      <enabled>false</enabled>
+      <encoderType>Undefined</encoderType>
+      <modeType>Undefined</modeType>
+      <aPin>8</aPin>
+      <bPin>8</bPin>
+      <modbusIO></modbusIO>
+      <conveyorType>Undefined</conveyorType>
+      <ticksPerMinute>0</ticksPerMinute>
+      <invertDirection>false</invertDirection>
+      <ticksPerRotation>0</ticksPerRotation>
+      <rotateTool>false</rotateTool>
+      <frame></frame>
+      <axis>X</axis>
+    </Conveyor>
+  </ConveyorConfig>
+  <SafetyConfigurationSettings>
+[ThreePositionEnabling]
+allowManualHighSpeed = 1
+
+[SafetyHome]
+sourceHomeId = 6020b286-6bc8-4ddd-bb33-be6273f8b959
+homePosition = [NaN,NaN,NaN,NaN,NaN,NaN]
+
+[Safety Tool 0]
+name = \ud234
+sourceToolId = 9f2b2bac-968d-4294-96a9-f4b99b83e3c8
+radius = 0.0
+toolPosition = [0.0,0.0,0.0]
+
+[SafetyIOConfigurationInputs]
+emergencyStopInputA = 255
+emergencyStopInputB = 255
+reducedModeInputA = 255
+reducedModeInputB = 255
+safeguardStopResetInputA = 0
+safeguardStopResetInputB = 1
+threePositionEnablingInputA = 255
+threePositionEnablingInputB = 255
+operationalModeInputA = 255
+operationalModeInputB = 255
+automaticModeSafeguardStopInputA = 255
+automaticModeSafeguardStopInputB = 255
+automaticModeSafeguardStopResetInputA = 255
+automaticModeSafeguardStopResetInputB = 255
+
+[SafetyIOConfigurationOutputs]
+systemEmergencyStopOutputA = 255
+systemEmergencyStopOutputB = 255
+robotMovingOutputA = 255
+robotMovingOutputB = 255
+robotNotStoppingOutputA = 255
+robotNotStoppingOutputB = 255
+reducedModeOutputA = 255
+reducedModeOutputB = 255
+notReducedModeOutputA = 255
+notReducedModeOutputB = 255
+safetyHomeOutputA = 255
+safetyHomeOutputB = 255
+configOut0and1_OSSD = 0
+configOut2and3_OSSD = 0
+configOut4and5_OSSD = 0
+configOut6and7_OSSD = 0
+
+[MiscConfiguration]
+teachPendant = 1
+
+[NormalModeSafetyLimits]
+maxTcpSpeed = 1.5
+maxForce = 150.0
+maxElbowSpeed = 1.5
+maxElbowForce = 150.0
+maxStoppingDistance = 0.5
+maxStoppingTime = 0.4
+maxPower = 300.0
+maxMomentum = 25.0
+maxJointSpeed = [2.6179938779739,2.6179938779739,2.8545508489005673,3.926990747000567,3.926990747000567,3.926990747000567]
+minJointPosition = [6.2308254295591725,6.2308254295591725,6.2308254295591725,6.2308254295591725,6.2308254295591725,6.230825429619756]
+maxJointPosition = [0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987755983018]
+minJointRevolutions = [-2,-2,-2,-2,-2,-2]
+maxJointRevolutions = [1,1,1,1,1,1]
+
+[ReducedModeSafetyLimits]
+maxTcpSpeed = 0.75
+maxForce = 120.0
+maxElbowSpeed = 0.75
+maxElbowForce = 120.0
+maxStoppingDistance = 0.3
+maxStoppingTime = 0.3
+maxPower = 200.0
+maxMomentum = 10.0
+maxJointSpeed = [2.268928027575034,2.268928027575034,2.5054849985017014,3.577924896601701,3.577924896601701,3.577924896601701]
+minJointPosition = [6.2308254295591725,6.2308254295591725,6.2308254295591725,6.2308254295591725,6.2308254295591725,6.230825429619756]
+maxJointPosition = [0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987755983018]
+minJointRevolutions = [-2,-2,-2,-2,-2,-2]
+maxJointRevolutions = [1,1,1,1,1,1]
+
+</SafetyConfigurationSettings>
+  <Extensions>
+    <Contribution OwnerID="cn.elibot.plugin.samples.myConfiguration" ID="cn.elibot.plugin.samples.configuration.MyConfigurationSettingServiceImpl" ConfigurationTitle="Configuration Plugin" Vendor="ELITE ROBOTS" Name="EliRobot: Example Plugin Configuration" ApiVersion="" Version="1.0.0.SNAPSHOT">
+      <dataModel/>
+    </Contribution>
+    <cn.elibot.plugin.samples.myConfiguration>
+      <dataModel/>
+    </cn.elibot.plugin.samples.myConfiguration>
+    <Contribution OwnerID="cn.elibot.plugin.fieldbus.ethernetip" ID="cn.elibot.plugin.fieldbus.ethernetip.EthernetIPSettingServiceImpl" ConfigurationTitle="ETHERNET/IP" Vendor="ELITE ROBOTS" Name="ELITECO: Fieldbus Plugin EthernetIP" ApiVersion="1.2.14.3" Version="1.2.14.3">
+      <dataModel>
+        <Primitive key="actionPLCIO" value="ignore" type="java.lang.String"/>
+        <Primitive key="status" value="false" type="java.lang.Boolean"/>
+      </dataModel>
+    </Contribution>
+    <cn.elibot.plugin.fieldbus.ethernetip>
+      <dataModel>
+        <Primitive key="actionPLCIO" value="ignore" type="java.lang.String"/>
+        <Primitive key="status" value="false" type="java.lang.Boolean"/>
+      </dataModel>
+    </cn.elibot.plugin.fieldbus.ethernetip>
+    <Contribution OwnerID="cn.elibot.plugin.samples.myToolIoLocker" ID="cn.elibot.plugin.samples.tooliolocker.ToolIOLockerSettingServiceImpl" ConfigurationTitle="IO Locker" Vendor="ELITE ROBOTS" Name="EliRobot:MyToolIoLocker" ApiVersion="" Version="1.0.0.SNAPSHOT">
+      <dataModel/>
+    </Contribution>
+    <cn.elibot.plugin.samples.myToolIoLocker>
+      <dataModel/>
+    </cn.elibot.plugin.samples.myToolIoLocker>
+    <Contribution OwnerID="cn.elibot.plugin.fieldbus.profinet" ID="cn.elibot.plugin.fieldbus.profinet.ProfinetSettingServiceImpl" ConfigurationTitle="Profinet" Vendor="ELITE ROBOTS" Name="ELITECO: Fieldbus Plugin Profinet" ApiVersion="1.2.14.3" Version="1.2.14.3">
+      <dataModel>
+        <Primitive key="actionPLCREG2" value="ignore" type="java.lang.String"/>
+        <Primitive key="actionPLCREG1" value="ignore" type="java.lang.String"/>
+        <Primitive key="actionPLCIO" value="ignore" type="java.lang.String"/>
+        <Primitive key="deviceName" value="elite-pnet" type="java.lang.String"/>
+        <Primitive key="status" value="false" type="java.lang.Boolean"/>
+      </dataModel>
+    </Contribution>
+    <cn.elibot.plugin.fieldbus.profinet>
+      <dataModel>
+        <Primitive key="actionPLCREG2" value="ignore" type="java.lang.String"/>
+        <Primitive key="actionPLCREG1" value="ignore" type="java.lang.String"/>
+        <Primitive key="actionPLCIO" value="ignore" type="java.lang.String"/>
+        <Primitive key="deviceName" value="elite-pnet" type="java.lang.String"/>
+        <Primitive key="status" value="false" type="java.lang.Boolean"/>
+      </dataModel>
+    </cn.elibot.plugin.fieldbus.profinet>
+  </Extensions>
+</ConfigurationSettings>

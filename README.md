@@ -103,6 +103,10 @@ ros2 launch elite_robot_controller elite_cs612.launch.py robot_ip:=192.168.227.1
 
 `operator-ui/`는 ROS 2와 별개로 동작하는 PyQt6 앱이다. 실행 방법은 [operator-ui/README.md](operator-ui/README.md)를 참고한다.
 
+### 전체를 한꺼번에 띄우기
+
+브로커·로봇 노드·UI·MQTT 시뮬레이터를 터미널별로 정리한 실행 순서는 [`docs/run_guide.md`](docs/run_guide.md)에 있다.
+
 ### 실제 로봇 없이 전체 흐름 시험
 
 로봇이 물리적으로 연결되어 있지 않으면 `robot_ip`(기본 `192.168.227.134`)로는 당연히 연결되지 않는다. 로봇 없이 UI까지 함께 시험하려면 [`src/elite_robot_controller/tools/elite_robot_simulator.py`](src/elite_robot_controller/tools/elite_robot_simulator.py)를 쓴다. 절차는 [패키지 README](src/elite_robot_controller/README.md#로봇-없이-시험-시뮬레이터)를 참고한다.

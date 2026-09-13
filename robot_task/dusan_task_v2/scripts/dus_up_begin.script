@@ -1,0 +1,66 @@
+# =============================================================================
+#  dus_up_begin.script — dusan_v2 태스크용
+#  한 피치만큼 상승할 목표를 잡는다. pub_u 를 정의한다
+#
+#  펜던트에서 "10_up_begin" 위치에 스크립트 노드를 파일(File) 모드로 넣고
+#  이 파일을 지정한다.
+#
+#  ※ 파일끼리 함수를 공유할 수 없어서 필요한 헬퍼를 이 파일 안에 직접 둔다.
+#     이름이 겹치지 않게 접두사(ub)를 붙였다.
+#
+#  ※ def main() 으로 감싸지 말 것. 펜던트는 파일 내용을 그 자리에 그대로
+#     끼워 넣기만 하고 main() 을 호출하지 않는다. 감싸면 아무것도 실행되지 않는다.
+#  ※ 최상위에 global 을 쓰지 말 것. 설정 변수는 펜던트 preamble 이 이미
+#     global 선언 + 대입을 해 둬서, 같은 스코프에서 다시 선언하면
+#     "assigned to before global declaration" 오류가 난다. 대입만 하면 된다.
+# =============================================================================
+
+
+def ub_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+# 로봇 자체 레지스터 384~389 와 같은 단위를 쓴다.
+#   길이 -> 0.1mm (m * 10000),  회전 -> mRad (rad * 1000)
+def ub_w6(a, p):
+  ub_w1(a, p[0] * 10000)
+  ub_w1(a + 1, p[1] * 10000)
+  ub_w1(a + 2, p[2] * 10000)
+  ub_w1(a + 3, p[3] * 1000)
+  ub_w1(a + 4, p[4] * 1000)
+  ub_w1(a + 5, p[5] * 1000)
+end
+
+
+# 절대 TCP(260~265) 와 원점기준 상대좌표(280~285), alive(293) 를 발행한다.
+# 항상 False 를 반환하므로 Until 표현식에 "pub_u() or 조건" 으로 끼워 쓴다.
+# 방향이송 + Until 이 만드는 while 루프가 제어주기마다 이 함수를 부른다.
+def pub_u():
+  global cur_pose
+  global rel_pose
+  global alive
+  cur_pose = get_actual_tcp_pose()
+  ub_w6(260, cur_pose)
+  rel_pose = pose_trans(zero_inv, cur_pose)
+  ub_w6(280, rel_pose)
+  alive = alive + 1
+  if (alive > 30000):
+    alive = 0
+  end
+  write_port_register(293, alive)
+  return False
+end
+
+
+tgt_pose = get_actual_tcp_pose()
+# 목표 높이는 직전 위치가 아니라 원점(z_base) 기준 절대값으로 잡는다.
+# 상대값으로 쌓으면 구간마다의 정지 오차가 행 수만큼 누적된다.
+tgt_pose[2] = z_base + row_idx * pitch * 0.001
+pub_u()

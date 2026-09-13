@@ -77,22 +77,26 @@ ROBOT/
 
 ```
 1  [스크립트파일] dus_init.script      파라미터·계획·레지스터 초기화·발행스레드 기동
-2  move_home                          Z 안전상승 후 MoveJ Home_joint
-3  [스크립트파일] dus_probe_c.script   중앙 : X+ 전진 → 검출 → X- 후퇴
-4  [스크립트파일] dus_probe_l.script   Y+ 너비/2 → 전진/검출 → 후퇴   ★ 여기가 원점
-5  [스크립트파일] dus_probe_r.script   Y- 너비/2 → 전진/검출 → 후퇴 → 2차식 계수 계산
-6  [스크립트파일] dus_goto_zero.script 원점 복귀 (Y 먼저 맞추고 X 로 접근)
+2  move_home                          Z 안전상승 후 MoveJ Home_joint  ← 유일하게 남은 펜던트 Move 노드
+3  [스크립트파일] dus_move_start.script          start_pose 로 이동 (블렌드 없음)
+4  [스크립트파일] dus_probe_c.script   중앙 : X+ 전진 → 검출 → X- 후퇴
+5  [스크립트파일] dus_move_start.script          start_pose 로 이동 (블렌드 없음)
+6  [스크립트파일] dus_probe_l.script   Y+ 너비/2 → 전진/검출 → 후퇴   ★ 여기가 원점
+7  [스크립트파일] dus_move_start_waypoint.script start_pose 를 r_l 로 스쳐 지나감
+8  [스크립트파일] dus_probe_r.script   Y- 너비/2 → 전진/검출 → 후퇴 → 2차식 계수 계산
+9  [스크립트파일] dus_move_start_waypoint.script start_pose 를 r_l 로 스쳐 지나감
+10 [스크립트파일] dus_goto_zero.script 원점 복귀 → 도착 알림·대기 → 적심 → 스캔
 루프 200 횟수
    pass_done=0
    If row_idx<rows and dir_sign>0 and pass_done==0
-      7  [스크립트파일] dus_pass_r.script    오른쪽(Y-) 한 줄
+      11 [스크립트파일] dus_pass_r.script    오른쪽(Y-) 한 줄
    If row_idx<rows and dir_sign<0 and pass_done==0
-      8  [스크립트파일] dus_pass_l.script    왼쪽(Y+) 한 줄
+      12 [스크립트파일] dus_pass_l.script    왼쪽(Y+) 한 줄
    If row_idx<rows
-      9  [스크립트파일] dus_up.script        한 피치 상승
+      13 [스크립트파일] dus_up.script        한 피치 상승
    If row_idx>=rows
-      10 [스크립트파일] dus_finish.script    후퇴 + 완료 플래그
-      11 move_home
+      14 [스크립트파일] dus_finish.script    후퇴 + 완료 플래그
+      15 move_home
       중지                                   ← 여기서 태스크가 끝난다
 중지                                          ← 파라미터 이상 시 안전장치
 ```
@@ -100,6 +104,20 @@ ROBOT/
 **루프 200 은 상한일 뿐이다.** 마지막 패스를 마치면 `row_idx >= rows` 가 되어
 네 번째 If 안에서 마무리하고 곧바로 끝난다. 남은 회차를 헛돌지 않는다.
 (조건 루프 노드의 XML 속성값을 확인할 수 없어 If + Halt 로 같은 결과를 만들었다)
+
+### 3-1-1. 태스크 판 네 가지
+
+| 태스크 | 스크립트 폴더 | 원점에서 | 쓰는 곳 |
+|---|---|---|---|
+| `dusan_v4` | `scripts/` | **MQTT 대기** (레지스터 267) | 실기 (눌림 센서 있음) |
+| `dusan_v4_nosensor` | `scripts_nosensor/` | **팝업** (사람이 확인) | 로봇만 단독 확인 (RCS 없이) |
+| `dusan_v4_nosensor_seq` | `scripts_nosensor/` + `scripts_nosensor_seq/dus_goto_zero.script` | **MQTT 대기** | 센서 없이 **시퀀스 전체**를 실기처럼 |
+| `dusan_v4_nosensor_loop` | `scripts_nosensor/` | 팝업 | 반복 내구 확인 |
+
+`nosensor_seq` 는 `dus_goto_zero.script` **한 파일만** 따로 두고 나머지 노드는
+`scripts_nosensor/` 를 그대로 가리킨다. 팝업을 띄우면 펜던트 화면이 잡아 버려
+ERUT 에서 확인 버튼을 눌러도 로봇이 그 신호를 받지 못하기 때문에, 시퀀스를
+끝까지 돌려 보려면 팝업이 없어야 한다.
 
 ### 3-2. 스크립트 파일이 하는 일
 

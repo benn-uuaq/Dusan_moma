@@ -62,6 +62,26 @@ def test_window_shows_received_poses(qtbot):
     window.close()
 
 
+def test_zero_relative_y_maps_straight_to_horizontal_position(qtbot):
+    """가로 위치는 rel_y를 그대로 쓴다(부호를 뒤집지 않는다).
+
+    dusan_v3부터 원점이 Y+에서 Y-로 바뀌어(dus_probe_l.script), 첫 패스가
+    Y-에서 Y+로 움직인다 — cur-zero(rel_y)가 이미 오른쪽(+)과 같은 방향이라
+    부호를 뒤집으면 위치 점이 반대로(왼쪽/음수 쪽으로) 움직이는 것처럼 보인다.
+    """
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+
+    # 위치 점은 스캔 중(state=6)에만 그린다 — 먼저 스캔 중임을 알린다.
+    window.ros_status.scan_state_changed.emit([6, 1, 3, 0, 1, 0, 237, 0, 0, 0])
+    window.ros_status.tcp_pose_zero_changed.emit([0.0, 250.0, 10.0, 0.0, 0.0, 0.0])
+
+    rect_view = window.main_screen.rect_view
+    assert rect_view._pos_h_mm == 250.0
+    assert rect_view._pos_v_mm == 10.0
+    window.close()
+
+
 def test_status_codes_are_translated(qtbot):
     """레지스터 값과 함께 운영자용 문구를 전달한다."""
     client = RosStatusClient()
@@ -150,9 +170,11 @@ def test_dashboard_commands_are_mapped_to_services():
     """수동 제어 화면의 명령이 모두 서비스에 연결되어 있어야 한다."""
     from smr_operator_ui.screens import CobotManualScreen
 
+    # connect/disconnect 는 이 화면에서 빠지고 "연결 설정" 화면이 맡는다
+    # (명령 자체는 그대로 쓰이며, 아래 목록에서 따로 확인한다).
     screen_commands = {
         command
-        for group in (CobotManualScreen._CONNECTION, CobotManualScreen._POWER,
+        for group in (CobotManualScreen._POWER,
                       CobotManualScreen._PROGRAM, CobotManualScreen._MOTION)
         for _label, command in group
     }
@@ -191,3 +213,110 @@ def test_command_without_ros_reports_clearly(qtbot):
 
     assert "실패" in window.cobot_manual_screen.activity_label.text()
     window.close()
+
+
+def test_connected_topic_is_reported_only_on_change(qtbot):
+    """연결 상태는 10 Hz 로 계속 오지만 바뀔 때만 알려야 한다.
+
+    그대로 흘려보내면 `_restore_robot_settings()` 가 초당 열 번 저장값을
+    다시 밀어 넣어, 운영자가 방금 바꾼 속도가 곧바로 100 으로 되돌아간다.
+    """
+    from smr_operator_ui.services import RosStatusClient
+
+    client = RosStatusClient()
+    seen: list[bool] = []
+    client.connected_changed.connect(seen.append)
+
+    class Msg:
+        def __init__(self, data): self.data = data
+
+    # 같은 값이 계속 들어와도 처음 한 번만 나간다.
+    for _ in range(10):
+        client._on_connected(Msg(True))
+    assert seen == [True]
+
+    client._on_connected(Msg(False))
+    client._on_connected(Msg(False))
+    assert seen == [True, False]
+
+
+def test_saved_settings_are_not_resent_every_cycle(qtbot, monkeypatch):
+    """연결 토픽이 반복돼도 저장값을 되풀이해 쓰면 안 된다.
+
+    되풀이하면 속도 바로 40 % 를 보내도 100 ms 안에 저장값(100 %)으로
+    덮어써져 "바꿨다가 바로 100 으로 되돌아가는" 증상이 된다.
+    """
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    sent: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        window.ros_status, "send_value",
+        lambda name, value: sent.append((name, value)) or True,
+    )
+
+    class Msg:
+        def __init__(self, data): self.data = data
+
+    for _ in range(10):
+        window.ros_status._on_connected(Msg(True))
+
+    speed_writes = [v for name, v in sent if name == "speed_ratio"]
+    assert len(speed_writes) == 1, f"저장값이 되풀이해 나갔다: {speed_writes}"
+    window.close()
+
+
+def test_speed_scale_ignores_values_out_of_range(qtbot):
+    """로봇이 아직 값을 못 주면 0 이 온다. 하한(2 %)으로 눌러 버리면 안 된다.
+
+    0 은 "속도가 2 %" 가 아니라 값이 없다는 뜻이다. 그대로 쓰면 화면이
+    2 % 와 100 % 를 오가는 것처럼 보인다.
+    """
+    from smr_operator_ui.services import RosStatusClient
+
+    client = RosStatusClient()
+    seen: list[int] = []
+    client.speed_scale_changed.connect(seen.append)
+
+    class Msg:
+        def __init__(self, data): self.data = data
+
+    for bad in (0, 1, 101, -5):
+        client._on_speed_scale(Msg(bad))
+    assert seen == [], f"범위 밖 값이 새어 나갔다: {seen}"
+
+    client._on_speed_scale(Msg(45))
+    assert seen == [45]
+
+
+def test_speed_scale_is_reported_only_on_change(qtbot):
+    """노드가 매 주기 발행하므로 같은 값이 초당 수십 번 화면을 때리면 안 된다."""
+    from smr_operator_ui.services import RosStatusClient
+
+    client = RosStatusClient()
+    seen: list[int] = []
+    client.speed_scale_changed.connect(seen.append)
+
+    class Msg:
+        def __init__(self, data): self.data = data
+
+    for _ in range(20):
+        client._on_speed_scale(Msg(100))
+    client._on_speed_scale(Msg(30))
+    for _ in range(20):
+        client._on_speed_scale(Msg(30))
+
+    assert seen == [100, 30]
+
+
+def test_speed_bar_shows_no_value_when_robot_has_none(qtbot):
+    """값이 없을 때 속도 바가 2 % 로 눌리지 않고 직전 값을 유지해야 한다."""
+    from smr_operator_ui.components import SpeedBar
+
+    bar = SpeedBar()
+    qtbot.addWidget(bar)
+    bar.set_actual(65)
+    assert bar.value() == 65
+    assert "65" in bar.value_label.text()
+
+    bar.set_actual(0)
+    assert bar.value() == 65, "값 없음이 슬라이더를 하한으로 끌어내렸다"

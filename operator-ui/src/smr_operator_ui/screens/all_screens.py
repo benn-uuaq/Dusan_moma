@@ -1,4 +1,4 @@
-"""보조 운영 화면과 PostgreSQL 기반 공통 설정 폼을 제공한다."""
+"""보조 운영 화면과 공통 설정 폼을 제공한다."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import os
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QListWidget, QProgressBar, QPushButton,
@@ -15,7 +15,9 @@ from PyQt6.QtWidgets import (
 )
 
 from smr_operator_ui.components import MetricRow
-from smr_operator_ui.keypad import TouchDoubleSpinBox, TouchLineEdit, TouchSpinBox
+from smr_operator_ui.keypad import (
+    TouchComboBox, TouchDoubleSpinBox, TouchLineEdit, TouchSpinBox,
+)
 
 
 def load_plc_signals(path: str | None = None) -> list[dict]:
@@ -50,8 +52,15 @@ class BaseScreen(QWidget):
         heading = QLabel(title); heading.setObjectName("HeroValue")
         title_box.addWidget(heading)
         if subtitle:
-            sub = QLabel(subtitle); sub.setObjectName("Muted"); title_box.addWidget(sub)
-        head.addLayout(title_box); head.addStretch()
+            sub = QLabel(subtitle); sub.setObjectName("Muted")
+            # 부제는 한 줄로 쓰기엔 긴 안내문이 많다. wordWrap이 없으면
+            # "이전" 버튼과 여백에 밀려 오른쪽이 그대로 잘렸다(예: Cobot
+            # 설정 화면 부제).
+            sub.setWordWrap(True)
+            title_box.addWidget(sub)
+        # 부제를 좁은 칸에 두면 3줄로 접혀 본문 높이를 잡아먹는다. 남는
+        # 가로를 쓰게 해서 한 줄로 눕힌다.
+        head.addLayout(title_box, 1)
         back = QPushButton("이전")
         back.setObjectName("BackButton")
         back.clicked.connect(self.back_requested.emit)
@@ -71,7 +80,10 @@ class ManualScreen(BaseScreen):
 
     def __init__(self) -> None:
         super().__init__("수동 제어", "점검 모드에서만 사용할 수 있으며, 버튼을 누르는 동안에만 동작합니다.")
-        grid = QGridLayout(); grid.setSpacing(12); self.body.addLayout(grid, 1)
+        # 창을 작게 쓰면 카드 높이가 모자라 버튼끼리 겹쳐 보였다. 내용을
+        # 스크롤 영역에 담아, 모자라면 겹치는 대신 스크롤되게 한다.
+        page = QWidget()
+        grid = QGridLayout(page); grid.setSpacing(12); grid.setContentsMargins(0, 0, 0, 0)
         amr, a = self.surface("AMR 조그 제어")
         pad = QGridLayout()
         for text, r, c in (("전진",0,1),("좌회전",1,0),("정지",1,1),("우회전",1,2),("후진",2,1)):
@@ -84,13 +96,25 @@ class ManualScreen(BaseScreen):
         grid.addWidget(lift,0,1)
         out,o=self.surface("아웃트리거")
         og=QGridLayout()
+        og.setSpacing(8)
         for i in range(3):
-            og.addWidget(QLabel(f"Outrigger {i+1}\n접지 · 정상"),0,i)
+            label = QLabel(f"Outrigger {i+1}\n접지 · 정상")
+            label.setWordWrap(True)
+            og.addWidget(label,0,i)
             og.addWidget(QPushButton("전개"),1,i); og.addWidget(QPushButton("회수"),2,i)
         o.addLayout(og); level=QPushButton("자동 수평 보정"); level.setMinimumHeight(56); o.addWidget(level)
         grid.addWidget(out,1,1)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("SettingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(page)
+        self.body.addWidget(scroll, 1)
+
         alert=QLabel("안전 인터락: Cobot 검사 중에는 AMR 이동과 아웃트리거 회수가 비활성화됩니다.")
-        alert.setObjectName("StatusWarn"); self.body.addWidget(alert)
+        alert.setObjectName("StatusWarn"); alert.setWordWrap(True); self.body.addWidget(alert)
 
 
 class StatusBlock(QWidget):
@@ -122,7 +146,6 @@ class CobotManualScreen(BaseScreen):
 
     # 버튼 문구와 명령 키를 함께 둔다. 명령 키는 robot_control_node가 제공하는
     # robot/dashboard/* 서비스 이름과 일치시켜 이후 연결을 단순하게 만든다.
-    _CONNECTION = (("연결", "connect"), ("연결 해제", "disconnect"))
     _POWER = (("전원 ON", "power_on"), ("전원 OFF", "power_off"), ("브레이크 해제", "brake_release"))
     _PROGRAM = (("재생", "play"), ("일시정지", "pause"), ("정지", "stop"))
     _MOTION = (("홈 이동", "home"),)
@@ -146,7 +169,12 @@ class CobotManualScreen(BaseScreen):
         conn,c=self.surface("연결")
         self.endpoint_label=QLabel(); self.endpoint_label.setObjectName("Muted"); c.addWidget(self.endpoint_label)
         self.connection_state=QLabel("● 연결 안 됨"); self.connection_state.setObjectName("StatusDanger"); c.addWidget(self.connection_state)
-        c.addLayout(self._button_row(self._CONNECTION))
+        # 연결/연결 해제는 "연결 설정" 화면 한 곳에서만 한다 — 화면마다 따로
+        # 걸고 끊으면 지금 어디에 붙어 있는지 알 수 없어진다. 여기서는 상태만
+        # 보여 주고, 조작은 그 화면으로 보낸다.
+        goto=QPushButton("연결 설정"); goto.setMinimumHeight(52)
+        goto.clicked.connect(lambda: self.navigate.emit("connection"))
+        c.addWidget(goto)
         c.addStretch()
         top.addWidget(conn,0,0)
 
@@ -181,11 +209,16 @@ class CobotManualScreen(BaseScreen):
             "robot_mode": StatusBlock("로봇 모드"),
             "control_method": StatusBlock("제어 방식"),
             "operation_mode": StatusBlock("운전 모드"),
+            # 작업 영역 전송이 막히는 조건이라(도는 중에는 안 보낸다)
+            # 지금 어떤 상태로 보고되는지 늘 보이게 둔다.
+            "task_state": StatusBlock("태스크 상태"),
         }
         # 세로로 쌓으면 아래 카드를 밀어내므로 세 항목을 가로로 배치한다.
         status_row=QHBoxLayout(); status_row.setSpacing(12)
         # 로봇 모드 값(CONFIRM_SAFETY 등)이 가장 길어 폭을 더 준다.
-        for row,stretch in zip(self.metrics.values(),(3,2,2)):
+        # zip 은 짧은 쪽에서 끊긴다 — 항목을 늘리면 이 튜플도 같이 늘려야
+        # 새 항목이 화면에서 통째로 빠지지 않는다.
+        for row,stretch in zip(self.metrics.values(),(3,2,2,2)):
             status_row.addWidget(row,stretch)
         s.addLayout(status_row)
         s.addStretch()
@@ -312,21 +345,16 @@ class CobotJogScreen(BaseScreen):
                  ("RX", "mrad"), ("RY", "mrad"), ("RZ", "mrad"))
     _SAVE = (("홈 위치 저장", "save_home_pose"), ("시작 포즈 저장", "save_start_pose"))
 
-    # 누르고 있는 동안 명령을 되풀이하는 간격 [ms].
-    # 노드의 jog_hold_time(기본 0.5초)보다 충분히 짧아야 끊기지 않는다.
-    JOG_REPEAT_MS = 150
-
     def __init__(self) -> None:
         super().__init__("Cobot 조그 / 위치 저장",
                          "점검 모드에서만 사용합니다. 버튼을 누르는 동안에만 움직입니다.")
         self.jog_buttons: dict[tuple[str, int, int], QPushButton] = {}
-        # 로봇은 조그 명령을 받은 뒤 정해진 시간만 움직이고 스스로 선다.
-        # 누르고 있는 동안 명령을 되풀이해야 계속 움직인다. 화면이 멈추거나
-        # 통신이 끊기면 되풀이가 끊겨 로봇도 곧 선다.
-        self._active_jog: tuple[str, int, int] | None = None
-        self._jog_timer = QTimer(self)
-        self._jog_timer.setInterval(self.JOG_REPEAT_MS)
-        self._jog_timer.timeout.connect(self._repeat_jog)
+        # speedj/speedl을 누를 때마다(예전에는 held 동안 150ms마다) 다시
+        # 보내면, 로봇이 그때마다 새 스크립트를 실행하느라 STOPPED →
+        # RUNNING을 반복해 움직임이 덜컹거린다. 그래서 누른 순간 딱 한 번만
+        # 보내고, 뗄 때 29999 stop으로 멈춘다 — held 동안 되풀이하지 않는다.
+        # 로봇 노드의 jog_hold_time은 이제 "혹시 stop이 안 갔을 때"의
+        # 안전 타임아웃일 뿐이니 충분히 길게 잡혀 있어야 한다.
         self.joint_values: dict[int, QLabel] = {}
         self.tcp_values: dict[str, QLabel] = {}
 
@@ -407,19 +435,9 @@ class CobotJogScreen(BaseScreen):
             f"{self._axis_name(kind, index)} 축을 "
             f"{'＋' if direction > 0 else '−'} 방향으로 조그 중입니다."
         )
-        self._active_jog = (kind, index, direction)
         self.jog_pressed.emit(kind, index, direction)
-        self._jog_timer.start()
-
-    def _repeat_jog(self) -> None:
-        if self._active_jog is None:
-            self._jog_timer.stop()
-            return
-        self.jog_pressed.emit(*self._active_jog)
 
     def _on_jog_released(self, kind: str, index: int) -> None:
-        self._jog_timer.stop()
-        self._active_jog = None
         self.jog_released.emit(kind, index)
 
     def _request(self, command: str, label: str) -> None:
@@ -465,7 +483,7 @@ class RunScreen(BaseScreen):
         super().__init__("검사 실행", "검사 계획을 선택하고 사전 조건을 확인한 뒤 원주 사이클을 시작합니다.")
         row=QHBoxLayout(); self.body.addLayout(row,1)
         plan,p=self.surface("검사 계획")
-        combo=QComboBox(); combo.addItems(["SMR Shell UT · 12구간", "교정 시편 · 4구간"]); p.addWidget(combo)
+        combo=TouchComboBox(); combo.addItems(["SMR Shell UT · 12구간", "교정 시편 · 4구간"]); p.addWidget(combo)
         p.addWidget(QLabel("대상: Ø 2.0 m\n시작 구간: 01\n회전 방향: 시계 방향\n구간당 검사 폭: 설정값 사용"))
         row.addWidget(plan,1)
         checks,c=self.surface("사전 조건")
@@ -486,7 +504,7 @@ class SettingsMenuScreen(BaseScreen):
         super().__init__("설정 / 진단", "장비 설정과 운전 기록을 관리합니다.")
         self.setObjectName("SettingsScreen")
         grid=QGridLayout(); grid.setSpacing(14); self.body.addLayout(grid,1)
-        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·MQTT IP"),("system","시스템 설정","시간·단위·로그"),("ut","UT 시스템 설정","검사 조건과 트리거"),("cobot","Cobot 설정","검사 작업 슬롯"),("errors","오류 로그","활성 및 과거 오류"),("logs","로그 파일","날짜별 기록 관리"),("modes","운전 모드 저장","설정 슬롯 관리"))
+        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·MQTT IP"),("system","시스템 설정","시간·단위·로그"),("ut","UT 시스템 설정","검사 조건과 트리거"),("cobot","Cobot 설정","검사 작업 슬롯"),("tpac_bridge","TPAC 설정 / TCP 인코딩","로봇 값을 외부 Modbus로 중계"),("errors","오류 로그","활성 및 과거 오류"),("logs","로그 파일","날짜별 기록 관리"),("modes","운전 모드 저장","설정 슬롯 관리"))
         for i,(key,title,desc) in enumerate(items):
             # key를 기본 인자로 고정한다. 그렇지 않으면 모든 lambda가
             # 반복문의 마지막 key만 참조하게 된다.
@@ -616,6 +634,11 @@ class FormScreen(BaseScreen):
 
     save_requested = pyqtSignal(str, dict)
 
+    # 화면에 보일 짧은 이름. 항목명(= 저장 키)은 그대로 두고 표시만 줄인다 —
+    # 구역 제목("협동로봇" 등) 아래에서는 접두어가 군더더기라 칸만 좁히고,
+    # 저장된 설정과의 호환도 깨진다.
+    DISPLAY_LABELS: dict[str, str] = {}
+
     def __init__(self,scope:str,title:str,subtitle:str,fields:list[tuple[str,QWidget|None]],columns:int=1) -> None:
         super().__init__(title,subtitle)
         self.settings_scope = scope
@@ -647,7 +670,7 @@ class FormScreen(BaseScreen):
                 section=QLabel(section_title); section.setObjectName("SectionTitle"); column.addWidget(section)
             form=QFormLayout(); form.setSpacing(16 if columns == 1 else 10)
             for label,widget in entries:
-                field_label = QLabel(label)
+                field_label = QLabel(self.DISPLAY_LABELS.get(label, label))
                 field_label.setObjectName("SettingsFieldLabel")
                 widget.setObjectName("SettingsInput")
                 self._fields[label] = widget
@@ -657,19 +680,47 @@ class FormScreen(BaseScreen):
             item=columns_layout.itemAt(i)
             if item.layout() is not None:
                 item.layout().addStretch()
-        layout.addLayout(columns_layout,1)
-        row=QHBoxLayout(); row.addStretch()
+        # 입력칸만 스크롤 영역에 담는다. 배율이 커지면(창을 키우면) 입력칸
+        # min-height 도 같이 커져 세로가 모자랄 때가 있는데, 그대로 두면
+        # 위젯끼리 **겹쳐 보였다**. 모자라면 이 안에서만 스크롤되고, 아래
+        # 저장/연결 버튼은 항상 보이는 자리에 남는다.
+        fields_area=QWidget()
+        fields_area.setLayout(columns_layout)
+        scroll=QScrollArea()
+        scroll.setObjectName("SettingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(fields_area)
+        layout.addWidget(scroll,1)
+        row=QHBoxLayout()
+        # 하위 화면이 이 줄 왼쪽에 조작부를 끼워 넣을 수 있게 남겨 둔다
+        # (카드를 하나 더 만들면 그만큼 입력칸 자리가 줄어든다).
+        self._action_row = row
+        row.addStretch()
         cancel=QPushButton("변경 취소"); cancel.setObjectName("SettingsButton"); cancel.clicked.connect(self.restore_saved_values)
         save=QPushButton("저장"); save.setObjectName("PrimarySettingsButton"); save.clicked.connect(self._request_save)
         # 문구 길이가 달라도 두 버튼이 같은 크기로 보이도록 폭을 맞춘다.
         for button in (cancel,save):
             button.setMinimumWidth(140); row.addWidget(button)
         layout.addLayout(row)
-        self.save_status = QLabel("PostgreSQL에서 설정을 불러오는 중입니다.")
+        self.save_status = QLabel("저장된 설정을 불러오는 중입니다.")
         self.save_status.setObjectName("Muted")
+        # 저장소 오류 문구("저장소 오류: SMR_DATABASE_URL 환경변수가
+        # 설정되지 않았습니다." 등)는 길어질 수 있어 한 줄로 두면 잘린다.
+        self.save_status.setWordWrap(True)
         layout.addWidget(self.save_status)
+
         self.body.addWidget(surface,1)
         self._saved_values = self.values()
+
+    def field(self, name: str):
+        """이름으로 입력 위젯을 돌려준다.
+
+        값이 바뀌는 즉시 다른 화면에 반영해야 하는 항목(로봇 IP 등)이 있어
+        바깥에서 시그널을 걸 수 있게 열어 둔다.
+        """
+        return self._fields.get(name)
 
     def values(self) -> dict[str, object]:
         """입력값을 JSONB와 호환되는 Python 자료형으로 수집한다."""
@@ -703,7 +754,7 @@ class FormScreen(BaseScreen):
                 widget.setChecked(bool(value))
         self._saved_values = self.values()
         self.save_status.setObjectName("Muted")
-        self.save_status.setText("PostgreSQL 저장값을 불러왔습니다.")
+        self.save_status.setText("저장된 설정을 불러왔습니다.")
         self.save_status.style().unpolish(self.save_status)
         self.save_status.style().polish(self.save_status)
 
@@ -714,14 +765,14 @@ class FormScreen(BaseScreen):
 
     def _request_save(self) -> None:
         """직접 DB를 호출하지 않고 서비스 계층에 저장을 요청한다."""
-        self.save_status.setText("PostgreSQL에 저장하는 중입니다.")
+        self.save_status.setText("저장하는 중입니다.")
         self.save_requested.emit(self.settings_scope, self.values())
 
     def mark_saved(self) -> None:
         """현재 값을 이후 변경 취소 시 사용할 기준값으로 기록한다."""
         self._saved_values = self.values()
         self.save_status.setObjectName("StatusGood")
-        self.save_status.setText("PostgreSQL에 저장했습니다.")
+        self.save_status.setText("저장했습니다.")
         self.save_status.style().unpolish(self.save_status)
         self.save_status.style().polish(self.save_status)
 
@@ -748,7 +799,7 @@ class SystemSettingsScreen(FormScreen):
     """콘솔, 갱신 주기, 보존 기간, 저장 경로를 설정하는 화면."""
 
     def __init__(self):
-        lang=QComboBox(); lang.addItems(["한국어","English"])
+        lang=TouchComboBox(); lang.addItems(["한국어","English"])
         super().__init__("system","시스템 설정","운영 환경과 로그 정책을 설정합니다.",[("장비 이름",line("SMR Operator Console")),("언어",lang),("상태 갱신 주기",spin(200,50,5000)),("로그 보존 기간",spin(365,1,3650)),("데이터 저장 위치",line("D:/SMR/Data")),("안전 설정",QLabel("PLC 관리 · 읽기 전용"))])
 
 class UTSettingsScreen(FormScreen):
@@ -758,26 +809,48 @@ class UTSettingsScreen(FormScreen):
         super().__init__("ut","UT 시스템 설정","검사 중에는 품질 관련 설정이 잠깁니다.",[("UT 주소",line("192.168.0.50")),("통신 포트",spin(5000)),("검사 조건",line("SMR_SHELL_A")),("주사 속도",dspin(150," mm/s")),("게인",dspin(26," dB")),("마킹 트리거",QCheckBox("기준 초과 시 출력"))])
 
 class CobotSettingsScreen(FormScreen):
-    """협동로봇 작업 슬롯을 설정하는 화면."""
+    """협동로봇 작업 슬롯을 설정하는 화면.
+
+    태스크는 펜던트/로봇 쪽에서 이미 고정되어 있어 여기서 고르지 않는다.
+    대신 29999 대시보드의 "task -s"로 지금 로봇에 실제로 올라가 있는
+    태스크가 뭔지만 물어와 표시한다(읽기 전용).
+    """
 
     # 저장할 때 이 항목을 로봇에도 보낸다. 항목명이 곧 저장 키이므로
     # 값을 꺼낼 때도 이 이름을 쓴다.
     SPEED_FIELD = "작업 속도"
     RATIO_FIELD = "속도 비율"
 
+    task_refresh_requested = pyqtSignal()
+
     def __init__(self):
-        tasks=QComboBox(); tasks.addItems([f"TASK {i:02d}" for i in range(1,25)])
+        # pyqtSignal은 QObject.__init__()이 돌기 전에는 바인딩되지 않으므로,
+        # self.task_refresh_requested를 쓰는 connect()는 super().__init__()
+        # 뒤로 미룬다. 위젯 자체를 만드는 건 상관없다.
+        task_row = QWidget()
+        task_layout = QHBoxLayout(task_row)
+        task_layout.setContentsMargins(0, 0, 0, 0)
+        self.task_status_label = QLabel("확인 전")
+        task_layout.addWidget(self.task_status_label, 1)
+        refresh = QPushButton("새로고침")
+        task_layout.addWidget(refresh)
         super().__init__(
             "cobot","Cobot 설정",
-            "작업 슬롯과 속도를 관리합니다. 작업 속도는 movel 속도이고, 속도 비율은 로봇 전체 속도에 곱해집니다.",
+            "작업 슬롯과 속도를 관리합니다. 작업 속도는 movel 속도로 안전 기준상 "
+            "최대 150 mm/s 이고, 속도 비율은 로봇 전체 속도에 곱해집니다(2~100 %).",
             [
-                ("선택 작업",tasks),
-                (self.SPEED_FIELD,spin(150,1,1000)),
+                ("현재 태스크",task_row),
+                (self.SPEED_FIELD,spin(150,1,150)),
                 (self.RATIO_FIELD,spin(100,2,100)),
                 ("연결 상태",QLabel("● 연결됨")),
                 ("마지막 응답",QLabel("12 ms")),
             ],
         )
+        refresh.clicked.connect(self.task_refresh_requested)
+
+    def set_task_status(self, text: str) -> None:
+        """29999 "task -s" 응답으로 현재 태스크 표시를 갱신한다."""
+        self.task_status_label.setText(text or "확인 전")
 
     def linear_speed(self) -> int:
         """저장 시 로봇으로 보낼 직선 동작 속도(mm/s)를 돌려준다."""
@@ -789,10 +862,31 @@ class CobotSettingsScreen(FormScreen):
 
 
 class ConnectionSettingsScreen(FormScreen):
-    """협동로봇, 차량용 PLC, MQTT Broker의 유선 연결 정보를 한 화면에서 설정한다."""
+    """협동로봇, 차량용 PLC, MQTT Broker의 유선 연결 정보를 한 화면에서 설정한다.
+
+    로봇 연결/연결 해제도 **이 화면에서만** 한다. 예전에는 Cobot 수동 제어와
+    TPAC 설정이 각자 연결 버튼을 갖고 있어서, 어느 화면에서 무엇에 붙어
+    있는지 알기 어려웠고 주소도 화면마다 따로 입력해야 했다.
+    """
+
+    ROBOT_IP_FIELD = "협동로봇 IP"
+    ROBOT_PORT_FIELD = "Modbus 포트"
+
+    DISPLAY_LABELS = {
+        "협동로봇 IP": "IP", "Dashboard 포트": "Dashboard",
+        "Primary 포트": "Primary", "Modbus 포트": "Modbus",
+        "PLC IP": "IP", "PLC 포트": "포트",
+        "PLC 프로토콜": "프로토콜", "PLC 국번": "국번",
+        "MQTT Broker 주소": "주소", "MQTT 포트": "포트",
+        "MQTT Client ID": "Client ID",
+        "MQTT Keep Alive": "Keep Alive", "MQTT TLS 사용": "TLS 사용",
+    }
+
+    connect_requested = pyqtSignal()
+    disconnect_requested = pyqtSignal()
 
     def __init__(self):
-        plc_protocol=QComboBox(); plc_protocol.addItems(["KEYENCE MC Protocol","Modbus TCP"])
+        plc_protocol=TouchComboBox(); plc_protocol.addItems(["KEYENCE MC Protocol","Modbus TCP"])
         super().__init__(
             "connection","연결 설정",
             "각 장비의 유선 연결 정보를 설정합니다. 변경한 값은 다음 연결 시도부터 적용됩니다.",
@@ -811,15 +905,70 @@ class ConnectionSettingsScreen(FormScreen):
                 ("MQTT Broker 주소",line("127.0.0.1")),
                 ("MQTT 포트",spin(1883,1,65535)),
                 ("MQTT Client ID",line("smr-operator-ui")),
+                # 한 열에 6개를 몰면 세로가 모자라 스크롤해야 보였다. 열마다
+                # 최대 4줄이 되도록 MQTT를 둘로 나눠 4열로 편다.
+                ("MQTT 옵션",None),
                 ("MQTT Keep Alive",spin(60,10,3600)),
                 ("MQTT TLS 사용",QCheckBox()),
             ],
-            columns=3,
+            columns=4,
         )
+        self._build_connection_controls()
+
+    def _build_connection_controls(self) -> None:
+        """저장과는 별개로 지금 바로 연결/해제를 걸 수 있는 조작부."""
+        # 카드를 따로 만들면 그만큼 입력칸 세로가 줄어 스크롤해야 보인다.
+        # 저장 버튼과 같은 줄 왼쪽에 얹어 자리를 아낀다.
+        self.link_state=QLabel("● 연결 안 됨"); self.link_state.setObjectName("StatusDanger")
+        self.connect_btn=QPushButton("연결")
+        self.connect_btn.setObjectName("PrimarySettingsButton")
+        self.connect_btn.clicked.connect(self.connect_requested.emit)
+        self.disconnect_btn=QPushButton("연결 해제")
+        self.disconnect_btn.setEnabled(False)
+        self.disconnect_btn.clicked.connect(self.disconnect_requested.emit)
+        for index,widget in enumerate((self.link_state, self.connect_btn, self.disconnect_btn)):
+            self._action_row.insertWidget(index, widget)
+        self._action_row.insertSpacing(1, 12)   # 상태 글자와 버튼이 붙지 않게
+
+    def robot_ip(self) -> str:
+        return str(self.values().get(self.ROBOT_IP_FIELD, "")).strip()
+
+    def robot_port(self) -> int:
+        return int(self.values().get(self.ROBOT_PORT_FIELD, 502))
+
+    def set_link_message(self, text: str) -> None:
+        """연결 시도 결과를 글자로 알린다.
+
+        버튼만 있고 결과가 안 보이면 눌러도 됐는지 알 수 없다 — 실패 사유
+        (노드 미동작, 주소 오류 등)를 이 자리에 그대로 보여 준다.
+        """
+        self.save_status.setText(text)
+
+    def set_link_state(self, connected: bool) -> None:
+        """연결 상태 표시와 버튼 활성 상태를 함께 갱신한다."""
+        self.link_state.setText("● 연결됨" if connected else "● 연결 안 됨")
+        self.link_state.setObjectName("StatusOk" if connected else "StatusDanger")
+        style=self.link_state.style()
+        style.unpolish(self.link_state); style.polish(self.link_state)
+        self.connect_btn.setEnabled(not connected)
+        self.disconnect_btn.setEnabled(connected)
 
 
+# TODO(개발): 오류 로그 / 로그 파일 / 운전 모드 저장 — 아직 정적 목업이다.
+# 2026-08-31 리뷰에서 확인됨: 표는 하드코딩된 예시 행이고, 버튼들은
+# `.clicked.connect(...)`가 아예 없어 눌러도 아무 일도 안 일어난다(체크
+# 해제·다운로드·삭제·불러오기·저장 전부). 실제로 구축하려면 최소한:
+#   - ErrorLogScreen : 실시간 알람 목록 서비스 연결, 행 선택 상태 추적,
+#     "선택 오류 해제"가 실제로 알람을 ack/clear 하는 경로, "다운로드"가
+#     실제 파일로 내보내는 경로(저장 위치를 사용자가 알 수 있게 안내 포함).
+#   - LogFilesScreen : 실제 로그 파일 목록을 읽어오는 서비스, 행 선택
+#     상태 추적, "선택 다운로드"/"선택 삭제"의 실제 파일 I/O.
+#   - ModeSlotsScreen : 슬롯 버튼에 선택 상태(눌려 있음/아님) 추가, "불러오기"/
+#     "현재 설정 저장" 버튼 자체가 코드에 없으므로 새로 만들어 선택된 슬롯에
+#     연결, 슬롯 데이터를 실제로 읽고 쓰는 서비스(설정 스코프 재사용 가능한지
+#     검토).
 class ErrorLogScreen(BaseScreen):
-    """현재 및 과거 알람을 보여주는 읽기 전용 화면."""
+    """현재 및 과거 알람을 보여주는 읽기 전용 화면. (목업 — 위 TODO 참고)"""
 
     def __init__(self):
         super().__init__("오류 로그","활성 오류를 먼저 확인하고 원인을 해소한 뒤 리셋합니다.")
@@ -833,7 +982,7 @@ class ErrorLogScreen(BaseScreen):
 
 
 class LogFilesScreen(BaseScreen):
-    """검사 및 시스템 로그 파일 관리 화면."""
+    """검사 및 시스템 로그 파일 관리 화면. (목업 — 위 TODO 참고)"""
 
     def __init__(self):
         super().__init__("로그 파일","검사 작업과 연결된 기록을 날짜별로 관리합니다.")
@@ -847,7 +996,7 @@ class LogFilesScreen(BaseScreen):
 
 
 class ModeSlotsScreen(BaseScreen):
-    """저장된 운전 모드 슬롯을 선택하는 화면."""
+    """저장된 운전 모드 슬롯을 선택하는 화면. (목업 — 위 TODO 참고)"""
 
     def __init__(self):
         super().__init__("운전 모드 저장","검사 조건과 장비 위치를 슬롯으로 관리합니다.")

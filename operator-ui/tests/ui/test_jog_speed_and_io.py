@@ -95,6 +95,37 @@ def test_cobot_settings_has_linear_speed(qtbot) -> None:
     window.close()
 
 
+def test_cobot_settings_has_no_task_picker(qtbot) -> None:
+    """태스크는 로봇 쪽에서 고정이라 여기서 고르는 목록이 없어야 한다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.screens["cobot"]
+
+    assert "선택 작업" not in screen.values()
+    assert screen.task_status_label.text() == "확인 전"
+    window.close()
+
+
+def test_task_status_refresh_reaches_the_service_and_back(qtbot) -> None:
+    """새로고침 버튼 → 29999 task_status 서비스 호출 → 응답이 라벨에 반영된다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.screens["cobot"]
+    calls: list[str] = []
+    window.ros_status.call_command = lambda name: calls.append(name) or True
+
+    refresh_button = next(b for b in screen.findChildren(QPushButton) if b.text() == "새로고침")
+    qtbot.mouseClick(refresh_button, Qt.MouseButton.LeftButton)
+    assert "task_status" in calls
+
+    window._show_command_result("task_status", True, "[task -s] Result: Task is running")
+    assert screen.task_status_label.text() == "Task is running"
+
+    window._show_command_result("task_status", False, "ROS 2에 연결되어 있지 않습니다.")
+    assert "실패" in screen.task_status_label.text()
+    window.close()
+
+
 def test_jog_screen_has_all_axes(qtbot) -> None:
     """관절 6축과 TCP 6축 각각에 + / - 버튼이 있어야 한다."""
     window = OperatorWindow(start_mqtt=False, start_ros=False)
@@ -142,6 +173,30 @@ def test_jog_is_disabled_until_address_is_known(qtbot) -> None:
     screen.set_enabled_commands({"jog_tcp"})
     assert screen.jog_buttons[("tcp", 0, 1)].isEnabled()
     assert not screen.jog_buttons[("joint", 0, 1)].isEnabled()
+    window.close()
+
+
+def test_jog_enables_on_robot_connection_not_register_address(qtbot) -> None:
+    """조그는 Modbus 레지스터가 아니라 30001 소켓을 쓰므로, 레지스터
+
+    주소 유무가 아니라 로봇 연결 여부로 잠기고 풀려야 한다. modbus_registers.
+    json에는 jog_joint/jog_tcp 항목이 아예 없다(30001로 처리하기 때문) —
+    예전에는 그래서 `writable("jog_joint")`가 항상 False가 되어 실제
+    연결과 무관하게 버튼이 영영 잠겨 있었다.
+    """
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.cobot_jog_screen
+
+    # 시작 시점(로봇 미연결)에는 잠겨 있어야 한다.
+    assert all(not b.isEnabled() for b in screen.jog_buttons.values())
+
+    window._update_jog_enabled(True)
+    assert screen.jog_buttons[("tcp", 0, 1)].isEnabled()
+    assert screen.jog_buttons[("joint", 0, 1)].isEnabled()
+
+    window._update_jog_enabled(False)
+    assert all(not b.isEnabled() for b in screen.jog_buttons.values())
     window.close()
 
 
@@ -284,27 +339,29 @@ def test_reconnect_rewrites_volatile_registers(qtbot, tmp_path, monkeypatch) -> 
     window.close()
 
 
-def test_jog_repeats_while_held(qtbot) -> None:
-    """로봇은 정해진 시간만 움직이므로 누르는 동안 명령을 되풀이해야 한다."""
+def test_jog_sends_once_and_stops_only_on_release(qtbot) -> None:
+    """되풀이해 재전송하면 로봇이 매번 새 스크립트를 실행해 덜컹거리므로
+
+    누르는 동안(held)에는 다시 보내지 않고 딱 한 번만 보낸다. 계속
+    움직이는 건 speedj/speedl의 hold 시간이 맡고, 실제 정지는 뗄 때
+    나가는 jog_released(→29999 stop) 하나로만 이뤄져야 한다.
+    """
     window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     screen = window.cobot_jog_screen
     sent: list[tuple[str, int, int]] = []
+    released: list[tuple[str, int]] = []
     screen.jog_pressed.connect(lambda k, a, d: sent.append((k, a, d)))
+    screen.jog_released.connect(lambda k, a: released.append((k, a)))
 
     screen._on_jog_pressed("tcp", 0, 1)
     assert sent == [("tcp", 0, 1)]
-    assert screen._jog_timer.isActive()
 
-    qtbot.wait(screen.JOG_REPEAT_MS * 3)
-    assert len(sent) > 1, "누르고 있는데 명령이 한 번만 나갔습니다"
-    assert set(sent) == {("tcp", 0, 1)}
+    # 누르고 있는 동안 아무리 기다려도 다시 나가면 안 된다.
+    qtbot.wait(300)
+    assert sent == [("tcp", 0, 1)]
+    assert released == []
 
     screen._on_jog_released("tcp", 0)
-    assert not screen._jog_timer.isActive()
-
-    # 손을 뗀 뒤에는 더 나가지 않아야 한다.
-    count = len(sent)
-    qtbot.wait(screen.JOG_REPEAT_MS * 3)
-    assert len(sent) == count
+    assert released == [("tcp", 0)]
     window.close()

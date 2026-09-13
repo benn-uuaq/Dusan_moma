@@ -1,0 +1,19 @@
+# =============================================================================
+#  dus_finish.script — dusan_v4
+#  벽에서 후퇴하고 완료 플래그를 낸다
+#
+#  펜던트에서 "10_finish" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+tgt_pose = get_actual_tcp_pose()
+tgt_pose[0] = get_actual_tcp_pose()[0] - back_off * 0.001
+movel(tgt_pose, a = a_l, v = v_l)
+
+write_port_register(290, 5)
+write_port_register(291, row_idx)
+write_port_register(295, 1)
+write_port_register(298, 100)

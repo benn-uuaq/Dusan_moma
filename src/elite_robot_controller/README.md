@@ -37,6 +37,9 @@ Elite CS612 협동로봇을 ROS 2에서 제어하기 위한 패키지입니다. 
 | `robot/status/operation_mode` | `std_msgs/Int32` | Modbus 72 |
 | `robot/status/tcp_pose` | `std_msgs/Float32MultiArray` | Modbus 384~389 (현재 TCP, 기본 프레임) |
 | `robot/status/tcp_pose_zero` | `std_msgs/Float32MultiArray` | Modbus 280~285 (원점 기준 상대 pose) |
+| `robot/status/scan_state` | `std_msgs/Int32MultiArray` | Modbus 290~298 (로봇 태스크의 스캔 진행 상태) |
+| `robot/status/task_state` | `std_msgs/Int32` | Modbus 500 (1 실행 중, 2 일시 중지, 3 중지됨) |
+| `robot/status/speed_scale` | `std_msgs/Int32` | Modbus 17 (로봇 동작 속도 비율 %, 2~100) |
 | `robot/status/joint_position` | `std_msgs/Float32MultiArray` | Modbus 73~78 (관절 각도) |
 | `robot/status/alarms` | `std_msgs/String` | 30001 알람 |
 | `robot/status/connected` | `std_msgs/Bool` | 세 채널 연결 여부 |
@@ -61,6 +64,9 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 | `read.joint_position` | 73~78 | 관절 각도 (베이스, 어깨, 엘보, 손목 1~3) |
 | `read.tcp_absolute` | 384~389 | 현재 TCP (기본 프레임) |
 | `read.tcp_zero_relative` | 280~285 | 원점 기준 상대 pose |
+| `read.scan_state` | 290~298 | 스캔 진행 상태. `state, row_idx, rows, alive, zero_ok, finished, pitch, ...` 순서 |
+| `read.task_state` | 500 | 태스크 상태(1 실행 중, 2 일시 중지, 3 중지됨). holding 이 아니라 **input register** 라 드라이버 폴백으로 읽힌다 |
+| `read.speed_scale` | 17 | 로봇 동작 속도 비율[%] 2~100. **읽기 전용으로 쓴다** — 설정은 29999 `speed -set N` 으로 보낸다 |
 | `write.linear_speed` | 306 | 작업 속도 [mm/s]. 태스크의 `movel` 속도 |
 | `write.speed_ratio` | 307 | 로봇 자체 속도 비율 [%] 2~100 |
 | `write.pose_src` | 308 | 1이면 태스크가 310~321의 기준 위치를 쓴다 |
@@ -124,7 +130,10 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 예를 들어 비율이 20 %면 관절 조그는 0.1 rad/s, 가속도는 0.2가 됩니다.
 
 `t`(`jog_hold_time`)는 **짧게 둡니다.** 매뉴얼상 로봇은 `t` 동안 계속 움직이므로, 길게 주면 정지 명령이 실패했을 때 그 시간만큼 멈추지 않습니다. 대신 운영 UI가 버튼을 누르고 있는 동안 명령을 되풀이해 보내고(150 ms 간격), 화면이 멈추거나 통신이 끊기면 되풀이가 끊겨 로봇도 `t` 안에 섭니다.
-- `robot/command/move_home`은 `home_lift_z`까지 `movel`로 올린 뒤 310~315에 저장된 관절값으로 `movej` 합니다. 태스크의 `move_home` 노드와 같은 순서입니다.
+- `robot/command/move_home`은 태스크의 `move_home` 노드와 같은 기준을 씁니다: 레지스터 308(`pose_src`)이 1일 때만 310~315 override 관절값을 쓰고, 평소(0)에는 `Home_joint`/`Home_pose`를 씁니다. `Home_pose[2]`까지 `movel`로 올린 뒤 `Home_joint`(또는 override 관절값)로 `movej` 합니다. 예전엔 항상 310~315를 읽어, 운영자가 '위치 저장'을 한 번도 안 했으면 그 레지스터가 0으로 남아 있어 `movej([0,0,0,0,0,0], ...)`처럼 엉뚱한 관절로 가버리는 문제가 있었습니다.
+  - 30001 소켓(실시간 명령 채널)에 `if`/`else`를 최상위로 그냥 보내면 한 줄씩 별개 명령으로 읽혀 실패합니다(`No 'if' command`). `def move_home_now(): ... end`로 감싼 **하나의 프로그램**으로 보내야 하고, 보낸 즉시 파싱이 끝나는 대로 실행되므로 따로 호출하면 안 됩니다(`move_home_now` 정의 안 됨 오류).
+  - 이 프로그램은 태스크 preamble 밖에서 도는 별개 컨텍스트라 태스크가 저장해 둔 `Home_joint`/`Home_pose` 전역을 그냥 참조할 수 없습니다(`정의되지 않았습니다`). 대신 29999의 `variable -get Home_joint`/`variable -get Home_pose`로 로봇에 저장된 실제 값을 그때그때 읽어와(`Robot_29999.get_variable`), `global` 선언 뒤 그 자리에서 바로 대입해 이 스크립트만의 전역으로 만들어 씁니다. 값을 하드코딩하지 않으므로 태스크 쪽 `Home_joint`/`Home_pose`가 바뀌어도 자동으로 맞습니다. 읽기 자체가 실패했을 때만 `RobotControlNode._HOME_JOINT_FALLBACK`/`_HOME_POSE_FALLBACK` 고정값으로 대신합니다.
+  - 변수 이름 `p`, `j`는 pose/joint 리터럴(`p[..]`, `j[..]`)과 충돌하니 피합니다.
 - `robot/command/work_area`는 원통이 커서 AMR 원주 구역 + Cobot 세로 격자로 나눠 스캔할 때, MQTT `job_cmd`의 `grid` 블록에서 온 이번 격자의 너비/높이/스캐너높이/겹침을 전달한다. `work_area` 항목은 `kind: "raw"`라 다른 자세 항목과 달리 값을 그대로 정수 mm로 저장한다(0.1mm 단위 아님).
 
 > `speedj`/`speedl`은 컨트롤러의 속도 백분율 설정에 영향을 받습니다(스크립트 매뉴얼 3.1.26/3.1.27). 100 %가 아니면 실제 속도가 그만큼 줄어듭니다.

@@ -1,0 +1,129 @@
+# =============================================================================
+#  dus_probe_c.script — dusan_v2
+#  호 중앙에서 벽을 짚어 '적정 눌림' 위치를 캘리브레이션한다
+#
+#  펜던트에서 "3_probe_center" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  센서는 손 **중앙에 하나**다. 좌우 막대 두 개로 기울기를 재던 방식은 없앴다.
+#    di_touch : 적정 눌림 (OK)
+#    di_limit : 눌림 한계 (뒤로 빼야 함)
+#  하나뿐이라 기울기(Rz)는 잴 수 없다. 자세는 호 기하로 계산하고, 센서는
+#  **얼마나 깊이 밀어야 하는지**(press_off) 하나만 잡아 준다.
+#
+#  전진/후진은 베이스가 아니라 **TCP 기준**이다 — 호를 그리며 도는 동안
+#  손의 방향이 계속 바뀌기 때문이다.
+#    TCP -Y = 전진(벽 쪽)   /   TCP +Y = 후진
+# =============================================================================
+
+def pc_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+# 로봇 자체 레지스터 384~389 와 같은 단위.  길이 0.1mm, 회전 mRad
+def pc_w6(a, p):
+  pc_w1(a, p[0] * 10000)
+  pc_w1(a + 1, p[1] * 10000)
+  pc_w1(a + 2, p[2] * 10000)
+  pc_w1(a + 3, p[3] * 1000)
+  pc_w1(a + 4, p[4] * 1000)
+  pc_w1(a + 5, p[5] * 1000)
+end
+
+
+def pc_step(dmm):
+  # TCP 기준 Y 로 dmm [mm] 만큼 움직인다. 음수가 전진(벽 쪽).
+  # pose_trans(cur, [0, dy, 0, 0,0,0]) = cur 의 로컬 Y 축으로 dy 이동.
+  movel(pose_trans(get_actual_tcp_pose(), [0, dmm * 0.001, 0, 0, 0, 0]),
+     a = 1.2, v = v_seek)
+end
+
+
+def pc_rush(t):
+  movel(t, a = 1.2, v = v_seek)
+end
+
+
+def pc_press():
+  # 벽에 닿아 '적정 눌림'이 될 때까지 TCP -Y 로 전진한다.
+  # 반환: 전진한 거리 [m] (양수). 못 찾으면 0.
+  # n_hit 는 preamble 전역이라, 이 함수 안에서 대입하려면 global 로
+  # 밝혀 둬야 한다 — 안 그러면 지역변수로 가려져 "초기화 안 됨" 에러가 난다.
+  global n_hit
+  x_home = get_actual_tcp_pose()
+  far = pose_trans(x_home, [0, -seek_limit * 0.001, 0, 0, 0, 0])
+
+  # 끊김 없이 한 번에 보내 놓고, 센서가 걸리는 순간 세운다.
+  mv_h = start_thread(pc_rush, (far,), detach_mode = False)
+  while (True):
+    if (get_standard_digital_in(di_touch) or get_standard_digital_in(di_limit)):
+      stop_thread(mv_h)
+      stopl(1.2)
+      break
+    end
+    if (pose_dist(get_actual_tcp_pose(), far) < 0.0005):
+      stop_thread(mv_h)
+      stopl(1.2)
+      break
+    end
+    sync()
+  end
+
+  # 한계까지 들어갔으면 적정 눌림만 남을 때까지 뒤로(+Y) 뺀다.
+  tries = 0
+  while (get_standard_digital_in(di_limit) and tries < seek_tries):
+    tries = tries + 1
+    pc_step(seek_step)
+    sync()
+  end
+
+  # 아직 안 닿았으면 적정 눌림이 될 때까지 조금씩 더 민다.
+  tries = 0
+  while (get_standard_digital_in(di_touch) == False and tries < seek_tries):
+    tries = tries + 1
+    pc_step(-seek_step)
+    sync()
+  end
+
+  if (get_standard_digital_in(di_touch)):
+    n_hit = n_hit + 1
+    return pose_dist(x_home, get_actual_tcp_pose())
+  end
+  return 0
+end
+
+
+write_port_register(290, 2)
+y_c = get_actual_tcp_pose()[1]
+z_base = get_actual_tcp_pose()[2]
+
+# 아직 한 번도 돌리지 않은 지금 자세를 '정위치'로 기억해 둔다.
+probe_rot = get_actual_tcp_pose()
+
+# 중앙 접근 — 여기서 잰 깊이가 세 점 전체에 쓰인다.
+x_start = get_actual_tcp_pose()
+press_off = pc_press()
+
+n_probe = n_probe + 1
+write_port_register(304, n_probe)
+write_port_register(305, n_hit)
+pc_w1(303, press_off * 10000)
+
+# movec 의 경유점. 회전값까지 통째로 남긴다.
+p_c_pose = get_actual_tcp_pose()
+p_cx = p_c_pose[0]
+write_port_register(300, floor(p_cx * 10000 + 0.5))
+pc_w6(330, p_c_pose)
+
+# 벽에서 물러난다 (TCP +Y). 잰 깊이만큼만 되돌리면 제자리다.
+movel(x_start, a = 1.2, v = v_move)

@@ -1,0 +1,64 @@
+Current Task: dusan_v3
+    Init Variables Value
+    Robot Main Task
+        1 [스크립트파일] dus_init.script
+            Script: dus_init.script
+        2 move_home
+            If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
+                MoveL
+                    Direction Robot Z+
+                        Until expression get_actual_tcp_pose()[2]≥Home_pose[2]
+            MoveJ
+                Home_joint
+        3 [스크립트파일] dus_probe_c.script
+            Script: dus_probe_c.script
+        2 move_home
+            If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
+                MoveL
+                    Direction Robot Z+
+                        Until expression get_actual_tcp_pose()[2]>=Home_pose[2]-0.001
+            MoveJ
+                Home_joint
+        4 [스크립트파일] dus_probe_l.script
+            Script: dus_probe_l.script
+        2 move_home
+            If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
+                MoveL
+                    Direction Robot Z+
+                        Until expression get_actual_tcp_pose()[2]>=Home_pose[2]-0.001
+            MoveJ
+                Home_joint
+        5 [스크립트파일] dus_probe_r.script
+            Script: dus_probe_r.script
+        2 move_home
+            If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
+                MoveL
+                    Direction Robot Z+
+                        Until expression get_actual_tcp_pose()[2]>=Home_pose[2]-0.001
+            MoveJ
+                Home_joint
+        6 [스크립트파일] dus_goto_zero.script
+            Script: dus_goto_zero.script
+        Loop 200 times
+            pass_done=0
+            If row_idx<rows and dir_sign>0 and pass_done==0
+                7 [스크립트파일] dus_pass_r.script
+                    Script: dus_pass_r.script
+            If row_idx<rows and dir_sign<0 and pass_done==0
+                8 [스크립트파일] dus_pass_l.script
+                    Script: dus_pass_l.script
+            If row_idx<rows
+                9 [스크립트파일] dus_up.script
+                    Script: dus_up.script
+            If row_idx>=rows
+                10 [스크립트파일] dus_finish.script
+                    Script: dus_finish.script
+                11 move_home
+                    If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
+                        MoveL
+                            Direction Robot Z+
+                                Until expression get_actual_tcp_pose()[2]>=Home_pose[2]-0.001
+                    MoveJ
+                        Home_joint
+                Halt
+        Halt

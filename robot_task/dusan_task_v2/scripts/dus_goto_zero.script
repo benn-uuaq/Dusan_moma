@@ -1,0 +1,61 @@
+# =============================================================================
+#  dus_goto_zero.script — dusan_v2
+#  측정이 끝난 뒤 원점(Y+ 끝)으로 돌아가 스캔을 시작할 준비를 한다
+#
+#  펜던트에서 "6_goto_zero" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def gz_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+def gz_w6(a, p):
+  gz_w1(a, p[0] * 10000)
+  gz_w1(a + 1, p[1] * 10000)
+  gz_w1(a + 2, p[2] * 10000)
+  gz_w1(a + 3, p[3] * 1000)
+  gz_w1(a + 4, p[4] * 1000)
+  gz_w1(a + 5, p[5] * 1000)
+end
+
+
+write_port_register(290, 3)
+
+# Y- 끝 정렬로 돌아간 자세 그대로 끌고 가면 막대가 벽에 쓸린다.
+# 이동 전에 자세를 정위치로 되돌린다.
+tgt_pose = get_actual_tcp_pose()
+tgt_pose[3] = probe_rot[3]
+tgt_pose[4] = probe_rot[4]
+tgt_pose[5] = probe_rot[5]
+movel(tgt_pose, a = 1.2, v = v_move)
+
+# 먼저 Y 를 맞추고(벽에서 떨어진 상태로 이동), 그다음 X 로 접근한다
+tgt_pose = get_actual_tcp_pose()
+tgt_pose[1] = zero_pose[1]
+movel(tgt_pose, a = 1.2, v = v_move)
+
+tgt_pose = get_actual_tcp_pose()
+tgt_pose[0] = zero_pose[0]
+movel(tgt_pose, a = 1.2, v = v_move)
+
+# 마지막으로 원점 pose 를 **통째로**(Z 와 회전값까지) 적용한다.
+# movec 는 mode=0(자세 고정)이라 여기서 잡은 자세가 호 전체에 그대로
+# 쓰인다. X,Y 만 맞추고 앞 측정에서 돌아간 자세를 남겨 두면 스캔 내내
+# 엉뚱한 각도로 훑게 된다 — 측정한 3점의 의미가 사라진다.
+movel(zero_pose, a = 1.2, v = v_move)
+
+gz_w6(270, zero_pose)      # 원점 pose (스캔 중 변하지 않는다)
+write_port_register(294, 1)
+path_len = 0
+write_port_register(290, 4)
