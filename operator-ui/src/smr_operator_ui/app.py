@@ -66,6 +66,8 @@ MAX_LINEAR_SPEED_MM_S = 150
 # 로봇 태스크를 stop 한 뒤 play 하기까지 두는 간격. 컨트롤러가 태스크를
 # 정리할 시간을 주지 않으면 play 가 거부된다.
 ROBOT_RESTART_DELAY_MS = 1200
+# abort 뒤 홈을 보내기까지 [ms]. 정지·태스크 교체가 먼저 처리되게 둔다.
+ABORT_HOME_DELAY_MS = 500
 
 # 시퀀서 상태를 화면의 "안전 순서" 5단계에 대응시킨다.
 # 5단계는 **구간(열)마다** 반복된다: 정지·고정 → 수평 보정 → Cobot 검사
@@ -599,11 +601,27 @@ class OperatorWindow(QMainWindow):
                              move_first=True)
 
     def _abort_job(self) -> None:
-        """ERUT 중단 요청. 순회와 더미 장비를 모두 멈춘다."""
+        """ERUT 중단 요청(작업자 검사 종료). 멈추고 벽에서 물러나 홈으로 간다.
+
+        규격 탭1: abort = 검사 마감, "로봇을 대기 상태로 되돌림". pause 처럼
+        그 자리에서 이어갈 일이 없으므로 제자리에 두지 않는다 — 프로브가
+        벽에 눌린 채로 있으면 다음 차량 이동을 못 한다. 홈 이동은 TCP -Z 로
+        먼저 물러난 뒤 올라가므로(노드 move_home) 곡면을 긁지 않는다.
+        """
+        self._cancel_play()                 # 걸려 있던 play 가 뒤늦게 가지 않게
         self.sequencer.stop()
         for adapter in (self.lift, self.amr, self.outrigger, self.retractor):
             adapter.cancel()
         self.simulator.stop_cycle()
+        # 마킹 중이었으면 마킹을 접고 스캔 태스크로 되돌린다(cancel 이 한다).
+        self.mark_runner.cancel()
+        # 원점 대기 표시를 푼다. 로봇은 290 = 7 을 들고 멈추므로 표시가 남아
+        # query 가 계속 ready 로 답했다.
+        self._origin_waiting = False
+        self.main_screen.show_activity("작업을 중단했습니다 — 벽에서 물러나 홈으로 갑니다.")
+        # 정지·태스크 교체가 먼저 처리되도록 잠깐 뒤에 홈을 보낸다.
+        QTimer.singleShot(ABORT_HOME_DELAY_MS,
+                          lambda: self.ros_status.call_command("home"))
 
     def _connect_sequencer(self) -> None:
         """격자 순회를 로봇·리프트·AMR·화면·MQTT에 잇는다.
@@ -871,10 +889,25 @@ class OperatorWindow(QMainWindow):
         # 돌아가므로 셀마다 켜 준다.
         self.ros_status.call_command("remote_control_on")
         self.ros_status.call_command("stop")
-        QTimer.singleShot(
-            ROBOT_RESTART_DELAY_MS,
-            lambda: self.ros_status.call_command("play"),
-        )
+        self._schedule_play()
+
+    def _schedule_play(self) -> None:
+        """잠시 뒤 play 를 보낸다. abort 가 오면 취소된다(_cancel_play).
+
+        예전에는 QTimer.singleShot 으로 걸어 두어 되돌릴 수 없었다. 시작 직후
+        abort 가 오면 그 뒤에 play 가 날아가 **멈춘 로봇이 다시 출발**했다.
+        """
+        if not hasattr(self, "_play_timer"):
+            self._play_timer = QTimer(self)
+            self._play_timer.setSingleShot(True)
+            self._play_timer.timeout.connect(
+                lambda: self.ros_status.call_command("play"))
+        self._play_timer.start(ROBOT_RESTART_DELAY_MS)
+
+    def _cancel_play(self) -> None:
+        timer = getattr(self, "_play_timer", None)
+        if timer is not None:
+            timer.stop()
 
     def _start_marking(self, points: list) -> None:
         """ERUT 마킹 점들을 돈다. 격자 크기는 지금 작업 영역을 쓴다."""
@@ -891,10 +924,7 @@ class OperatorWindow(QMainWindow):
         self.ros_status.call_command("remote_control_on")
         self.ros_status.call_command("stop")
         self.ros_status.call_command("load_mark_task")
-        QTimer.singleShot(
-            ROBOT_RESTART_DELAY_MS,
-            lambda: self.ros_status.call_command("play"),
-        )
+        self._schedule_play()
 
     def _stop_inspection(self) -> None:
         """주요 제어의 '정지' 버튼. 화면 시뮬레이터와 실제 순회·로봇을 모두 멈춘다.
@@ -1476,7 +1506,7 @@ class OperatorWindow(QMainWindow):
 
     #: 스캔을 띄우고 멈추는 명령. 실패가 메인 화면에도 보여야 한다.
     _SCAN_COMMANDS = ("play", "stop", "remote_control_on",
-                      "load_mark_task", "load_scan_task")
+                      "load_mark_task", "load_scan_task", "home")
 
     def _show_command_result(self, name: str, success: bool, message: str) -> None:
         """명령 결과를 요청한 화면의 안내 문구로 보여준다."""
@@ -1587,7 +1617,11 @@ class OperatorWindow(QMainWindow):
         """
         if not values:
             return
-        waiting = int(values[self._SCAN_STATE_INDEX]) == self._STATE_AT_ORIGIN
+        # 원점 대기는 **스캔 구간이 도는 중일 때만** 뜻이 있다. 로봇은 멈춰도
+        # 290 = 7 을 그대로 들고 있어서, 이걸 안 거르면 abort·정지 뒤에도
+        # 대기로 다시 잡혀 evt/ready 가 또 나간다.
+        waiting = (int(values[self._SCAN_STATE_INDEX]) == self._STATE_AT_ORIGIN
+                   and self.sequencer.state is SequencerState.SCANNING)
         if waiting == getattr(self, "_origin_waiting", False):
             return
         self._origin_waiting = waiting

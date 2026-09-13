@@ -660,3 +660,40 @@ def test_recalibration_reopens_the_gate(session):
     s.handle_request(*_req("prepare", job_id="jb1", area=AREA, plan=PLAN, scan=SCAN))
 
     assert client.res[-1]["code"] == 202
+
+
+def test_abort_clears_the_origin_wait(session):
+    """abort 뒤에는 원점 대기가 풀려 query 가 ready 로 답하지 않는다."""
+    s, client, seq = session
+    s.job_requested.connect(lambda plan: seq.start(plan, 30.0, move_first=True))
+    s.handle_request(*_req("prepare", job_id="jb1", area=AREA, scan=SCAN))
+    s.notify_at_origin()
+
+    s.handle_request(*_req("abort", job_id="jb1"))
+    seq.stop()
+    s.handle_request("query", {"req_id": "q-after-abort"})
+
+    assert client.res[-1]["state"] != "ready"
+
+
+def test_abort_during_marking_frees_the_next_mark(session):
+    """마킹 도중 abort 하면 다음 mark 가 409 로 막히지 않는다."""
+    s, client, _ = session
+    s.handle_request(*_req("mark", points=[{"id": "p1", "x": 1, "y": 2}]))
+    s.handle_request(*_req("abort"))
+
+    s.handle_request("mark", {"req_id": "req-mark-2",
+                              "points": [{"id": "p2", "x": 1, "y": 2}]})
+
+    assert client.res[-1]["code"] == 202
+
+
+def test_aborted_mark_sends_no_complete(session):
+    """abort 된 작업은 완료를 내지 않는다 (탭4 D-3)."""
+    s, client, _ = session
+    s.handle_request(*_req("mark", points=[{"id": "p1", "x": 1, "y": 2}]))
+    s.handle_request(*_req("abort"))
+
+    s.finish_mark(["p1"], [])
+
+    assert not [e for e in client.events if e[0] == "complete"]

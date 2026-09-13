@@ -98,3 +98,25 @@ def test_failed_point_is_reported_and_the_next_one_still_runs(qtbot):
         retractor.arrived.emit()
 
     assert done == [(["p2"], ["p1"])]
+
+
+def test_cancel_mid_point_restores_the_scan_task(qtbot):
+    """마킹 도중 접으면 스캔 태스크로 되돌린다 — 다음 play 가 마킹을 돌지 않게."""
+    r, (amr, lift, outrigger, retractor), calls, _log = _runner(qtbot)
+    done = []
+    r.finished.connect(lambda m, f: done.append((m, f)))
+    r.start([{"id": "p1", "x": 0.0, "y": 0.0}], 721.0, 500.0)
+    amr.arrived.emit()
+
+    r.cancel()
+
+    assert calls["restore"] == 1
+    assert done == [], "접었는데 완료를 냈다"
+    assert not r.running
+
+
+def test_cancel_when_idle_does_nothing(qtbot):
+    """돌고 있지 않으면 태스크를 건드리지 않는다."""
+    r, _axes, calls, _log = _runner(qtbot)
+    r.cancel()
+    assert calls["restore"] == 0

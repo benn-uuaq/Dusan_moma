@@ -1341,6 +1341,18 @@ movel(pose_trans(get_actual_tcp_pose(), [0, 0, -probe_dist * 0.001, 0, 0, 0]),
 #  ※ def main() 으로 감싸지 말 것
 # =============================================================================
 write_port_register(290, 13)
+# 벽에 붙어 있을 수 있으니 먼저 TCP -Z 로 물러난다. 단 홈 자세보다 더
+# 뒤로는 안 간다 — 홈이 TCP 축으로 뒤에 있는 만큼만, 최대 probe_dist.
+# (RCS 의 홈 이동 명령과 같은 규칙이다.)
+hm_cur = get_actual_tcp_pose()
+hm_rel = pose_trans(pose_inv(hm_cur), Home_pose)
+hm_back = -hm_rel[2]
+if (hm_back &gt; probe_dist * 0.001):
+  hm_back = probe_dist * 0.001
+end
+if (hm_back &gt; 0.001):
+  movel(pose_trans(hm_cur, [0, 0, -hm_back, 0, 0, 0]), a = a_l, v = v_l)
+end
 if (get_actual_tcp_pose()[2] &lt; Home_pose[2] - 0.001):
   hm_up = get_actual_tcp_pose()
   hm_up[2] = Home_pose[2]

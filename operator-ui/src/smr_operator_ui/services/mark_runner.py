@@ -79,9 +79,19 @@ class MarkRunner(QObject):
         self._next_point()
 
     def cancel(self) -> None:
+        """마킹을 접는다(abort). 완료(finished)는 내지 않는다.
+
+        도중이었으면 로봇에 마킹 태스크가 올라가 있으므로 **스캔 태스크로
+        되돌려 둔다** — 안 그러면 다음 prepare 가 play 할 때 마킹 태스크가
+        돈다.
+        """
+        was_running = self.running
         self._timer.stop()
         self._index = len(self._points)
         self._step = ""
+        if was_running:
+            self._restore_scan_task()
+            self.activity.emit("마킹을 중단했습니다.")
 
     # ------------------------------------------------------------ 점 하나
     def _point(self) -> dict:

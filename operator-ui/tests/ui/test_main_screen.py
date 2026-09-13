@@ -1047,6 +1047,12 @@ def test_tpac_pose_source_defaults_to_scan_value(qtbot) -> None:
 # ---------------------------------------------------------------------------
 # 원점 도착 -> ERUT 확인 -> 적심 -> 스캔
 # ---------------------------------------------------------------------------
+def _scanning(window) -> None:
+    """스캔 구간이 도는 중으로 세운다. 원점 대기는 이때만 뜻이 있다."""
+    from smr_operator_ui.services import SequencerState
+    window.sequencer._state = SequencerState.SCANNING
+
+
 def _scan_state(state: int) -> list[int]:
     """레지스터 290~299 를 흉내 낸다. 앞자리만 의미 있는 시험용."""
     values = [0] * 10
@@ -1062,6 +1068,7 @@ def test_robot_waiting_at_origin_is_announced_once(qtbot) -> None:
     """
     window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
+    _scanning(window)
     told: list[int] = []
     window.erut_session.notify_at_origin = lambda: told.append(1)
 
@@ -1076,6 +1083,7 @@ def test_leaving_the_origin_arms_the_next_arrival(qtbot) -> None:
     """대기가 풀리면 다음 도착 때 다시 알려야 한다(루프판)."""
     window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
+    _scanning(window)
     told: list[int] = []
     window.erut_session.notify_at_origin = lambda: told.append(1)
     window.erut_session.clear_at_origin = lambda: None
@@ -1130,6 +1138,7 @@ def test_probe_gate_is_announced_to_mc(qtbot) -> None:
     mqtt_server = MqttServer()
     window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
+    _scanning(window)
     gates: list[tuple] = []
     mqtt_server.publish_probe_gate = lambda waiting, cell="": gates.append(
         (waiting, cell)) or True
@@ -1145,6 +1154,7 @@ def test_probe_ack_releases_only_when_pressed(qtbot) -> None:
     """확인이 참일 때만 로봇을 푼다 — 프로브가 안 붙었으면 계속 세워 둔다."""
     window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
+    _scanning(window)
     sent: list[tuple] = []
     window.ros_status.send_value = lambda name, value: sent.append(
         (name, value)) or True
@@ -1412,4 +1422,39 @@ def test_values_sent_by_erut_win_over_the_local_setup(qtbot) -> None:
 
     assert (filled.radius, filled.eoat_probes) == (1200.0, 8)
     assert filled.thickness == 10.0
+    window.close()
+
+
+def test_abort_backs_off_and_goes_home(qtbot) -> None:
+    """ERUT abort: 걸려 있던 play 를 취소하고, 잠시 뒤 홈 이동을 보낸다.
+
+    홈 이동은 노드에서 TCP -Z 로 먼저 물러난 뒤 올라가므로 곡면을 긁지 않는다.
+    """
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    calls: list[str] = []
+    window.ros_status.call_command = lambda name: calls.append(name) or True
+
+    window._start_robot_scan()            # play 가 1.2초 뒤로 걸려 있다
+    window._abort_job()
+    qtbot.wait(1500)
+
+    assert "home" in calls
+    assert "play" not in calls, "abort 뒤에 play 가 날아가 로봇이 다시 출발했다"
+    window.close()
+
+
+def test_origin_wait_is_ignored_when_no_section_is_running(qtbot) -> None:
+    """스캔 구간이 안 도는데 290 == 7 이 남아 있어도 대기로 잡지 않는다.
+
+    로봇은 멈춰도 7 을 들고 있어서, 안 거르면 abort 뒤 evt/ready 가 또 나간다.
+    """
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    told: list[int] = []
+    window.erut_session.notify_at_origin = lambda: told.append(1)
+
+    window._handle_origin_wait(_scan_state(7))
+
+    assert told == []
     window.close()

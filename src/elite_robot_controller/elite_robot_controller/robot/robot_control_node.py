@@ -504,6 +504,11 @@ class RobotControlNode(Node):
 
         home_joint = self.robot_dash.get_variable("Home_joint")
         home_pose = self.robot_dash.get_variable("Home_pose")
+        # 벽에서 먼저 물러날 거리 [m]. 태스크가 쓰는 probe_dist(mm)와 같다.
+        probe_dist = self.robot_dash.get_variable("probe_dist")
+        if not isinstance(probe_dist, (int, float)) or probe_dist <= 0:
+            probe_dist = self._HOME_RETREAT_FALLBACK_MM
+        retreat_m = round(float(probe_dist) / 1000.0, 4)
         if not isinstance(home_joint, list) or len(home_joint) != 6:
             self.get_logger().warn(
                 f"[move_home] Home_joint를 로봇에서 못 읽었습니다({home_joint!r}). "
@@ -539,6 +544,20 @@ class RobotControlNode(Node):
             "    tgt_j = Home_joint\n"
             "    tgt_h = Home_pose\n"
             "  end\n"
+            # 벽에 붙어 있을 수 있다(스캔·마킹 도중 멈춘 경우). 곧장 올라가면
+            # 프로브가 곡면을 긁고 올라가므로 **먼저 TCP -Z 로 물러난다.**
+            # 다만 홈 자세보다 더 뒤로는 가지 않는다 — 홈이 지금 자리에서
+            # TCP 축으로 얼마나 뒤에 있는지(hm_rel[2])만큼만, 최대 probe_dist.
+            # 이미 홈보다 뒤에 있거나 홈에 있으면 물러나지 않는다.
+            "  cur_pose = get_actual_tcp_pose()\n"
+            "  hm_rel = pose_trans(pose_inv(cur_pose), tgt_h)\n"
+            "  hm_back = -hm_rel[2]\n"
+            f"  if (hm_back > {retreat_m}):\n"
+            f"    hm_back = {retreat_m}\n"
+            "  end\n"
+            "  if (hm_back > 0.001):\n"
+            "    movel(pose_trans(cur_pose, [0, 0, -hm_back, 0, 0, 0]), a=1.2, v=0.1)\n"
+            "  end\n"
             "  cur_pose = get_actual_tcp_pose()\n"
             "  if (cur_pose[2] < tgt_h[2] - 0.001):\n"
             "    cur_pose[2] = tgt_h[2]\n"
@@ -559,6 +578,9 @@ class RobotControlNode(Node):
         res.success = bool(ok)
         res.message = "[move_home] 홈 이동을 요청했습니다." if ok else "[move_home] 스크립트 전송 실패"
         return res
+
+    #: probe_dist 를 로봇에서 못 읽었을 때 쓰는 후퇴 한도 [mm].
+    _HOME_RETREAT_FALLBACK_MM = 100.0
 
     #: 태스크를 세운 뒤 스크립트를 보내기까지 기다리는 시간 [s].
     #: 정지가 끝나기 전에 보내면 컨트롤러가 "실행 중"으로 거부한다.

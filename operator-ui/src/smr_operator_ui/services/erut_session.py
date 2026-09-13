@@ -409,8 +409,18 @@ class ErutSession(QObject):
         self.resume_requested.emit()
 
     def _do_abort(self, req_id: str, content: dict) -> None:
+        """작업자 검사 종료 (탭4 D-3). 200 으로 바로 답하고 끝낸다.
+
+        abort 된 job 은 완료(evt/complete)를 내지 않는다 — 규격 그대로.
+        원점 대기·마킹 표시도 여기서 내린다. 안 내리면 query 가 계속 ready
+        로 답하거나, 다음 mark 가 409 BUSY 로 막힌다.
+        """
         self._reply(req_id, "abort", 200, "OK")
         self._start_req_id = ""
+        self._ready_req_id = ""
+        self._at_origin = False
+        self._mark_req_id = ""
+        self._marking = False
         self.abort_requested.emit()
 
     # ---- reset : TEST (장애 수집이 아직 없다) --------------------------------
