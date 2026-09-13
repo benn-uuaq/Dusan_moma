@@ -343,6 +343,12 @@ class ErutSession(QObject):
         프로브 눌림 수치는 주고받지 않는다. ERUT 가 자기 UT 회로로 눌림을
         보고 판단한 뒤 보내는 `req/start` 자체가 확인이다.
         """
+        # ERUT 가 시킨 작업이 아니면(RCS '검사 시작'·사내 MC job_cmd) ERUT
+        # 에 알릴 요청이 없다. req_id 가 빈 evt/ready 를 흘리면 ERUT 가 자기가
+        # 보낸 적 없는 준비 완료를 받는다 — 그래서 아무것도 안 한다. 그때
+        # 원점 대기는 MC 쪽 probe_ack 으로 푼다.
+        if not self._ready_req_id and not self._start_req_id:
+            return
         self._at_origin = True
         if self._ready_req_id:
             req_id, action = self._ready_req_id, "prepare"

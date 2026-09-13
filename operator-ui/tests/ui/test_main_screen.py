@@ -1541,3 +1541,58 @@ def test_erut_job_loads_the_chosen_scan_task_first(qtbot) -> None:
     assert pushed[-1][0].endswith("dusan_v4_nosensor_seq.task")
     assert calls[:3] == ["remote_control_on", "stop", "load_scan_task"]
     window.close()
+
+
+def test_rcs_start_runs_the_same_job_as_mqtt(qtbot) -> None:
+    """RCS '검사 시작'도 MQTT job_cmd 처럼 실제 순회를 시작한다.
+
+    예전에는 데모 사이클에만 이어져 안전 순서 표시만 돌고 차량·리프트·
+    로봇은 움직이지 않았다.
+    """
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    pushed, calls = _task_spy(window)
+    window.main_screen.rect_view.set_work_area(721.0, 500.0, 30.0, 20.0)
+    window.main_screen.orbit_view.set_target_dimensions(1.6692, 2.0)
+
+    window.main_screen.start_button.click()
+
+    plan = window.sequencer.plan
+    assert plan is not None, "순회가 시작되지 않았다"
+    # 원주 π x 1669.2 = 5244 / (721-20) -> 8 열, 높이 2000 / (500-20) -> 5 행
+    assert (plan.column_count, plan.row_count) == (8, 5)
+    assert (plan.pitch_x, plan.pitch_y) == (20.0, 20.0)
+    assert calls[:3] == ["remote_control_on", "stop", "load_scan_task"]
+    window.close()
+
+
+def test_rcs_start_is_refused_while_a_job_runs(qtbot) -> None:
+    """돌고 있는 작업을 버튼 한 번에 갈아엎지 않는다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    _task_spy(window)
+    _scanning(window)
+    before = window.sequencer.plan
+
+    window._start_inspection()
+
+    assert window.sequencer.plan is before
+    assert "이미 작업 중" in window.main_screen.activity_label.text()
+    window.close()
+
+
+def test_rcs_pause_pauses_and_resumes_the_real_job(qtbot) -> None:
+    """RCS '일시정지'는 실제 순회를 멈추고, 다시 누르면 이어간다."""
+    from smr_operator_ui.services import SequencerState
+
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    _task_spy(window)
+    window._start_inspection()
+    assert window.sequencer.state not in (SequencerState.IDLE, SequencerState.PAUSED)
+
+    window._toggle_pause()
+    assert window.sequencer.state is SequencerState.PAUSED
+    window._toggle_pause()
+    assert window.sequencer.state is not SequencerState.PAUSED
+    window.close()

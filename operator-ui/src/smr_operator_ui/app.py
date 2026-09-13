@@ -9,7 +9,7 @@ import re
 import sys
 from datetime import datetime
 from importlib.resources import files
-from math import isfinite
+from math import ceil, isfinite, pi
 from typing import Any
 
 from PyQt6.QtCore import QTimer, Qt
@@ -355,8 +355,11 @@ class OperatorWindow(QMainWindow):
             if hasattr(screen, "back_requested"):
                 screen.back_requested.connect(self.navigate_back)
 
-        self.main_screen.start_requested.connect(self.simulator.start_cycle)
-        self.main_screen.pause_requested.connect(self.simulator.toggle_pause)
+        # '검사 시작'은 MQTT job_cmd 와 **똑같이** 실제 순회를 시작한다(차량·
+        # 리프트·로봇). 예전에는 데모 사이클(simulator.start_cycle)에만 이어져
+        # 안전 순서 표시만 돌고 장비는 하나도 움직이지 않았다.
+        self.main_screen.start_requested.connect(self._start_inspection)
+        self.main_screen.pause_requested.connect(self._toggle_pause)
         self.main_screen.stop_requested.connect(self._stop_inspection)
         self.main_screen.alarm_reset_requested.connect(self._reset_alarms)
         self.main_screen.settings_requested.connect(lambda: self.navigate("settings"))
@@ -1344,11 +1347,76 @@ class OperatorWindow(QMainWindow):
         # job_cmd 자체가 "전체 작업 시작" 명령이다. 화면의 진행 표시는
         # 시퀀서가 주도한다 — 데모 타이머로 혼자 앞서 나가면 실제 로봇이
         # 아직 1A에 있는데도 화면만 12구역까지 가버린다.
+        self._begin_grid_job(grid, scan_h_mm)
+
+    def _begin_grid_job(self, grid, scan_h_mm: float) -> None:
+        """격자 순회를 시작한다. MQTT job_cmd 와 RCS '검사 시작'이 함께 쓴다.
+
+        체크한 판(센서/논센서)의 스캔 태스크를 먼저 불러 두고, 화면 진행
+        표시는 시퀀서가 주도하게 한다(데모 타이머로 혼자 앞서 나가지 않게).
+        """
         self.simulator.begin_external(grid.column_count)
-        # 체크한 판(센서/논센서)의 스캔 태스크를 먼저 불러 둔다.
         self._push_task_paths()
         self._load_scan_task()
         self.sequencer.start(grid, scan_h_mm)
+
+    #: 사내 MC 규격의 격자 한계 — 열 1~12, 행 A~F.
+    _MAX_COLUMNS = 12
+    _MAX_ROWS = 6
+
+    def _start_inspection(self) -> None:
+        """RCS '검사 시작' — MQTT job_cmd 와 같은 순회를 RCS 설정으로 시작한다.
+
+        job_cmd 가 실어 오는 값을 RCS 가 가진 값으로 채운다.
+          셀 크기·겹침  : 작업 영역 설정 (Modbus 256~259 로 나가는 값)
+          반지름·두께·EOAT : 작업 영역의 장비 값
+          열·행 수      : 검사 대상 원주 / 열 간격, 높이 / 행 간격 (올림)
+                         — 사내 MC 규격 한계(12열, 6행)로 자른다.
+        겹침은 격자끼리의 겹침이라 가로·세로 이동량에서 뺀다(job_cmd 와 같다).
+        """
+        if (self.sequencer.state not in (
+                SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED)
+                or self.mark_runner.running):
+            self.main_screen.show_activity("이미 작업 중입니다 — 끝나거나 정지한 뒤 시작하세요.")
+            return
+        width, height, _scan_h, overlap = self.main_screen.rect_view.work_area()
+        diameter_m, target_h_m = self.main_screen.orbit_view.target_dimensions()
+        column_pitch = max(width - overlap, 1.0)
+        row_pitch = max(height - overlap, 1.0)
+        columns = int(ceil(pi * diameter_m * 1000.0 / column_pitch))
+        rows = int(ceil(target_h_m * 1000.0 / row_pitch))
+        columns = min(max(columns, 1), self._MAX_COLUMNS)
+        rows = min(max(rows, 1), self._MAX_ROWS)
+        extra = self._work_area_extra
+        grid = GridPlan(
+            column_count=columns, row_count=rows,
+            cell_width=width, cell_height=height,
+            scan_overlap=0.0, pitch_x=overlap, pitch_y=overlap,
+            radius=float(extra.get("radius_mm", 0) or 0),
+            thickness=float(extra.get("thickness_mm", 0) or 0),
+            eoat_probes=int(float(extra.get("eoat_type", 0) or 0)),
+        )
+        self.main_screen.show_activity(
+            f"RCS 검사 시작: {columns}열 x {rows}행 (셀 {width:.0f} x {height:.0f} mm, "
+            f"겹침 {overlap:g} mm)")
+        self._begin_grid_job(grid, self._scan_band_mm(grid))
+
+    def _toggle_pause(self) -> None:
+        """RCS '일시정지' — 실제 순회·로봇도 같이 멈추고 다시 이어간다.
+
+        MQTT mc_cmd 의 stop/run 과 같다. 순회가 안 돌 때는 예전처럼 데모
+        사이클만 토글한다.
+        """
+        state = self.sequencer.state
+        if state is SequencerState.PAUSED:
+            self.simulator.start_cycle()
+            self.sequencer.resume()
+        elif state not in (SequencerState.IDLE, SequencerState.DONE,
+                           SequencerState.STOPPED):
+            self.sequencer.pause()
+            self.simulator.pause_cycle()
+        else:
+            self.simulator.toggle_pause()
 
     def _apply_speed_ratio(self, raw: Any, source: str = "UI") -> None:
         """로봇 전체 동작 속도 비율[%]을 로봇에 보낸다. 2~100.

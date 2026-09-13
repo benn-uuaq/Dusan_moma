@@ -527,6 +527,7 @@ def test_start_while_at_origin_releases_instead_of_reporting_busy(session):
     평소 규칙대로 409 BUSY 를 돌려주면 로봇이 영영 풀리지 않는다.
     """
     s, client, _seq = session
+    s.handle_request(*_req("prepare", job_id="jb1", area=AREA, scan=SCAN))
     s.notify_at_origin()
 
     released: list[int] = []
@@ -542,6 +543,7 @@ def test_start_while_at_origin_releases_instead_of_reporting_busy(session):
 def test_arrival_is_published_as_a_ready_event(session):
     """도착 통보는 evt/ready 로 나가고 어느 단계인지 붙는다."""
     s, client, _seq = session
+    s.handle_request(*_req("prepare", job_id="jb1", area=AREA, scan=SCAN))
     s.notify_at_origin()
 
     ready = [fields for name, fields in client.events if name == "ready"]
@@ -697,3 +699,16 @@ def test_aborted_mark_sends_no_complete(session):
     s.finish_mark(["p1"], [])
 
     assert not [e for e in client.events if e[0] == "complete"]
+
+
+def test_no_ready_goes_to_erut_for_a_job_it_did_not_ask_for(session):
+    """RCS '검사 시작'·사내 MC 작업은 ERUT 가 시킨 게 아니다 — ready 를 안 낸다.
+
+    req_id 가 빈 evt/ready 를 흘리면 ERUT 가 보낸 적 없는 준비 완료를 받는다.
+    """
+    s, client, _ = session
+
+    s.notify_at_origin()
+
+    assert client.events == []
+    assert s.robot_state() != "ready"
