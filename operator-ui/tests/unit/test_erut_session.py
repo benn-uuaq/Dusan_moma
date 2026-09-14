@@ -19,6 +19,7 @@ class FakeClient:
         self.progress: list[dict] = []
         self.status: list[tuple] = []
         self.errors: list[dict] = []
+        self.messages: list[dict] = []
         self.is_connected = True
 
     # 시그널 자리 — 세션이 connect() 를 부르므로 흉내만 낸다.
@@ -45,6 +46,11 @@ class FakeClient:
 
     def publish_status(self, state, battery=None, charging=None):
         self.status.append((state, battery, charging))
+        return True
+
+    def publish_message(self, code, message, text, **extra):
+        self.messages.append({"code": code, "message": message,
+                              "text": text, **extra})
         return True
 
     def publish_error(self, code, message, level, recovery, **extra):
@@ -747,9 +753,12 @@ def test_local_stop_without_an_erut_job_says_nothing(session):
     assert client.events == []
 
 
-# ---- home (규격 밖 — 우리가 더한 동작) ------------------------------------------
-def test_home_is_refused_with_a_reason_while_the_robot_moves(session) -> None:
-    """로봇이 동작 중이면 409 BUSY, 사유 문장은 detail 에 싣는다."""
+# ---- home (규격 20260914 탭4 E-1) ------------------------------------------------
+def test_home_is_refused_and_the_reason_goes_to_evt_message(session) -> None:
+    """동작 중이면 res 409 BUSY(detail 없음) + evt/message M1001 로 사유를 알린다.
+
+    사유는 장애가 아니므로 evt/error 로 내지 않고, errors[] 에도 안 들어간다.
+    """
     from smr_operator_ui.services.erut_session import HOME_BUSY_TEXT
     sess, client, _seq = session
     fired = []
@@ -760,7 +769,12 @@ def test_home_is_refused_with_a_reason_while_the_robot_moves(session) -> None:
 
     assert client.res[-1]["code"] == 409
     assert client.res[-1]["message"] == "BUSY"
-    assert client.res[-1]["detail"] == HOME_BUSY_TEXT
+    assert "detail" not in client.res[-1]
+    assert client.messages == [{"code": "M1001", "message": "HOME_NOT_ALLOWED",
+                                "text": HOME_BUSY_TEXT, "req_id": "h1",
+                                "action": "home"}]
+    assert client.errors == []
+    assert sess.error_codes() == []
     assert fired == []
 
 

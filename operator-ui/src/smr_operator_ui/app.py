@@ -52,7 +52,11 @@ from smr_operator_ui.services import (
     SequencerState,
     SettingsService,
 )
-from smr_operator_ui.services.erut_session import HOME_BUSY_TEXT
+from smr_operator_ui.services.erut_session import (
+    HOME_BUSY_TEXT,
+    MSG_AREA_APPLY_PENDING,
+    MSG_ARC_LIMIT_CLAMPED,
+)
 from smr_operator_ui.services.ros_status_client import TASK_STATE_NAMES
 from smr_operator_ui.services.reference_poses import (
     load_reference_poses,
@@ -748,10 +752,11 @@ class OperatorWindow(QMainWindow):
                    f"가능한 최대는 {limit:.0f} mm 이며, 그 값으로 진행합니다.")
         self.main_screen.show_activity(message)
         self.cobot_manual_screen.add_alarm(message)
-        self.erut_session.raise_error({
-            "code": "E-ARC-LIMIT", "message": "작업 호 길이가 최대 작업 길이 초과",
-            "level": "warning", "recovery": "auto", "detail": message,
-        })
+        # 장애가 아니다 — 줄여서 그대로 진행하므로 알림(evt/message)으로 낸다.
+        self.erut_session.notify(
+            *MSG_ARC_LIMIT_CLAMPED,
+            f"구간 폭 {width_mm:.0f} mm 가 최대 작업 폭을 넘어 "
+            f"최대값 {limit:.0f} mm 로 줄여 진행합니다.")
         return limit
 
     def _send_work_area(
@@ -856,10 +861,11 @@ class OperatorWindow(QMainWindow):
                        f"조건이 풀리면 자동으로 다시 보냅니다.")
             self.main_screen.show_activity(message)
             self.cobot_manual_screen.add_alarm(message)
-            self.erut_session.raise_error({
-                "code": "E-AREA-SEND", "message": f"작업 영역 전송 보류 — {reason}",
-                "level": "warning", "recovery": "auto", "detail": message,
-            })
+            # 장애가 아니다 — 조건이 풀리면 스스로 다시 보내므로 알림으로 낸다.
+            # ERUT 에는 내부 통신 사정(연결·태스크 상태)을 싣지 않는다.
+            self.erut_session.notify(
+                *MSG_AREA_APPLY_PENDING,
+                "구간 설정을 아직 반영하지 못했습니다. 준비되면 자동으로 다시 반영합니다.")
             return
 
         if self.ros_status.send_pose("work_area", values):

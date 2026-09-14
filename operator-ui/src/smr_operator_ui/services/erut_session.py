@@ -51,8 +51,13 @@ _STATE_MAP = {
 
 
 #: 로봇이 동작 중이라 홈 요청을 받을 수 없을 때 보여 주는 문장.
-#: RCS 팝업과 ERUT 응답(detail)이 같은 문장을 쓴다.
+#: RCS 로그와 ERUT 알림(evt/message M1001)이 같은 문장을 쓴다.
 HOME_BUSY_TEXT = "현재 로봇이 동작 중이므로 홈 이동이 불가합니다."
+
+#: evt/message 알림 목록 (규격 20260914 탭5). (code, message)
+MSG_HOME_NOT_ALLOWED = ("M1001", "HOME_NOT_ALLOWED")
+MSG_ARC_LIMIT_CLAMPED = ("M2001", "ARC_LIMIT_CLAMPED")
+MSG_AREA_APPLY_PENDING = ("M2002", "AREA_APPLY_PENDING")
 
 
 class ErutSession(QObject):
@@ -443,15 +448,16 @@ class ErutSession(QObject):
     def _do_home(self, req_id: str, content: dict) -> None:
         """로봇 홈 이동. 규격 20260914 판에 추가한 동작 (탭4 E-1, 탭5).
 
-        로봇이 동작 중이면(스캔·프로브·마킹 등) 409 BUSY 로 거절하고, 사유를
-        `detail` 에 사람이 읽을 문장으로 싣는다 — 통신 로그에 남기는 용도다
-        (팝업 없음).
+        로봇이 동작 중이면(스캔·프로브·마킹 등) 409 BUSY 로 거절하고, 사유는
+        장애가 아니므로 evt/error 가 아닌 **evt/message(M1001)** 로 알린다 —
+        ERUT 는 통신 로그에 남기기만 한다(팝업 없음).
         쉬고 있으면 200 으로 바로 답하고 홈 이동을 시작한다(완료 이벤트 없음,
         abort 와 같은 즉시형).
         """
         if self.robot_busy():
-            self._reply(req_id, "home", 409, "BUSY", detail=HOME_BUSY_TEXT)
-            self.activity.emit(f"ERUT 홈 요청 거절 — {HOME_BUSY_TEXT}")
+            self._reply(req_id, "home", 409, "BUSY")
+            self.notify(*MSG_HOME_NOT_ALLOWED, HOME_BUSY_TEXT,
+                        req_id=req_id, action="home")
             return
         self._reply(req_id, "home", 200, "OK")
         self.activity.emit("ERUT 요청으로 로봇을 홈으로 보냅니다.")
@@ -546,6 +552,17 @@ class ErutSession(QObject):
                                   failed=list(failed))
         self.activity.emit(
             f"ERUT 마킹 완료를 발행했습니다 (성공 {len(marked)}, 실패 {len(failed)}).")
+
+    # ------------------------------------------------------------ 알림
+    def notify(self, code: str, message: str, text: str, **extra) -> None:
+        """장애가 아닌 안내를 evt/message 로 알린다 (규격 20260914).
+
+        장애(evt/error)와 나눈다 — 로봇 쪽에서도 에러와 메시지가 나뉘듯이.
+        알림은 걸려 있는 장애 목록(query 의 errors[])에 들어가지 않고,
+        작업을 멈추지도 않는다.
+        """
+        self.client.publish_message(code, message, text, **extra)
+        self.activity.emit(f"ERUT 알림: {code} {text}")
 
     # ------------------------------------------------------------ 장애
     def raise_error(self, fields: dict) -> None:

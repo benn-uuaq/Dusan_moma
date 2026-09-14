@@ -10,7 +10,7 @@
     ④ 구간 검사   req/start    → res 202 → evt/progress … → evt/complete
     ⑤ 마킹        req/mark     → res 202 → evt/complete
     중간 개입     req/pause · req/resume · req/abort · req/reset
-    홈 이동       req/home — 동작 중이면 409 BUSY + detail 로 거절 (20260914 추가)
+    홈 이동       req/home — 동작 중이면 409 BUSY + evt/message 로 사유 (20260914 추가)
 
 「시나리오 자동 진행」을 누르면 ①~④를 순서대로 밟으며, 각 단계의 응답을
 기다렸다가 다음으로 넘어간다. 기다리는 대상이 오지 않으면 그 자리에서 멈추고
@@ -135,7 +135,7 @@ class ErutSimApp:
             ("■ abort", lambda: self._send("abort")),
             ("↺ reset", lambda: self._send("reset")),
             # 규격 20260914 추가 (탭4 E-1). 로봇이 동작 중이면
-            # res 409 BUSY 와 함께 detail 에 사유 문장이 온다.
+            # res 409 BUSY 뒤에 evt/message(M1001)로 사유 문장이 온다.
             ("⌂ home", lambda: self._send("home")),
         )
         for i, (label, fn) in enumerate(buttons):

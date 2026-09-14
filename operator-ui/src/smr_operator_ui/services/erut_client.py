@@ -22,7 +22,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 # ERUT 가 보내오는 동작. 토픽 끝부분으로 구분한다.
 # 앞의 9개가 규격 20260812 판이고, "home" 은 20260914 판에 추가했다
-# (탭4 E-1: 동작 중이면 409 BUSY + detail).
+# (탭4 E-1: 동작 중이면 409 BUSY + evt/message).
 ACTIONS = (
     "calibrate", "prepare", "start", "pause", "resume",
     "abort", "reset", "mark", "query",
@@ -201,6 +201,22 @@ class ErutClient(QObject):
         if charging is not None:
             payload["charging"] = charging
         return self._publish(self.evt_topic("status"), payload, qos=1, retain=True)
+
+    def publish_message(self, code: str, message: str, text: str,
+                        **extra) -> bool:
+        """안내 알림 (규격 20260914 evt/message). 장애가 아니다.
+
+        evt/error 와 달리 발생·해제 쌍이 없고 ERUT 동작을 바꾸지 않는다 —
+        text 를 표시·기록만 한다. 봉투는 evt/error 와 같게 `code`(Mxxxx)·
+        `message` 가 최상위, 보여 줄 문장 `text` 는 content 안이다.
+        요청 때문에 낸 알림이면 extra 로 req_id·action 을 싣는다.
+        """
+        content = {"text": text}
+        content.update(extra)
+        return self._publish(self.evt_topic("message"), {
+            "timestamp": utc_ms(), "code": code,
+            "message": message, "content": content,
+        })
 
     def publish_error(self, code: str, message: str, level: str,
                       recovery: str, **extra) -> bool:

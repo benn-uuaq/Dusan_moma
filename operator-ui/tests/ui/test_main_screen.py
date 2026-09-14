@@ -801,14 +801,18 @@ def test_oversized_work_length_is_clamped_and_alarmed(qtbot) -> None:
     qtbot.addWidget(window)
     _robot_ready(window)
     raised: list[dict] = []
+    notes: list[tuple] = []
     window.erut_session.raise_error = lambda fields: raised.append(fields)
+    window.erut_session.notify = lambda code, msg, text, **kw: notes.append((code, msg, text))
 
     window._send_work_area(1110.0, 500.0, 30.0, 20.0,
                            radius_mm=834.6, thickness_mm=10.0, eoat_w_mm=30.0)
 
     assert window.main_screen.rect_view.work_area()[0] == 721.0
-    assert len(raised) == 1
-    assert raised[0]["code"] == "E-ARC-LIMIT"
+    # 줄여서 진행하는 것은 장애가 아니다 — evt/error 가 아니라 알림으로 낸다.
+    assert raised == []
+    assert [n[0] for n in notes] == ["M2001"]
+    assert "721" in notes[0][2]
     alarms = [window.cobot_manual_screen.alarm_list.item(i).text()
               for i in range(window.cobot_manual_screen.alarm_list.count())]
     assert any("최대 작업 길이" in text for text in alarms)
@@ -930,8 +934,14 @@ def test_work_area_is_held_back_while_the_robot_task_runs(qtbot) -> None:
     qtbot.addWidget(window)
     sent: list[list] = []
     raised: list[dict] = []
+    notes: list[tuple] = []
     window.ros_status.send_pose = lambda name, values: sent.append(list(values)) or True
     window.erut_session.raise_error = lambda fields: raised.append(fields)
+    window.erut_session.notify = lambda code, msg, text, **kw: notes.append((code, msg, text))
+
+    def rcs_alarms() -> list[str]:
+        lst = window.cobot_manual_screen.alarm_list
+        return [lst.item(i).text() for i in range(lst.count())]
 
     area = dict(radius_mm=834.6, thickness_mm=10.0,
                 eoat_w_mm=244.5, eoat_h_mm=244.5, eoat_type=5.0)
@@ -939,8 +949,10 @@ def test_work_area_is_held_back_while_the_robot_task_runs(qtbot) -> None:
     # 연결이 없으면 못 보낸다 — 사유를 알린다.
     window._send_work_area(978.0, 500.0, 257.0, 0.0, **area)
     assert sent == []
-    assert raised[-1]["code"] == "E-AREA-SEND"
-    assert "연결" in raised[-1]["message"]
+    # ERUT 에는 알림(M2002)만 — 내부 통신 사정은 RCS 알람에만 남긴다.
+    assert notes[-1][0] == "M2002"
+    assert "연결" not in notes[-1][2]
+    assert any("연결" in a for a in rcs_alarms())
 
     # 연결되면 보류분이 자동으로 나간다.
     window.ros_status.connected_changed.emit(True)
@@ -949,11 +961,12 @@ def test_work_area_is_held_back_while_the_robot_task_runs(qtbot) -> None:
 
     # 태스크가 도는 중이면 보류하고, 로봇이 보고한 값을 함께 알린다.
     window.ros_status.task_state_changed.emit(1)
-    raised.clear()
+    notes.clear()
     window._send_work_area(600.0, 500.0, 257.0, 20.0, **area)
     assert len(sent) == 1, "태스크 실행 중에는 보내면 안 된다"
-    assert "실행 중" in raised[-1]["message"]
-    assert "태스크 상태 = 1" in raised[-1]["detail"]
+    assert notes[-1][0] == "M2002"
+    assert any("실행 중" in a and "태스크 상태 = 1" in a for a in rcs_alarms())
+    assert raised == [], "보류는 장애가 아니다"
 
     # 멈추면 보류해 둔 값이 나간다.
     window.ros_status.task_state_changed.emit(3)
