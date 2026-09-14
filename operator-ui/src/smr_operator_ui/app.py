@@ -20,7 +20,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
-    QMessageBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -1045,15 +1044,15 @@ class OperatorWindow(QMainWindow):
     def _request_home(self) -> None:
         """RCS 의 '로봇 홈' — 로봇이 쉬고 있을 때만 홈으로 보낸다.
 
-        스캔·프로브·마킹 등 **로봇이 동작 중이면 보내지 않고** 팝업으로
-        "현재 로봇이 동작 중이므로 홈 이동이 불가합니다." 를 띄운다. 작업
-        도중 홈으로 가면 그 작업이 깨지므로, 먼저 '정지'로 멈춘 뒤 누른다.
-        ERUT 에서 온 홈 요청은 세션이 같은 문장으로 409 응답한다.
+        스캔·프로브·마킹 등 **로봇이 동작 중이면 보내지 않고** 로그에만
+        "현재 로봇이 동작 중이므로 홈 이동이 불가합니다." 를 남긴다(팝업
+        없음). 작업 도중 홈으로 가면 그 작업이 깨지므로, 먼저 '정지'로
+        멈춘 뒤 누른다. ERUT 에서 온 홈 요청은 세션이 같은 문장으로 409
+        응답한다(규격 20260914 탭4 E-1).
         """
         if self._robot_busy():
             self.main_screen.show_activity(f"홈 이동 거절 — {HOME_BUSY_TEXT}")
             self.cobot_manual_screen.activity_label.setText(HOME_BUSY_TEXT)
-            self._show_home_busy_popup()
             return
         self._send_home()
 
@@ -1062,17 +1061,6 @@ class OperatorWindow(QMainWindow):
         뒤로는 안 감) -> 홈 높이로 상승 -> moveJ."""
         self.main_screen.show_activity("로봇을 홈으로 보냅니다.")
         self.ros_status.call_command("home")
-
-    def _show_home_busy_popup(self) -> None:
-        """거절 사유 팝업. 화면을 막지 않도록 open() 으로 띄우고, 여러 번
-        눌러도 창이 쌓이지 않게 하나를 다시 쓴다."""
-        box = getattr(self, "_home_busy_box", None)
-        if box is None:
-            box = QMessageBox(QMessageBox.Icon.Warning, "로봇 홈", HOME_BUSY_TEXT,
-                              QMessageBox.StandardButton.Ok, self)
-            self._home_busy_box = box
-        if not box.isVisible():
-            box.open()
 
     def _stop_robot_scan(self) -> None:
         """로봇 태스크를 멈춘다. 장애·일시정지·정지가 모두 여기로 모인다.

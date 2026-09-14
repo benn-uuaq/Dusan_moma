@@ -1,4 +1,4 @@
-<ConfigurationSettings robotType="6212" toolType="1" robotTypeName="CS612" robotSN="09252312420001" savedTime="2026-09-03 14:07:49">
+<ConfigurationSettings robotType="6212" toolType="1" robotTypeName="CS612" robotSN="09252312420001" savedTime="2026-09-14 13:02:11">
   <versionInfo>
     <lastSavedVersion project="RT ROBOT" major="2" minor="14" bugfix="3" commitHashInfo="a6e8c3aA" additionalInfo="" buildDate="2025-08-22 08:51:45"/>
     <createdVersion project="RT ROBOT" major="2" minor="15" bugfix="0" commitHashInfo="00cb5e6" additionalInfo="" buildDate="2026-01-16 06:45:14"/>
@@ -99,14 +99,39 @@
     </Conveyor>
   </ConveyorConfig>
   <SafetyConfigurationSettings>
-[Safety Tool 0]
-name = \ud234
-sourceToolId = 9f2b2bac-968d-4294-96a9-f4b99b83e3c8
-radius = 0.0
-toolPosition = [0.0,0.0,0.0]
+[NormalModeSafetyLimits]
+maxTcpSpeed = 0.25
+maxForce = 100.0
+maxElbowSpeed = 0.25
+maxElbowForce = 100.0
+maxStoppingDistance = 0.2
+maxStoppingTime = 0.2
+maxPower = 80.0
+maxMomentum = 5.0
+maxJointSpeed = [2.6179938779739,2.6179938779739,2.8545508489005673,3.926990747000567,3.926990747000567,3.926990747000567]
+minJointPosition = [6.2308254295591725,6.2308254295591725,6.2308254295591725,6.2308254295591725,6.2308254295591725,6.230825429619756]
+maxJointPosition = [0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987755983018]
+minJointRevolutions = [-2,-2,-2,-2,-2,-2]
+maxJointRevolutions = [1,1,1,1,1,1]
 
-[MiscConfiguration]
-teachPendant = 1
+[ReducedModeSafetyLimits]
+maxTcpSpeed = 0.25
+maxForce = 100.0
+maxElbowSpeed = 0.25
+maxElbowForce = 100.0
+maxStoppingDistance = 0.2
+maxStoppingTime = 0.2
+maxPower = 80.0
+maxMomentum = 5.0
+maxJointSpeed = [2.268928027575034,2.268928027575034,2.5054849985017014,3.577924896601701,3.577924896601701,3.577924896601701]
+minJointPosition = [6.2308254295591725,6.2308254295591725,6.2308254295591725,6.2308254295591725,6.2308254295591725,6.230825429619756]
+maxJointPosition = [0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987755983018]
+minJointRevolutions = [-2,-2,-2,-2,-2,-2]
+maxJointRevolutions = [1,1,1,1,1,1]
+
+[SafetyHome]
+sourceHomeId = 6020b286-6bc8-4ddd-bb33-be6273f8b959
+homePosition = [NaN,NaN,NaN,NaN,NaN,NaN]
 
 [ThreePositionEnabling]
 allowManualHighSpeed = 1
@@ -145,39 +170,14 @@ configOut2and3_OSSD = 0
 configOut4and5_OSSD = 0
 configOut6and7_OSSD = 0
 
-[SafetyHome]
-sourceHomeId = 6020b286-6bc8-4ddd-bb33-be6273f8b959
-homePosition = [NaN,NaN,NaN,NaN,NaN,NaN]
+[Safety Tool 0]
+name = \ud234
+sourceToolId = 9f2b2bac-968d-4294-96a9-f4b99b83e3c8
+radius = 0.0
+toolPosition = [0.0,0.0,0.0]
 
-[NormalModeSafetyLimits]
-maxTcpSpeed = 0.25
-maxForce = 100.0
-maxElbowSpeed = 0.25
-maxElbowForce = 100.0
-maxStoppingDistance = 0.2
-maxStoppingTime = 0.2
-maxPower = 80.0
-maxMomentum = 5.0
-maxJointSpeed = [2.6179938779739,2.6179938779739,2.8545508489005673,3.926990747000567,3.926990747000567,3.926990747000567]
-minJointPosition = [6.2308254295591725,6.2308254295591725,6.2308254295591725,6.2308254295591725,6.2308254295591725,6.230825429619756]
-maxJointPosition = [0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987755983018]
-minJointRevolutions = [-2,-2,-2,-2,-2,-2]
-maxJointRevolutions = [1,1,1,1,1,1]
-
-[ReducedModeSafetyLimits]
-maxTcpSpeed = 0.25
-maxForce = 100.0
-maxElbowSpeed = 0.25
-maxElbowForce = 100.0
-maxStoppingDistance = 0.2
-maxStoppingTime = 0.2
-maxPower = 80.0
-maxMomentum = 5.0
-maxJointSpeed = [2.268928027575034,2.268928027575034,2.5054849985017014,3.577924896601701,3.577924896601701,3.577924896601701]
-minJointPosition = [6.2308254295591725,6.2308254295591725,6.2308254295591725,6.2308254295591725,6.2308254295591725,6.230825429619756]
-maxJointPosition = [0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987762041372,0.05235987755983018]
-minJointRevolutions = [-2,-2,-2,-2,-2,-2]
-maxJointRevolutions = [1,1,1,1,1,1]
+[MiscConfiguration]
+teachPendant = 1
 
 </SafetyConfigurationSettings>
   <Extensions>
