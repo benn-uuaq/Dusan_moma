@@ -410,8 +410,22 @@ class ErutSimApp:
         self.root.destroy()
 
 
+def use_visible_cursor(root: tk.Tk) -> None:
+    """마우스 포인터를 직접 지정한다.
+
+    WSLg(Xwayland)에서 Tk 창은 커서를 지정하지 않으면 X 루트의 **빈 커서**를
+    물려받아, 창 위에 마우스를 올리면 포인터가 사라진다. 자식 위젯은 부모
+    창의 커서를 따르므로 최상위 창에만 주면 되고, 팝업(메시지 상자)은 따로
+    뜨는 최상위 창이라 옵션으로 같이 준다. 입력칸의 I 자 커서는 그대로다.
+    """
+    root.configure(cursor="left_ptr")
+    root.option_add("*Toplevel.cursor", "left_ptr")
+    root.option_add("*Dialog.cursor", "left_ptr")
+
+
 def main() -> None:
     root = tk.Tk()
+    use_visible_cursor(root)
     ErutSimApp(root)
     root.mainloop()
 
