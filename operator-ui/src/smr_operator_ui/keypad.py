@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QEvent, Qt
+import atexit
+
+from PyQt6.QtCore import QEvent, QObject, Qt
 from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import (
+    QAbstractScrollArea,
+    QAbstractSlider,
     QAbstractSpinBox,
     QApplication,
     QComboBox,
@@ -16,10 +20,79 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QPushButton,
+    QScrollBar,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
+
+
+class WheelGuard(QObject):
+    """마우스 휠로 입력값이 바뀌지 않게 막는다 (앱 전체).
+
+    값은 **클릭해서 키패드·키보드로 넣는 것만** 허용한다. Qt 기본값으로는
+    스핀박스·콤보박스·슬라이더 위에서 휠을 굴리면 값이 바뀌어, 화면을
+    스크롤하려다 설정값이나 로봇 속도(속도 바 슬라이더)가 슬쩍 바뀌었다.
+
+    휠은 버리지 않고 **바깥 스크롤 영역으로 넘긴다** — 입력칸 위에 마우스가
+    있어도 페이지는 그대로 스크롤된다. 스크롤바 자체는 막지 않는다.
+    """
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if event.type() != QEvent.Type.Wheel or not isinstance(watched, QWidget):
+            return False
+        if not _wheel_changes_value(watched):
+            return False
+        area = _scroll_area_of(watched)
+        if area is not None:
+            QApplication.sendEvent(area.verticalScrollBar(), event)
+        return True     # 값은 안 바꾼다
+
+
+def _wheel_changes_value(widget: QWidget) -> bool:
+    """휠이 값을 바꾸는 위젯(또는 그 안쪽 입력부)인가."""
+    w: QWidget | None = widget
+    # 자기 자신과 바로 위 하나만 본다 — 스핀박스·콤보의 안쪽 QLineEdit 까지.
+    # 더 올라가면 펼친 콤보 목록 안의 스크롤까지 막힌다.
+    for _ in range(2):
+        if w is None:
+            return False
+        if isinstance(w, (QAbstractSpinBox, QComboBox)):
+            return True
+        if isinstance(w, QAbstractSlider) and not isinstance(w, QScrollBar):
+            return True
+        w = w.parentWidget()
+    return False
+
+
+def _scroll_area_of(widget: QWidget) -> QAbstractScrollArea | None:
+    w = widget.parentWidget()
+    while w is not None:
+        if isinstance(w, QAbstractScrollArea) and not isinstance(w, QComboBox):
+            return w
+        w = w.parentWidget()
+    return None
+
+
+def install_wheel_guard(app: QApplication | None = None) -> None:
+    """앱에 WheelGuard 를 한 번만 건다. 여러 번 불러도 된다."""
+    app = app or QApplication.instance()
+    if app is None or getattr(app, "_smr_wheel_guard", None) is not None:
+        return
+    guard = WheelGuard(app)
+    app.installEventFilter(guard)
+    app._smr_wheel_guard = guard
+    # 파이썬이 끝날 때 Qt 가 앱을 허무는 도중에도 이벤트가 오는데, 그때
+    # 이미 반쯤 정리된 파이썬 필터를 부르면 죽는다(세그폴트). 파이썬이
+    # 정리를 시작하기 전에 떼어 둔다.
+    atexit.register(_remove_wheel_guard, app, guard)
+
+
+def _remove_wheel_guard(app: QApplication, guard: QObject) -> None:
+    try:
+        app.removeEventFilter(guard)
+    except RuntimeError:        # 앱이 이미 없어졌다
+        pass
 
 
 def _disarm_enter(button: QPushButton) -> None:

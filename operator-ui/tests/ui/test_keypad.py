@@ -151,3 +151,97 @@ def test_touch_select_dialog_enter_and_escape(qtbot) -> None:
     qtbot.keyClick(other, Qt.Key.Key_Escape)
     assert other.result() == QDialog.DialogCode.Rejected
     assert other.selected_index == -1
+
+
+# ---- 마우스 휠로 값이 바뀌지 않는다 ------------------------------------------
+def _wheel(widget, up: bool = True) -> None:
+    from PyQt6.QtCore import QPoint, QPointF
+    from PyQt6.QtGui import QWheelEvent
+    pos = QPointF(widget.width() / 2, widget.height() / 2)
+    ev = QWheelEvent(pos, widget.mapToGlobal(pos), QPoint(0, 0),
+                     QPoint(0, 120 if up else -120), Qt.MouseButton.NoButton,
+                     Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(widget, ev)
+
+
+def test_wheel_never_changes_input_values_but_still_scrolls_the_page(qtbot) -> None:
+    """입력칸 위에서 휠을 굴려도 값은 그대로이고, 페이지는 스크롤된다."""
+    from PyQt6.QtWidgets import QScrollArea, QSlider, QVBoxLayout, QWidget
+    from smr_operator_ui.keypad import TouchComboBox, TouchSpinBox, install_wheel_guard
+    install_wheel_guard()
+
+    area = QScrollArea(); area.setWidgetResizable(True)
+    page = QWidget(); col = QVBoxLayout(page)
+    spin = TouchSpinBox(); spin.setRange(0, 1000); spin.setValue(200)
+    combo = TouchComboBox(); combo.addItems(["한국어", "English"])
+    slider = QSlider(Qt.Orientation.Horizontal); slider.setRange(0, 100); slider.setValue(50)
+    for w in (spin, combo, slider):
+        col.addWidget(w)
+    col.addSpacing(3000)                     # 스크롤할 거리
+    area.setWidget(page); area.resize(300, 200)
+    qtbot.addWidget(area); area.show()
+
+    bar = area.verticalScrollBar()
+    for target in (spin.lineEdit(), spin, combo, slider):
+        _wheel(target, up=False)
+    assert spin.value() == 200
+    assert combo.currentIndex() == 0
+    assert slider.value() == 50
+    assert bar.value() > 0, "입력칸 위에서도 페이지는 스크롤돼야 한다"
+
+
+def test_speed_bar_is_not_changed_by_the_wheel(qtbot) -> None:
+    """로봇 속도 슬라이더도 휠로 안 바뀐다 — 스크롤하다 속도가 바뀌면 위험하다."""
+    from smr_operator_ui.app import OperatorWindow
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    slider = window.main_screen.speed_bar.slider
+    slider.setValue(50)                  # 끝값이면 휠이 더 못 가 시험이 안 된다
+    _wheel(slider, up=False)
+    assert slider.value() == 50
+    _wheel(slider, up=True)
+    assert slider.value() == 50
+    window.close()
+
+
+# ---- 데이터 저장 위치: 폴더 선택 창 --------------------------------------------
+def test_data_folder_opens_a_folder_picker_not_the_keyboard(qtbot) -> None:
+    from smr_operator_ui.app import OperatorWindow
+    from smr_operator_ui.folder_picker import FolderPathEdit
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    field = window.screens["system"].field("데이터 저장 위치")
+    assert isinstance(field, FolderPathEdit)
+    assert field.isReadOnly()
+    asked: list[str] = []
+    field.chooser = lambda current: asked.append(current) or "E:/UT/Data"
+
+    qtbot.mouseClick(field, Qt.MouseButton.LeftButton)
+
+    assert asked == ["D:/SMR/Data"]              # 지금 값에서 연다
+    assert field.text() == "E:/UT/Data"
+    assert window.screens["system"].values()["데이터 저장 위치"] == "E:/UT/Data"
+    window.close()
+
+
+def test_cancelled_folder_picker_keeps_the_old_path(qtbot) -> None:
+    from smr_operator_ui.folder_picker import FolderPathEdit
+    field = FolderPathEdit("D:/SMR/Data")
+    qtbot.addWidget(field)
+    field.chooser = lambda current: None
+    qtbot.mouseClick(field, Qt.MouseButton.LeftButton)
+    assert field.text() == "D:/SMR/Data"
+
+
+def test_windows_picker_paths_and_arguments() -> None:
+    import base64
+    from smr_operator_ui import folder_picker as fp
+    assert fp.to_windows_path("D:/SMR/Data") == "D:\\SMR\\Data"
+    assert fp.from_windows_path("D:\\SMR\\데이터") == "D:/SMR/데이터"
+    args = fp.windows_picker_args("데이터 저장 위치 선택", "D:\\SMR\\Data")
+    assert "-STA" in args
+    script = base64.b64decode(args[-1]).decode("utf-16-le")
+    assert "'데이터 저장 위치 선택'" in script
+    assert "'D:\\SMR\\Data'" in script
+    # 작은따옴표가 든 경로도 PowerShell 문자열이 깨지지 않는다.
+    assert fp._ps_quote("D:\\it's") == "'D:\\it''s'"

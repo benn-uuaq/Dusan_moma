@@ -35,6 +35,7 @@ from smr_operator_ui.screens import (
     ModeSlotsScreen, RunScreen, SettingsMenuScreen, SystemSettingsScreen,
     TpacBridgeScreen, UTSettingsScreen,
 )
+from smr_operator_ui.keypad import install_wheel_guard
 from smr_operator_ui.state import CyclePhase
 from smr_operator_ui.services.mqtt_server import SPEED_MAX, SPEED_MIN
 from smr_operator_ui.services import (
@@ -307,6 +308,8 @@ class OperatorWindow(QMainWindow):
         start_erut: bool | None = None,
     ) -> None:
         super().__init__()
+        # 입력값은 클릭해서 키패드·키보드로만 바꾼다 — 휠로는 안 바뀐다.
+        install_wheel_guard()
         self.setWindowTitle("3S-Robotics | SMR Operator Console")
         self.resize(1280, 720)
         self.setMinimumSize(1280, 720)
@@ -1992,6 +1995,7 @@ def create_application(argv: list[str] | None = None) -> QApplication:
     if font_path.is_file():
         QFontDatabase.addApplicationFont(str(font_path))
     app.setStyleSheet(load_stylesheet())
+    install_wheel_guard(app)
     return app
 
 

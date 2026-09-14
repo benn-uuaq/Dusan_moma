@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from smr_operator_ui.components import MetricRow
+from smr_operator_ui.folder_picker import FolderPathEdit
 from smr_operator_ui.keypad import (
     TouchComboBox, TouchDoubleSpinBox, TouchLineEdit, TouchSpinBox,
 )
@@ -800,7 +801,7 @@ class SystemSettingsScreen(FormScreen):
 
     def __init__(self):
         lang=TouchComboBox(); lang.addItems(["한국어","English"])
-        super().__init__("system","시스템 설정","운영 환경과 로그 정책을 설정합니다.",[("장비 이름",line("SMR Operator Console")),("언어",lang),("상태 갱신 주기",spin(200,50,5000)),("로그 보존 기간",spin(365,1,3650)),("데이터 저장 위치",line("D:/SMR/Data")),("안전 설정",QLabel("PLC 관리 · 읽기 전용"))])
+        super().__init__("system","시스템 설정","운영 환경과 로그 정책을 설정합니다.",[("장비 이름",line("SMR Operator Console")),("언어",lang),("상태 갱신 주기",spin(200,50,5000)),("로그 보존 기간",spin(365,1,3650)),("데이터 저장 위치",FolderPathEdit("D:/SMR/Data", title="데이터 저장 위치 선택")),("안전 설정",QLabel("PLC 관리 · 읽기 전용"))])
 
 class UTSettingsScreen(FormScreen):
     """초음파 검사 장비의 연결 및 수집 조건 설정 화면."""
