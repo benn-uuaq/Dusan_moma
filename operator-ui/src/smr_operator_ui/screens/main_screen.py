@@ -334,23 +334,16 @@ class MainScreen(QWidget):
                 label.set_scale(scale)
 
     def set_motion_values(self, lift_mm: float, amr_mm: float) -> None:
-        """가상 차량 이동 거리와 리프트 높이를 헤드라인 옆에 붙인다.
+        """가상 차량 이동 거리와 리프트 높이를 받아 둔다.
 
-        열·행 번호만으로는 지금 얼마나 갔는지 알 수 없다. 칸 수 옆에 실제
-        값을 같이 두면 이동 중인지 선 건지도 바로 보인다 (값이 흐른다).
+        칸이 좁아 헤드라인에는 전체 구간·행 수만 적는다(mm 값은 안 붙인다).
+        값은 차량·리프트 표시와 ERUT 응답 쪽에서 쓴다.
         """
         self._lift_mm, self._amr_mm = float(lift_mm), float(amr_mm)
-        self._refresh_hero_totals()
 
     def _refresh_hero_totals(self) -> None:
-        columns = getattr(self, "_columns", 12)
-        rows = getattr(self, "_rows", 6)
-        amr = getattr(self, "_amr_mm", None)
-        lift = getattr(self, "_lift_mm", None)
-        self.segment_total.setText(
-            f"/ {columns}" if amr is None else f"/ {columns} · {amr:,.0f} mm")
-        self.row_total.setText(
-            f"/ {rows}" if lift is None else f"/ {rows} · {lift:,.0f} mm")
+        self.segment_total.setText(f"/ {getattr(self, '_columns', 12)}")
+        self.row_total.setText(f"/ {getattr(self, '_rows', 6)}")
 
     def set_base_speed(self, mm_s: float) -> None:
         """속도 바가 % 를 mm/s 로 환산할 기준값을 갱신한다."""

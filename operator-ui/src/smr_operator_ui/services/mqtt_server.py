@@ -587,7 +587,7 @@ def validate_command_payload(topic: str, payload: dict[str, Any]) -> None:
             raise MqttPayloadError("amr 또는 cobot 명령이 하나 이상 필요합니다.")
         if amr is not None and amr not in {"run", "stop", "ems", "lift"}:
             raise MqttPayloadError(f"허용되지 않은 AMR 명령입니다: {amr!r}")
-        if cobot is not None and cobot not in {"run", "stop", "ems"}:
+        if cobot is not None and cobot not in {"run", "stop", "ems", "home"}:
             raise MqttPayloadError(f"허용되지 않은 Cobot 명령입니다: {cobot!r}")
         return
 

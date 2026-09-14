@@ -137,7 +137,7 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 |---|---|---|---|---|---|---|
 | `timestamp` | `string` | `Y` | `ms` | UTC Unix Epoch 밀리초로 추정 | 명령 생성 시각 | `"1784727720000"` |
 | `amr` | `string` | `Y` | - | `run`, `stop`, `ems`, `lift` | AMR에 전달할 동작 명령 | `"stop"` |
-| `cobot` | `string` | `Y` | - | `run`, `stop`, `ems` | Cobot에 전달할 동작 명령 | `"stop"` |
+| `cobot` | `string` | `Y` | - | `run`, `stop`, `ems`, `home` | Cobot에 전달할 동작 명령. `home` = 홈 이동 (로봇이 동작 중이면 거절 — RCS 로그에만 남김) | `"stop"` |
 
 #### 명령값 정리
 
@@ -452,6 +452,7 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 |---|---|---|
 | 전체 작업 시작 | `doosan/robot/req/job_cmd` | `job_info` + `scan` 값을 함께 실어 보낸다 |
 | 일시정지 / 재개 | `doosan/robot/req/mc_cmd` | `cobot`(또는 `amr`) `"stop"` = 일시정지, `"run"` = 재개 |
+| 로봇 홈 | `doosan/robot/req/mc_cmd` | `cobot` `"home"` — 작업 중이면 거절, 먼저 `job_clear`(정지) |
 | 정지(중단) | `doosan/robot/req/job_clear` | 진행 중인 작업을 완전히 멈추고 정리한다 |
 
 동작 순서는 다음과 같다: AMR이 구역에 도착 → Cobot이 격자 0을 ㄹ자로 스캔 → 완료 후 Cobot이 홈 위치로 복귀 → 리프트가 상승해 다음 격자 높이로 이동 → Cobot이 격자 1을 스캔 → (해당 구역의 마지막 격자까지 반복) → AMR이 다음 구역으로 이동 → 위 과정을 반복.

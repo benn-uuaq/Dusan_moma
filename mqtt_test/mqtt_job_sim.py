@@ -247,7 +247,13 @@ class MqttJobSimApp:
         ).grid(row=0, column=3, padx=3, sticky=tk.EW)
 
         extra = ttk.Frame(frame)
-        extra.grid(row=len(left_fields) + 1, column=0, columnspan=4, pady=(6, 0), sticky=tk.EW)
+        extra.grid(row=max(len(left_fields), len(right_fields)) + 1,
+                   column=0, columnspan=4, pady=(6, 0), sticky=tk.EW)
+        # 로봇 홈: mc_cmd 의 cobot="home". 로봇이 동작 중이면 RCS 가 거절하고
+        # 로그에만 남긴다 — 작업 중이면 먼저 '■ 정지' 후 누른다.
+        ttk.Button(extra, text="⌂ 로봇 홈", command=self._publish_home).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
         ttk.Button(extra, text="Reset", command=lambda: self._publish_request(RESET)).pack(
             side=tk.LEFT, padx=(0, 6)
         )
@@ -651,6 +657,9 @@ class MqttJobSimApp:
         self._publish(
             MC_COMMAND, {"timestamp": utc_epoch_ms(), "amr": "run", "cobot": "run"}
         )
+
+    def _publish_home(self) -> None:
+        self._publish(MC_COMMAND, {"timestamp": utc_epoch_ms(), "cobot": "home"})
 
     def _publish_stop(self) -> None:
         self._publish(JOB_CLEAR, {"timestamp": utc_epoch_ms(), "request": "true"})

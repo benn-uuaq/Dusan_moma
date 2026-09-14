@@ -1670,3 +1670,82 @@ def test_manual_screen_home_follows_the_same_rule(qtbot) -> None:
     assert calls == []
     assert window.cobot_manual_screen.activity_label.text() == HOME_BUSY_TEXT
     window.close()
+
+
+def test_home_parks_the_position_at_the_origin(qtbot) -> None:
+    """정지 후 홈으로 보내면 현재 위치를 영점으로 되돌린다.
+
+    태스크가 멈추면 로봇은 좌표를 더 쓰지 않아 레지스터에 마지막 스캔
+    좌표가 굳어 남는다. 그 값이 계속 들어와도 다시 그리지 않고, 로봇이
+    다시 좌표를 내기 시작하면(생존 카운터가 움직이면) 그때부터 그린다.
+    """
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    _task_spy(window)
+    rect = window.main_screen.rect_view
+    stale = [0.0, 600.0, 300.0, 0.0, 0.0, 0.0]
+
+    def scan_state(alive: int) -> list:
+        return [6, 1, 3, alive, 1, 0, 257, 0, 0, 0]
+
+    window.ros_status.scan_state_changed.emit(scan_state(1))
+    window.ros_status.tcp_pose_zero_changed.emit(stale)
+    assert (rect._pos_h_mm, rect._pos_v_mm) == (600.0, 300.0)
+
+    window._request_home()
+    assert (rect._pos_h_mm, rect._pos_v_mm) == (0.0, 0.0)
+    # 굳은 좌표가 계속 들어와도 영점에 머문다.
+    window.ros_status.scan_state_changed.emit(scan_state(1))
+    window.ros_status.tcp_pose_zero_changed.emit(stale)
+    assert (rect._pos_h_mm, rect._pos_v_mm) == (0.0, 0.0)
+
+    # 다음 작업에서 로봇이 다시 좌표를 내면 그대로 그린다.
+    window.ros_status.scan_state_changed.emit(scan_state(2))
+    window.ros_status.tcp_pose_zero_changed.emit([0.0, 50.0, 0.0, 0.0, 0.0, 0.0])
+    assert rect._pos_h_mm == 50.0
+    window.close()
+
+
+def test_mqtt_cobot_home_follows_the_home_rule(qtbot) -> None:
+    """MC 의 mc_cmd cobot=home — 쉬고 있으면 홈, 동작 중이면 거절."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    _pushed, calls = _task_spy(window)
+
+    window._handle_mqtt_command(MqttTopics.MC_COMMAND, {"cobot": "home"})
+    assert calls == ["home"]
+
+    calls.clear()
+    window._on_robot_task_state(1)
+    window._handle_mqtt_command(MqttTopics.MC_COMMAND, {"cobot": "home"})
+    assert calls == []
+    assert HOME_BUSY_TEXT in window.main_screen.activity_label.text()
+    window.close()
+
+
+def test_mqtt_job_clear_stops_the_robot_too(qtbot) -> None:
+    """MC 의 job_clear(정지)는 RCS '정지'와 같이 로봇 태스크까지 멈춘다.
+
+    예전에는 순회만 멈춰 로봇이 계속 돌았고, 이어 누른 홈이 거절됐다.
+    """
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    _pushed, calls = _task_spy(window)
+    window._start_inspection()
+    calls.clear()
+
+    window._handle_mqtt_command(MqttTopics.JOB_CLEAR, {"request": "true"})
+
+    assert "stop" in calls
+    assert window._job_running() is False
+    window.close()
+
+
+def test_hero_totals_show_counts_only(qtbot) -> None:
+    """현재 구간/행 칸에는 전체 수만 — mm 값은 칸이 좁아 안 붙인다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    window.main_screen.set_motion_values(960.0, 1234.0)
+    assert "mm" not in window.main_screen.segment_total.text()
+    assert "mm" not in window.main_screen.row_total.text()
+    window.close()

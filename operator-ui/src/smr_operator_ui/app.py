@@ -652,8 +652,7 @@ class OperatorWindow(QMainWindow):
         self._origin_waiting = False
         self.main_screen.show_activity("작업을 중단했습니다 — 벽에서 물러나 홈으로 갑니다.")
         # 정지·태스크 교체가 먼저 처리되도록 잠깐 뒤에 홈을 보낸다.
-        QTimer.singleShot(ABORT_HOME_DELAY_MS,
-                          lambda: self.ros_status.call_command("home"))
+        QTimer.singleShot(ABORT_HOME_DELAY_MS, self._send_home)
 
     def _connect_sequencer(self) -> None:
         """격자 순회를 로봇·리프트·AMR·화면·MQTT에 잇는다.
@@ -1064,9 +1063,21 @@ class OperatorWindow(QMainWindow):
 
     def _send_home(self) -> None:
         """홈 이동 자체는 노드가 한다: 태스크 정지 -> TCP -Z 로 물러남(홈보다
-        뒤로는 안 감) -> 홈 높이로 상승 -> moveJ."""
+        뒤로는 안 감) -> 홈 높이로 상승 -> moveJ.
+
+        현재 위치 표시는 영점으로 되돌린다. 태스크가 멈추면 로봇이 좌표를
+        더 쓰지 않아 마지막 스캔 좌표가 그대로 남는데, 그걸 계속 그리면
+        홈에 가 있는 로봇이 벽 위 어딘가에 있는 것처럼 보인다.
+        """
         self.main_screen.show_activity("로봇을 홈으로 보냅니다.")
+        self._park_position()
         self.ros_status.call_command("home")
+
+    def _park_position(self) -> None:
+        """현재 위치를 영점에 세우고, 로봇이 다시 좌표를 낼 때까지
+        (생존 카운터가 움직일 때까지) 굳은 좌표를 무시한다."""
+        self._position_stale = True
+        self.main_screen.rect_view.park_position()
 
     def _stop_robot_scan(self) -> None:
         """로봇 태스크를 멈춘다. 장애·일시정지·정지가 모두 여기로 모인다.
@@ -1278,11 +1289,10 @@ class OperatorWindow(QMainWindow):
             return
 
         if topic == MqttTopics.JOB_CLEAR:
-            # 전체 작업 정지(중단). 진행 중인 사이클과 격자 순회를 멈춘다.
-            self.sequencer.stop()
-            for adapter in (self.lift, self.amr, self.outrigger, self.retractor):
-                adapter.cancel()
-            self.simulator.stop_cycle()
+            # 전체 작업 정지(중단). RCS '정지' 버튼과 같은 경로로 순회·마킹·
+            # 로봇 태스크까지 멈춘다 — 예전에는 순회만 멈춰 로봇 태스크가 계속
+            # 돌았고, 그 뒤 홈 명령이 "동작 중"으로 거절됐다.
+            self._stop_job_locally()
             self.main_screen.show_activity("MQTT 요청으로 작업을 정지했습니다.")
             return
 
@@ -1291,6 +1301,10 @@ class OperatorWindow(QMainWindow):
 
         amr_command = payload.get("amr")
         cobot_command = payload.get("cobot")
+        if cobot_command == "home":
+            # RCS '로봇 홈' 버튼과 같다 — 동작 중이면 거절하고 로그에만 남긴다.
+            self._request_home()
+            return
         if amr_command == "run" or cobot_command == "run":
             # 일시정지 후 재개도 이 명령을 그대로 쓴다.
             self.simulator.start_cycle()
@@ -1549,7 +1563,10 @@ class OperatorWindow(QMainWindow):
             # 보내므로 점이 영점에 가만히 서 있게 된다 — 표시가 생겼다
             # 없어졌다 하는 것보다 그쪽이 읽기 쉽고, 같은 값을 받는 TPAC
             # 쪽과도 어긋나지 않는다.
-            self.main_screen.apply_wall_position(values[1], values[2])
+            # 홈 이동·태스크 정지 뒤에는 레지스터에 마지막 스캔 좌표가 굳어
+            # 남는다 — 생존 카운터가 다시 움직일 때까지는 그리지 않는다.
+            if not getattr(self, "_position_stale", False):
+                self.main_screen.apply_wall_position(values[1], values[2])
         self._publish_tcp(values)
 
     def _publish_tcp(self, values: list) -> None:
@@ -1761,12 +1778,14 @@ class OperatorWindow(QMainWindow):
             return
         alive = int(values[self._ALIVE_INDEX])
         if alive != getattr(self, "_last_alive", None):
+            if getattr(self, "_last_alive", None) is not None:
+                self._position_stale = False    # 다시 좌표를 낸다
             self._last_alive = alive
             self._alive_stall = 0
             return
         self._alive_stall = getattr(self, "_alive_stall", 0) + 1
         if self._alive_stall == self._ALIVE_STALL_LIMIT:
-            self.main_screen.rect_view.park_position()
+            self._park_position()
 
     # scan_state(레지스터 290~299)의 10번째 값 — 센서판 probe_c/l/r 이
     # 벽 접촉을 못 찾고 halt() 하기 직전에 남긴다(config/modbus_registers.json
