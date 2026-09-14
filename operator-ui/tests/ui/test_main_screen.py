@@ -3,6 +3,7 @@ import pytest
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
+from smr_operator_ui.services.erut_session import HOME_BUSY_TEXT
 from smr_operator_ui.app import OperatorWindow, _scale_stylesheet
 from smr_operator_ui.services import GridPlan, MqttServer, MqttTopics
 from smr_operator_ui.state import CyclePhase
@@ -1610,38 +1611,68 @@ def test_home_button_sends_home_when_idle(qtbot) -> None:
     window.close()
 
 
-def test_home_mid_job_asks_first_and_can_be_declined(qtbot) -> None:
-    """작업 중에는 먼저 묻는다. 아니오면 아무것도 안 한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
-    qtbot.addWidget(window)
-    _pushed, calls = _task_spy(window)
-    _scanning(window)
-    window._confirm_home_mid_job = lambda: False
-
-    window.main_screen.home_button.click()
-    qtbot.wait(700)
-
-    assert "home" not in calls
-    assert window.sequencer.state is not None and calls == []
-    window.close()
-
-
-def test_home_mid_job_stops_the_job_then_goes_home(qtbot) -> None:
-    """예라고 하면 작업을 멈추고, 잠시 뒤 홈을 보낸다."""
-    from smr_operator_ui.services import SequencerState
-
+def test_home_is_refused_with_a_popup_while_a_job_runs(qtbot) -> None:
+    """작업 중(스캔·프로브·마킹 등)에는 홈 명령을 보내지 않고 사유를 띄운다."""
     window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     _pushed, calls = _task_spy(window)
     window._start_inspection()
-    window._confirm_home_mid_job = lambda: True
-    interrupted: list[int] = []
-    window.erut_session.interrupt_active_job = lambda: interrupted.append(1)
+    calls.clear()
 
-    window.main_screen.home_button.click()
+    window.main_screen.home_button.click()   # 버튼은 잠그지 않는다 — 눌러야 사유가 보인다
+    box = window._home_busy_box
+    assert box.isVisible()
+    assert box.text() == HOME_BUSY_TEXT
     qtbot.wait(700)
 
-    assert window.sequencer.state is SequencerState.STOPPED
-    assert calls[-1] == "home"
-    assert interrupted == [1], "ERUT 에 중단을 알리지 않았다"
+    assert "home" not in calls, "동작 중인데 홈 명령이 나갔다"
+    box.close()
+    window.close()
+
+
+def test_home_is_refused_while_the_robot_task_runs(qtbot) -> None:
+    """RCS 작업이 없어도 로봇 태스크가 돌면(펜던트에서 튼 경우) 거절한다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    _pushed, calls = _task_spy(window)
+
+    window._on_robot_task_state(1)          # 레지스터 500: 실행 중
+    window._request_home()
+    assert calls == []
+    window._home_busy_box.close()
+
+    window._on_robot_task_state(3)          # 중지됨
+    window._request_home()
+    assert calls == ["home"]
+    window.close()
+
+
+def test_repeated_presses_reuse_one_popup(qtbot) -> None:
+    """여러 번 눌러도 팝업이 쌓이지 않는다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    _task_spy(window)
+    window._on_robot_task_state(1)
+
+    window._request_home()
+    first = window._home_busy_box
+    window._request_home()
+
+    assert window._home_busy_box is first
+    first.close()
+    window.close()
+
+
+def test_manual_screen_home_follows_the_same_rule(qtbot) -> None:
+    """Cobot 수동 제어의 '홈 이동'도 로봇이 동작 중이면 거절하고 사유를 보인다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    _pushed, calls = _task_spy(window)
+    window._on_robot_task_state(1)
+
+    window._handle_cobot_command("home")
+
+    assert calls == []
+    assert window.cobot_manual_screen.activity_label.text() == HOME_BUSY_TEXT
+    window._home_busy_box.close()
     window.close()

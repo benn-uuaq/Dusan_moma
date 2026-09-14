@@ -50,6 +50,11 @@ _STATE_MAP = {
 }
 
 
+#: 로봇이 동작 중이라 홈 요청을 받을 수 없을 때 보여 주는 문장.
+#: RCS 팝업과 ERUT 응답(detail)이 같은 문장을 쓴다.
+HOME_BUSY_TEXT = "현재 로봇이 동작 중이므로 홈 이동이 불가합니다."
+
+
 class ErutSession(QObject):
     """ERUT 요청을 받아 로봇(진짜)과 시험용 응답으로 나눠 처리한다."""
 
@@ -69,6 +74,8 @@ class ErutSession(QObject):
     scan_go_requested = pyqtSignal()
     # 마킹 점들을 돌아 달라는 요청. [{id, x, y}, ...] (검사면 좌표 mm)
     mark_requested = pyqtSignal(list)
+    # 로봇을 홈으로 보내 달라는 요청. 로봇이 쉬고 있을 때만 나간다.
+    home_requested = pyqtSignal()
 
     def __init__(self, client: ErutClient, sequencer,
                  parent: QObject | None = None) -> None:
@@ -84,6 +91,9 @@ class ErutSession(QObject):
         # 가상 차량·리프트 값을 주는 함수. app.py 가 물려 준다.
         # 규격 탭5 의 query.lift_height 와 progress.moved 자리를 채운다.
         self.motion_state: Callable[[], dict] = dict
+        # 로봇이 동작 중인가를 알려 주는 함수. app.py 가 물려 준다.
+        # 동작 중이면 home 요청을 거절한다.
+        self.robot_busy: Callable[[], bool] = lambda: False
         # 원점 도착 시 evt/ready 를 낼 prepare 요청의 req_id.
         self._ready_req_id = ""
         # 마킹 중인 요청의 req_id 와 진행 여부.
@@ -428,6 +438,23 @@ class ErutSession(QObject):
         self._mark_req_id = ""
         self._marking = False
         self.abort_requested.emit()
+
+    # ---- home : 규격 밖 (우리가 더한 동작) -----------------------------------
+    def _do_home(self, req_id: str, content: dict) -> None:
+        """로봇 홈 이동. 규격 20260812 에는 없는 동작이라 협력사 합의가 필요하다.
+
+        로봇이 동작 중이면(스캔·프로브·마킹 등) 409 BUSY 로 거절하고, 사유를
+        `detail` 에 사람이 읽을 문장으로 싣는다 — ERUT 가 그대로 띄우면 된다.
+        쉬고 있으면 200 으로 바로 답하고 홈 이동을 시작한다(완료 이벤트 없음,
+        abort 와 같은 즉시형).
+        """
+        if self.robot_busy():
+            self._reply(req_id, "home", 409, "BUSY", detail=HOME_BUSY_TEXT)
+            self.activity.emit(f"ERUT 홈 요청 거절 — {HOME_BUSY_TEXT}")
+            return
+        self._reply(req_id, "home", 200, "OK")
+        self.activity.emit("ERUT 요청으로 로봇을 홈으로 보냅니다.")
+        self.home_requested.emit()
 
     # ---- reset : TEST (장애 수집이 아직 없다) --------------------------------
     def _do_reset(self, req_id: str, content: dict) -> None:

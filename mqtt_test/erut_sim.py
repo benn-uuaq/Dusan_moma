@@ -10,6 +10,7 @@
     ④ 구간 검사   req/start    → res 202 → evt/progress … → evt/complete
     ⑤ 마킹        req/mark     → res 202 → evt/complete
     중간 개입     req/pause · req/resume · req/abort · req/reset
+    (규격 밖)     req/home — 동작 중이면 409 BUSY + detail 로 거절된다
 
 「시나리오 자동 진행」을 누르면 ①~④를 순서대로 밟으며, 각 단계의 응답을
 기다렸다가 다음으로 넘어간다. 기다리는 대상이 오지 않으면 그 자리에서 멈추고
@@ -27,7 +28,7 @@ import queue
 import time
 import tkinter as tk
 import uuid
-from tkinter import scrolledtext, ttk
+from tkinter import messagebox, scrolledtext, ttk
 from typing import Any
 
 DEVICE_DEFAULT = "robot1"
@@ -133,6 +134,9 @@ class ErutSimApp:
             ("⏵ resume", lambda: self._send("resume")),
             ("■ abort", lambda: self._send("abort")),
             ("↺ reset", lambda: self._send("reset")),
+            # 규격 20260812 밖 — RCS 에 우리가 더한 동작. 로봇이 동작 중이면
+            # res 409 BUSY 와 함께 detail 에 사유 문장이 온다.
+            ("⌂ home (규격 밖)", lambda: self._send("home")),
         )
         for i, (label, fn) in enumerate(buttons):
             r, c = divmod(i, 5)
@@ -382,8 +386,13 @@ class ErutSimApp:
             return
         self._log(f"[수신 {tail}] {json.dumps(payload, ensure_ascii=False)}")
         if isinstance(payload, dict):
-            action = (payload.get("content") or {}).get("action", "")
+            content = payload.get("content") or {}
+            action = content.get("action", "")
             self._received.add((tail, action))
+            # 거절 사유 문장이 오면(예: 동작 중 홈 요청) ERUT 화면처럼 띄운다.
+            if content.get("detail"):
+                messagebox.showwarning(f"RCS 응답 — {action}", str(content["detail"]),
+                                       parent=self.root)
 
     def _log(self, text: str) -> None:
         self.log.configure(state=tk.NORMAL)

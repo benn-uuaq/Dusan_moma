@@ -19,8 +19,8 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QMainWindow,
+    QMessageBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -53,6 +53,7 @@ from smr_operator_ui.services import (
     SequencerState,
     SettingsService,
 )
+from smr_operator_ui.services.erut_session import HOME_BUSY_TEXT
 from smr_operator_ui.services.ros_status_client import TASK_STATE_NAMES
 from smr_operator_ui.services.reference_poses import (
     load_reference_poses,
@@ -545,6 +546,10 @@ class OperatorWindow(QMainWindow):
         self.erut_session.robot_stop_requested.connect(self._stop_robot_scan)
         # 가상 차량·리프트 값을 ERUT 응답에 실어 보낸다 (규격 탭5).
         self.erut_session.motion_state = self.motion_state
+        # ERUT 의 홈 요청: 동작 중이면 세션이 409 + 사유로 거절하고,
+        # 쉬고 있으면 여기로 온다.
+        self.erut_session.robot_busy = self._robot_busy
+        self.erut_session.home_requested.connect(self._send_home)
         # 원점에서 멈춰 선 로봇을 ERUT 의 "작업 시작"으로 풀어 준다.
         self.erut_session.scan_go_requested.connect(self._release_scan_gate)
         # 마킹: 점마다 차량 -> 고정 -> 리프트 -> 로봇(마킹 태스크) -> 복귀.
@@ -1026,34 +1031,48 @@ class OperatorWindow(QMainWindow):
         self._origin_waiting = False
         self.erut_session.interrupt_active_job()
 
-    def _request_home(self) -> None:
-        """메인 화면 '로봇 홈' — 언제든 홈으로 보낸다.
+    def _robot_busy(self) -> bool:
+        """로봇이 동작 중인가 — 이때는 홈 명령을 거절한다.
 
-        작업 중이면 한 번 묻는다(누르면 그 작업은 끝난다). 홈 이동 자체는
-        노드가 한다: 태스크 정지 -> TCP -Z 로 물러남(홈보다 뒤로는 안 감)
-        -> 홈 높이로 상승 -> moveJ. 그래서 벽에 붙어 있어도 곡면을 긁지 않는다.
+        둘 중 하나면 동작 중으로 본다.
+          * RCS 작업이 도는 중 (스캔 순회·마킹, 일시정지 포함)
+          * 로봇 태스크가 실행 중 (레지스터 500 == 1) — 프로브·원점 대기·
+            ㄹ자·마킹 어느 단계든, 펜던트에서 직접 튼 경우도 여기 걸린다.
         """
-        if self._job_running():
-            if not self._confirm_home_mid_job():
-                return
-            self._stop_job_locally()
-            self.main_screen.show_activity("작업을 멈추고 로봇을 홈으로 보냅니다.")
-            # 정지·태스크 교체가 먼저 처리되도록 잠깐 뒤에 보낸다(abort 와 같다).
-            QTimer.singleShot(ABORT_HOME_DELAY_MS,
-                              lambda: self.ros_status.call_command("home"))
+        return (self._job_running()
+                or getattr(self, "_robot_task_state", 0) == self._TASK_STATE_RUNNING)
+
+    def _request_home(self) -> None:
+        """RCS 의 '로봇 홈' — 로봇이 쉬고 있을 때만 홈으로 보낸다.
+
+        스캔·프로브·마킹 등 **로봇이 동작 중이면 보내지 않고** 팝업으로
+        "현재 로봇이 동작 중이므로 홈 이동이 불가합니다." 를 띄운다. 작업
+        도중 홈으로 가면 그 작업이 깨지므로, 먼저 '정지'로 멈춘 뒤 누른다.
+        ERUT 에서 온 홈 요청은 세션이 같은 문장으로 409 응답한다.
+        """
+        if self._robot_busy():
+            self.main_screen.show_activity(f"홈 이동 거절 — {HOME_BUSY_TEXT}")
+            self.cobot_manual_screen.activity_label.setText(HOME_BUSY_TEXT)
+            self._show_home_busy_popup()
             return
+        self._send_home()
+
+    def _send_home(self) -> None:
+        """홈 이동 자체는 노드가 한다: 태스크 정지 -> TCP -Z 로 물러남(홈보다
+        뒤로는 안 감) -> 홈 높이로 상승 -> moveJ."""
         self.main_screen.show_activity("로봇을 홈으로 보냅니다.")
         self.ros_status.call_command("home")
 
-    def _confirm_home_mid_job(self) -> bool:
-        """작업 중 홈 이동을 한 번 확인한다."""
-        answer = QMessageBox.question(
-            self, "로봇 홈 이동",
-            "작업이 진행 중입니다.\n지금 홈으로 보내면 이 작업은 중단됩니다. 계속할까요?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        return answer == QMessageBox.StandardButton.Yes
+    def _show_home_busy_popup(self) -> None:
+        """거절 사유 팝업. 화면을 막지 않도록 open() 으로 띄우고, 여러 번
+        눌러도 창이 쌓이지 않게 하나를 다시 쓴다."""
+        box = getattr(self, "_home_busy_box", None)
+        if box is None:
+            box = QMessageBox(QMessageBox.Icon.Warning, "로봇 홈", HOME_BUSY_TEXT,
+                              QMessageBox.StandardButton.Ok, self)
+            self._home_busy_box = box
+        if not box.isVisible():
+            box.open()
 
     def _stop_robot_scan(self) -> None:
         """로봇 태스크를 멈춘다. 장애·일시정지·정지가 모두 여기로 모인다.
@@ -1666,6 +1685,10 @@ class OperatorWindow(QMainWindow):
 
     def _handle_cobot_command(self, command: str) -> None:
         """수동 제어 화면의 명령을 robot/dashboard/* 서비스로 보낸다."""
+        if command == "home":
+            # 메인 화면 '로봇 홈'과 같은 규칙 — 로봇이 동작 중이면 무시한다.
+            self._request_home()
+            return
         if command in self.ros_status.COMMAND_SERVICES:
             self.ros_status.call_command(command)
         else:

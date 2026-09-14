@@ -745,3 +745,31 @@ def test_local_stop_without_an_erut_job_says_nothing(session):
     s, client, _ = session
     s.interrupt_active_job()
     assert client.events == []
+
+
+# ---- home (규격 밖 — 우리가 더한 동작) ------------------------------------------
+def test_home_is_refused_with_a_reason_while_the_robot_moves(session) -> None:
+    """로봇이 동작 중이면 409 BUSY, 사유 문장은 detail 에 싣는다."""
+    from smr_operator_ui.services.erut_session import HOME_BUSY_TEXT
+    sess, client, _seq = session
+    fired = []
+    sess.home_requested.connect(lambda: fired.append(True))
+    sess.robot_busy = lambda: True
+
+    sess.handle_request("home", {"req_id": "h1"})
+
+    assert client.res[-1]["code"] == 409
+    assert client.res[-1]["message"] == "BUSY"
+    assert client.res[-1]["detail"] == HOME_BUSY_TEXT
+    assert fired == []
+
+
+def test_home_goes_when_the_robot_is_idle(session) -> None:
+    sess, client, _seq = session
+    fired = []
+    sess.home_requested.connect(lambda: fired.append(True))
+
+    sess.handle_request("home", {"req_id": "h2"})
+
+    assert client.res[-1]["code"] == 200
+    assert fired == [True]

@@ -20,10 +20,13 @@ from typing import Any
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-# ERUT 가 보내오는 동작 9개. 토픽 끝부분으로 구분한다.
+# ERUT 가 보내오는 동작. 토픽 끝부분으로 구분한다.
+# 앞의 9개가 규격 20260812 판이고, "home" 은 **우리가 더한 것**이다 —
+# 규격에 홈 이동이 없어서 협력사와 합의가 필요하다(req/home -> res).
 ACTIONS = (
     "calibrate", "prepare", "start", "pause", "resume",
     "abort", "reset", "mark", "query",
+    "home",
 )
 
 # 장치 상태 7값 (탭5 값 정의)
