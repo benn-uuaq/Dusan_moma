@@ -30,6 +30,8 @@ class MainScreen(QWidget):
     # 화면은 장비나 저장 서비스를 직접 호출하지 않고 동작을 요청한다.
     # OperatorWindow가 아래 시그널을 알맞은 서비스에 연결한다.
     start_requested = pyqtSignal()
+    # 알림 상자에 뜬 문구. 운영 기록(알람이벤트)이 받아 적는다.
+    activity_shown = pyqtSignal(str)
     pause_requested = pyqtSignal()
     stop_requested = pyqtSignal()
     IDLE_NOTICE = "검사 시작을 기다리고 있습니다."
@@ -423,3 +425,4 @@ class MainScreen(QWidget):
     def show_activity(self, message: str) -> None:
         """서비스 또는 시뮬레이터의 최근 활동 메시지를 표시한다."""
         self.activity_label.setText(message)
+        self.activity_shown.emit(message)

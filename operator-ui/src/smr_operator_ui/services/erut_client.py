@@ -146,17 +146,28 @@ class ErutClient(QObject):
         finally:
             self._set_connected(False)
 
+    # ------------------------------------------------------------ 통신 기록
+    #: (방향, 토픽, 원문) 을 받는 함수. app.py 가 운영 기록에 잇는다.
+    #: MQTT 수신 스레드에서도 불린다.
+    traffic: Any = None
+
+    def _note_traffic(self, direction: str, topic: str, payload: Any) -> None:
+        if self.traffic is None:
+            return
+        try:
+            self.traffic(direction, topic, payload)
+        except Exception:  # noqa: BLE001 — 기록 실패가 통신을 막으면 안 된다
+            pass
+
     # ------------------------------------------------------------ 발행
     def _publish(self, topic: str, payload: dict, qos: int = 1,
                  retain: bool = False) -> bool:
         if self._client is None or not self._connected:
             return False
+        text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         try:
-            self._client.publish(
-                topic,
-                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-                qos=qos, retain=retain,
-            )
+            self._client.publish(topic, text, qos=qos, retain=retain)
+            self._note_traffic("발신", topic, text)
         except Exception as exc:  # noqa: BLE001
             self.error_occurred.emit(f"ERUT 발행 실패 ({topic}): {exc}")
             return False
@@ -248,6 +259,7 @@ class ErutClient(QObject):
         self._set_connected(False)
 
     def _on_message(self, _client, _userdata, msg) -> None:  # noqa: ANN001
+        self._note_traffic("수신", msg.topic, msg.payload)
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:

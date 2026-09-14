@@ -208,6 +208,18 @@ class MqttServer(QObject):
         finally:
             self._set_connected(False)
 
+    #: (방향, 토픽, 원문) 을 받는 함수. app.py 가 운영 기록에 잇는다.
+    #: MQTT 수신 스레드에서도 불린다.
+    traffic: Any = None
+
+    def _note_traffic(self, direction: str, topic: str, payload: Any) -> None:
+        if self.traffic is None:
+            return
+        try:
+            self.traffic(direction, topic, payload)
+        except Exception:  # noqa: BLE001 — 기록 실패가 통신을 막으면 안 된다
+            pass
+
     def publish(
         self,
         topic: str,
@@ -235,6 +247,7 @@ class MqttServer(QObject):
             )
             if int(result.rc) != 0:
                 raise RuntimeError(f"Paho 오류 코드 {result.rc}")
+            self._note_traffic("발신", topic, encoded)
         except (TypeError, ValueError, RuntimeError) as exc:
             self.error_occurred.emit(f"MQTT 발행 실패 ({topic}): {exc}")
             return False
@@ -512,6 +525,7 @@ class MqttServer(QObject):
     def _on_message(self, _client: Any, _userdata: Any, message: Any) -> None:
         """수신 JSON을 검증하고 Topic 종류에 맞는 Qt 시그널을 발생시킨다."""
         topic = str(message.topic)
+        self._note_traffic("수신", topic, bytes(message.payload))
         try:
             text = bytes(message.payload).decode("utf-8")
             payload = json.loads(text)

@@ -81,6 +81,10 @@ class ErutSession(QObject):
     mark_requested = pyqtSignal(list)
     # 로봇을 홈으로 보내 달라는 요청. 로봇이 쉬고 있을 때만 나간다.
     home_requested = pyqtSignal()
+    # evt/error 를 냈다 (코드, 메시지, level). 해제는 코드가 -CLEAR 로 끝난다.
+    error_published = pyqtSignal(str, str, str)
+    # evt/message 를 냈다 (코드, 문장).
+    message_published = pyqtSignal(str, str)
 
     def __init__(self, client: ErutClient, sequencer,
                  parent: QObject | None = None) -> None:
@@ -122,6 +126,11 @@ class ErutSession(QObject):
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(STATUS_PERIOD_MS)
         self._status_timer.timeout.connect(self.publish_status)
+
+    @property
+    def job_id(self) -> str:
+        """지금 구간의 job_id (prepare/start 가 준 값). 작업기록에 쓴다."""
+        return self._job_id
 
     # ------------------------------------------------------------ 상태
     def start(self) -> None:
@@ -562,6 +571,7 @@ class ErutSession(QObject):
         작업을 멈추지도 않는다.
         """
         self.client.publish_message(code, message, text, **extra)
+        self.message_published.emit(code, text)
         self.activity.emit(f"ERUT 알림: {code} {text}")
 
     # ------------------------------------------------------------ 장애
@@ -596,6 +606,7 @@ class ErutSession(QObject):
             self._errors.append(code)
 
         self.client.publish_error(code, message, level, recovery, **extra)
+        self.error_published.emit(code, message, level)
         self.activity.emit(f"장애 통보: {code} {message} ({level})")
 
         if level in ("stop", "estop"):

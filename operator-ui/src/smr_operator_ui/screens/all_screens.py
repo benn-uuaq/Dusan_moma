@@ -144,6 +144,8 @@ class CobotManualScreen(BaseScreen):
     """
 
     command_requested = pyqtSignal(str)
+    # 알람 목록에 올라간 알람. 운영 기록(알람이벤트)이 받아 적는다.
+    alarm_added = pyqtSignal(str)
 
     # 버튼 문구와 명령 키를 함께 둔다. 명령 키는 robot_control_node가 제공하는
     # robot/dashboard/* 서비스 이름과 일치시켜 이후 연결을 단순하게 만든다.
@@ -325,6 +327,7 @@ class CobotManualScreen(BaseScreen):
         while self.alarm_list.count() > self.MAX_ALARMS:
             self.alarm_list.takeItem(self.alarm_list.count() - 1)
         self.alarm_list.scrollToTop()
+        self.alarm_added.emit(text)
 
 
 class CobotJogScreen(BaseScreen):

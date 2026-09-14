@@ -1749,3 +1749,51 @@ def test_hero_totals_show_counts_only(qtbot) -> None:
     assert "mm" not in window.main_screen.segment_total.text()
     assert "mm" not in window.main_screen.row_total.text()
     window.close()
+
+
+def test_operation_records_follow_a_real_cell(qtbot, tmp_path, monkeypatch) -> None:
+    """구간 하나를 돌면 작업기록·스캔좌표·알람이벤트·통신 파일이 남는다."""
+    from pathlib import Path
+    from openpyxl import load_workbook
+    from smr_operator_ui.services import data_recorder as dr
+    monkeypatch.setenv("SMR_DATA_DIR", str(tmp_path))
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    _task_spy(window)
+    assert window.data_recorder.root == tmp_path
+
+    window._start_inspection()                          # RCS 검사 시작
+    window.sequencer.cell_status_changed.emit("1A", "executing")
+    window.ros_status.scan_state_changed.emit([6, 1, 3, 1, 1, 0, 257, 0, 0, 0])
+    window.ros_status.tcp_pose_zero_changed.emit([0.0, 40.0, 0.0, 0.0, 0.0, 180.0])
+    window.ros_status.tcp_pose_zero_changed.emit([0.0, 80.0, 0.0, 0.0, 0.0, 180.0])
+    window.sequencer.cell_status_changed.emit("1A", "completed")
+    window.erut._note_traffic("수신", "doosan/robot/req/query", b'{"content":{"req_id":"q1"}}')
+    window._stop_inspection()
+
+    (book,) = (tmp_path / dr.JOBS).rglob("*.xlsx")
+    rows = list(load_workbook(book).active.iter_rows(min_row=2, values_only=True))
+    assert rows[0][4] == "RCS" and rows[0][6] == "1A" and rows[0][7] == "완료"
+    assert rows[0][16] == 2, "스캔 중 좌표 2개"
+    (scan,) = (tmp_path / dr.SCAN).rglob("*.txt")
+    assert len(scan.read_text(encoding="utf-8").splitlines()) == 3 + 2
+    events = next((tmp_path / dr.EVENTS).rglob("*.txt")).read_text(encoding="utf-8")
+    assert "RCS 검사 시작" in events and "작업을 정지했습니다" in events
+    comms = next((tmp_path / dr.COMMS).rglob("*.txt")).read_text(encoding="utf-8")
+    assert "doosan/robot/req/query" in comms
+    window.close()
+
+
+def test_saving_system_settings_moves_the_record_folder(qtbot, tmp_path, monkeypatch) -> None:
+    window = OperatorWindow(start_mqtt=False, start_ros=False)   # 시험용 임시 폴더로 뜬다
+    qtbot.addWidget(window)
+    # 환경변수 고정을 풀어야 설정값이 먹는다 — 창을 만든 뒤에 풀어서
+    # 기본값(D:/SMR/Data)으로는 한 번도 쓰지 않게 한다.
+    monkeypatch.delenv("SMR_DATA_DIR", raising=False)
+    target = tmp_path / "records"
+    window._apply_system_settings("system", {"데이터 저장 위치": str(target),
+                                             "로그 보존 기간": 30})
+    assert window.data_recorder.root == target
+    assert window.data_recorder._retention_days == 30
+    assert str(target) in window.screens["system"].field("데이터 저장 위치").toolTip()
+    window.close()

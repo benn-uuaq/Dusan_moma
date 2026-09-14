@@ -21,8 +21,12 @@ def isolated_settings_file(tmp_path_factory):
     previous = {
         "SMR_SETTINGS_FILE": os.environ.get("SMR_SETTINGS_FILE"),
         "SMR_DATABASE_URL": os.environ.get("SMR_DATABASE_URL"),
+        "SMR_DATA_DIR": os.environ.get("SMR_DATA_DIR"),
     }
     os.environ["SMR_SETTINGS_FILE"] = str(path)
+    # 운영 기록도 마찬가지 — 안 막으면 테스트가 실제 데이터 저장 위치
+    # (D:/SMR/Data 등)에 가짜 작업기록·알람을 쌓는다.
+    os.environ["SMR_DATA_DIR"] = str(tmp_path_factory.mktemp("operator_data"))
     # DB 가 잡혀 있으면 그쪽으로 가 버리므로 파일 저장소를 쓰게 비워 둔다.
     os.environ.pop("SMR_DATABASE_URL", None)
     yield path

@@ -13,6 +13,8 @@ dependencies = [
     "psycopg[binary]>=3.2,<4",
     # services/tpac_bridge — TPAC 등 외부 Modbus 장치로 로봇 값을 중계한다.
     "pyModbusTCP>=0.3,<1",
+    # services/data_recorder — 작업기록을 엑셀(xlsx)로 남긴다.
+    "openpyxl>=3.1,<4",
 ]
 
 [project.optional-dependencies]

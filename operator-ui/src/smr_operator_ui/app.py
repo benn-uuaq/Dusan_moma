@@ -53,6 +53,8 @@ from smr_operator_ui.services import (
     SequencerState,
     SettingsService,
 )
+from smr_operator_ui.services.data_recorder import DataRecorder
+from smr_operator_ui.services.job_sequencer import CellStatus
 from smr_operator_ui.services.erut_session import (
     HOME_BUSY_TEXT,
     MSG_AREA_APPLY_PENDING,
@@ -501,6 +503,8 @@ class OperatorWindow(QMainWindow):
         # ERUT 도 MQTT 접속이라 별도로 끄지 않으면 start_mqtt 를 따라간다.
         # 테스트가 start_mqtt=False 로 부를 때 네트워크를 열지 않게 하기 위함이다.
         self._connect_erut(start_mqtt if start_erut is None else start_erut)
+        # 운영 기록(작업·스캔 좌표·알람이벤트·통신)을 데이터 저장 위치에 남긴다.
+        self._setup_data_recorder()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -632,6 +636,7 @@ class OperatorWindow(QMainWindow):
         # 작업마다 한 번 — 셀마다 부르는 play 는 그대로 play 만 한다.
         self._push_task_paths()
         self._load_scan_task()
+        self._record_job("ERUT", self.erut_session.job_id, plan)
         self.sequencer.start(plan, scan_h_mm, base_lift_mm=plan.origin_y,
                              move_first=True)
 
@@ -1201,6 +1206,8 @@ class OperatorWindow(QMainWindow):
         screen = self._settings_screens.get(scope)
         if screen is not None:
             screen.apply_values(values)
+        if scope == "system":
+            self._apply_system_settings(scope, values)
             if scope == "connection":
                 self._sync_cobot_endpoint()
 
@@ -1363,6 +1370,8 @@ class OperatorWindow(QMainWindow):
             "MQTT Job 정보를 검사대상 설정에 적용했습니다. "
             f"(지름 {diameter_m:.2f} m, 높이 {height_m:.2f} m)"
         )
+        # 작업기록에 적을 job_id. 격자 순회를 시작할 때 쓴다.
+        self._mc_job_id = str(payload.get("job_id", "")).strip()
         self._apply_mqtt_plan(payload.get("plan"))
 
     def _apply_mqtt_plan(self, plan: Any) -> None:
@@ -1429,9 +1438,11 @@ class OperatorWindow(QMainWindow):
         # job_cmd 자체가 "전체 작업 시작" 명령이다. 화면의 진행 표시는
         # 시퀀서가 주도한다 — 데모 타이머로 혼자 앞서 나가면 실제 로봇이
         # 아직 1A에 있는데도 화면만 12구역까지 가버린다.
-        self._begin_grid_job(grid, scan_h_mm)
+        self._begin_grid_job(grid, scan_h_mm, source="MC",
+                             job_id=getattr(self, "_mc_job_id", ""))
 
-    def _begin_grid_job(self, grid, scan_h_mm: float) -> None:
+    def _begin_grid_job(self, grid, scan_h_mm: float, source: str = "MC",
+                        job_id: str = "") -> None:
         """격자 순회를 시작한다. MQTT job_cmd 와 RCS '검사 시작'이 함께 쓴다.
 
         체크한 판(센서/논센서)의 스캔 태스크를 먼저 불러 두고, 화면 진행
@@ -1440,6 +1451,7 @@ class OperatorWindow(QMainWindow):
         self.simulator.begin_external(grid.column_count)
         self._push_task_paths()
         self._load_scan_task()
+        self._record_job(source, job_id, grid)
         self.sequencer.start(grid, scan_h_mm)
 
     #: 사내 MC 규격의 격자 한계 — 열 1~12, 행 A~F.
@@ -1481,7 +1493,7 @@ class OperatorWindow(QMainWindow):
         self.main_screen.show_activity(
             f"RCS 검사 시작: {columns}열 x {rows}행 (셀 {width:.0f} x {height:.0f} mm, "
             f"겹침 {overlap:g} mm)")
-        self._begin_grid_job(grid, self._scan_band_mm(grid))
+        self._begin_grid_job(grid, self._scan_band_mm(grid), source="RCS")
 
     def _toggle_pause(self) -> None:
         """RCS '일시정지' — 실제 순회·로봇도 같이 멈추고 다시 이어간다.
@@ -1976,10 +1988,92 @@ class OperatorWindow(QMainWindow):
             self._current_screen_key = key
             self.stack.setCurrentWidget(screen)
 
+    # ------------------------------------------------------------ 운영 기록
+    # 시스템 설정의 두 항목 이름. 저장 위치 아래에 기록을 남기고, 보존
+    # 기간이 지난 파일은 지운다(services/data_recorder.py).
+    DATA_DIR_FIELD = "데이터 저장 위치"
+    RETENTION_FIELD = "로그 보존 기간"
+
+    def _setup_data_recorder(self) -> None:
+        """네 가지 운영 기록(작업·스캔 좌표·알람이벤트·통신)을 잇는다."""
+        system = self.screens["system"]
+        self.data_recorder = rec = DataRecorder(
+            root_value=system.field(self.DATA_DIR_FIELD).text(),
+            retention_days=system.field(self.RETENTION_FIELD).value(),
+            parent=self,
+        )
+        rec.problem.connect(self._show_recorder_problem)
+        # 알람·이벤트
+        self.main_screen.activity_shown.connect(lambda text: rec.log_event("정보", text))
+        self.cobot_manual_screen.alarm_added.connect(lambda text: rec.log_event("알람", text))
+        self.erut_session.error_published.connect(self._record_erut_error)
+        self.erut_session.message_published.connect(
+            lambda code, text: rec.log_event("알림", text, code=code))
+        # 통신 (MQTT 수신 스레드에서도 불린다 — 기록기가 잠금으로 막는다)
+        self.erut.traffic = lambda d, topic, payload: rec.comms(d, "ERUT", topic, payload)
+        self.mqtt_server.traffic = self._record_mc_traffic
+        # 작업기록·스캔 좌표
+        self.sequencer.cell_status_changed.connect(self._record_cell_status)
+        self.sequencer.state_changed.connect(self._record_sequencer_state)
+        self.mark_runner.finished.connect(rec.mark_finished)
+        self.ros_status.scan_state_changed.connect(
+            lambda values: rec.set_robot_state(int(values[0])) if values else None)
+        self.ros_status.tcp_pose_zero_changed.connect(rec.scan_point)
+        # 설정 화면에서 저장하면 바로 반영한다.
+        system.save_requested.connect(self._apply_system_settings)
+        system.field(self.DATA_DIR_FIELD).setToolTip(f"실제 저장 폴더: {rec.root}")
+        rec.purge_old()
+
+    def _apply_system_settings(self, scope: str, values: dict) -> None:
+        """저장 위치·보존 기간을 기록기에 넣는다(불러올 때·저장할 때)."""
+        if scope != "system" or not hasattr(self, "data_recorder"):
+            return
+        rec = self.data_recorder
+        before = rec.root
+        if self.DATA_DIR_FIELD in values:
+            rec.set_root(str(values[self.DATA_DIR_FIELD]))
+        if self.RETENTION_FIELD in values:
+            rec.set_retention_days(values[self.RETENTION_FIELD])
+        self.screens["system"].field(self.DATA_DIR_FIELD).setToolTip(
+            f"실제 저장 폴더: {rec.root}")
+        if rec.root != before:
+            self.main_screen.show_activity(f"운영 기록 저장 위치: {rec.root}")
+
+    def _record_mc_traffic(self, direction: str, topic: str, payload) -> None:
+        # MC 접속은 우리가 내는 상태·응답 토픽도 구독한다 — 그 수신은 방금
+        # 보낸 것이 되돌아온 것이라 두 번 적지 않는다.
+        if direction == "수신" and topic in (*MqttTopics.STATUSES, *MqttTopics.RESPONSES):
+            return
+        self.data_recorder.comms(direction, "MC", topic, payload)
+
+    def _record_job(self, source: str, job_id: str, plan) -> None:
+        self.data_recorder.begin_job(source, job_id, plan, nosensor=self._nosensor)
+
+    def _record_cell_status(self, label: str, status: str) -> None:
+        if status == CellStatus.EXECUTING.value:
+            self.data_recorder.cell_started(label)
+        elif status == CellStatus.COMPLETED.value:
+            self.data_recorder.cell_finished(label, "완료")
+
+    def _record_sequencer_state(self, name: str) -> None:
+        if name == SequencerState.STOPPED.name:
+            self.data_recorder.job_stopped("중단")
+
+    def _record_erut_error(self, code: str, message: str, level: str) -> None:
+        if code.endswith("-CLEAR"):
+            self.data_recorder.log_event("해제", message, code=code[:-len("-CLEAR")], level=level)
+        else:
+            self.data_recorder.log_event("장애", message, code=code, level=level)
+
+    def _show_recorder_problem(self, message: str) -> None:
+        self.main_screen.show_activity(f"운영 기록 문제: {message}")
+        self.cobot_manual_screen.add_alarm(message)
+
     def closeEvent(self, event) -> None:  # noqa: N802
         """창 종료 전에 MQTT 네트워크 루프와 ROS 구독을 정리한다."""
         self.mqtt_server.stop()
         self.ros_status.stop()
+        self.data_recorder.close()
         self.screens["tpac_bridge"].shutdown()
         # 우리가 띄운 노드만 거둔다(따로 띄운 노드는 남의 것이다).
         self.robot_node.stop()
