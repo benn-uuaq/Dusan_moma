@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import queue
 import time
@@ -33,7 +34,8 @@ from typing import Any
 
 DEVICE_DEFAULT = "robot1"
 BROKER_DEFAULT = "127.0.0.1"
-PORT_DEFAULT = 1883
+# win_sim.sh 로 Windows 에서 띄우면 1884 (Windows 쪽 1883 은 Windows mosquitto 몫).
+PORT_DEFAULT = int(os.environ.get("SIM_MQTT_PORT", "1883"))
 
 REQ = "doosan/robot/req/"
 ERUT_STATUS = "erut/status"

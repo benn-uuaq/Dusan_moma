@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import time
 import tkinter as tk
@@ -25,7 +26,8 @@ from tkinter import scrolledtext, ttk
 from typing import Any
 
 BROKER_DEFAULT = "127.0.0.1"
-PORT_DEFAULT = 1883
+# win_sim.sh 로 Windows 에서 띄우면 1884 (Windows 쪽 1883 은 Windows mosquitto 몫).
+PORT_DEFAULT = int(os.environ.get("SIM_MQTT_PORT", "1883"))
 INJECT_TOPIC = "3s/test/inject/error"
 
 # level  : warning=화면 표시만 / stop=구간 중단 / estop=전체 중단

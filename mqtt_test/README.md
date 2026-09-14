@@ -14,6 +14,22 @@ pip install paho-mqtt
 python3 mqtt_test/mqtt_job_sim.py
 ```
 
+### WSL 에서 마우스 포인터가 안 보일 때 — Windows 로 띄우기
+
+WSLg(WSL 2.7 / WSLg 1.0.73)에서는 X11 창이 커서를 지정하면 Windows 쪽 포인터가
+숨겨진다. Tk 는 X11 로만 뜨므로 Tk 시뮬레이터(`mqtt_job_sim`·`erut_sim`·`alarm_sim`)
+위에서 포인터가 사라진다(RCS 는 Qt/Wayland 라 괜찮다). 이때는 Windows 파이썬으로 띄운다.
+
+```bash
+mqtt_test/win_sim.sh mqtt_job_sim
+```
+
+- Windows 파이썬에 `paho-mqtt` 필요: `py -m pip install paho-mqtt`
+- 기본 포트가 **1884** 로 잡힌다. Windows 쪽 `localhost:1883` 은 Windows mosquitto 가
+  쓰고 있어서, WSL mosquitto 에 localhost 전용 1884 리스너를 더했다
+  (`/etc/mosquitto/conf.d/windows_sims.conf`). Windows `localhost:1884` → WSL 브로커
+  (RCS 가 쓰는 브로커)로 간다.
+
 `tkinter`(표준 라이브러리)와 `paho-mqtt`만 있으면 되고, ROS나 Operator UI 코드(`smr_operator_ui`)에는 의존하지 않는다. Windows에서도 그대로 실행할 수 있다.
 
 ## 장애·알람 조작판 (`alarm_sim.py`)
