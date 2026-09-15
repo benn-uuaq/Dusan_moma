@@ -620,6 +620,14 @@ class ErutSession(QObject):
             ):
                 self.pause_requested.emit()
 
+    def clear_error(self, code: str) -> bool:
+        """걸려 있던 장애 코드 하나만 지운다(오류 로그 화면의 '선택 해제')."""
+        errors = getattr(self, "_errors", [])
+        if code not in errors:
+            return False
+        self._errors = [c for c in errors if c != code]
+        return True
+
     def clear_errors(self) -> list[str]:
         """걸려 있던 장애 코드를 모두 지우고, 지운 코드를 돌려준다.
 

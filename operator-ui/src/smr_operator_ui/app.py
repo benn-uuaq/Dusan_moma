@@ -412,12 +412,18 @@ class OperatorWindow(QMainWindow):
         # 태스크 판(센서/논센서). 기본은 센서판 — 불러온 값이 있으면 덮는다.
         self._nosensor = False
         self._task_version = DEFAULT_TASK_VERSION
+        # 운전 모드 슬롯 {"1": {...}, ...}. 비운 슬롯은 {} 로 둔다(DB 저장소는
+        # 키를 지우지 않고 덮어쓰기만 하므로).
+        self._mode_slots: dict[str, dict] = {}
+        # 켤 때 불러오기는 비동기라, 그 전에 슬롯을 저장·비웠으면 늦게 온
+        # 옛 값이 방금 바꾼 슬롯을 덮는다. 바꾼 뒤에는 불러온 값을 버린다.
+        self._mode_slots_touched = False
         cobot_screen = self.screens.get("cobot")
         if cobot_screen is not None:
             cobot_screen.nosensor_changed.connect(self._set_nosensor)
             cobot_screen.task_version_changed.connect(self._set_task_version)
         for scope in (*self._settings_screens.keys(), "inspection_target",
-                      "work_area", "robot_task"):
+                      "work_area", "robot_task", "mode_slots"):
             self.settings_service.load(scope)
 
         # 기준 위치의 원본은 로봇 쪽 설정 파일이다. 레지스터는 휘발성이라
@@ -517,6 +523,8 @@ class OperatorWindow(QMainWindow):
         self._connect_erut(start_mqtt if start_erut is None else start_erut)
         # 운영 기록(작업·스캔 좌표·알람이벤트·통신)을 데이터 저장 위치에 남긴다.
         self._setup_data_recorder()
+        # 오류 로그·로그 파일·운전 모드 화면을 기록기와 설정에 잇는다.
+        self._setup_record_screens()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -1192,6 +1200,12 @@ class OperatorWindow(QMainWindow):
 
     def _apply_stored_settings(self, scope: str, values: dict) -> None:
         """DB 조회 결과를 해당 설정 범위의 소유 화면으로 전달한다."""
+        if scope == "mode_slots":
+            if self._mode_slots_touched:
+                return
+            self._mode_slots = {str(k): dict(v or {}) for k, v in (values or {}).items()}
+            self.screens["modes"].set_slots(self._mode_slots)
+            return
         if scope == "robot_task":
             self._nosensor = bool(values.get("nosensor", False))
             self._task_version = str(values.get("task_version", DEFAULT_TASK_VERSION))
@@ -1989,6 +2003,8 @@ class OperatorWindow(QMainWindow):
         할 수 있게 한다 — 현장에서 스테이션 조작을 기다릴 수 없다.
         """
         cleared = self.erut_session.clear_errors()
+        for code in cleared:
+            self.data_recorder.log_event("해제", "운영자 알람 리셋", code=code)
         self.cobot_manual_screen.set_alarms([])
         self.main_screen.clear_activity()
         if cleared:
@@ -2016,6 +2032,9 @@ class OperatorWindow(QMainWindow):
 
         self._current_screen_key = key
         self.stack.setCurrentWidget(screen)
+        # 기록을 보여 주는 화면은 열 때마다 파일을 다시 읽는다.
+        if key in ("errors", "logs"):
+            screen.refresh()
 
     def navigate_back(self) -> None:
         """탐색 기록이 있으면 가장 최근에 방문한 화면으로 돌아간다."""
@@ -2106,6 +2125,112 @@ class OperatorWindow(QMainWindow):
             self.data_recorder.log_event("해제", message, code=code[:-len("-CLEAR")], level=level)
         else:
             self.data_recorder.log_event("장애", message, code=code, level=level)
+
+    # ------------------------------------------------------------ 기록 화면
+    def _setup_record_screens(self) -> None:
+        errors, logs, modes = self.screens["errors"], self.screens["logs"], self.screens["modes"]
+        errors.bind(self.data_recorder, self.erut_session.error_codes)
+        errors.clear_requested.connect(self._clear_errors)
+        self.data_recorder.event_logged.connect(errors.on_event_logged)
+        self.erut_session.error_published.connect(errors.refresh_active)
+        logs.bind(self.data_recorder)
+        logs.system_settings_requested.connect(lambda: self.navigate("system"))
+        modes.load_requested.connect(self._load_mode_slot)
+        modes.save_requested.connect(self._save_mode_slot)
+        modes.clear_requested.connect(self._clear_mode_slot)
+
+    def _clear_errors(self, codes: list) -> None:
+        """오류 로그 화면의 해제. 빈 목록이면 전체 해제(= 메인 화면 알람 리셋)."""
+        if not codes:
+            self._reset_alarms()
+        else:
+            for code in codes:
+                if self.erut_session.clear_error(str(code)):
+                    self.data_recorder.log_event("해제", "운영자가 오류 로그에서 해제", code=str(code))
+            self.main_screen.show_activity(f"오류 해제: {', '.join(map(str, codes))}")
+        self.screens["errors"].refresh_active()
+
+    # ---- 운전 모드 슬롯 --------------------------------------------------------
+    #: 슬롯에 넣는 폼 화면. 연결·시스템 설정은 장비 고유값이라 넣지 않는다.
+    MODE_FORM_SCOPES = ("cobot", "ut")
+    #: 폼에 있어도 슬롯에서 빼는 항목 — 작업 조건이 아니라 장비 연결값이다.
+    MODE_SKIP_FIELDS = ("태스크 판", "UT 주소", "통신 포트")
+
+    def _mode_snapshot(self) -> dict:
+        """지금 작업 조건을 한데 묶는다(작업 영역·검사 대상·Cobot·UT·태스크)."""
+        width, height, scan_h, overlap = self.main_screen.rect_view.work_area()
+        area = {"width_mm": width, "height_mm": height, "scan_h_mm": scan_h,
+                "overlap_mm": overlap, **self._work_area_extra}
+        target = self.settings_service.known("inspection_target")
+        diameter_m, height_m = self.main_screen.orbit_view.target_dimensions()
+        target.update({"diameter_m": diameter_m, "height_m": height_m})
+        snap = {"work_area": area, "inspection_target": target,
+                "robot_task": {"nosensor": self._nosensor, "task_version": self._task_version}}
+        for scope in self.MODE_FORM_SCOPES:
+            values = self._settings_screens[scope].values()
+            for key in self.MODE_SKIP_FIELDS:      # 태스크 판은 robot_task 에 있다
+                values.pop(key, None)
+            snap[scope] = values
+        return snap
+
+    def _save_mode_slot(self, slot: int, name: str) -> None:
+        snap = self._mode_snapshot()
+        snap["name"] = name
+        snap["saved_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        self._mode_slots[str(slot)] = snap
+        self._mode_slots_touched = True
+        self.settings_service.save("mode_slots", self._mode_slots)
+        modes = self.screens["modes"]
+        modes.set_slots(self._mode_slots)
+        modes.show_status(f"슬롯 {slot}에 '{name}'을(를) 저장했습니다.", "StatusGood")
+        self.data_recorder.log_event("정보", f"운전 모드 저장: 슬롯 {slot} '{name}'")
+
+    def _clear_mode_slot(self, slot: int) -> None:
+        self._mode_slots[str(slot)] = {}
+        self._mode_slots_touched = True
+        self.settings_service.save("mode_slots", self._mode_slots)
+        modes = self.screens["modes"]
+        modes.set_slots(self._mode_slots)
+        modes.show_status(f"슬롯 {slot}을(를) 비웠습니다.")
+
+    def _load_mode_slot(self, slot: int) -> None:
+        """슬롯의 작업 조건을 적용하고 저장한다. 작업 중에는 받지 않는다."""
+        modes = self.screens["modes"]
+        if self._job_running():
+            modes.show_status("작업 중에는 운전 모드를 불러올 수 없습니다 — 끝나거나 정지한 뒤 불러오세요.",
+                              "StatusDanger")
+            return
+        snap = dict(self._mode_slots.get(str(slot)) or {})
+        if not snap:
+            modes.show_status(f"슬롯 {slot}은(는) 비어 있습니다.", "StatusWarn")
+            return
+        name = snap.get("name", f"슬롯 {slot}")
+        # 1) 작업 영역·검사 대상 — 저장하고, 화면·로봇에 적용(로봇 전송은 기존 규칙대로)
+        for scope in ("work_area", "inspection_target"):
+            values = snap.get(scope)
+            if values:
+                self.settings_service.save(scope, dict(values))
+                self._apply_stored_settings(scope, dict(values))
+        # 2) 태스크 버전·판 — 화면만 먼저 맞춘다(불러오기는 맨 끝에 한 번)
+        task = snap.get("robot_task") or {}
+        cobot = self.screens["cobot"]
+        if task:
+            self._nosensor = bool(task.get("nosensor", False))
+            cobot.set_nosensor(self._nosensor)
+            cobot.set_task_version(str(task.get("task_version", DEFAULT_TASK_VERSION)))
+            self._task_version = cobot.task_version()
+        # 3) Cobot·UT 폼 — 저장 버튼을 누른 것과 같다(Cobot 은 속도가 로봇으로 간다)
+        for scope in self.MODE_FORM_SCOPES:
+            values = snap.get(scope)
+            if values:
+                screen = self._settings_screens[scope]
+                screen.apply_values(dict(values))
+                screen.save_requested.emit(scope, screen.values())
+        # 4) 태스크 — 저장하고 경로를 넘기고, 한가하면 그 스캔 태스크를 불러온다
+        if task:
+            self._apply_task_choice(self._task_version, "운전 모드 태스크")
+        modes.show_status(f"슬롯 {slot} '{name}'을(를) 불러왔습니다.", "StatusGood")
+        self.main_screen.show_activity(f"운전 모드 '{name}'을(를) 불러왔습니다.")
 
     def _show_recorder_problem(self, message: str) -> None:
         self.main_screen.show_activity(f"운영 기록 문제: {message}")

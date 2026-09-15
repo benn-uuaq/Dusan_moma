@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
 
-from PyQt6.QtCore import QProcess, Qt
+from PyQt6.QtCore import QObject, QProcess, Qt, pyqtSignal
 from PyQt6.QtWidgets import QFileDialog, QWidget
 
 from smr_operator_ui.keypad import TouchLineEdit
@@ -195,6 +196,102 @@ def from_windows_path(path: str) -> str:
     return path.strip().replace("\\", "/")
 
 
+def to_local_path(path: str) -> str:
+    """고른 경로를 이 프로그램이 파일을 쓸 수 있는 경로로 바꾼다.
+
+    WSL 에서 Windows 창이 준 "D:/Export" 는 /mnt/d/Export 로,
+    "//wsl.localhost/<배포판>/home/..." 는 /home/... 로 바꾼다.
+    그 밖에는 그대로다.
+    """
+    path = (path or "").strip()
+    unc = re.match(r"^[\\/]{2}(?:wsl\.localhost|wsl\$)[\\/][^\\/]+(.*)$", path, re.I)
+    if unc:
+        return unc.group(1).replace("\\", "/") or "/"
+    drive = re.match(r"^([A-Za-z]):[\\/]*(.*)$", path)
+    if drive and running_in_wsl():
+        rest = drive.group(2).replace("\\", "/").strip("/")
+        return f"/mnt/{drive.group(1).lower()}/{rest}".rstrip("/")
+    return path
+
+
+def open_in_file_manager(path: str) -> None:
+    """폴더를 파일 관리자로 연다. WSL 이면 Windows 탐색기, 아니면 데스크톱 기본."""
+    if running_in_wsl() and shutil.which("explorer.exe"):
+        QProcess.startDetached("explorer.exe", [to_windows_path(path)])
+        return
+    from PyQt6.QtCore import QUrl
+    from PyQt6.QtGui import QDesktopServices
+    QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+
+class FolderPicker(QObject):
+    """폴더 선택 창 하나. 고르면 `chosen` 으로 화면 표기 경로를 낸다.
+
+    WSL 이면 Windows 탐색기식 창(비동기), 아니면 Qt 창. 데이터 저장 위치
+    칸과 로그 파일·오류 로그의 '내보내기'가 같이 쓴다. 시험에서는
+    `chooser` 에 (시작 경로) -> 고른 경로|None 함수를 넣는다.
+    """
+
+    chosen = pyqtSignal(str)
+
+    def __init__(self, title: str = "폴더 선택", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.title = title
+        self.chooser: Callable[[str], str | None] | None = None
+        self._widget = parent
+        self._process: QProcess | None = None
+
+    @property
+    def busy(self) -> bool:
+        return self._process is not None
+
+    def open(self, start: str = "") -> None:
+        """창을 연다. 이미 떠 있으면 또 띄우지 않는다."""
+        if self._process is not None:
+            return
+        if self.chooser is not None:
+            self._accept(self.chooser(start))
+            return
+        powershell = windows_powershell() if running_in_wsl() else None
+        if powershell:
+            self._open_windows_picker(powershell, start)
+        else:
+            self._open_qt_picker(start)
+
+    def _open_qt_picker(self, start: str) -> None:
+        chosen = QFileDialog.getExistingDirectory(self._widget, self.title, to_local_path(start))
+        self._accept(chosen or None)
+
+    def _open_windows_picker(self, powershell: str, start: str) -> None:
+        proc = QProcess(self)
+        self._process = proc
+        proc.finished.connect(self._on_windows_picker_finished)
+        proc.errorOccurred.connect(lambda error, s=start: self._on_windows_picker_error(error, s))
+        proc.start(powershell, windows_picker_args(self.title, to_windows_path(start)))
+
+    def _on_windows_picker_finished(self, code: int, _status) -> None:
+        proc, self._process = self._process, None
+        if proc is None:
+            return
+        chosen = bytes(proc.readAllStandardOutput()).decode("utf-8", "replace").strip()
+        proc.deleteLater()
+        if code == 0 and chosen:
+            self._accept(from_windows_path(chosen))
+
+    def _on_windows_picker_error(self, error, start: str) -> None:
+        if error != QProcess.ProcessError.FailedToStart:
+            return
+        # PowerShell 을 못 띄우면 Qt 창으로라도 고르게 한다.
+        proc, self._process = self._process, None
+        if proc is not None:
+            proc.deleteLater()
+        self._open_qt_picker(start)
+
+    def _accept(self, chosen: str | None) -> None:
+        if chosen:
+            self.chosen.emit(chosen)
+
+
 class FolderPathEdit(TouchLineEdit):
     """누르면 폴더 선택 창이 뜨는 경로 입력칸 (직접 타이핑 없음).
 
@@ -207,9 +304,20 @@ class FolderPathEdit(TouchLineEdit):
                  parent: QWidget | None = None) -> None:
         super().__init__(text, parent)
         self.setReadOnly(True)
-        self.title = title
-        self.chooser: Callable[[str], str | None] | None = None
-        self._process: QProcess | None = None
+        self._picker = FolderPicker(title, self)
+        self._picker.chosen.connect(self.setText)
+
+    @property
+    def title(self) -> str:
+        return self._picker.title
+
+    @property
+    def chooser(self):
+        return self._picker.chooser
+
+    @chooser.setter
+    def chooser(self, fn) -> None:
+        self._picker.chooser = fn
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
@@ -219,47 +327,5 @@ class FolderPathEdit(TouchLineEdit):
         super(TouchLineEdit, self).mousePressEvent(event)
 
     def open_picker(self) -> None:
-        """폴더 선택 창을 연다. 이미 떠 있으면 또 띄우지 않는다."""
-        if self._process is not None:
-            return
-        if self.chooser is not None:
-            self._accept(self.chooser(self.text()))
-            return
-        powershell = windows_powershell() if running_in_wsl() else None
-        if powershell:
-            self._open_windows_picker(powershell)
-        else:
-            self._open_qt_picker()
-
-    def _open_qt_picker(self) -> None:
-        chosen = QFileDialog.getExistingDirectory(self, self.title, self.text())
-        self._accept(chosen or None)
-
-    def _open_windows_picker(self, powershell: str) -> None:
-        proc = QProcess(self)
-        self._process = proc
-        proc.finished.connect(self._on_windows_picker_finished)
-        proc.errorOccurred.connect(self._on_windows_picker_error)
-        proc.start(powershell, windows_picker_args(self.title, to_windows_path(self.text())))
-
-    def _on_windows_picker_finished(self, code: int, _status) -> None:
-        proc, self._process = self._process, None
-        if proc is None:
-            return
-        chosen = bytes(proc.readAllStandardOutput()).decode("utf-8", "replace").strip()
-        proc.deleteLater()
-        if code == 0 and chosen:
-            self._accept(from_windows_path(chosen))
-
-    def _on_windows_picker_error(self, error) -> None:
-        if error != QProcess.ProcessError.FailedToStart:
-            return
-        # PowerShell 을 못 띄우면 Qt 창으로라도 고르게 한다.
-        proc, self._process = self._process, None
-        if proc is not None:
-            proc.deleteLater()
-        self._open_qt_picker()
-
-    def _accept(self, chosen: str | None) -> None:
-        if chosen:
-            self.setText(chosen)
+        """폴더 선택 창을 연다(지금 값에서 시작)."""
+        self._picker.open(self.text())

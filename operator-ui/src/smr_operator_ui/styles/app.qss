@@ -108,3 +108,9 @@ QLabel#NoticeTitle { font-size: 14px; font-weight: 700; color: #5B6773; }
 QLabel#NoticeText { font-size: 15px; color: #17212B; }
 /* 알림 목록 아래의 리셋 버튼. 자주 쓰는 조작이라 제 크기로 둔다. */
 QPushButton#NoticeClear { min-height: 48px; font-size: 17px; font-weight: 700; }
+
+/* 운전 모드 저장 — 고른 슬롯이 보이게, 불러오기는 다른 버튼과 같은 크기로 */
+QPushButton#ModeSlotButton:checked { background: #E6F1FA; border: 2px solid #0070C0; }
+QPushButton#ModeLoadButton { background: #0070C0; color: #FFFFFF; border: 0; }
+QPushButton#ModeLoadButton:hover { background: #00599A; }
+QPushButton#ModeLoadButton:disabled { background: #B8C7D6; color: #FFFFFF; }

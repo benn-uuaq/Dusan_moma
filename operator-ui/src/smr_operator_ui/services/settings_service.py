@@ -68,17 +68,29 @@ class SettingsService(QObject):
             self._repository = JsonFileSettingsRepository()
         self._pool = QThreadPool.globalInstance()
         self._workers: set[_DatabaseWorker] = set()
+        # 범위별로 마지막에 불러오거나 저장한 값. 운전 모드 슬롯이 "지금
+        # 설정"을 한데 묶을 때 쓴다 — 저장소를 다시 읽지 않아도 된다.
+        self._known: dict[str, dict[str, Any]] = {}
+
+    def known(self, scope: str) -> dict[str, Any]:
+        """이 범위의 마지막 값(불러온 값 또는 저장한 값). 없으면 빈 사전."""
+        return dict(self._known.get(scope, {}))
 
     def load(self, scope: str) -> None:
         """하나의 논리적 설정 범위에 속한 값을 모두 불러온다."""
         self._run(
             scope,
             lambda: self._repository.load(scope),
-            lambda result: self.loaded.emit(scope, result),
+            lambda result: self._remember_and_emit(scope, result),
         )
+
+    def _remember_and_emit(self, scope: str, result: dict[str, Any]) -> None:
+        self._known[scope] = dict(result or {})
+        self.loaded.emit(scope, result)
 
     def save(self, scope: str, values: dict[str, Any]) -> None:
         """이벤트 루프를 막지 않고 하나의 설정 범위를 저장한다."""
+        self._known[scope] = dict(values)
         self._run(
             scope,
             lambda: self._repository.save(scope, values),

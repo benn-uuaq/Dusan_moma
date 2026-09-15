@@ -508,7 +508,7 @@ class SettingsMenuScreen(BaseScreen):
         super().__init__("설정 / 진단", "장비 설정과 운전 기록을 관리합니다.")
         self.setObjectName("SettingsScreen")
         grid=QGridLayout(); grid.setSpacing(14); self.body.addLayout(grid,1)
-        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·MQTT IP"),("system","시스템 설정","시간·단위·로그"),("ut","UT 시스템 설정","검사 조건과 트리거"),("cobot","Cobot 설정","검사 작업 슬롯"),("tpac_bridge","TPAC 설정 / TCP 인코딩","로봇 값을 외부 Modbus로 중계"),("errors","오류 로그","활성 및 과거 오류"),("logs","로그 파일","날짜별 기록 관리"),("modes","운전 모드 저장","설정 슬롯 관리"))
+        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·MQTT IP"),("system","시스템 설정","장비·기록 위치·보존 기간"),("ut","UT 시스템 설정","검사 조건과 트리거"),("cobot","Cobot 설정","검사 작업 슬롯"),("tpac_bridge","TPAC 설정 / TCP 인코딩","로봇 값을 외부 Modbus로 중계"),("errors","오류 로그","활성 오류 해제·과거 기록"),("logs","로그 파일","기록 파일 보기·내보내기·삭제"),("modes","운전 모드 저장","작업 조건 묶음 저장·불러오기"))
         for i,(key,title,desc) in enumerate(items):
             # key를 기본 인자로 고정한다. 그렇지 않으면 모든 lambda가
             # 반복문의 마지막 key만 참조하게 된다.
@@ -804,7 +804,7 @@ class SystemSettingsScreen(FormScreen):
 
     def __init__(self):
         lang=TouchComboBox(); lang.addItems(["한국어","English"])
-        super().__init__("system","시스템 설정","운영 환경과 로그 정책을 설정합니다.",[("장비 이름",line("SMR Operator Console")),("언어",lang),("상태 갱신 주기",spin(200,50,5000)),("로그 보존 기간",spin(365,1,3650)),("데이터 저장 위치",FolderPathEdit("D:/SMR/Data", title="데이터 저장 위치 선택")),("안전 설정",QLabel("PLC 관리 · 읽기 전용"))])
+        super().__init__("system","시스템 설정","운영 환경과 기록 정책을 설정합니다. 데이터 저장 위치·로그 보존 기간은 로그 파일·오류 로그 화면이 따릅니다.",[("장비 이름",line("SMR Operator Console")),("언어",lang),("상태 갱신 주기",spin(200,50,5000)),("로그 보존 기간",spin(365,1,3650)),("데이터 저장 위치",FolderPathEdit("D:/SMR/Data", title="데이터 저장 위치 선택")),("안전 설정",QLabel("PLC 관리 · 읽기 전용"))])
 
 class UTSettingsScreen(FormScreen):
     """초음파 검사 장비의 연결 및 수집 조건 설정 화면."""
@@ -1008,58 +1008,3 @@ class ConnectionSettingsScreen(FormScreen):
         self.disconnect_btn.setEnabled(connected)
 
 
-# TODO(개발): 오류 로그 / 로그 파일 / 운전 모드 저장 — 아직 정적 목업이다.
-# 2026-08-31 리뷰에서 확인됨: 표는 하드코딩된 예시 행이고, 버튼들은
-# `.clicked.connect(...)`가 아예 없어 눌러도 아무 일도 안 일어난다(체크
-# 해제·다운로드·삭제·불러오기·저장 전부). 실제로 구축하려면 최소한:
-#   - ErrorLogScreen : 실시간 알람 목록 서비스 연결, 행 선택 상태 추적,
-#     "선택 오류 해제"가 실제로 알람을 ack/clear 하는 경로, "다운로드"가
-#     실제 파일로 내보내는 경로(저장 위치를 사용자가 알 수 있게 안내 포함).
-#   - LogFilesScreen : 실제 로그 파일 목록을 읽어오는 서비스, 행 선택
-#     상태 추적, "선택 다운로드"/"선택 삭제"의 실제 파일 I/O.
-#   - ModeSlotsScreen : 슬롯 버튼에 선택 상태(눌려 있음/아님) 추가, "불러오기"/
-#     "현재 설정 저장" 버튼 자체가 코드에 없으므로 새로 만들어 선택된 슬롯에
-#     연결, 슬롯 데이터를 실제로 읽고 쓰는 서비스(설정 스코프 재사용 가능한지
-#     검토).
-class ErrorLogScreen(BaseScreen):
-    """현재 및 과거 알람을 보여주는 읽기 전용 화면. (목업 — 위 TODO 참고)"""
-
-    def __init__(self):
-        super().__init__("오류 로그","활성 오류를 먼저 확인하고 원인을 해소한 뒤 리셋합니다.")
-        table=QTableWidget(4,6); table.setHorizontalHeaderLabels(["발생 시각","코드","장비","심각도","메시지","상태"])
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        rows=[("2026-07-16 08:20:14","ER000","PLC","주의","Safety stop test","해제"),("2026-07-15 17:42:10","ER112","Cobot","오류","Response timeout","복구"),("2026-07-15 10:11:08","WR021","Lift","주의","Height deviation","복구"),("2026-07-14 15:02:33","IF005","UT","정보","Connection restored","확인")]
-        for r,row in enumerate(rows):
-            for c,v in enumerate(row):table.setItem(r,c,QTableWidgetItem(v))
-        table.horizontalHeader().setStretchLastSection(True); self.body.addWidget(table,1)
-        buttons=QHBoxLayout(); buttons.addStretch(); buttons.addWidget(QPushButton("선택 오류 해제")); buttons.addWidget(QPushButton("다운로드")); self.body.addLayout(buttons)
-
-
-class LogFilesScreen(BaseScreen):
-    """검사 및 시스템 로그 파일 관리 화면. (목업 — 위 TODO 참고)"""
-
-    def __init__(self):
-        super().__init__("로그 파일","검사 작업과 연결된 기록을 날짜별로 관리합니다.")
-        table=QTableWidget(5,5); table.setHorizontalHeaderLabels(["생성 시각","작업 ID","종류","크기","파일명"])
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        rows=[("2026-07-16 08:30","SMR-001","검사","18.4 MB","inspection_001.log"),("2026-07-16 08:20","-","오류","320 KB","error_20260716.log"),("2026-07-15 16:44","SMR-000","검사","22.1 MB","inspection_000.log"),("2026-07-15 09:00","-","시스템","1.3 MB","system_20260715.log"),("2026-07-14 09:00","-","시스템","1.1 MB","system_20260714.log")]
-        for r,row in enumerate(rows):
-            for c,v in enumerate(row):table.setItem(r,c,QTableWidgetItem(v))
-        table.horizontalHeader().setStretchLastSection(True); self.body.addWidget(table,1)
-        row=QHBoxLayout(); row.addStretch(); row.addWidget(QPushButton("선택 다운로드")); delete=QPushButton("선택 삭제"); delete.setObjectName("DangerButton"); row.addWidget(delete); self.body.addLayout(row)
-
-
-class ModeSlotsScreen(BaseScreen):
-    """저장된 운전 모드 슬롯을 선택하는 화면. (목업 — 위 TODO 참고)"""
-
-    def __init__(self):
-        super().__init__("운전 모드 저장","검사 조건과 장비 위치를 슬롯으로 관리합니다.")
-        grid=QGridLayout(); self.body.addLayout(grid,1)
-        for i in range(1,9):
-            text=f"슬롯 {i}\n" + ("SMR Shell 기본\n2026-07-16" if i==1 else "비어 있음")
-            b=QPushButton(text); b.setMinimumHeight(105)
-            # QSS의 min-height 때문에 버튼 높이가 한 줄 기준으로 고정된다.
-            # 여러 줄 문구가 잘리지 않도록 세로로 늘어나게 한다.
-            b.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-            grid.addWidget(b,(i-1)//4,(i-1)%4)
-        row=QHBoxLayout(); row.addStretch(); row.addWidget(QPushButton("불러오기")); row.addWidget(QPushButton("현재 설정 저장")); self.body.addLayout(row)

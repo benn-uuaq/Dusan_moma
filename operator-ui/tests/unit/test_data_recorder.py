@@ -200,3 +200,35 @@ def test_old_records_are_purged_and_empty_folders_removed(rec, tmp_path) -> None
     assert not (tmp_path / dr.EVENTS / "2025" / "08").exists(), "빈 월 폴더는 지운다"
     assert keep.exists()
     assert foreign.exists(), "이름이 날짜로 시작하지 않는 파일은 건드리지 않는다"
+
+
+# ---- 화면용 읽기·지우기·내보내기 ---------------------------------------------------
+def test_list_read_delete_and_export(rec, tmp_path) -> None:
+    rec.log_event("알람", "하나")
+    rec.log_event("장애", "둘", code="E1", level="stop")
+    rec.comms("수신", "MC", "doosan/robot/req/job_cmd", "{}")
+    records = rec.list_records()
+    assert {r.category for r in records} == {dr.EVENTS, dr.COMMS}
+    assert rec.event_days() == [date(2026, 9, 14)]
+    assert [r[1:3] for r in rec.read_events(date(2026, 9, 14))] == [["알람", ""], ["장애", "E1"]]
+
+    out = tmp_path.parent / (tmp_path.name + "_out")
+    copied = rec.export_files([r.path for r in records], out)
+    assert sorted(p.relative_to(out).parts[0] for p in copied) == sorted([dr.COMMS, dr.EVENTS])
+
+    # 기록 파일이 아닌 것은 지우지 않는다 — 저장 위치 밖, 이름 규칙 밖.
+    outside = tmp_path.parent / "outside_20260914_x.txt"
+    outside.write_text("keep", encoding="utf-8")
+    stray = tmp_path / dr.EVENTS / "메모.txt"
+    stray.write_text("keep", encoding="utf-8")
+    removed = rec.delete_files([outside, stray, *[r.path for r in records]])
+    assert outside.exists() and stray.exists()
+    assert sorted(removed) == sorted(r.path for r in records)
+    assert rec.list_records() == []
+
+
+def test_event_logged_signal_carries_the_row(rec) -> None:
+    got = []
+    rec.event_logged.connect(got.append)
+    rec.log_event("알림", "문장", code="M1001")
+    assert got and got[0][1:] == ["알림", "M1001", "", "문장"]

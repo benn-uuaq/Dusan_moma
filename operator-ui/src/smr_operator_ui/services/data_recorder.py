@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -121,11 +123,23 @@ def _safe_name(text: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s]+', "_", text).strip("_") or "-"
 
 
+@dataclass(frozen=True)
+class RecordFile:
+    """저장 위치 아래의 기록 파일 하나 (로그 파일 화면이 쓴다)."""
+
+    category: str
+    day: date
+    path: Path
+    size: int
+
+
 class DataRecorder(QObject):
     """네 가지 운영 기록을 파일로 남긴다."""
 
     #: 기록을 못 남겼을 때 사람이 볼 문장. 같은 문제는 한 번만 낸다.
     problem = pyqtSignal(str)
+    #: 알람이벤트 한 줄을 남겼다 [시각, 구분, 코드, 수준, 내용]. 오류 로그 화면이 받는다.
+    event_logged = pyqtSignal(list)
 
     #: 보존 기간 정리 주기 [ms]. 켜 둔 채 날이 바뀌어도 지워지게.
     PURGE_INTERVAL_MS = 6 * 60 * 60 * 1000
@@ -171,6 +185,10 @@ class DataRecorder(QObject):
                 self._root = root
                 self._reported.discard("root")
             return self._root
+
+    @property
+    def retention_days(self) -> int:
+        return self._retention_days
 
     def set_retention_days(self, days: Any) -> None:
         try:
@@ -351,12 +369,13 @@ class DataRecorder(QObject):
     def log_event(self, kind: str, message: str, code: str = "", level: str = "") -> None:
         """구분: 정보(진행 알림) / 알람 / 장애 / 해제 / 알림."""
         now = self._clock()
+        fields = [_stamp(now), kind, code, level, _clean(message)]
         self._append_line(
-            EVENTS, now, "시각\t구분\t코드\t수준\t내용",
-            [_stamp(now), kind, code, level, _clean(message)],
+            EVENTS, now, "시각\t구분\t코드\t수준\t내용", fields,
             title="# 알람·이벤트 기록 — 구분: 정보(진행 알림) / 알람 / 장애 / 해제 / 알림")
         if kind in ("알람", "장애"):
             self.note(f"{code} {message}".strip())
+        self.event_logged.emit(fields)
 
     # ------------------------------------------------------------ 통신
     def comms(self, direction: str, channel: str, topic: str, payload: Any) -> None:
@@ -428,6 +447,91 @@ class DataRecorder(QObject):
                     _rmdir_if_empty(year)
         return removed
 
+    # ------------------------------------------------------------ 읽기 (화면용)
+    def list_records(self, category: str | None = None) -> list[RecordFile]:
+        """저장 위치 아래의 기록 파일. 최근 날짜가 앞에 온다."""
+        found: list[RecordFile] = []
+        for cat in CATEGORIES if category is None else (category,):
+            base = self._root / cat
+            if not base.is_dir():
+                continue
+            for path in base.glob("*/*/*"):
+                m = _DATE_PREFIX.match(path.name)
+                if not m or path.suffix not in (".txt", ".xlsx") or not path.is_file():
+                    continue
+                try:
+                    day = datetime.strptime(m.group(1), "%Y%m%d").date()
+                    size = path.stat().st_size
+                except (ValueError, OSError):
+                    continue
+                found.append(RecordFile(cat, day, path, size))
+        found.sort(key=lambda r: (r.day, r.path.name), reverse=True)
+        return found
+
+    def event_days(self) -> list[date]:
+        """알람이벤트 기록이 있는 날. 최근이 앞."""
+        return sorted({r.day for r in self.list_records(EVENTS)}, reverse=True)
+
+    def read_events(self, day: date) -> list[list[str]]:
+        """그날 알람이벤트 줄들 [시각, 구분, 코드, 수준, 내용] (기록 순서)."""
+        path = self.path_for(EVENTS, f"{day:%Y%m%d}_{EVENTS}.txt",
+                             datetime(day.year, day.month, day.day))
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except OSError:
+            return []
+        rows = []
+        for line in text.splitlines()[2:]:          # 제목·머리 줄 다음부터
+            fields = line.split("\t")
+            rows.append((fields + [""] * 5)[:5])
+        return rows
+
+    def _is_record(self, path: Path) -> bool:
+        """저장 위치 아래, 우리 이름 규칙을 따른 기록 파일인가 — 지우기 전 확인."""
+        try:
+            rel = path.resolve().relative_to(self._root.resolve())
+        except (OSError, ValueError):
+            return False
+        return (len(rel.parts) == 4 and rel.parts[0] in CATEGORIES
+                and bool(_DATE_PREFIX.match(path.name))
+                and path.suffix in (".txt", ".xlsx") and path.is_file())
+
+    def delete_files(self, paths: Iterable[Path]) -> list[Path]:
+        """고른 기록 파일을 지운다. 기록 파일이 아니면 건드리지 않는다."""
+        removed: list[Path] = []
+        with self._lock:
+            for path in paths:
+                path = Path(path)
+                if not self._is_record(path):
+                    continue
+                if self._cell is not None and self._cell.get("scan_path") == path:
+                    continue                    # 지금 쓰는 좌표 파일은 두고 간다
+                try:
+                    path.unlink()
+                    removed.append(path)
+                except OSError:
+                    pass
+            for path in removed:
+                _rmdir_if_empty(path.parent)
+                _rmdir_if_empty(path.parent.parent)
+        return removed
+
+    def export_files(self, paths: Iterable[Path], dest: Path) -> list[Path]:
+        """고른 기록 파일을 dest/<항목>/<파일> 로 복사한다(원본은 그대로)."""
+        copied: list[Path] = []
+        for path in paths:
+            path = Path(path)
+            if not self._is_record(path):
+                continue
+            target = Path(dest) / path.parent.parent.parent.name / path.name
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+                copied.append(target)
+            except OSError:
+                pass
+        return copied
+
     def close(self) -> None:
         with self._lock:
             self._close_scan_file()
@@ -478,3 +582,28 @@ def _append_xlsx(path: Path, rows: list[list[Any]]) -> None:
     except BaseException:
         Path(handle.name).unlink(missing_ok=True)
         raise
+
+
+def write_table_xlsx(path: Path, sheet_title: str, header: list[str],
+                     rows: list[list[Any]], widths: list[int] | None = None) -> Path:
+    """표 하나를 엑셀 파일로 쓴다(오류 로그 내보내기 등). 머리 줄 굵게·고정."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    book = Workbook()
+    sheet = book.active
+    sheet.title = sheet_title[:31]
+    sheet.append(list(header))
+    head = PatternFill("solid", fgColor="DCE6F1")
+    for index, cell in enumerate(sheet[1]):
+        cell.font = Font(bold=True)
+        cell.fill = head
+        if widths and index < len(widths):
+            sheet.column_dimensions[cell.column_letter].width = widths[index]
+    for row in rows:
+        sheet.append(list(row))
+    sheet.freeze_panes = "A2"
+    book.save(path)
+    return path
