@@ -23,3 +23,5 @@ Thumbs.db
 # 코드와 문서는 파일 이름으로만 가리킨다. 필요하면 사내 공유 경로에서 받는다.
 mqtt_test/ERUT-3S_*.xlsx
 mqtt_test/ERUT-3S_*.pdf
+# 펜던트가 저장할 때 남기는 이전 태스크 백업
+robot_task/**/*.old

@@ -1,8 +1,8 @@
 <VariablesManager>
-  <Variable name="Home_joint" value="[0.66477, -1.58308, -2.73865, 1.18014, 0.90602, 0.0]" remarks="" favorite="false"/>
-  <Variable name="Home_pose" value="[0.39874, 0.0, 0.38842, -1.5708, -0.0, -1.57081]" remarks="" favorite="false"/>
-  <Variable name="gripper_target_pose" value="[0.63171, -0.00005, 0.2687, -1.57143, -0.00019, -1.5708]" remarks="그리퍼(EOAT)를 작업면 중앙에 딱 붙여 티칭한 pose (입력레지스터 316~321, UI가 저장한 값). 접촉 상태이지 대기 자세가 아니다 — 툴플렌지 pose도 아니다. dus_init이 eoat_type 오프셋을 빼 접촉 시점 플랜지 pose를 구한 뒤, probe_dist 만큼 TCP -Z로 물러난 곳을 start_pose로 계산한다" favorite="false"/>
-  <Variable name="start_pose" value="[0.53171, -0.00005, 0.26876, -1.57143, -0.00019, -1.5708]" remarks="실제 movej 목표(툴플랜지 기준, 그리퍼가 작업면에서 probe_dist 만큼 물러난 대기 자세). dus_init이 매 작업마다 gripper_target_pose 로부터 다시 계산한다 — 여기 직접 값을 넣어도 다음 작업 시작 시 덮어써진다" favorite="false"/>
+  <Variable name="Home_joint" value="[0.79941, -1.55029, -2.70026, 1.10839, 0.81203, -3.14139]" remarks="" favorite="false"/>
+  <Variable name="Home_pose" value="[0.40795, 0.05529, 0.40515, 1.57121, 0.00018, 1.61144]" remarks="" favorite="false"/>
+  <Variable name="gripper_target_pose" value="[0.63329, 0.05528, 0.19672, 1.57117, 0.00016, 1.61143]" remarks="그리퍼(EOAT)를 작업면 중앙에 딱 붙여 티칭한 pose (입력레지스터 316~321, UI가 저장한 값). 접촉 상태이지 대기 자세가 아니다 — 툴플렌지 pose도 아니다. dus_init이 eoat_type 오프셋을 빼 접촉 시점 플랜지 pose를 구한 뒤, probe_dist 만큼 TCP -Z로 물러난 곳을 start_pose로 계산한다" favorite="false"/>
+  <Variable name="start_pose" value="[0.53337, 0.05122, 0.19676, 1.57117, 0.00016, 1.61143]" remarks="실제 movej 목표(툴플랜지 기준, 그리퍼가 작업면에서 probe_dist 만큼 물러난 대기 자세). dus_init이 매 작업마다 gripper_target_pose 로부터 다시 계산한다 — 여기 직접 값을 넣어도 다음 작업 시작 시 덮어써진다" favorite="false"/>
   <Variable name="pose_src" value="0" remarks="0=이 변수값 사용, 1=Modbus 310~321 사용 (레지스터 308)" favorite="false"/>
   <Variable name="pub_a" value="0" remarks="발행 스레드 생존 확인용 — 워치독(293) 이전 값. dus5_init 이 두 제어주기 동안 293 이 안 변하면 스레드가 죽은 것으로 보고 다시 띄운다" favorite="false"/>
   <Variable name="pub_b" value="2" remarks="발행 스레드 생존 확인용 — 워치독(293) 이후 값" favorite="false"/>
@@ -55,7 +55,7 @@
   <Variable name="wet_i" value="3" remarks="적심 반복 카운터. goto_zero 가 쓴다" favorite="false"/>
   <Variable name="wet_ref" value="[0.34965, 0.00002, 0.07577, 0.00015, -0.42683, -0.00031]" remarks="원점 로컬에서 본 호 중앙(p_c_pose). X 성분 부호로 적심 방향을 정한다" favorite="false"/>
   <Variable name="app_width" value="699.30621" remarks="작업 영역 좌우 너비 [mm](= 좌우 끝점 사이 실제 현). 충돌 여유로 700mm 를 넘지 않게 app_arc 를 잡는다" favorite="false"/>
-  <Variable name="app_height" value="500" remarks="작업 영역 높이 [mm] (입력레지스터 257)" favorite="false"/>
+  <Variable name="app_height" value="140" remarks="작업 영역 높이 [mm] (입력레지스터 257)" favorite="false"/>
   <Variable name="scan_h" value="30" remarks="프로브 유효 세로 커버 [mm] (입력레지스터 258). 한 줄이 덮는 밴드 높이이자 up 동작의 최대 상승량" favorite="false"/>
   <Variable name="overlap" value="0.58824" remarks="격자 **안**의 줄 겹침 [mm] = scan_h - pitch. dus5_init 이 계산해 넣는다. 입력레지스터 259 로 받는 값은 격자**끼리**의 겹침이라 뜻이 다르고, 격자 안 피치에는 쓰지 않는다" favorite="false"/>
   <Variable name="pitch" value="29.41176" remarks="상승 피치 [mm]. 가운데 프로브가 밑면(0)과 윗면(app_height)을 모두 지나도록 app_height 를 균등 분할한 값 = app_height / gaps. dus5_init 이 매번 다시 계산한다" favorite="false"/>

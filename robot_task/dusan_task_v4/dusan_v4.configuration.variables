@@ -1,39 +1,39 @@
 <VariablesManager>
-  <Variable name="Home_joint" value="[0.66477, -1.58308, -2.73865, 1.18014, 0.90602, 0.0]" remarks="" favorite="false"/>
-  <Variable name="Home_pose" value="[0.39874, 0.0, 0.38842, -1.5708, -0.0, -1.57081]" remarks="" favorite="false"/>
-  <Variable name="gripper_target_pose" value="[0.63171, -0.00005, 0.2687, -1.57143, -0.00019, -1.5708]" remarks="그리퍼(EOAT)를 작업면 중앙에 딱 붙여 티칭한 pose (입력레지스터 316~321, UI가 저장한 값). 접촉 상태이지 대기 자세가 아니다 — 툴플렌지 pose도 아니다. dus_init이 eoat_type 오프셋을 빼 접촉 시점 플랜지 pose를 구한 뒤, probe_dist 만큼 TCP -Z로 물러난 곳을 start_pose로 계산한다" favorite="false"/>
-  <Variable name="start_pose" value="[0.53171, -0.00005, 0.26876, -1.57143, -0.00019, -1.5708]" remarks="실제 movej 목표(툴플랜지 기준, 그리퍼가 작업면에서 probe_dist 만큼 물러난 대기 자세). dus_init이 매 작업마다 gripper_target_pose 로부터 다시 계산한다 — 여기 직접 값을 넣어도 다음 작업 시작 시 덮어써진다" favorite="false"/>
+  <Variable name="Home_joint" value="[0.79941, -1.55029, -2.70026, 1.10839, 0.81203, -3.14139]" remarks="" favorite="false"/>
+  <Variable name="Home_pose" value="[0.40795, 0.05529, 0.40515, 1.57121, 0.00018, 1.61144]" remarks="" favorite="false"/>
+  <Variable name="gripper_target_pose" value="[0.63329, 0.05528, 0.19672, 1.57117, 0.00016, 1.61143]" remarks="그리퍼(EOAT)를 작업면 중앙에 딱 붙여 티칭한 pose (입력레지스터 316~321, UI가 저장한 값). 접촉 상태이지 대기 자세가 아니다 — 툴플렌지 pose도 아니다. dus_init이 eoat_type 오프셋을 빼 접촉 시점 플랜지 pose를 구한 뒤, probe_dist 만큼 TCP -Z로 물러난 곳을 start_pose로 계산한다" favorite="false"/>
+  <Variable name="start_pose" value="[0.53337, 0.05122, 0.19676, 1.57117, 0.00016, 1.61143]" remarks="실제 movej 목표(툴플랜지 기준, 그리퍼가 작업면에서 probe_dist 만큼 물러난 대기 자세). dus_init이 매 작업마다 gripper_target_pose 로부터 다시 계산한다 — 여기 직접 값을 넣어도 다음 작업 시작 시 덮어써진다" favorite="false"/>
   <Variable name="pose_src" value="0" remarks="0=이 변수값 사용, 1=Modbus 310~321 사용 (레지스터 308)" favorite="false"/>
   <Variable name="pub_a" value="0" remarks="발행 스레드 생존 확인용 — 워치독(293) 이전 값. dus_init 이 두 제어주기 동안 293 이 안 변하면 스레드가 죽은 것으로 보고 다시 띄운다" favorite="false"/>
-  <Variable name="pub_b" value="2" remarks="발행 스레드 생존 확인용 — 워치독(293) 이후 값" favorite="false"/>
+  <Variable name="pub_b" value="0" remarks="발행 스레드 생존 확인용 — 워치독(293) 이후 값" favorite="false"/>
   <Variable name="pub_started" value="1" remarks="좌표 발행 스레드(pub_thread)를 이미 띄웠으면 1. dus_init 이 반복 실행돼도 스레드를 한 번만 띄우게 막는다 — 안 그러면 사이클마다 쌓여 Thread over the max size: 20 으로 멈춘다. 프로그램 시작 시 Init Variables Value 가 0 으로 되돌린다" favorite="false"/>
   <Variable name="scan_on" value="0" remarks="스캔 패스(dus_pass_r/l 의 movec) 진행 중이면 1. 이 구간에서만 제로점 기준 좌표(280~285)를 내보내고, 그 외에는 전부 0 을 쏜다. dus_init 이 시작할 때 0 으로 되돌린다" favorite="false"/>
-  <Variable name="eoat_type" value="5" remarks="장착된 그리퍼 종류. 0=없음(툴플랜지 그대로), 5=5축 십자형, 8=8축 직사각. 레지스터 264(param_src=1일 때, 레지스터 266)로 받거나 이 변수를 펜던트에서 직접 입력" favorite="false"/>
+  <Variable name="eoat_type" value="0" remarks="장착된 그리퍼 종류. 0=없음(툴플랜지 그대로), 5=5축 십자형, 8=8축 직사각. 레지스터 264(param_src=1일 때, 레지스터 266)로 받거나 이 변수를 펜던트에서 직접 입력" favorite="false"/>
   <Variable name="eoat5_offset_x" value="0" remarks="5축 그리퍼: 툴플랜지 -&gt; 그리퍼 기준점 오프셋 X [m] (플랜지 로컬 좌표). 실측 후 채울 것" favorite="false"/>
   <Variable name="eoat5_offset_y" value="0" remarks="5축 그리퍼: 툴플랜지 -&gt; 그리퍼 기준점 오프셋 Y [m] (플랜지 로컬 좌표). 실측 후 채울 것" favorite="false"/>
   <Variable name="eoat5_offset_z" value="0" remarks="5축 그리퍼: 툴플랜지 -&gt; 그리퍼 기준점 오프셋 Z [m] (플랜지 로컬 좌표). 실측 후 채울 것" favorite="false"/>
   <Variable name="eoat8_offset_x" value="0" remarks="8축 그리퍼: 툴플랜지 -&gt; 그리퍼 기준점 오프셋 X [m] (플랜지 로컬 좌표). 실측 후 채울 것" favorite="false"/>
   <Variable name="eoat8_offset_y" value="0" remarks="8축 그리퍼: 툴플랜지 -&gt; 그리퍼 기준점 오프셋 Y [m] (플랜지 로컬 좌표). 실측 후 채울 것" favorite="false"/>
   <Variable name="eoat8_offset_z" value="0" remarks="8축 그리퍼: 툴플랜지 -&gt; 그리퍼 기준점 오프셋 Z [m] (플랜지 로컬 좌표). 실측 후 채울 것" favorite="false"/>
-  <Variable name="spd_in" value="0" remarks="작업 속도 입력 [mm/s] (입력레지스터 306). 0이면 v_l 유지" favorite="false"/>
+  <Variable name="spd_in" value="150" remarks="작업 속도 입력 [mm/s] (입력레지스터 306). 0이면 v_l 유지" favorite="false"/>
   <Variable name="spd_ratio" value="100" remarks="로봇 자체 속도 비율 [%] 2~100 (입력레지스터 307)" favorite="false"/>
   <Variable name="param_src" value="0" remarks="0=이 변수값 사용, 1=Modbus 256~259 사용 (레지스터 266)" favorite="false"/>
   <Variable name="di_touch" value="0" remarks="중앙 접촉 센서 1차 — ON 이면 적정 눌림 위치" favorite="false"/>
   <Variable name="di_limit" value="1" remarks="중앙 접촉 센서 2차 — ON 이면 눌림 한계. TCP -Z 로 후퇴한다" favorite="false"/>
-  <Variable name="app_radius" value="834.59998" remarks="도면 반지름(안쪽 면) [mm]. 레지스터 260 을 0.1mm 로 받고, dus_init 이 두께를 더해 훑는 면 반지름으로 바꾼다. 시험 벽 기준(MQTT 시뮬레이터·RCS 샘플과 동일) — 충돌 여유 700mm 현 계산도 이 반지름 기준" favorite="false"/>
-  <Variable name="scan_radius" value="844.59998" remarks="로봇이 실제로 훑는 바깥면의 반지름 [mm] = app_radius + app_thick. dus_init 이 매번 다시 계산한다. app_radius(도면 안쪽 반지름)에 두께를 덮어쓰면 dus_init 이 반복 실행될 때마다 두께가 또 더해져 값이 계속 커진다 — 그래서 따로 둔다" favorite="false"/>
-  <Variable name="app_thick" value="10" remarks="제품 두께 [mm]. 레지스터 261 을 0.1mm 단위로 받는다. UT 기록용" favorite="false"/>
+  <Variable name="app_radius" value="594.59998" remarks="도면 반지름(안쪽 면) [mm]. 레지스터 260 을 0.1mm 로 받고, dus_init 이 두께를 더해 훑는 면 반지름으로 바꾼다. 시험 벽 기준(MQTT 시뮬레이터·RCS 샘플과 동일) — 충돌 여유 700mm 현 계산도 이 반지름 기준" favorite="false"/>
+  <Variable name="scan_radius" value="1002.29999" remarks="로봇이 실제로 훑는 바깥면의 반지름 [mm] = app_radius + app_thick. dus_init 이 매번 다시 계산한다. app_radius(도면 안쪽 반지름)에 두께를 덮어쓰면 dus_init 이 반복 실행될 때마다 두께가 또 더해져 값이 계속 커진다 — 그래서 따로 둔다" favorite="false"/>
+  <Variable name="app_thick" value="407.70001" remarks="제품 두께 [mm]. 레지스터 261 을 0.1mm 단위로 받는다. UT 기록용" favorite="false"/>
   <Variable name="app_arc" value="721" remarks="격자 가로 = 호 길이 [mm] (레지스터 256). 로봇이 실제로 지나는 거리. 현이 아니다. 좌우 끝도 가운데 프로브 중심 기준이라 TCP 가 이 길이를 그대로 오간다. 좌우 끝점 사이 실제 현(app_width)이 충돌 여유 700mm 를 넘지 않는 최대 정수값(699.31mm)" favorite="false"/>
-  <Variable name="eoat_w" value="30" remarks="프로브 유효 가로 커버 [mm]. 레지스터 262. 5축 십자 30(가운데 프로브 지름) / 8축 직사각 75(좌우합). 경로에는 안 쓴다 — 좌우 끝도 프로브 중심 기준이다" favorite="false"/>
-  <Variable name="eoat_h" value="30" remarks="프로브 유효 세로 커버 [mm]. 레지스터 263. 5축 십자 30(가운데 프로브 지름) / 8축 직사각 167.5(상하합). scan_h 로 쓰이며 곧 up 동작의 최대 상승량이다" favorite="false"/>
+  <Variable name="eoat_w" value="446.60001" remarks="프로브 유효 가로 커버 [mm]. 레지스터 262. 5축 십자 30(가운데 프로브 지름) / 8축 직사각 75(좌우합). 경로에는 안 쓴다 — 좌우 끝도 프로브 중심 기준이다" favorite="false"/>
+  <Variable name="eoat_h" value="157.10001" remarks="프로브 유효 세로 커버 [mm]. 레지스터 263. 5축 십자 30(가운데 프로브 지름) / 8축 직사각 167.5(상하합). scan_h 로 쓰이며 곧 up 동작의 최대 상승량이다" favorite="false"/>
   <Variable name="arc_run" value="721" remarks="TCP 가 실제로 움직일 호 길이 [mm] = app_arc 그대로. dus_init 이 계산" favorite="false"/>
-  <Variable name="arc_ox" value="1.47632" remarks="곡률 중심 X [m]. probe_l 이 계산" favorite="false"/>
-  <Variable name="arc_oy" value="-0.00011" remarks="곡률 중심 Y [m]. probe_l 이 계산" favorite="false"/>
-  <Variable name="arc_phi0" value="2.71471" remarks="원점(zero_pose)이 곡률 중심에서 보이는 각 [rad]" favorite="false"/>
+  <Variable name="arc_ox" value="1.63455" remarks="곡률 중심 X [m]. probe_l 이 계산" favorite="false"/>
+  <Variable name="arc_oy" value="0.09602" remarks="곡률 중심 Y [m]. probe_l 이 계산" favorite="false"/>
+  <Variable name="arc_phi0" value="2.82258" remarks="원점(zero_pose)이 곡률 중심에서 보이는 각 [rad]" favorite="false"/>
   <Variable name="arc_ok" value="True" remarks="호 기준이 잡혔는지. True 여야 호 위치를 발행한다" favorite="false"/>
-  <Variable name="arc_s" value="0.00051" remarks="원점부터 지금까지의 호 위 거리 [mm]. 레지스터 286 으로 발행" favorite="false"/>
-  <Variable name="arc_half" value="0.42683" remarks="호 반각 [rad] = arc_run/(2*app_radius). dus_init 이 계산" favorite="false"/>
-  <Variable name="press_off" value="0.18755" remarks="센서로 잰 적정 눌림 보정량 [m]. 계산한 3점을 TCP +Z 로 이만큼 더 민다" favorite="false"/>
+  <Variable name="arc_s" value="0.00129" remarks="원점부터 지금까지의 호 위 거리 [mm]. 레지스터 286 으로 발행" favorite="false"/>
+  <Variable name="arc_half" value="0.35967" remarks="호 반각 [rad] = arc_run/(2*app_radius). dus_init 이 계산" favorite="false"/>
+  <Variable name="press_off" value="0.10395" remarks="센서로 잰 적정 눌림 보정량 [m]. 계산한 3점을 TCP +Z 로 이만큼 더 민다" favorite="false"/>
   <Variable name="seek_step" value="2" remarks="자세 보정 중 한 걸음 전진/후퇴 거리 [mm]" favorite="false"/>
   <Variable name="seek_tries" value="80" remarks="전진·회전 되풀이 최대 횟수. 넘으면 포기하고 진행" favorite="false"/>
   <Variable name="seek_limit" value="400" remarks="전진 최대 거리 [mm]. 센서가 없으면 여기까지 가고 멈춘다" favorite="false"/>
@@ -51,25 +51,25 @@
   <Variable name="a_scan" value="0.4" remarks="스캔 movel/movec 가속도 [m/s^2]. 고정 스펙 400mm/s^2" favorite="false"/>
   <Variable name="wet_amp" value="10" remarks="적심(비비기) 진폭 [mm]. 스캔 직전 원점에서 호 안쪽으로 이만큼 갔다가 돌아온다. 물을 퍼뜨려 검사면을 적시는 동작" favorite="false"/>
   <Variable name="wet_cycles" value="3" remarks="적심 왕복 횟수. goto_zero 가 스캔 시작 직전에 돈다" favorite="false"/>
-  <Variable name="wet_step" value="10" remarks="적심 한 번의 이동량 [mm] (툴 로컬 X). wet_amp 에 방향 부호를 붙인 값 — goto_zero 가 p_c_pose 위치로 매번 다시 정한다" favorite="false"/>
+  <Variable name="wet_step" value="-10" remarks="적심 한 번의 이동량 [mm] (툴 로컬 X). wet_amp 에 방향 부호를 붙인 값 — goto_zero 가 p_c_pose 위치로 매번 다시 정한다" favorite="false"/>
   <Variable name="wet_i" value="3" remarks="적심 반복 카운터. goto_zero 가 쓴다" favorite="false"/>
-  <Variable name="wet_ref" value="[0.34965, 0.00002, 0.07577, 0.00015, -0.42683, -0.00031]" remarks="원점 로컬에서 본 호 중앙(p_c_pose). X 성분 부호로 적심 방향을 정한다" favorite="false"/>
-  <Variable name="app_width" value="699.30621" remarks="작업 영역 좌우 너비 [mm](= 좌우 끝점 사이 실제 현). 충돌 여유로 700mm 를 넘지 않게 app_arc 를 잡는다" favorite="false"/>
-  <Variable name="app_height" value="500" remarks="작업 영역 높이 [mm] (입력레지스터 257)" favorite="false"/>
-  <Variable name="scan_h" value="30" remarks="프로브 유효 세로 커버 [mm] (입력레지스터 258). 한 줄이 덮는 밴드 높이이자 up 동작의 최대 상승량" favorite="false"/>
-  <Variable name="overlap" value="0.58824" remarks="격자 **안**의 줄 겹침 [mm] = scan_h - pitch. dus_init 이 계산해 넣는다. 입력레지스터 259 로 받는 값은 격자**끼리**의 겹침이라 뜻이 다르고, 격자 안 피치에는 쓰지 않는다" favorite="false"/>
-  <Variable name="pitch" value="29.41176" remarks="상승 피치 [mm]. 가운데 프로브가 밑면(0)과 윗면(app_height)을 모두 지나도록 app_height 를 균등 분할한 값 = app_height / gaps. dus_init 이 매번 다시 계산한다" favorite="false"/>
-  <Variable name="gaps" value="17" remarks="줄 사이 간격 수 = ceil(app_height / scan_h). 줄 수는 여기에 1 을 더한 값이다" favorite="false"/>
-  <Variable name="rows" value="18" remarks="가로 패스 수 = gaps + 1. 첫 줄은 ㅗ 자세로 밑면, 마지막 줄은 ㅜ 자세로 윗면을 가운데 프로브가 훑는다" favorite="false"/>
+  <Variable name="wet_ref" value="[-0.34965, -0.00002, 0.07577, -0.00008, 0.42683, -0.00013]" remarks="원점 로컬에서 본 호 중앙(p_c_pose). X 성분 부호로 적심 방향을 정한다" favorite="false"/>
+  <Variable name="app_width" value="705.55493" remarks="작업 영역 좌우 너비 [mm](= 좌우 끝점 사이 실제 현). 충돌 여유로 700mm 를 넘지 않게 app_arc 를 잡는다" favorite="false"/>
+  <Variable name="app_height" value="140" remarks="작업 영역 높이 [mm] (입력레지스터 257)" favorite="false"/>
+  <Variable name="scan_h" value="157.10001" remarks="프로브 유효 세로 커버 [mm] (입력레지스터 258). 한 줄이 덮는 밴드 높이이자 up 동작의 최대 상승량" favorite="false"/>
+  <Variable name="overlap" value="17.1" remarks="격자 **안**의 줄 겹침 [mm] = scan_h - pitch. dus_init 이 계산해 넣는다. 입력레지스터 259 로 받는 값은 격자**끼리**의 겹침이라 뜻이 다르고, 격자 안 피치에는 쓰지 않는다" favorite="false"/>
+  <Variable name="pitch" value="140" remarks="상승 피치 [mm]. 가운데 프로브가 밑면(0)과 윗면(app_height)을 모두 지나도록 app_height 를 균등 분할한 값 = app_height / gaps. dus_init 이 매번 다시 계산한다" favorite="false"/>
+  <Variable name="gaps" value="1" remarks="줄 사이 간격 수 = ceil(app_height / scan_h). 줄 수는 여기에 1 을 더한 값이다" favorite="false"/>
+  <Variable name="rows" value="2" remarks="가로 패스 수 = gaps + 1. 첫 줄은 ㅗ 자세로 밑면, 마지막 줄은 ㅜ 자세로 윗면을 가운데 프로브가 훑는다" favorite="false"/>
   <Variable name="row_idx" value="0" remarks="완료한 가로 패스 수" favorite="false"/>
   <Variable name="dir_sign" value="1" remarks="1=오른쪽(Y-) 차례, -1=왼쪽(Y+) 차례" favorite="false"/>
   <Variable name="pass_done" value="0" remarks="" favorite="false"/>
   <Variable name="n_probe" value="3" remarks="측정 완료한 점 수 (0~3)" favorite="false"/>
   <Variable name="n_hit" value="0" remarks="센서로 검출된 점 수" favorite="false"/>
-  <Variable name="p_cx" value="0.63172" remarks="중앙 측정 X [m]" favorite="false"/>
-  <Variable name="p_lx" value="0.70752" remarks="Y+ 끝 측정 X [m]" favorite="false"/>
-  <Variable name="p_rx" value="0.70748" remarks="Y- 끝 측정 X [m]" favorite="false"/>
-  <Variable name="y_c" value="-0.00005" remarks="중앙 Y [m]" favorite="false"/>
+  <Variable name="p_cx" value="0.63307" remarks="중앙 측정 X [m]" favorite="false"/>
+  <Variable name="p_lx" value="0.68282" remarks="Y+ 끝 측정 X [m]" favorite="false"/>
+  <Variable name="p_rx" value="0.7115" remarks="Y- 끝 측정 X [m]" favorite="false"/>
+  <Variable name="y_c" value="0.05122" remarks="중앙 Y [m]" favorite="false"/>
   <Variable name="y_l" value="0.30185" remarks="" favorite="false"/>
   <Variable name="y_r" value="-0.29815" remarks="" favorite="false"/>
   <Variable name="half" value="0.3" remarks="너비의 절반 [m]" favorite="false"/>
@@ -77,27 +77,27 @@
   <Variable name="qb" value="0" remarks="벽면 2차식 1차항" favorite="false"/>
   <Variable name="qc" value="0" remarks="벽면 2차식 상수항 (= 중앙 X)" favorite="false"/>
   <Variable name="zero_ok" value="True" remarks="" favorite="false"/>
-  <Variable name="x_start" value="[0.53171, -0.00005, 0.26876, -1.57142, -0.00018, -1.57083]" remarks="" favorite="false"/>
-  <Variable name="z_base" value="0.26876" remarks="" favorite="false"/>
-  <Variable name="zero_pose" value="[0.70752, 0.34959, 0.2687, -1.57142, -0.00018, -1.99768]" remarks="원점 = Y+ 끝 측정 위치" favorite="false"/>
-  <Variable name="zero_inv" value="[0.61111, 0.26912, -0.49911, -1.5723, -1.14391, -3.14005]" remarks="pose_inv(zero_pose)" favorite="false"/>
-  <Variable name="cur_pose" value="[0.70752, 0.34959, 0.2687, -1.57142, -0.00017, -1.99768]" remarks="현재 절대 TCP (260~265 로 발행)" favorite="false"/>
-  <Variable name="rel_pose" value="[0.09999, -0, 0.50007, -0, 0.00001, -0.00002]" remarks="원점 기준 상대 pose (280~285 로 발행)" favorite="false"/>
-  <Variable name="tgt_pose" value="[0.60752, 0.3496, 0.76877, -1.57143, -0.0002, -1.99767]" remarks="현재 구간 목표 pose" favorite="false"/>
+  <Variable name="x_start" value="[0.53339, 0.05122, 0.19674, 1.57117, 0.00016, 1.61142]" remarks="" favorite="false"/>
+  <Variable name="z_base" value="0.19674" remarks="" favorite="false"/>
+  <Variable name="zero_pose" value="[0.68282, 0.41036, 0.19672, 1.57106, 0.00012, 1.25179]" remarks="원점 = Y+ 끝 측정 위치" favorite="false"/>
+  <Variable name="zero_inv" value="[-0.60379, -0.19693, -0.51961, -1.57165, -1.25179, 0.00093]" remarks="pose_inv(zero_pose)" favorite="false"/>
+  <Variable name="cur_pose" value="[0.68282, 0.41037, 0.19672, 1.57106, 0.00011, 1.25179]" remarks="현재 절대 TCP (260~265 로 발행)" favorite="false"/>
+  <Variable name="rel_pose" value="[0.1, 0, 0.14004, 0, -0.00001, 0.00002]" remarks="원점 기준 상대 pose (280~285 로 발행)" favorite="false"/>
+  <Variable name="tgt_pose" value="[0.59461, 0.40771, 0.33674, 1.57106, 0.00011, 1.18464]" remarks="현재 구간 목표 pose" favorite="false"/>
   <Variable name="dy" value="0.3" remarks="" favorite="false"/>
   <Variable name="y_from" value="-0.30001" remarks="" favorite="false"/>
   <Variable name="y_to" value="0.29999" remarks="" favorite="false"/>
   <Variable name="n_seg" value="12" remarks="" favorite="false"/>
   <Variable name="i_seg" value="13" remarks="" favorite="false"/>
   <Variable name="path_len" value="0" remarks="누적 이동거리 [mm]" favorite="false"/>
-  <Variable name="alive" value="22634" remarks="워치독 카운터" favorite="false"/>
+  <Variable name="alive" value="15917" remarks="워치독 카운터" favorite="false"/>
   <Variable name="mv_h" value="0" remarks="이동 스레드 핸들" favorite="false"/>
-  <Variable name="pub_h" value="1782576224" remarks="발행 스레드 핸들" favorite="false"/>
-  <Variable name="probe_rot" value="[0.53171, -0.00005, 0.26876, -1.57142, -0.00018, -1.57083]" remarks="정렬 전 기준 자세. 측정점 사이를 이동할 때 여기로 되돌린다 (probe_c 가 채운다)" favorite="false"/>
+  <Variable name="pub_h" value="1764750432" remarks="발행 스레드 핸들" favorite="false"/>
+  <Variable name="probe_rot" value="[0.53339, 0.05122, 0.19674, 1.57117, 0.00016, 1.61142]" remarks="정렬 전 기준 자세. 측정점 사이를 이동할 때 여기로 되돌린다 (probe_c 가 채운다)" favorite="false"/>
   <Variable name="arc_mode" value="1" remarks="movec 의 mode. 0 = 자세 고정" favorite="false"/>
-  <Variable name="p_c_pose" value="[0.63172, -0.00006, 0.2687, -1.57142, -0.00018, -1.57085]" remarks="중앙 측정 pose — movec 의 경유점 (330~335 로 발행)" favorite="false"/>
-  <Variable name="p_r_pose" value="[0.70748, -0.34972, 0.2687, -1.57142, -0.00018, -1.14402]" remarks="Y- 끝 측정 pose — movec 의 도착점 (340~345 로 발행)" favorite="false"/>
-  <Variable name="via_pose" value="[0.63172, -0.00006, 0.76877, -1.57143, -0.00019, -1.57084]" remarks="movec 경유점 (현재 높이로 갈아끼운 것)" favorite="false"/>
-  <Variable name="to_pose" value="[0.70751, 0.34959, 0.76877, -1.57143, -0.00019, -1.99767]" remarks="movec 도착점 (현재 높이로 갈아끼운 것)" favorite="false"/>
-  <Variable name="z_now" value="0.76877" remarks="가로 패스 시작 시점의 Z [m]" favorite="false"/>
+  <Variable name="p_c_pose" value="[0.63307, 0.05527, 0.19672, 1.57106, 0.00012, 1.61146]" remarks="중앙 측정 pose — movec 의 경유점 (330~335 로 발행)" favorite="false"/>
+  <Variable name="p_r_pose" value="[0.7115, -0.29461, 0.19672, 1.57106, 0.00012, 1.97113]" remarks="Y- 끝 측정 pose — movec 의 도착점 (340~345 로 발행)" favorite="false"/>
+  <Variable name="via_pose" value="[0.63311, 0.05527, 0.33675, 1.57106, 0.00012, 1.61146]" remarks="movec 경유점 (현재 높이로 갈아끼운 것)" favorite="false"/>
+  <Variable name="to_pose" value="[0.6946, 0.40771, 0.33675, 1.57106, 0.00012, 1.18463]" remarks="movec 도착점 (현재 높이로 갈아끼운 것)" favorite="false"/>
+  <Variable name="z_now" value="0.33675" remarks="가로 패스 시작 시점의 Z [m]" favorite="false"/>
 </VariablesManager>

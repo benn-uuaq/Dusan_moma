@@ -4,6 +4,7 @@ Current Task: dusan_v4
         1 [스크립트파일] dus_init.script
             Script: dus_init.script
         2 move_home
+            'If get_actual_tcp_pose()[1]<Home_pose[1]+0.002'
             If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
                 MoveL
                     Direction Robot Z+
@@ -15,18 +16,15 @@ Current Task: dusan_v4
         4 [스크립트파일] dus_probe_c.script
             Script: dus_probe_c.script
         5 move_start
-            MoveL
-                start_pose
+            Script: dus_move_start.script
         6 [스크립트파일] dus_probe_l.script
             Script: dus_probe_l.script
-        7 move_start
-            MoveL
-                start_pose
+        7 move_start_waypoint
+            Script: dus_move_start_waypoint.script
         8 [스크립트파일] dus_probe_r.script
             Script: dus_probe_r.script
-        9 move_start
-            MoveL
-                start_pose
+        9 move_start_waypoint
+            Script: dus_move_start_waypoint.script
         10 [스크립트파일] dus_goto_zero.script
             Script: dus_goto_zero.script
         Loop 200 times

@@ -472,8 +472,8 @@ class RobotControlNode(Node):
 
     # get_variable이 실패했을 때만 쓰는 마지막 안전망. 정상 경로에서는
     # 항상 로봇에서 29999로 직접 읽은 값을 쓴다.
-    _HOME_JOINT_FALLBACK = [0.66477, -1.58308, -2.73865, 1.18014, 0.90602, 0.0]
-    _HOME_POSE_FALLBACK = [0.39874, 0.0, 0.38842, -1.5708, -0.0, -1.57081]
+    _HOME_JOINT_FALLBACK = [0.79941, -1.55029, -2.70026, 1.10839, 0.81203, -3.14139]
+    _HOME_POSE_FALLBACK = [0.40795, 0.05529, 0.40515, 1.57121, 0.00018, 1.61144]
 
     def cb_move_home(self, req, res):
         """안전 높이까지 movel로 올린 뒤 movej로 홈 관절값에 간다.

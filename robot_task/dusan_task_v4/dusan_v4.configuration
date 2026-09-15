@@ -1,4 +1,4 @@
-<ConfigurationSettings robotType="6212" toolType="1" robotTypeName="CS612" robotSN="09252312420001" savedTime="2026-09-14 13:02:11">
+<ConfigurationSettings robotType="6212" toolType="1" robotTypeName="CS612" robotSN="09252312420001" savedTime="2026-09-15 15:54:29">
   <versionInfo>
     <lastSavedVersion project="RT ROBOT" major="2" minor="14" bugfix="3" commitHashInfo="a6e8c3aA" additionalInfo="" buildDate="2025-08-22 08:51:45"/>
     <createdVersion project="RT ROBOT" major="2" minor="15" bugfix="0" commitHashInfo="00cb5e6" additionalInfo="" buildDate="2026-01-16 06:45:14"/>
@@ -99,6 +99,40 @@
     </Conveyor>
   </ConveyorConfig>
   <SafetyConfigurationSettings>
+[SafetyIOConfigurationInputs]
+emergencyStopInputA = 255
+emergencyStopInputB = 255
+reducedModeInputA = 255
+reducedModeInputB = 255
+safeguardStopResetInputA = 0
+safeguardStopResetInputB = 1
+threePositionEnablingInputA = 255
+threePositionEnablingInputB = 255
+operationalModeInputA = 255
+operationalModeInputB = 255
+automaticModeSafeguardStopInputA = 255
+automaticModeSafeguardStopInputB = 255
+automaticModeSafeguardStopResetInputA = 255
+automaticModeSafeguardStopResetInputB = 255
+
+[SafetyIOConfigurationOutputs]
+systemEmergencyStopOutputA = 255
+systemEmergencyStopOutputB = 255
+robotMovingOutputA = 255
+robotMovingOutputB = 255
+robotNotStoppingOutputA = 255
+robotNotStoppingOutputB = 255
+reducedModeOutputA = 255
+reducedModeOutputB = 255
+notReducedModeOutputA = 255
+notReducedModeOutputB = 255
+safetyHomeOutputA = 255
+safetyHomeOutputB = 255
+configOut0and1_OSSD = 0
+configOut2and3_OSSD = 0
+configOut4and5_OSSD = 0
+configOut6and7_OSSD = 0
+
 [NormalModeSafetyLimits]
 maxTcpSpeed = 0.25
 maxForce = 100.0
@@ -135,40 +169,6 @@ homePosition = [NaN,NaN,NaN,NaN,NaN,NaN]
 
 [ThreePositionEnabling]
 allowManualHighSpeed = 1
-
-[SafetyIOConfigurationInputs]
-emergencyStopInputA = 255
-emergencyStopInputB = 255
-reducedModeInputA = 255
-reducedModeInputB = 255
-safeguardStopResetInputA = 0
-safeguardStopResetInputB = 1
-threePositionEnablingInputA = 255
-threePositionEnablingInputB = 255
-operationalModeInputA = 255
-operationalModeInputB = 255
-automaticModeSafeguardStopInputA = 255
-automaticModeSafeguardStopInputB = 255
-automaticModeSafeguardStopResetInputA = 255
-automaticModeSafeguardStopResetInputB = 255
-
-[SafetyIOConfigurationOutputs]
-systemEmergencyStopOutputA = 255
-systemEmergencyStopOutputB = 255
-robotMovingOutputA = 255
-robotMovingOutputB = 255
-robotNotStoppingOutputA = 255
-robotNotStoppingOutputB = 255
-reducedModeOutputA = 255
-reducedModeOutputB = 255
-notReducedModeOutputA = 255
-notReducedModeOutputB = 255
-safetyHomeOutputA = 255
-safetyHomeOutputB = 255
-configOut0and1_OSSD = 0
-configOut2and3_OSSD = 0
-configOut4and5_OSSD = 0
-configOut6and7_OSSD = 0
 
 [Safety Tool 0]
 name = \ud234

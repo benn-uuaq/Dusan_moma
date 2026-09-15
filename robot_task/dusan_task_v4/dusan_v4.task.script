@@ -6,20 +6,32 @@ def dusan_v4():
   # Configuration variables.
   # 
   global Home_joint
-  Home_joint = [0.38064, -2.04697, -2.38113, 1.28652, 1.19015, -0.00001]
+  Home_joint = [0.79941, -1.55029, -2.70026, 1.10839, 0.81203, -3.14139]
   # 
   global Home_pose
-  Home_pose = [0.58815, 0, 0.3, -1.57079, 0, -1.5708]
+  Home_pose = [0.40795, 0.05529, 0.40515, 1.57121, 0.00018, 1.61144]
   # 그리퍼(EOAT)를 작업면 중앙에 딱 붙여 티칭한 pose (입력레지스터 316~321, UI가 저장한 값). 접촉 상태이지 대기 자세가 아니다 — 툴플렌지 pose도 아니다. dus_init이 eoat_type 오프셋을 빼 접촉 시점 플랜지 pose를 구한 뒤, probe_dist 만큼 TCP -Z로 물러난 곳을 start_pose로 계산한다
   global gripper_target_pose
-  gripper_target_pose = [0.86775, 0, 0.13597, -1.5708, 0, -1.57078]
+  gripper_target_pose = [0.63329, 0.05528, 0.19672, 1.57117, 0.00016, 1.61143]
   # 실제 movej 목표(툴플랜지 기준, 그리퍼가 작업면에서 probe_dist 만큼 물러난 대기 자세). dus_init이 매 작업마다 gripper_target_pose 로부터 다시 계산한다 — 여기 직접 값을 넣어도 다음 작업 시작 시 덮어써진다
   global start_pose
-  start_pose = [0.76775, -0, 0.13597, -1.5708, -0, -1.57078]
+  start_pose = [0.53337, 0.05122, 0.19676, 1.57117, 0.00016, 1.61143]
   # 0=이 변수값 사용, 1=Modbus 310~321 사용 (레지스터 308)
   global pose_src
   pose_src = 0
-  # 장착된 그리퍼 종류. 0=없음(툴플랜지 그대로), 5=5축 X형, 8=8축 직사각. 레지스터 264(param_src=1일 때, 레지스터 266)로 받거나 이 변수를 펜던트에서 직접 입력
+  # 발행 스레드 생존 확인용 — 워치독(293) 이전 값. dus_init 이 두 제어주기 동안 293 이 안 변하면 스레드가 죽은 것으로 보고 다시 띄운다
+  global pub_a
+  pub_a = 0
+  # 발행 스레드 생존 확인용 — 워치독(293) 이후 값
+  global pub_b
+  pub_b = 0
+  # 좌표 발행 스레드(pub_thread)를 이미 띄웠으면 1. dus_init 이 반복 실행돼도 스레드를 한 번만 띄우게 막는다 — 안 그러면 사이클마다 쌓여 Thread over the max size: 20 으로 멈춘다. 프로그램 시작 시 Init Variables Value 가 0 으로 되돌린다
+  global pub_started
+  pub_started = 1
+  # 스캔 패스(dus_pass_r/l 의 movec) 진행 중이면 1. 이 구간에서만 제로점 기준 좌표(280~285)를 내보내고, 그 외에는 전부 0 을 쏜다. dus_init 이 시작할 때 0 으로 되돌린다
+  global scan_on
+  scan_on = 0
+  # 장착된 그리퍼 종류. 0=없음(툴플랜지 그대로), 5=5축 십자형, 8=8축 직사각. 레지스터 264(param_src=1일 때, 레지스터 266)로 받거나 이 변수를 펜던트에서 직접 입력
   global eoat_type
   eoat_type = 5
   # 5축 그리퍼: 툴플랜지 -> 그리퍼 기준점 오프셋 X [m] (플랜지 로컬 좌표). 실측 후 채울 것
@@ -57,43 +69,46 @@ def dusan_v4():
   di_limit = 1
   # 도면 반지름(안쪽 면) [mm]. 레지스터 260 을 0.1mm 로 받고, dus_init 이 두께를 더해 훑는 면 반지름으로 바꾼다. 시험 벽 기준(MQTT 시뮬레이터·RCS 샘플과 동일) — 충돌 여유 700mm 현 계산도 이 반지름 기준
   global app_radius
-  app_radius = 854.59998
+  app_radius = 598
+  # 로봇이 실제로 훑는 바깥면의 반지름 [mm] = app_radius + app_thick. dus_init 이 매번 다시 계산한다. app_radius(도면 안쪽 반지름)에 두께를 덮어쓰면 dus_init 이 반복 실행될 때마다 두께가 또 더해져 값이 계속 커진다 — 그래서 따로 둔다
+  global scan_radius
+  scan_radius = 882.89996
   # 제품 두께 [mm]. 레지스터 261 을 0.1mm 단위로 받는다. UT 기록용
   global app_thick
-  app_thick = 10
-  # 격자 가로 = 호 길이 [mm] (레지스터 256). 로봇이 실제로 지나는 거리. 현이 아니다. 좌우 끝점 사이 실제 현(app_width)이 충돌 여유 700mm 를 넘지 않는 최대 정수값(699.31mm)
+  app_thick = 284.89999
+  # 격자 가로 = 호 길이 [mm] (레지스터 256). 로봇이 실제로 지나는 거리. 현이 아니다. 좌우 끝도 가운데 프로브 중심 기준이라 TCP 가 이 길이를 그대로 오간다. 좌우 끝점 사이 실제 현(app_width)이 충돌 여유 700mm 를 넘지 않는 최대 정수값(699.31mm)
   global app_arc
-  app_arc = 978
-  # EOAT 가로(호 방향) [mm]. 레지스터 262. 5축 X형 257 / 8축 직사각 186
+  app_arc = 721
+  # 프로브 유효 가로 커버 [mm]. 레지스터 262. 5축 십자 30(가운데 프로브 지름) / 8축 직사각 75(좌우합). 경로에는 안 쓴다 — 좌우 끝도 프로브 중심 기준이다
   global eoat_w
-  eoat_w = 257
-  # EOAT 세로 [mm]. 레지스터 263. 5축 257 / 8축 316(세로로 길게). 스캐너 밴드 높이로 쓴다
+  eoat_w = 657.59998
+  # 프로브 유효 세로 커버 [mm]. 레지스터 263. 5축 십자 30(가운데 프로브 지름) / 8축 직사각 167.5(상하합). scan_h 로 쓰이며 곧 up 동작의 최대 상승량이다
   global eoat_h
-  eoat_h = 257
-  # TCP 가 실제로 움직일 호 길이 [mm] = app_arc - eoat_w. dus_init 이 계산
+  eoat_h = -157.2
+  # TCP 가 실제로 움직일 호 길이 [mm] = app_arc 그대로. dus_init 이 계산
   global arc_run
   arc_run = 721
   # 곡률 중심 X [m]. probe_l 이 계산
   global arc_ox
-  arc_ox = 1.69687
+  arc_ox = 1.51701
   # 곡률 중심 Y [m]. probe_l 이 계산
   global arc_oy
-  arc_oy = 0.00001
+  arc_oy = 0.09121
   # 원점(zero_pose)이 곡률 중심에서 보이는 각 [rad]
   global arc_phi0
-  arc_phi0 = -2.71974
+  arc_phi0 = 2.77392
   # 호 기준이 잡혔는지. True 여야 호 위치를 발행한다
   global arc_ok
   arc_ok = True
   # 원점부터 지금까지의 호 위 거리 [mm]. 레지스터 286 으로 발행
   global arc_s
-  arc_s = 0
+  arc_s = 353.21201
   # 호 반각 [rad] = arc_run/(2*app_radius). dus_init 이 계산
   global arc_half
-  arc_half = 0.42184
+  arc_half = 0.40831
   # 센서로 잰 적정 눌림 보정량 [m]. 계산한 3점을 TCP +Z 로 이만큼 더 민다
   global press_off
-  press_off = 0.07452
+  press_off = 0.10155
   # 자세 보정 중 한 걸음 전진/후퇴 거리 [mm]
   global seek_step
   seek_step = 2
@@ -118,6 +133,9 @@ def dusan_v4():
   # 가로 패스를 나누는 구간 길이 [mm]. 작을수록 X 보정이 촘촘하다
   global seg_len
   seg_len = 50
+  # movel(스캔 제외) 블렌더 반경 [m]. probe_c에서 probe_l, probe_r로 이동할때에만 적용한다.
+  global r_l
+  r_l = 0.35
   # movel(스캔 제외) 속도 [m/s]. dus_init 이 150mm/s 로 상한을 자른다
   global v_l
   v_l = 0.15
@@ -136,30 +154,48 @@ def dusan_v4():
   # 스캔 movel/movec 가속도 [m/s^2]. 고정 스펙 400mm/s^2
   global a_scan
   a_scan = 0.4
+  # 적심(비비기) 진폭 [mm]. 스캔 직전 원점에서 호 안쪽으로 이만큼 갔다가 돌아온다. 물을 퍼뜨려 검사면을 적시는 동작
+  global wet_amp
+  wet_amp = 10
+  # 적심 왕복 횟수. goto_zero 가 스캔 시작 직전에 돈다
+  global wet_cycles
+  wet_cycles = 3
+  # 적심 한 번의 이동량 [mm] (툴 로컬 X). wet_amp 에 방향 부호를 붙인 값 — goto_zero 가 p_c_pose 위치로 매번 다시 정한다
+  global wet_step
+  wet_step = -10
+  # 적심 반복 카운터. goto_zero 가 쓴다
+  global wet_i
+  wet_i = 3
+  # 원점 로컬에서 본 호 중앙(p_c_pose). X 성분 부호로 적심 방향을 정한다
+  global wet_ref
+  wet_ref = [-0.35056, -0.00002, 0.06581, -0.00008, 0.40835, -0.00014]
   # 작업 영역 좌우 너비 [mm](= 좌우 끝점 사이 실제 현). 충돌 여유로 700mm 를 넘지 않게 app_arc 를 잡는다
   global app_width
-  app_width = 699.80646
+  app_width = 701.13214
   # 작업 영역 높이 [mm] (입력레지스터 257)
   global app_height
-  app_height = 500
-  # 스캐너 세로 유효높이 [mm] (입력레지스터 258)
+  app_height = 140
+  # 프로브 유효 세로 커버 [mm] (입력레지스터 258). 한 줄이 덮는 밴드 높이이자 up 동작의 최대 상승량
   global scan_h
-  scan_h = 257
-  # 세로 겹침 [mm] (입력레지스터 259)
+  scan_h = 167.5
+  # 격자 **안**의 줄 겹침 [mm] = scan_h - pitch. dus_init 이 계산해 넣는다. 입력레지스터 259 로 받는 값은 격자**끼리**의 겹침이라 뜻이 다르고, 격자 안 피치에는 쓰지 않는다
   global overlap
-  overlap = 20
-  # 상승 피치 = scan_h - overlap [mm] (고정)
+  overlap = 17.5
+  # 상승 피치 [mm]. 가운데 프로브가 밑면(0)과 윗면(app_height)을 모두 지나도록 app_height 를 균등 분할한 값 = app_height / gaps. dus_init 이 매번 다시 계산한다
   global pitch
-  pitch = 237
-  # 가로 패스 수
+  pitch = 150
+  # 줄 사이 간격 수 = ceil(app_height / scan_h). 줄 수는 여기에 1 을 더한 값이다
+  global gaps
+  gaps = 1
+  # 가로 패스 수 = gaps + 1. 첫 줄은 ㅗ 자세로 밑면, 마지막 줄은 ㅜ 자세로 윗면을 가운데 프로브가 훑는다
   global rows
-  rows = 3
+  rows = 2
   # 완료한 가로 패스 수
   global row_idx
-  row_idx = 3
+  row_idx = 2
   # 1=오른쪽(Y-) 차례, -1=왼쪽(Y+) 차례
   global dir_sign
-  dir_sign = -1
+  dir_sign = 1
   # 
   global pass_done
   pass_done = 1
@@ -171,16 +207,16 @@ def dusan_v4():
   n_hit = 3
   # 중앙 측정 X [m]
   global p_cx
-  p_cx = 0.84227
+  p_cx = 0.63484
   # Y+ 끝 측정 X [m]
   global p_lx
-  p_lx = 0.93623
+  p_lx = 0.69946
   # Y- 끝 측정 X [m]
   global p_rx
-  p_rx = 0.91372
+  p_rx = 0.71867
   # 중앙 Y [m]
   global y_c
-  y_c = 0
+  y_c = 0.05121
   # 
   global y_l
   y_l = 0.30185
@@ -204,25 +240,25 @@ def dusan_v4():
   zero_ok = True
   # 
   global x_start
-  x_start = [0.76776, 0, 0.13598, -1.5708, -0, -1.57077]
+  x_start = [0.53338, 0.05121, 0.19676, 1.57114, 0.00014, 1.61142]
   # 
   global z_base
-  z_base = 0.13598
+  z_base = 0.19676
   # 원점 = Y+ 끝 측정 위치
   global zero_pose
-  zero_pose = [0.93623, -0.34136, 0.13597, -1.57081, 0.00001, -1.14897]
+  zero_pose = [0.69946, 0.40613, 0.19672, 1.5711, 0.00013, 1.20308]
   # pose_inv(zero_pose)
   global zero_inv
-  zero_inv = [-0.69476, 0.13599, -0.71439, 1.57084, -1.14897, -0.00005]
+  zero_inv = [-0.6304, -0.19696, -0.50664, -1.57163, -1.20308, 0.00091]
   # 현재 절대 TCP (260~265 로 발행)
   global cur_pose
-  cur_pose = [0.58815, -0, 0.3, -1.57078, -0, -1.5708]
+  cur_pose = [0.40795, 0.05528, 0.40516, 1.5712, 0.00018, 1.61144]
   # 원점 기준 상대 pose (280~285 로 발행)
   global rel_pose
-  rel_pose = [-0.34808, 0.34136, 0.16404, 0.00004, -0.00001, -0.42184]
+  rel_pose = [0.1, -0.00001, 0.15004, 0.00001, 0.00004, 0.00003]
   # 현재 구간 목표 pose
   global tgt_pose
-  tgt_pose = [0.81372, 0.35147, 0.60998, -1.5708, 0.00001, -1.99263]
+  tgt_pose = [0.59946, 0.40613, 0.34676, 1.5711, 0.00015, 1.20309]
   # 
   global dy
   dy = 0.3
@@ -240,37 +276,37 @@ def dusan_v4():
   i_seg = 13
   # 누적 이동거리 [mm]
   global path_len
-  path_len = 2637
+  path_len = 1592
   # 워치독 카운터
   global alive
-  alive = 15667
+  alive = 27041
   # 이동 스레드 핸들
   global mv_h
   mv_h = 0
   # 발행 스레드 핸들
   global pub_h
-  pub_h = 1793635424
+  pub_h = 1785410656
   # 정렬 전 기준 자세. 측정점 사이를 이동할 때 여기로 되돌린다 (probe_c 가 채운다)
   global probe_rot
-  probe_rot = [0.76776, 0, 0.13598, -1.5708, -0, -1.57077]
+  probe_rot = [0.53338, 0.05121, 0.19676, 1.57114, 0.00014, 1.61142]
   # movec 의 mode. 0 = 자세 고정
   global arc_mode
   arc_mode = 1
   # 중앙 측정 pose — movec 의 경유점 (330~335 로 발행)
   global p_c_pose
-  p_c_pose = [0.84227, 0, 0.13597, -1.5708, -0, -1.57079]
+  p_c_pose = [0.63484, 0.05534, 0.19673, 1.57109, 0.00013, 1.61143]
   # Y- 끝 측정 pose — movec 의 도착점 (340~345 로 발행)
   global p_r_pose
-  p_r_pose = [0.91372, 0.35147, 0.13598, -1.57079, 0.00002, -1.99262]
+  p_r_pose = [0.71867, -0.2934, 0.19674, 1.57105, 0.00017, 2.01977]
   # movec 경유점 (현재 높이로 갈아끼운 것)
   global via_pose
-  via_pose = [0.84227, 0, 0.60998, -1.5708, -0, -1.57079]
+  via_pose = [0.63484, 0.05534, 0.34676, 1.57109, 0.00013, 1.61143]
   # movec 도착점 (현재 높이로 갈아끼운 것)
   global to_pose
-  to_pose = [0.91372, 0.35147, 0.60998, -1.57079, 0.00002, -1.99262]
+  to_pose = [0.69946, 0.40613, 0.34676, 1.5711, 0.00013, 1.20308]
   # 가로 패스 시작 시점의 Z [m]
   global z_now
-  z_now = 0.60998
+  z_now = 0.34676
   set_tool_analog_io_work_mode(3)
   set_tool_digital_io_work_mode(0)
   set_tool_analog_input_domain(0)
@@ -281,7 +317,7 @@ def dusan_v4():
   set_tool_digital_io_config(3,0,False,False)
   tool_serial_config(False,115200,0,1,modbus_rtu = False,usage = 0)
   set_tool_voltage(0)
-  set_tcp([0.0, 0.0, 0.2, 0.0, 0.0, 0.0])
+  set_tcp([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
   set_payload(0.0, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
   set_standard_analog_input_domain(0, 1)
   set_standard_analog_input_domain(1, 1)
@@ -315,1127 +351,1352 @@ def dusan_v4():
   # Thread Node Preamble Script.
   # Event Node Preamble Script.
   # Main Task Script.
-  while (True):
-    $ LINE: (2, "Robot Main Task")
-    $ LINE: (3, "1 [스크립트파일] dus_init.script")
-    $ LINE: (4, "Script")
-    # =============================================================================
-    #  dus_init.script — dusan_v4
-    #  파라미터를 읽고 피치·행수를 계산한다. 실시간 발행 스레드를 띄운다
-    #
-    #  펜던트에서 "1_init" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
-    #
-    #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
-    #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
-    #  ※ if / while 은 반드시 end 로 닫을 것
-    # =============================================================================
-    
-    def ini_w1(a, v):
-      if (v > 32000):
-        v = 32000
-      end
-      if (v < -32000):
-        v = -32000
-      end
-      write_port_register(a, floor(v + 0.5))
+  $ LINE: (2, "Robot Main Task")
+  $ LINE: (3, "1 [스크립트파일] dus_init.script")
+  $ LINE: (4, "Script")
+  # =============================================================================
+  #  dus_init.script — dusan_v4
+  #  파라미터를 읽고 피치·행수를 계산한다. 실시간 발행 스레드를 띄운다
+  #
+  #  펜던트에서 "1_init" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+  #
+  #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+  #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+  #  ※ if / while 은 반드시 end 로 닫을 것
+  # =============================================================================
+  
+  def ini_w1(a, v):
+    if (v > 32000):
+      v = 32000
     end
-    
-    
-    # 로봇 자체 레지스터 384~389 와 같은 단위.  길이 0.1mm, 회전 mRad
-    def ini_w6(a, p):
-      ini_w1(a, p[0] * 10000)
-      ini_w1(a + 1, p[1] * 10000)
-      ini_w1(a + 2, p[2] * 10000)
-      ini_w1(a + 3, p[3] * 1000)
-      ini_w1(a + 4, p[4] * 1000)
-      ini_w1(a + 5, p[5] * 1000)
+    if (v < -32000):
+      v = -32000
     end
-    
-    
-    # 절대 TCP(260~265) 는 항상 발행한다. 원점기준 상대좌표(280~285)와 호
-    # 위치(286/287)는 원점(zero_pose)이 잡혀 있으면(zero_ok/arc_ok) 항상
-    # 내보낸다 — TPAC 의 "Plane" 이 실제 TCP 이동거리를 보여줘야 하므로 ㄹ자
-    # 스캔 중(state=4)만이 아니라 3점측정 후 원점복귀·다음 줄 이동 중에도
-    # 값이 살아 있어야 한다. 원점이 아직 없으면(zero_ok==False) [0,0,0,0,0,0]
-    # 을 쏜다.
-    #
-    # 위치는 베이스 좌표계 그대로 빼서 쓴다(cur - zero). 원래는
-    # pose_trans(zero_inv, cur_pose)로 툴 좌표계 기준값을 냈는데, 툴이
-    # 벽을 비스듬히 보고 있으면 베이스 Z+ 로 올라가도 이 값의 Z 성분이
-    # 음수로 커지는 문제가 있었다. register_map.txt 4항의 역변환 공식
-    # base = R_zero * rel_tcp 은 rel_tcp = R_zero^T * (cur-zero) 이므로
-    # 결국 cur - zero 와 정확히 같다(회전행렬을 걸었다 다시 푸는 셈).
-    # 그러니 처음부터 베이스 좌표계로 빼면 회전행렬 없이 같은 결과이고,
-    # 세로(Z)가 위로 갈수록 커지도록 직관과도 맞는다.
-    def pub_rel():
-      global cur_pose
-      global rel_pose
-      global alive
-      cur_pose = get_actual_tcp_pose()
-      ini_w6(260, cur_pose)
-      if (zero_ok == True):
-        rel_pose = [cur_pose[0] - zero_pose[0],
-              cur_pose[1] - zero_pose[1],
-              cur_pose[2] - zero_pose[2],
-              cur_pose[3] - zero_pose[3],
-              cur_pose[4] - zero_pose[4],
-              cur_pose[5] - zero_pose[5]]
-        ini_w6(280, rel_pose)
-      else:
-        ini_w6(280, [0, 0, 0, 0, 0, 0])
-      end
-      # ---- 호 위 위치 (TPAC 스캔 축) ----------------------------------
-      # 좌표를 그대로 주면 현(1031.8)으로 7% 눌리고 호 위치에 비례하지도
-      # 않는다. 원점부터 호를 따라 실제로 지난 거리를 계산해서 내보낸다.
-      #   286 = 이번 줄의 호 위 거리 [0.1mm]  (0 ~ 11100)
-      #   287 = 완료된 줄까지 더한 누적 [mm]
-      if (arc_ok == True):
-        adx = cur_pose[0] - arc_ox
-        ady = cur_pose[1] - arc_oy
-        aph = atan2(ady, adx) - arc_phi0
-        # atan2 는 ±pi 로 감기므로 한 바퀴 보정한다
-        if (aph > 3.14159265):
-          aph = aph - 6.28318531
-        end
-        if (aph < -3.14159265):
-          aph = aph + 6.28318531
-        end
-        if (aph < 0):
-          aph = -aph
-        end
-        arc_s = aph * app_radius
-        ini_w1(286, arc_s * 10)
-        ini_w1(287, path_len + arc_s)
-      else:
-        arc_s = 0
-        ini_w1(286, 0)
-        ini_w1(287, path_len)
-      end
-    
-      alive = alive + 1
-      if (alive > 30000):
-        alive = 0
-      end
-      write_port_register(293, alive)
-    end
-    
-    
-    # 제어주기마다 도는 발행 스레드. 이 뒤로는 평범한 movel 을 써도
-    # 이동 중 좌표가 계속 나간다.
-    def pub_thread():
-      while (True):
-        pub_rel()
-        sync()
-      end
-    end
-    
-    
-    # ------------------------------------------------------------------ 본문
-    # 266 = 1 이면 외부(Modbus)가 준 값을, 0 이면 펜던트 변수값을 쓴다
-    #   256 호 길이 [mm]   257 격자 높이 [mm]   258 스캐너 높이 [mm]
-    #   259 겹침 [mm]      260 반지름 [0.1mm]   261 두께 [0.1mm]
-    #   264 그리퍼 종류(eoat_type) — 0=없음, 5=5축, 8=8축
-    # 260/261 만 0.1mm 인 이유: 반지름이 834.6 처럼 소수라 정수 mm 로는
-    # 호 모양이 눈에 띄게 틀어진다. 길이 쪽은 1mm 분해능으로 충분하다.
-    if (read_port_register(266, True) == 1):
-      app_arc = read_port_register(256, True)
-      app_height = read_port_register(257, True)
-      scan_h = read_port_register(258, True)
-      overlap = read_port_register(259, True)
-      app_radius = read_port_register(260, True) * 0.1
-      app_thick = read_port_register(261, True) * 0.1
-      eoat_w = read_port_register(262, True)
-      eoat_h = read_port_register(263, True)
-      eoat_type = read_port_register(264, True)
-    end
-    
-    # ---- EOAT(검사 프로브 뭉치) 크기 ------------------------------------------
-    # 프로브가 EOAT 폭만큼 퍼져 있으므로 TCP 가 격자 끝까지 갈 필요가 없다.
-    # 양 끝에서 EOAT 의 **반**씩 안쪽으로 들어가면 프로브 가장자리가 끝에 닿는다.
-    # 그래서 실제 이동 호 길이는 덮는 길이에서 EOAT 폭 하나를 뺀 값이다.
-    #   5축 X형 257x257 -> 1110-257 = 853,  8축 186x316 -> 1110-186 = 924
-    # 세로도 마찬가지로 EOAT 세로가 곧 한 줄이 덮는 밴드 높이(scan_h)가 된다.
-    if (eoat_h > 0):
-      scan_h = eoat_h
-    end
-    if (eoat_w > 0):
-      arc_run = app_arc - eoat_w
-      if (arc_run < 1):
-        # EOAT 가 격자보다 넓다 = 한 자리에서 다 덮는다. 움직이지 않는다.
-        arc_run = 0
-      end
-    else:
-      arc_run = app_arc
-    end
-    
-    if (app_arc <= 0):
-      app_arc = 1000
-    end
-    if (app_radius <= 0):
-      # 반지름을 못 받았으면 평면으로 본다. 호 각도 0 = 직선.
-      app_radius = 0
-    end
-    
-    # ---- 훑는 면의 반지름 -----------------------------------------------------
-    # 도면 반지름은 **안쪽(오목) 면** 기준이고 로봇은 **바깥(볼록) 면**을 훑으므로
-    # 두께를 더해야 실제로 손이 닿는 면의 반지름이 된다.
-    #   시험 벽: 834.6 + 10 = 844.6
-    # 안쪽 면을 훑는 장비로 바뀌면 여기를 빼기로 뒤집어야 한다.
-    if (app_radius > 0):
-      app_radius = app_radius + app_thick
-    end
-    
-    # ---- 호 기하 --------------------------------------------------------------
-    # 받은 값은 **호 길이**다(현이 아니다). 반각 t = L / (2R) 이고,
-    # 현(= 두 끝점 사이 직선 거리)은 c = 2R*sin(t) 다.
-    #   시험 벽: L=1110, R=844.6 -> t=0.6572 rad(37.6deg), c=1031.8
-    # 로봇이 실제로 지나는 길이는 movec 가 호를 따라가므로 **호 길이(1110)** 다.
-    # 현(1031.8)은 두 끝점이 얼마나 떨어져 있는지일 뿐 이동 거리가 아니다.
-    # 평면(R=0)이면 호 각도가 없으므로 현 = 호 길이로 둔다.
-    if (app_radius > 0):
-      arc_half = arc_run / (2.0 * app_radius)
-      app_width = 2.0 * app_radius * sin(arc_half)
-    else:
-      arc_half = 0
-      app_width = arc_run
-    end
-    if (app_height < 0):
-      app_height = 0
-    end
-    if (scan_h <= 0):
-      scan_h = 200
-    end
-    if (overlap < 0):
-      overlap = 0
-    end
-    if (overlap >= scan_h):
-      overlap = scan_h - 10
-    end
-    
-    # ---- 속도/가속도 : 전역 변수로 관리한다 ----------------------------------
-    #   movel(스캔 제외)       : a_l, v_l
-    #   movej(홈 복귀 등)      : a_j, v_j
-    #   스캔 movel/movec       : a_scan, v_scan  (고정 스펙 100 mm/s / 400 mm/s^2)
-    # 필요하면 각 스크립트가 그 자리에서 값을 바꿔 써도 된다 — 예를 들어
-    # 접촉 탐색처럼 더 천천히 움직여야 할 때는 v_l 을 따로 두지 않고
-    # `v_l / 3.0` 처럼 그 movel 호출 하나에만 적용한다(전역값 자체는 안 바뀜).
-    #
-    # 안전 규정: 스캔 외 동작은 150 mm/s 를 넘으면 안 된다. 관절 이동의
-    # 각속도도 여기에 맞춰 조그와 같은 상한(0.50 rad/s)을 넘지 않게 자른다.
-    # 306 = 작업 속도 [mm/s]. v_l 로 쓴다. 0 이면 변수값을 유지한다.
-    # 307 = 로봇 자체 속도 비율 [%] 2~100. 모든 이송 속도에 곱한다.
-    spd_in = read_port_register(306, True)
-    if (spd_in > 0):
-      v_l = spd_in / 1000.0
-    end
-    
-    v_l_limit = 0.150
-    if (v_l > v_l_limit):
-      v_l = v_l_limit
-    end
-    v_j_limit = 0.50
-    if (v_j > v_j_limit):
-      v_j = v_j_limit
-    end
-    
-    spd_ratio = read_port_register(307, True)
-    if (spd_ratio < 2):
-      spd_ratio = 100
-    end
-    if (spd_ratio > 100):
-      spd_ratio = 100
-    end
-    v_l = v_l * spd_ratio / 100.0
-    v_j = v_j * spd_ratio / 100.0
-    v_scan = v_scan * spd_ratio / 100.0
-    
-    # ---- 기준 위치 : 308 이 1 이면 310~321 의 값을 쓴다 --------------------
-    # 310~315 홈 관절값 [mRad], 316~321 그리퍼 기준점 pose(길이 0.1mm, 회전 mRad)
-    # — 316~321 은 툴플랜지가 아니라 실제 장착된 그리퍼(EOAT) 기준점 목표다.
-    # 아래에서 eoat_type 에 맞는 오프셋을 빼 플랜지 기준 start_pose 를 만든다.
-    if (read_port_register(308, True) == 1):
-      Home_joint = [read_port_register(310, True) / 1000.0,
-             read_port_register(311, True) / 1000.0,
-             read_port_register(312, True) / 1000.0,
-             read_port_register(313, True) / 1000.0,
-             read_port_register(314, True) / 1000.0,
-             read_port_register(315, True) / 1000.0]
-      gripper_target_pose = [read_port_register(316, True) / 10000.0,
-             read_port_register(317, True) / 10000.0,
-             read_port_register(318, True) / 10000.0,
-             read_port_register(319, True) / 1000.0,
-             read_port_register(320, True) / 1000.0,
-             read_port_register(321, True) / 1000.0]
-      Home_pose = get_forward_kin(Home_joint)
-    end
-    
-    # ---- 그리퍼(EOAT) 기준점 -> 툴플랜지 pose 역계산 ------------------------
-    # 그리퍼가 플랜지 로컬 좌표로 (ox,oy,oz) 만큼 앞에 붙어 있다고 보면
-    #   그리퍼 pose = pose_trans(플랜지 pose, [ox,oy,oz,0,0,0])
-    # 이므로 반대로 플랜지 pose 를 구하려면 부호를 뒤집어 그리퍼 pose 에
-    # 적용한다(회전은 그대로 — 그리퍼가 플랜지에 고정 장착되어 상대 회전이
-    # 없다고 본다). eoat_type 이 0(그리퍼 없음)이면 오프셋 없이 그대로 쓴다.
-    # 매 작업(dus_init 실행)마다 다시 계산하므로, 그리퍼를 5축<->8축으로
-    # 바꿔 달아도 티칭을 다시 안 하고 eoat_type 만 바꾸면 된다.
-    if (eoat_type == 8):
-      eoat_ox = eoat8_offset_x
-      eoat_oy = eoat8_offset_y
-      eoat_oz = eoat8_offset_z
-    else:
-      if (eoat_type == 5):
-        eoat_ox = eoat5_offset_x
-        eoat_oy = eoat5_offset_y
-        eoat_oz = eoat5_offset_z
-      else:
-        eoat_ox = 0
-        eoat_oy = 0
-        eoat_oz = 0
-      end
-    end
-    gripper_touch_flange = pose_trans(gripper_target_pose, [-eoat_ox, -eoat_oy, -eoat_oz, 0, 0, 0])
-    
-    # ---- 그리퍼를 작업면에 딱 붙인 티칭 지점에서 물러난 곳이 start_pose ------
-    # gripper_target_pose 는 그리퍼를 작업면 중앙에 접촉시켜 놓고 티칭한
-    # 값이다(위 gripper_touch_flange 는 그 순간의 플랜지 pose). 거기 그대로
-    # 두면 각 프로브 사이 이동 때마다 작업면에 닿아 있는 자세라 위험하니,
-    # probe_l/r/goto_zero 의 대기 지점(l_stand/r_stand/z_stand)과 같은 방식
-    # 으로 TCP 기준 -Z 로 probe_dist 만큼 물러난 지점을 실제 start_pose 로
-    # 쓴다(다음엔 그 자리에서 TCP +Z 로 전진해 다시 붙이면 된다).
-    start_pose = pose_trans(gripper_touch_flange, [0, 0, -probe_dist * 0.001, 0, 0, 0])
-    
-    # 상승 피치 = 스캐너 높이 - 겹침 (고정)
-    pitch = scan_h - overlap
-    if (pitch <= 0):
-      pitch = 10
-    end
-    
-    # 스캐너가 한 자리에서 scan_h 를 훑으므로
-    # 마지막 패스가 (높이 - scan_h) 이상이면 사각형 전체가 덮인다
-    rows = ceil((app_height - scan_h) * 1.0 / pitch) + 1
-    if (rows < 1):
-      rows = 1
-    end
-    if (rows > 200):
-      popup(s = "ROWS OVER LIMIT(200). CHECK HEIGHT/SCAN_H/OVERLAP", title = "dusan_v4", blocking = True)
-      write_port_register(290, 9)
-      halt()
-    end
-    
-    row_idx = 0
-    dir_sign = 1
-    pass_done = 0
-    path_len = 0
-    alive = 0
-    zero_ok = False
-    n_probe = 0
-    n_hit = 0
-    qa = 0
-    qb = 0
-    qc = 0
-    
-    write_port_register(290, 0)
-    write_port_register(291, 0)
-    write_port_register(292, rows)
-    write_port_register(293, 0)
-    write_port_register(294, 0)
-    write_port_register(295, 0)
-    write_port_register(296, pitch)
-    write_port_register(297, 0)
-    write_port_register(298, 0)
-    write_port_register(299, 0)  # probe_error: 0=정상, 1/2/3=probe_c/l/r 접촉 실패
-    write_port_register(304, 0)
-    write_port_register(305, 0)
-    
-    # 실시간 발행 스레드 기동
-    pub_h = start_thread(pub_thread, (), detach_mode = True)
-    $ LINE: (5, "2 move_home")
-    $ LINE: (6, "If")
-    if (get_actual_tcp_pose()[2]<Home_pose[2]-0.001):
-      $ LINE: (7, "MoveL")
-      $ LINE: (8, "Direction Robot Z+")
-      global move_thread_flag_8
-      move_thread_flag_8 = 0
-      def move_thread_8():
-        global move_thread_flag_8
-        move_thread_flag_8 = 1
-        towardsPos = calculate_point_to_move_towards([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0,0.0,1.0], 1000.0)
-        movel(towardsPos, a=0.6, v=0.15)
-        move_thread_flag_8 = 2
-      end
-      move_thread_flag_8 = 0
-      move_thread_han_8 = start_thread(move_thread_8, (), detach_mode = False)
-      while (True):
-        if (get_actual_tcp_pose()[2] >= Home_pose[2]):
-          stop_thread(move_thread_han_8)
-          stopl(0.6)
-          $ LINE: (9, "Until (Expression)")
-          break
-        end
-        sync()
-      end
-    end
-    $ LINE: (10, "MoveJ")
-    $ LINE: (11, "Home_joint", "after")
-    movej(Home_joint, a=0.698131700835289, v=0.3490658503988659)
-    $ LINE: (12, "3 move_start")
-    $ LINE: (13, "Script")
-    # =============================================================================
-    #  dus_move_start.script — dusan_v4
-    #  각 프로브 동작 사이의 대기 자세로 이동한다 (Home_joint 이 아니라 start_pose)
-    #
-    #  펜던트에서 "2 move_home" 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
-    #  파일(File) 모드로 넣고 지정한다. probe_c/l/r, goto_zero 앞에 하나씩,
-    #  총 4번 들어간다("11 move_home"만 쓰는 사이클 맨 끝은 그대로 둔다).
-    #
-    #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
-    #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
-    #  ※ if / while 은 반드시 end 로 닫을 것
-    #
-    #  start_pose 는 로봇 툴플렌지 기준이 아니라 실제 장착된 그리퍼(5축/8축)
-    #  기준으로 맞춰지도록 dus_init.script 가 매 작업마다 계산해 둔 값이다
-    #  (eoat_type + eoat5/8_offset_x/y/z 참고). 여기서는 그 결과만 쓴다.
-    #
-    #  move_home 과 같은 이유로 두 단계로 나눈다: 먼저 현재 위치에서 Z 만
-    #  start_pose 높이까지 올린 뒤(자세는 그대로 두고 벽/바닥을 스치지
-    #  않게), 그다음 start_pose 자세로 재배치한다. 큰 자세 변화가 필요할 수
-    #  있어 movel 이 아니라 movej 를 쓴다(경로 전체가 아니라 도착점만
-    #  역기구학이 풀리면 된다 — dus_probe_r.script 의 r_stand 이동과 같은
-    #  이유. probe_dist 를 조절해도 안 풀리던 문제가 여기 있었다).
-    #  movej 는 관절각 배열만 받는다(포즈를 못 받는다) — start_pose 는
-    #  [x,y,z,Rx,Ry,Rz] 직교좌표라 get_inverse_kin 으로 관절각으로 바꿔서
-    #  넘긴다(현재 관절각과 가장 가까운 해를 고른다).
-    if (get_actual_tcp_pose()[2] < start_pose[2] - 0.001):
-      z_up = get_actual_tcp_pose()
-      z_up[2] = start_pose[2]
-      movel(z_up, a = a_l, v = v_l)
-    end
-    movel(start_pose, a = a_l, v = v_l)
-    $ LINE: (14, "4 [스크립트파일] dus_probe_c.script")
-    $ LINE: (15, "Script")
-    # =============================================================================
-    #  dus_probe_c.script — dusan_v4
-    #  호 중앙에서 벽을 짚어 '적정 눌림' 위치를 캘리브레이션한다
-    #
-    #  펜던트에서 "3_probe_center" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
-    #
-    #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
-    #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
-    #  ※ if / while 은 반드시 end 로 닫을 것
-    #
-    #  센서는 손 **중앙에 하나**다. 좌우 막대 두 개로 기울기를 재던 방식은 없앴다.
-    #    di_touch : 적정 눌림 (OK)
-    #    di_limit : 눌림 한계 (뒤로 빼야 함)
-    #  하나뿐이라 기울기(Rz)는 잴 수 없다. 자세는 호 기하로 계산하고, 센서는
-    #  **얼마나 깊이 밀어야 하는지**(press_off) 하나만 잡아 준다.
-    #
-    #  전진/후진은 베이스가 아니라 **TCP 기준**이다 — 호를 그리며 도는 동안
-    #  손의 방향이 계속 바뀌기 때문이다.
-    #    TCP +Z = 전진(벽 쪽)   /   TCP -Z = 후진
-    # =============================================================================
-    
-    def pc_w1(a, v):
-      if (v > 32000):
-        v = 32000
-      end
-      if (v < -32000):
-        v = -32000
-      end
-      write_port_register(a, floor(v + 0.5))
-    end
-    
-    
-    # 로봇 자체 레지스터 384~389 와 같은 단위.  길이 0.1mm, 회전 mRad
-    def pc_w6(a, p):
-      pc_w1(a, p[0] * 10000)
-      pc_w1(a + 1, p[1] * 10000)
-      pc_w1(a + 2, p[2] * 10000)
-      pc_w1(a + 3, p[3] * 1000)
-      pc_w1(a + 4, p[4] * 1000)
-      pc_w1(a + 5, p[5] * 1000)
-    end
-    
-    
-    def pc_step(dmm):
-      # TCP 기준 Z 로 dmm [mm] 만큼 움직인다. 음수가 전진(벽 쪽) — dmm 부호의
-      # 의미는 예전(Y축) 그대로 두고, 축만 Y에서 Z로 바꾼다(그래서 부호가
-      # 한 번 뒤집힌다: 예전 [0,dmm,0,0,0,0] -> 이제 [0,0,-dmm,0,0,0]).
-      movel(pose_trans(get_actual_tcp_pose(), [0, 0, -dmm * 0.001, 0, 0, 0]),
-         a = a_l, v = v_l / 3.0)  # 접촉 탐색: 천천히
-    end
-    
-    
-    def pc_rush(t):
-      movel(t, a = a_l, v = v_l / 3.0)  # 접촉 탐색: 천천히
-    end
-    
-    
-    def pc_press():
-      # 벽에 닿아 '적정 눌림'이 될 때까지 TCP +Z 로 전진한다.
-      # 반환: 전진한 거리 [m] (양수). 못 찾으면 0.
-      # n_hit 는 preamble 전역이라, 이 함수 안에서 대입하려면 global 로
-      # 밝혀 둬야 한다 — 안 그러면 지역변수로 가려져 "초기화 안 됨" 에러가 난다.
-      global n_hit
-      x_home = get_actual_tcp_pose()
-      far = pose_trans(x_home, [0, 0, seek_limit * 0.001, 0, 0, 0])
-    
-      # 끊김 없이 한 번에 보내 놓고, 센서가 걸리는 순간 세운다.
-      mv_h = start_thread(pc_rush, (far,), detach_mode = False)
-      while (True):
-        if (get_standard_digital_in(di_touch) or get_standard_digital_in(di_limit)):
-          stop_thread(mv_h)
-          stopl(1.2)
-          break
-        end
-        if (pose_dist(get_actual_tcp_pose(), far) < 0.0005):
-          stop_thread(mv_h)
-          stopl(1.2)
-          break
-        end
-        sync()
-      end
-    
-      # 한계까지 들어갔으면 적정 눌림만 남을 때까지 뒤로(-Z) 뺀다.
-      tries = 0
-      while (get_standard_digital_in(di_limit) and tries < seek_tries):
-        tries = tries + 1
-        pc_step(seek_step)
-        sync()
-      end
-    
-      # 아직 안 닿았으면 적정 눌림이 될 때까지 조금씩 더 민다.
-      tries = 0
-      while (get_standard_digital_in(di_touch) == False and tries < seek_tries):
-        tries = tries + 1
-        pc_step(-seek_step)
-        sync()
-      end
-    
-      if (get_standard_digital_in(di_touch)):
-        n_hit = n_hit + 1
-        return pose_dist(x_home, get_actual_tcp_pose())
-      end
-      # 계산값 대신 쓸 값이 없다 — 여기서 조용히 넘어가면 잘못된 좌표로
-      # 스캔을 시작하게 되므로, 실패는 반드시 멈춰서 알려야 한다.
-      popup(s = "PROBE_C: WALL CONTACT NOT FOUND", title = "dusan_v4", blocking = True)
-      write_port_register(299, 1)
-      write_port_register(290, 9)
-      halt()
-      return 0
-    end
-    
-    
-    write_port_register(290, 2)
-    y_c = get_actual_tcp_pose()[1]
-    z_base = get_actual_tcp_pose()[2]
-    
-    # 아직 한 번도 돌리지 않은 지금 자세를 '정위치'로 기억해 둔다.
-    probe_rot = get_actual_tcp_pose()
-    
-    # 중앙 접근 — 여기서 잰 깊이가 세 점 전체에 쓰인다.
-    x_start = get_actual_tcp_pose()
-    press_off = pc_press()
-    
-    n_probe = n_probe + 1
-    write_port_register(304, n_probe)
-    write_port_register(305, n_hit)
-    pc_w1(303, press_off * 10000)
-    
-    # movec 의 경유점. 회전값까지 통째로 남긴다.
-    p_c_pose = get_actual_tcp_pose()
-    p_cx = p_c_pose[0]
-    write_port_register(300, floor(p_cx * 10000 + 0.5))
-    pc_w6(330, p_c_pose)
-    
-    # 벽에서 물러난다 (TCP -Z). 잰 깊이만큼만 되돌리면 제자리다.
-    movel(x_start, a = a_l, v = v_l)
-    $ LINE: (16, "5 move_start")
-    $ LINE: (17, "MoveL")
-    $ LINE: (18, "start_pose", "after")
-    movel(start_pose, a=1.2, v=0.25)
-    $ LINE: (19, "6 [스크립트파일] dus_probe_l.script")
-    $ LINE: (20, "Script")
-    # =============================================================================
-    #  dus_probe_l.script — dusan_v4
-    #  호의 양 끝점을 반지름·호각으로 **먼저 계산**하고, 원점(이 중 Y- 끝)은
-    #  그 계산값으로 접근해 실제 벽 접촉으로 다시 보정한다.
-    #
-    #  펜던트에서 "4_probe_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
-    #
-    #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
-    #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
-    #  ※ if / while 은 반드시 end 로 닫을 것
-    #
-    #  센서가 중앙 하나뿐이라 계산만으로 끝내면, 도면 반지름이 실제 벽과 조금만
-    #  달라도(또는 벽이 완전한 원통이 아니어도) 원점이 벽에서 뜨거나 파고든다.
-    #  그래서 계산값은 "여기쯤일 것이다"라는 접근 목표로만 쓰고, 그 자리에 가서
-    #  중앙과 똑같이 눌림 센서로 다시 찾는다 — probe_c 의 pc_press() 와 같은
-    #  방식이다. Y- 끝(p_r_pose)은 여기서는 계산만 해 두고, dus_probe_r.script가
-    #  같은 방식으로 실측한다.
-    #
-    #  기하: 중앙 접점 P 에서 TCP +Z 로 R 만큼 간 곳이 곡률 중심 O 다
-    #  (바깥 볼록면을 훑으므로 중심은 벽 뒤에 있다). O 를 베이스 Z 로 t 만큼 돌린 뒤
-    #  다시 로컬 -Z 로 R 만큼 나오면 호 위의 점이 되고, **손 방향도 그 점의
-    #  법선으로 같이 돌아간다** — movec 에 그대로 쓸 수 있는 자세다.
-    # =============================================================================
-    
-    def al_w1(a, v):
-      if (v > 32000):
-        v = 32000
-      end
-      if (v < -32000):
-        v = -32000
-      end
-      write_port_register(a, floor(v + 0.5))
-    end
-    
-    
-    def al_w6(a, p):
-      al_w1(a, p[0] * 10000)
-      al_w1(a + 1, p[1] * 10000)
-      al_w1(a + 2, p[2] * 10000)
-      al_w1(a + 3, p[3] * 1000)
-      al_w1(a + 4, p[4] * 1000)
-      al_w1(a + 5, p[5] * 1000)
-    end
-    
-    
-    def al_arc(mid, th):
-      # 중앙 접점 mid 에서 호를 따라 th [rad] 만큼 돌아간 점(자세 포함).
+    write_port_register(a, floor(v + 0.5))
+  end
+  
+  
+  # 로봇 자체 레지스터 384~389 와 같은 단위.  길이 0.1mm, 회전 mRad
+  def ini_w6(a, p):
+    ini_w1(a, p[0] * 10000)
+    ini_w1(a + 1, p[1] * 10000)
+    ini_w1(a + 2, p[2] * 10000)
+    ini_w1(a + 3, p[3] * 1000)
+    ini_w1(a + 4, p[4] * 1000)
+    ini_w1(a + 5, p[5] * 1000)
+  end
+  
+  
+  # 절대 TCP(260~265) 는 항상 발행한다. 원점기준 상대좌표(280~285)와 호
+  # 위치(286/287)는 원점(zero_pose)이 잡혀 있으면(zero_ok/arc_ok) 항상
+  # 내보낸다 — TPAC 의 "Plane" 이 실제 TCP 이동거리를 보여줘야 하므로 ㄹ자
+  # 스캔 중(state=4)만이 아니라 3점측정 후 원점복귀·다음 줄 이동 중에도
+  # 값이 살아 있어야 한다. 원점이 아직 없으면(zero_ok==False) [0,0,0,0,0,0]
+  # 을 쏜다.
+  #
+  # 위치는 베이스 좌표계 그대로 빼서 쓴다(cur - zero). 원래는
+  # pose_trans(zero_inv, cur_pose)로 툴 좌표계 기준값을 냈는데, 툴이
+  # 벽을 비스듬히 보고 있으면 베이스 Z+ 로 올라가도 이 값의 Z 성분이
+  # 음수로 커지는 문제가 있었다. register_map.txt 4항의 역변환 공식
+  # base = R_zero * rel_tcp 은 rel_tcp = R_zero^T * (cur-zero) 이므로
+  # 결국 cur - zero 와 정확히 같다(회전행렬을 걸었다 다시 푸는 셈).
+  # 그러니 처음부터 베이스 좌표계로 빼면 회전행렬 없이 같은 결과이고,
+  # 세로(Z)가 위로 갈수록 커지도록 직관과도 맞는다.
+  def pub_rel():
+    global cur_pose
+    global rel_pose
+    global alive
+    global arc_s
+    cur_pose = get_actual_tcp_pose()
+    ini_w6(260, cur_pose)
+    # 스캔 구간인지는 **상태 레지스터 290** 하나로만 판단한다(6 = 스캔 중).
+    # 예전에는 scan_on 이라는 스크립트 변수를 썼는데, 값을 켜는 곳(다른 스크립트
+    # 노드)과 읽는 곳(이 발행 스레드)이 달라 전달을 신뢰할 수 없었다.
+    # 레지스터는 로봇 안에 하나뿐이라 그런 문제가 없고, RCS 도 같은 값을 본다.
+    if (zero_ok == True and read_port_register(290, True) == 6):
+      rel_pose = [cur_pose[0] - zero_pose[0],
+            cur_pose[1] - zero_pose[1],
+            cur_pose[2] - zero_pose[2],
+            cur_pose[3] - zero_pose[3],
+            cur_pose[4] - zero_pose[4],
+            cur_pose[5] - zero_pose[5]]
+      # 좌표계 기준은 **가운데 프로브 중심**이다(십자형·직사각형 모두).
+      # TCP 자체가 그 중심이라 보정할 것이 없다.
       #
-      # 원통은 세워져 있으므로 호는 **수평면** 안에 있다. 그래서
-      #   (1) 곡률 중심 O 는 접점에서 '전진 방향(TCP +Z)의 **수평 성분**'으로 R.
-      #       TCP +Z 가 조금 기울어 있어도 수평 성분만 써야 반지름이 맞는다.
-      #   (2) 회전은 O 를 지나는 **수직축(베이스 Z)** 으로 한다.
-      #       툴 로컬 Z 로 돌리면 호가 수평면을 벗어나 현이 짧아진다.
-      # 자세도 같이 돌아가므로 각 점에서 손이 그 자리의 법선을 본다.
-      if (app_radius <= 0):
-        return mid
-      end
-      fwd = pose_trans(mid, [0, 0, 1.0, 0, 0, 0])
-      dx = fwd[0] - mid[0]
-      dy = fwd[1] - mid[1]
-      n = sqrt(dx * dx + dy * dy)
-      if (n < 0.0001):
-        # 전진 방향이 거의 수직이다 = 벽을 보고 있지 않다. 그대로 둔다.
-        return mid
-      end
-      r = app_radius * 0.001
-      o_t = [mid[0] + dx / n * r, mid[1] + dy / n * r, 0, 0, 0, 0]
-      return pose_trans(o_t, pose_trans([0, 0, 0, 0, 0, th],
-                       pose_trans(pose_inv(o_t), mid)))
-    end
-    
-    
-    def al_step(dmm):
-      # TCP 기준 Z 로 dmm [mm] 만큼 움직인다. 음수가 전진(벽 쪽) — dmm 부호의
-      # 의미는 예전(Y축) 그대로 두고, 축만 Y에서 Z로 바꾼다(그래서 부호가
-      # 한 번 뒤집힌다: 예전 [0,dmm,0,0,0,0] -> 이제 [0,0,-dmm,0,0,0]).
-      movel(pose_trans(get_actual_tcp_pose(), [0, 0, -dmm * 0.001, 0, 0, 0]),
-         a = a_l, v = v_l / 3.0)
-    end
-    
-    
-    def al_rush(t):
-      movel(t, a = a_l, v = v_l / 3.0)
-    end
-    
-    
-    def al_press(target):
-      # target 자세(계산값) 그대로, 그 지점의 로컬 +Z 로 전진해 실제 벽
-      # 접촉을 찾는다 — probe_c 의 pc_press() 와 같은 방식이다.
-      # 반환: 실제로 닿은 pose(자세는 target 유지, 위치만 실측으로 보정됨).
-      # 못 찾으면 계산값으로 조용히 넘어가지 않는다 — 아래에서 멈춘다.
-      global n_hit
-      far = pose_trans(target, [0, 0, seek_limit * 0.001, 0, 0, 0])
-      mv_h = start_thread(al_rush, (far,), detach_mode = False)
-      while (True):
-        if (get_standard_digital_in(di_touch) or get_standard_digital_in(di_limit)):
-          stop_thread(mv_h)
-          stopl(1.2)
-          break
-        end
-        if (pose_dist(get_actual_tcp_pose(), far) < 0.0005):
-          stop_thread(mv_h)
-          stopl(1.2)
-          break
-        end
-        sync()
-      end
-    
-      tries = 0
-      while (get_standard_digital_in(di_limit) and tries < seek_tries):
-        tries = tries + 1
-        al_step(seek_step)
-        sync()
-      end
-    
-      tries = 0
-      while (get_standard_digital_in(di_touch) == False and tries < seek_tries):
-        tries = tries + 1
-        al_step(-seek_step)
-        sync()
-      end
-    
-      if (get_standard_digital_in(di_touch)):
-        n_hit = n_hit + 1
-        return get_actual_tcp_pose()
-      end
-      # 계산값 대신 쓸 값이 없다 — 원점이 실측 없이 계산값으로 넘어가면
-      # 스캔 전체가 잘못된 좌표로 돌게 되므로, 실패는 반드시 멈춰서 알려야 한다.
-      popup(s = "PROBE_L: WALL CONTACT NOT FOUND", title = "dusan_v4", blocking = True)
-      write_port_register(299, 2)
-      write_port_register(290, 9)
-      halt()
-      return target
-    end
-    
-    
-    write_port_register(290, 3)
-    
-    # 양 끝을 다 계산해 놓고, 베이스 Y 가 작은 쪽을 Y-(원점), 큰 쪽을 Y+ 로 나눈다.
-    # 손이 어느 방향을 보고 있느냐에 따라 +t 가 어느 쪽으로 갈지 달라지므로
-    # 부호를 미리 못 박지 않고 실제 좌표로 가른다.
-    end_a = al_arc(p_c_pose, arc_half)
-    end_b = al_arc(p_c_pose, -arc_half)
-    if (end_a[1] <= end_b[1]):
-      zero_est = end_a
-      p_r_pose = end_b
+      # 여기서 **Rz 180 도**로 뒤집어 내보낸다. 반시계 방향으로 훑도록
+      # 바꾸면서 원점이 베이스 Y 가 큰 쪽 끝이 되었는데, 그대로 빼면
+      # Y 가 계속 음수로 나간다. 제로점 좌표계를 180 도 돌려 놓으면
+      # 훑는 방향이 반대여도 Y 는 0 에서 + 로만 커진다.
+      #   x' = -x,  y' = -y,  z' = z   (Z 축 회전이라 높이는 그대로)
+      rel_pose[0] = -rel_pose[0]
+      rel_pose[1] = -rel_pose[1]
+      ini_w6(280, rel_pose)
     else:
-      zero_est = end_b
-      p_r_pose = end_a
+      ini_w6(280, [0, 0, 0, 0, 0, 0])
     end
-    
-    # 계산한 원점(zero_est)의 대기 지점(TCP -Z 로 물러난 곳)까지 안전하게
-    # 이동한 뒤, 그 자세 그대로 전진해 실제 벽 접촉으로 원점을 보정한다.
-    #
-    # 여기 오기 전 위치(중앙, p_c_pose)에서 l_stand 까지는 호의 절반 가까이
-    # 자세가 크게 돌아간다. 한때 movej(get_inverse_kin(...))로 바꿨었는데,
-    # 좌우 이동은 movel(직선)로 가도록 되돌린다.
-    l_stand = pose_trans(zero_est, [0, 0, -probe_dist * 0.001, 0, 0, 0])
-    movel(l_stand, a = a_l, v = v_l)
-    zero_pose = al_press(zero_est)
-    
-    # 이 자리가 원점이자 movec 의 시작점이다 (회전값 포함).
-    p_lx = zero_pose[0]
-    write_port_register(301, floor(p_lx * 10000 + 0.5))
-    al_w6(350, zero_pose)
-    zero_inv = pose_inv(zero_pose)
-    zero_ok = True
-    
-    # ---- 호 위 위치를 실시간으로 내보내기 위한 기준 ---------------------------
-    # TPAC 은 스캔 축 위치로 **호 길이**를 받아야 한다. 좌표를 그대로 주면
-    # 현(1031.8)으로 7% 눌리고, 게다가 호 위치에 비례하지 않아 1/4·3/4 지점에서
-    # 14.6mm 씩 어긋난다(C-scan 이 앞뒤로 밀려 찍힌다).
-    # 곡률 중심과 원점의 방위각을 남겨 두면, 발행 스레드가 매 주기
-    #   s = R * |현재각 - 원점각|
-    # 으로 호 위 실제 거리를 계산할 수 있다.
-    if (app_radius > 0):
-      fwd0 = pose_trans(p_c_pose, [0, 0, 1.0, 0, 0, 0])
-      d0x = fwd0[0] - p_c_pose[0]
-      d0y = fwd0[1] - p_c_pose[1]
-      n0 = sqrt(d0x * d0x + d0y * d0y)
-      if (n0 > 0.0001):
-        arc_ox = p_c_pose[0] + d0x / n0 * app_radius * 0.001
-        arc_oy = p_c_pose[1] + d0y / n0 * app_radius * 0.001
-        arc_phi0 = atan2(zero_pose[1] - arc_oy, zero_pose[0] - arc_ox)
-        arc_ok = True
+    # ---- 호 위 위치 (TPAC 스캔 축) ----------------------------------
+    # 좌표를 그대로 주면 현(1031.8)으로 7% 눌리고 호 위치에 비례하지도
+    # 않는다. 원점부터 호를 따라 실제로 지난 거리를 계산해서 내보낸다.
+    #   286 = 이번 줄의 호 위 거리 [0.1mm]  (0 ~ 11100)
+    #   287 = 완료된 줄까지 더한 누적 [mm]
+    if (arc_ok == True):
+      adx = cur_pose[0] - arc_ox
+      ady = cur_pose[1] - arc_oy
+      aph = atan2(ady, adx) - arc_phi0
+      # atan2 는 ±pi 로 감기므로 한 바퀴 보정한다
+      if (aph > 3.14159265):
+        aph = aph - 6.28318531
       end
+      if (aph < -3.14159265):
+        aph = aph + 6.28318531
+      end
+      if (aph < 0):
+        aph = -aph
+      end
+      arc_s = aph * scan_radius
+      ini_w1(286, arc_s * 10)
+      ini_w1(287, path_len + arc_s)
+    else:
+      arc_s = 0
+      ini_w1(286, 0)
+      ini_w1(287, path_len)
     end
-    
-    n_probe = n_probe + 1
-    write_port_register(304, n_probe)
-    write_port_register(305, n_hit)
-    
-    # 벽에서 물러난다 (다음 동작에서 곡면을 가로지르지 않도록) — 좌우 이동은
-    # movel(직선)로 간다.
-    movel(l_stand, a = a_l, v = v_l)
-    $ LINE: (21, "7 move_start")
-    $ LINE: (22, "MoveL")
-    $ LINE: (23, "start_pose", "after")
-    movel(start_pose, a=1.2, v=0.25)
-    $ LINE: (24, "8 [스크립트파일] dus_probe_r.script")
-    $ LINE: (25, "Script")
-    # =============================================================================
-    #  dus_probe_r.script — dusan_v4
-    #  Y+ 끝점을 실제 벽 접촉으로 보정한다. 계산 목표는 dus_probe_l 이 이미
-    #  해 두었다(p_r_pose, 아직 계산값).
-    #
-    #  펜던트에서 "5_probe_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
-    #
-    #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
-    #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
-    #  ※ if / while 은 반드시 end 로 닫을 것
-    #
-    #  probe_l 과 같은 이유: 계산값만으로는 도면 반지름과 실제 벽의 오차가
-    #  그대로 남는다. probe_l이 계산해 둔 목표(p_r_pose)로 접근해 중앙과
-    #  똑같이 눌림 센서로 다시 찾는다(probe_c 의 pc_press() 와 같은 방식).
-    # =============================================================================
-    
-    def pr_w1(a, v):
-      if (v > 32000):
-        v = 32000
-      end
-      if (v < -32000):
-        v = -32000
-      end
-      write_port_register(a, floor(v + 0.5))
+  
+    alive = alive + 1
+    if (alive > 30000):
+      alive = 0
     end
-    
-    
-    def pr_w6(a, p):
-      pr_w1(a, p[0] * 10000)
-      pr_w1(a + 1, p[1] * 10000)
-      pr_w1(a + 2, p[2] * 10000)
-      pr_w1(a + 3, p[3] * 1000)
-      pr_w1(a + 4, p[4] * 1000)
-      pr_w1(a + 5, p[5] * 1000)
+    write_port_register(293, alive)
+  end
+  
+  
+  # 제어주기마다 도는 발행 스레드. 이 뒤로는 평범한 movel 을 써도
+  # 이동 중 좌표가 계속 나간다.
+  def pub_thread():
+    while (True):
+      pub_rel()
+      sync()
     end
-    
-    
-    def pr_step(dmm):
-      # TCP 기준 Z 로 dmm [mm] 만큼 움직인다. 음수가 전진(벽 쪽) — dmm 부호의
-      # 의미는 예전(Y축) 그대로 두고, 축만 Y에서 Z로 바꾼다(그래서 부호가
-      # 한 번 뒤집힌다: 예전 [0,dmm,0,0,0,0] -> 이제 [0,0,-dmm,0,0,0]).
-      movel(pose_trans(get_actual_tcp_pose(), [0, 0, -dmm * 0.001, 0, 0, 0]),
-         a = a_l, v = v_l / 3.0)
+  end
+  
+  
+  # ------------------------------------------------------------------ 본문
+  # 266 = 1 이면 외부(Modbus)가 준 값을, 0 이면 펜던트 변수값을 쓴다
+  #   256 호 길이 [mm]      257 격자 높이 [mm]   258 스캐너 높이 [0.1mm]
+  #   259 격자간 겹침 [mm]  260 반지름 [0.1mm]   261 두께 [0.1mm]
+  #   262 프로브 유효 가로 [0.1mm]  263 프로브 유효 세로 [0.1mm]
+  #   264 그리퍼 종류(eoat_type) — 0=없음, 5=5축, 8=8축
+  # 0.1mm 를 쓰는 자리는 소수가 나오는 값들이다 — 반지름 834.6, 프로브
+  # 167.5 처럼. 정수 mm 로 반올림하면 호 모양과 줄 간격이 눈에 띄게 틀어진다.
+  # 호 길이·격자 높이·겹침은 1mm 분해능으로 충분하다.
+  if (read_port_register(266, True) == 1):
+    app_arc = read_port_register(256, True)
+    app_height = read_port_register(257, True)
+    scan_h = read_port_register(258, True) * 0.1
+    overlap = read_port_register(259, True)   # 격자끼리의 겹침. 기록용
+    app_radius = read_port_register(260, True) * 0.1
+    app_thick = read_port_register(261, True) * 0.1
+    eoat_w = read_port_register(262, True) * 0.1
+    eoat_h = read_port_register(263, True) * 0.1
+    eoat_type = read_port_register(264, True)
+  end
+  
+  # ---- 프로브 유효 커버 -----------------------------------------------------
+  # 262/263 으로 받는 값은 EOAT 몸통 크기가 아니라 **한 번 지날 때 실제로
+  # 검사되는 커버**(가로합/세로합)다. 좌우 끝과 상승 모두 **가운데 프로브
+  # 중심**을 기준으로 잡으므로, TCP 는 작업 영역 좌우 끝까지 그대로 간다 —
+  # 예전처럼 EOAT 폭의 절반씩 안쪽으로 물리지 않는다.
+  #   5축 십자형 : 가로 30    세로 30     (가운데 프로브 센서 지름)
+  #   8축 직사각 : 가로 75    세로 167.5  (좌우합 / 상하합)
+  # 세로값(eoat_h)이 곧 한 줄이 덮는 밴드 높이이자 ㄹ자 up 동작의 **최대
+  # 상승량**이다. 나중에 십자의 위·아래 프로브까지 유효로 치기로 하면
+  # RCS 쪽 상수(PROBE_COVERAGE_MM)의 세로값만 167.5 로 고치면 된다.
+  if (eoat_h > 0):
+    scan_h = eoat_h
+  end
+  arc_run = app_arc
+  
+  if (app_arc <= 0):
+    app_arc = 1000
+  end
+  if (app_radius <= 0):
+    # 반지름을 못 받았으면 평면으로 본다. 호 각도 0 = 직선.
+    app_radius = 0
+  end
+  
+  # ---- 훑는 면의 반지름 -----------------------------------------------------
+  # 도면 반지름은 **안쪽(오목) 면** 기준이고 로봇은 **바깥(볼록) 면**을 훑으므로
+  # 두께를 더해야 실제로 손이 닿는 면의 반지름이 된다.
+  #   시험 벽: 834.6 + 10 = 844.6
+  # 안쪽 면을 훑는 장비로 바뀌면 여기를 빼기로 뒤집어야 한다.
+  #
+  # **결과를 app_radius 에 덮어쓰면 안 된다.** 이 스크립트는 사이클마다 다시
+  # 도는데(루프판), 그때마다 두께가 또 더해져 값이 계속 커진다
+  # (834.6 -> 844.6 -> 854.6 ...). app_radius 는 받은 도면값 그대로 두고,
+  # 훑는 면 반지름은 scan_radius 에 따로 담는다.
+  if (app_radius > 0):
+    scan_radius = app_radius + app_thick
+  else:
+    scan_radius = 0
+  end
+  
+  # ---- 호 기하 --------------------------------------------------------------
+  # 받은 값은 **호 길이**다(현이 아니다). 반각 t = L / (2R) 이고,
+  # 현(= 두 끝점 사이 직선 거리)은 c = 2R*sin(t) 다.
+  #   시험 벽: L=1110, R=844.6 -> t=0.6572 rad(37.6deg), c=1031.8
+  # 로봇이 실제로 지나는 길이는 movec 가 호를 따라가므로 **호 길이(1110)** 다.
+  # 현(1031.8)은 두 끝점이 얼마나 떨어져 있는지일 뿐 이동 거리가 아니다.
+  # 평면(R=0)이면 호 각도가 없으므로 현 = 호 길이로 둔다.
+  if (scan_radius > 0):
+    arc_half = arc_run / (2.0 * scan_radius)
+    app_width = 2.0 * scan_radius * sin(arc_half)
+  else:
+    arc_half = 0
+    app_width = arc_run
+  end
+  if (app_height < 0):
+    app_height = 0
+  end
+  if (scan_h <= 0):
+    scan_h = 200
+  end
+  if (overlap < 0):
+    overlap = 0
+  end
+  
+  # ---- 속도/가속도 : 전역 변수로 관리한다 ----------------------------------
+  #   movel(스캔 제외)       : a_l, v_l
+  #   movej(홈 복귀 등)      : a_j, v_j
+  #   스캔 movel/movec       : a_scan, v_scan  (고정 스펙 100 mm/s / 400 mm/s^2)
+  # 필요하면 각 스크립트가 그 자리에서 값을 바꿔 써도 된다 — 예를 들어
+  # 접촉 탐색처럼 더 천천히 움직여야 할 때는 v_l 을 따로 두지 않고
+  # `v_l / 3.0` 처럼 그 movel 호출 하나에만 적용한다(전역값 자체는 안 바뀜).
+  #
+  # 안전 규정: 스캔 외 동작은 150 mm/s 를 넘으면 안 된다. 관절 이동의
+  # 각속도도 여기에 맞춰 조그와 같은 상한(0.50 rad/s)을 넘지 않게 자른다.
+  # 306 = 작업 속도 [mm/s]. v_l 로 쓴다. 0 이면 변수값을 유지한다.
+  # 307 = 로봇 자체 속도 비율 [%] 2~100. 모든 이송 속도에 곱한다.
+  spd_in = read_port_register(306, True)
+  if (spd_in > 0):
+    v_l = spd_in / 1000.0
+  end
+  
+  v_l_limit = 0.150
+  if (v_l > v_l_limit):
+    v_l = v_l_limit
+  end
+  v_j_limit = 0.50
+  if (v_j > v_j_limit):
+    v_j = v_j_limit
+  end
+  
+  spd_ratio = read_port_register(307, True)
+  if (spd_ratio < 2):
+    spd_ratio = 100
+  end
+  if (spd_ratio > 100):
+    spd_ratio = 100
+  end
+  v_l = v_l * spd_ratio / 100.0
+  v_j = v_j * spd_ratio / 100.0
+  v_scan = v_scan * spd_ratio / 100.0
+  
+  # ---- 기준 위치 : 308 이 1 이면 310~321 의 값을 쓴다 --------------------
+  # 310~315 홈 관절값 [mRad], 316~321 그리퍼 기준점 pose(길이 0.1mm, 회전 mRad)
+  # — 316~321 은 툴플랜지가 아니라 실제 장착된 그리퍼(EOAT) 기준점 목표다.
+  # 아래에서 eoat_type 에 맞는 오프셋을 빼 플랜지 기준 start_pose 를 만든다.
+  if (read_port_register(308, True) == 1):
+    Home_joint = [read_port_register(310, True) / 1000.0,
+           read_port_register(311, True) / 1000.0,
+           read_port_register(312, True) / 1000.0,
+           read_port_register(313, True) / 1000.0,
+           read_port_register(314, True) / 1000.0,
+           read_port_register(315, True) / 1000.0]
+    gripper_target_pose = [read_port_register(316, True) / 10000.0,
+           read_port_register(317, True) / 10000.0,
+           read_port_register(318, True) / 10000.0,
+           read_port_register(319, True) / 1000.0,
+           read_port_register(320, True) / 1000.0,
+           read_port_register(321, True) / 1000.0]
+    Home_pose = get_forward_kin(Home_joint)
+  end
+  
+  # ---- 그리퍼(EOAT) 기준점 -> 툴플랜지 pose 역계산 ------------------------
+  # 그리퍼가 플랜지 로컬 좌표로 (ox,oy,oz) 만큼 앞에 붙어 있다고 보면
+  #   그리퍼 pose = pose_trans(플랜지 pose, [ox,oy,oz,0,0,0])
+  # 이므로 반대로 플랜지 pose 를 구하려면 부호를 뒤집어 그리퍼 pose 에
+  # 적용한다(회전은 그대로 — 그리퍼가 플랜지에 고정 장착되어 상대 회전이
+  # 없다고 본다). eoat_type 이 0(그리퍼 없음)이면 오프셋 없이 그대로 쓴다.
+  # 매 작업(dus_init 실행)마다 다시 계산하므로, 그리퍼를 5축<->8축으로
+  # 바꿔 달아도 티칭을 다시 안 하고 eoat_type 만 바꾸면 된다.
+  if (eoat_type == 8):
+    eoat_ox = eoat8_offset_x
+    eoat_oy = eoat8_offset_y
+    eoat_oz = eoat8_offset_z
+  else:
+    if (eoat_type == 5):
+      eoat_ox = eoat5_offset_x
+      eoat_oy = eoat5_offset_y
+      eoat_oz = eoat5_offset_z
+    else:
+      eoat_ox = 0
+      eoat_oy = 0
+      eoat_oz = 0
     end
-    
-    
-    def pr_rush(t):
-      movel(t, a = a_l, v = v_l / 3.0)
+  end
+  gripper_touch_flange = pose_trans(gripper_target_pose, [-eoat_ox, -eoat_oy, -eoat_oz, 0, 0, 0])
+  
+  # ---- 그리퍼를 작업면에 딱 붙인 티칭 지점에서 물러난 곳이 start_pose ------
+  # gripper_target_pose 는 그리퍼를 작업면 중앙에 접촉시켜 놓고 티칭한
+  # 값이다(위 gripper_touch_flange 는 그 순간의 플랜지 pose). 거기 그대로
+  # 두면 각 프로브 사이 이동 때마다 작업면에 닿아 있는 자세라 위험하니,
+  # probe_l/r/goto_zero 의 대기 지점(l_stand/r_stand/z_stand)과 같은 방식
+  # 으로 TCP 기준 -Z 로 probe_dist 만큼 물러난 지점을 실제 start_pose 로
+  # 쓴다(다음엔 그 자리에서 TCP +Z 로 전진해 다시 붙이면 된다).
+  start_pose = pose_trans(gripper_touch_flange, [0, 0, -probe_dist * 0.001, 0, 0, 0])
+  
+  # ---- 상승 피치와 줄 수 -----------------------------------------------------
+  # 십자(+) 프로브는 **가운데 프로브**가 검사면을 훑는다. 그래서 맨 아랫줄은
+  # ㅗ 자세로 밑면(높이 0)을, 맨 윗줄은 ㅜ 자세로 윗면(app_height)을 가운데
+  # 프로브가 직접 지나가야 한다. 줄 위치는 0..app_height 를 균등 분할한
+  # 자리로 먼저 정해지고, **겹침은 그 결과로 나온다**.
+  #
+  # 피치(= ㄹ자 up 동작의 상승 높이)는 프로브 유효 세로 커버(scan_h) 를
+  # **넘을 수 없다** — 넘으면 줄과 줄 사이에 검사 안 된 띠가 남는다.
+  #   5축 십자 : scan_h 30    -> 500mm 샘플이면 17칸 -> 18줄, 피치 29.4
+  #   8축 직사 : scan_h 167.5 -> 500mm 샘플이면  3칸 ->  4줄, 피치 166.7
+  # **259 로 받은 겹침은 여기에 안 쓴다.** 그 값은 격자 **안**의 줄 겹침이
+  # 아니라 **격자끼리**의 겹침 허용도다 — 이 격자와 다음 격자가 얼마나
+  # 겹치는지, 즉 리프트가 다음 줄로 올라갈 때 얼마를 덜 올라가는지다.
+  # 그건 RCS 가 리프트 상승량에서 빼서 처리하고, 로봇은 자기 격자 안만
+  # 책임진다. 그래서 격자 안 피치는 프로브 유효 커버(scan_h) 하나로 정한다.
+  # (예전에는 259 를 격자 안 최소 겹침으로 써서, 바깥에서 20 을 주면
+  #  격자 안 줄이 쓸데없이 촘촘해졌다.)
+  
+  if (app_height <= 0):
+    rows = 1
+    pitch = 0
+  else:
+    gaps = ceil(app_height * 1.0 / scan_h)
+    if (gaps < 1):
+      gaps = 1
     end
-    
-    
-    def pr_press(target):
-      # target 자세(계산값) 그대로, 그 지점의 로컬 +Z 로 전진해 실제 벽
-      # 접촉을 찾는다. 반환: 실제로 닿은 pose. 못 찾으면 계산값으로 조용히
-      # 넘어가지 않는다 — 아래에서 멈춘다.
-      global n_hit
-      far = pose_trans(target, [0, 0, seek_limit * 0.001, 0, 0, 0])
-      mv_h = start_thread(pr_rush, (far,), detach_mode = False)
-      while (True):
-        if (get_standard_digital_in(di_touch) or get_standard_digital_in(di_limit)):
-          stop_thread(mv_h)
-          stopl(1.2)
-          break
-        end
-        if (pose_dist(get_actual_tcp_pose(), far) < 0.0005):
-          stop_thread(mv_h)
-          stopl(1.2)
-          break
-        end
-        sync()
-      end
-    
-      tries = 0
-      while (get_standard_digital_in(di_limit) and tries < seek_tries):
-        tries = tries + 1
-        pr_step(seek_step)
-        sync()
-      end
-    
-      tries = 0
-      while (get_standard_digital_in(di_touch) == False and tries < seek_tries):
-        tries = tries + 1
-        pr_step(-seek_step)
-        sync()
-      end
-    
-      if (get_standard_digital_in(di_touch)):
-        n_hit = n_hit + 1
-        return get_actual_tcp_pose()
-      end
-      # 계산값 대신 쓸 값이 없다 — 실패는 반드시 멈춰서 알려야 한다.
-      popup(s = "PROBE_R: WALL CONTACT NOT FOUND", title = "dusan_v4", blocking = True)
-      write_port_register(299, 3)
-      write_port_register(290, 9)
-      halt()
-      return target
-    end
-    
-    
-    # probe_l이 남겨 둔 계산 목표. 대기 지점(TCP -Z 로 물러난 곳)까지 안전하게
-    # 이동한 뒤, 그 자세 그대로 전진해 실제 벽 접촉으로 보정한다.
-    #
-    # 지금 로봇은 dus_probe_l 이 끝낸 자리(Y- 끝)에 있고 r_stand 는 호 반대쪽
-    # (Y+ 끝) 이라, 호 전체 폭만큼 자세가 크게 돌아간다. 한때
-    # movej(get_inverse_kin(...))로 바꿨었는데, 좌우 이동은 movel(직선)로
-    # 가도록 되돌린다.
-    p_r_est = p_r_pose
-    r_stand = pose_trans(p_r_est, [0, 0, -probe_dist * 0.001, 0, 0, 0])
-    movel(r_stand, a = a_l, v = v_l)
-    p_r_pose = pr_press(p_r_est)
-    
-    p_rx = p_r_pose[0]
-    write_port_register(302, floor(p_rx * 10000 + 0.5))
-    pr_w6(340, p_r_pose)
-    
-    n_probe = n_probe + 1
-    write_port_register(304, n_probe)
-    write_port_register(305, n_hit)
-    
-    # 벽에서 물러난다 (다음 동작에서 곡면을 가로지르지 않도록) — 좌우 이동은
-    # movel(직선)로 간다.
-    movel(r_stand, a = a_l, v = v_l)
-    
-    # 세 점이 그대로 movec 의 시작(원점) / 경유(중앙) / 도착(Y+ 끝) 이 된다.
-    write_port_register(346, arc_mode)
-    $ LINE: (26, "9 move_start")
-    $ LINE: (27, "MoveL")
-    $ LINE: (28, "start_pose", "after")
-    movel(start_pose, a=1.2, v=0.25)
-    $ LINE: (29, "10 [스크립트파일] dus_goto_zero.script")
-    $ LINE: (30, "Script")
-    # =============================================================================
-    #  dus_goto_zero.script — dusan_v4
-    #  측정이 끝난 뒤 원점(Y- 끝)으로 돌아가 스캔을 시작할 준비를 한다
-    #
-    #  펜던트에서 "6_goto_zero" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
-    #
-    #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
-    #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
-    #  ※ if / while 은 반드시 end 로 닫을 것
-    # =============================================================================
-    
-    def gz_w1(a, v):
-      if (v > 32000):
-        v = 32000
-      end
-      if (v < -32000):
-        v = -32000
-      end
-      write_port_register(a, floor(v + 0.5))
-    end
-    
-    
-    def gz_w6(a, p):
-      gz_w1(a, p[0] * 10000)
-      gz_w1(a + 1, p[1] * 10000)
-      gz_w1(a + 2, p[2] * 10000)
-      gz_w1(a + 3, p[3] * 1000)
-      gz_w1(a + 4, p[4] * 1000)
-      gz_w1(a + 5, p[5] * 1000)
-    end
-    
-    
-    write_port_register(290, 3)
-    
-    # 현재 TCP 자세를 기준으로 가면 안 된다 — 직전 지점(p_r_pose)의 회전이
-    # 그대로 남아 있어 zero_pose 의 회전과 다르고, 그 채로(베이스 좌표축을
-    # 하나씩 맞추며) 위치만 옮기면 정면을 본 자세로 볼록한 곡면을 파고들며
-    # 접근하다가 마지막에 Rz 를 한 번에 먹여 그리퍼가 벽을 쓸고 지나간다.
-    # probe_l/r 과 같은 방식으로, zero_pose 자세 그대로 **TCP 기준** +Z 반대
-    # 방향(로컬 -Z)으로 물러난 지점까지 먼저 이동한 뒤, 그 자세 그대로
-    # 로컬 +Z 로 전진해 들어간다 — 베이스 축을 하나씩 맞추는 방식이 아니다.
-    #
-    # 지금 로봇은 dus_probe_r 이 끝낸 자리(Y+ 끝)에 있고 z_stand 는 호 반대쪽
-    # (원점, Y- 끝) 이라 호 전체 폭만큼 자세가 크게 돌아간다. 한때
-    # movej(get_inverse_kin(...))로 바꿨었는데, 좌우 이동은 movel(직선)로
-    # 가도록 되돌린다.
-    z_stand = pose_trans(zero_pose, [0, 0, -probe_dist * 0.001, 0, 0, 0])
-    movel(z_stand, a = a_l, v = v_l)
-    # z_stand -> zero_pose 도 probe_dist 만큼밖에 안 되는 짧은 이동이지만,
-    # 막 큰 자세 변화(movej)를 거친 직후라 그 근처는 여전히 movel 의 직선
-    # 경로 역기구학이 빡빡할 수 있다(dus_probe_r.script 에서 실제로 발생).
-    # zero_pose 는 이미 probe_l.script 에서 눌림 센서로 확인해 둔 자리라
-    # 여기서는 계산값으로 바로 들어가는 것뿐이라 직선일 필요가 없다 —
-    # movel 대신 movej 를 쓴다.
-    movej(get_inverse_kin(zero_pose), a = a_j, v = v_j / 3.0)  # 접촉 위치 진입: 천천히
-    
-    gz_w6(270, zero_pose)      # 원점 pose (스캔 중 변하지 않는다)
-    write_port_register(294, 1)
-    path_len = 0
-    write_port_register(290, 4)
-    $ LINE: (31, "Loop 200 times")
-    Loop_1 = 0
-    while (Loop_1 < 200):
-      $ LINE: (32, "Script")
-      pass_done=0
-      $ LINE: (33, "If")
-      if (row_idx<rows and dir_sign>0 and pass_done==0):
-        $ LINE: (34, "11 [스크립트파일] dus_pass_r.script")
-        $ LINE: (35, "Script")
-        # =============================================================================
-        #  dus_pass_r.script — dusan_v4
-        #  오른쪽(Y+) 으로 한 줄. 중앙을 경유점으로 하는 movec 원호
-        #
-        #  펜던트에서 "7_pass_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
-        #
-        #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
-        #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
-        #  ※ if / while 은 반드시 end 로 닫을 것
-        # =============================================================================
-        
-        def pr2_w1(a, v):
-          if (v > 32000):
-            v = 32000
-          end
-          if (v < -32000):
-            v = -32000
-          end
-          write_port_register(a, floor(v + 0.5))
-        end
-        
-        
-        # 오른쪽(Y+) 으로 한 줄 — movec 원호 하나
-        z_now = get_actual_tcp_pose()[2]
-        via_pose = p_c_pose.copy()
-        via_pose[2] = z_now
-        to_pose = p_r_pose.copy()
-        to_pose[2] = z_now
-        movec(via_pose, to_pose, a = a_scan, v = v_scan, r = 0, mode = arc_mode)
-        
-        row_idx = row_idx + 1
-        dir_sign = -1
-        pass_done = 1
-        # movec 는 호를 따라가므로 실제 지난 거리는 현(app_width)이 아니라
-        # **호 길이**(app_arc)다. 시험 벽에서 한 줄에 78mm 씩 차이가 난다.
-        # 총 작업 거리는 TCP 가 실제로 움직인 길이다. EOAT 폭만큼 짧으므로
-        # 덮는 길이(app_arc)가 아니라 arc_run 을 더한다.
-        path_len = path_len + arc_run
-        write_port_register(291, row_idx)
-        pr2_w1(297, path_len * 0.1)
-        pr2_w1(298, row_idx * 100.0 / rows)
-      end
-      $ LINE: (36, "If")
-      if (row_idx<rows and dir_sign<0 and pass_done==0):
-        $ LINE: (37, "12 [스크립트파일] dus_pass_l.script")
-        $ LINE: (38, "Script")
-        # =============================================================================
-        #  dus_pass_l.script — dusan_v4
-        #  왼쪽(Y-) 으로 한 줄. 중앙을 경유점으로 하는 movec 원호
-        #
-        #  펜던트에서 "8_pass_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
-        #
-        #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
-        #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
-        #  ※ if / while 은 반드시 end 로 닫을 것
-        # =============================================================================
-        
-        def pl2_w1(a, v):
-          if (v > 32000):
-            v = 32000
-          end
-          if (v < -32000):
-            v = -32000
-          end
-          write_port_register(a, floor(v + 0.5))
-        end
-        
-        
-        # 왼쪽(Y-) 으로 한 줄 — movec 원호 하나
-        z_now = get_actual_tcp_pose()[2]
-        via_pose = p_c_pose.copy()
-        via_pose[2] = z_now
-        to_pose = zero_pose.copy()
-        to_pose[2] = z_now
-        movec(via_pose, to_pose, a = a_scan, v = v_scan, r = 0, mode = arc_mode)
-        
-        row_idx = row_idx + 1
-        dir_sign = 1
-        pass_done = 1
-        # movec 는 호를 따라가므로 실제 지난 거리는 현(app_width)이 아니라
-        # **호 길이**(app_arc)다. 시험 벽에서 한 줄에 78mm 씩 차이가 난다.
-        # 총 작업 거리는 TCP 가 실제로 움직인 길이다. EOAT 폭만큼 짧으므로
-        # 덮는 길이(app_arc)가 아니라 arc_run 을 더한다.
-        path_len = path_len + arc_run
-        write_port_register(291, row_idx)
-        pl2_w1(297, path_len * 0.1)
-        pl2_w1(298, row_idx * 100.0 / rows)
-      end
-      $ LINE: (39, "If")
-      if (row_idx<rows):
-        $ LINE: (40, "13 [스크립트파일] dus_up.script")
-        $ LINE: (41, "Script")
-        # =============================================================================
-        #  dus_up.script — dusan_v4
-        #  다음 줄로 한 피치만큼 상승한다
-        #
-        #  펜던트에서 "9_up" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
-        #
-        #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
-        #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
-        #  ※ if / while 은 반드시 end 로 닫을 것
-        # =============================================================================
-        
-        def up_w1(a, v):
-          if (v > 32000):
-            v = 32000
-          end
-          if (v < -32000):
-            v = -32000
-          end
-          write_port_register(a, floor(v + 0.5))
-        end
-        
-        
-        # 목표 높이는 직전 위치가 아니라 원점(z_base) 기준 절대값으로 잡는다.
-        # 상대값으로 쌓으면 구간마다의 정지 오차가 행 수만큼 누적된다.
-        tgt_pose = get_actual_tcp_pose()
-        tgt_pose[2] = z_base + row_idx * pitch * 0.001
-        movel(tgt_pose, a = a_scan, v = v_scan)
-        
-        path_len = path_len + pitch
-        up_w1(297, path_len * 0.1)
-      end
-      $ LINE: (42, "If")
-      if (row_idx>=rows):
-        $ LINE: (43, "14 [스크립트파일] dus_finish.script")
-        $ LINE: (44, "Script")
-        # =============================================================================
-        #  dus_finish.script — dusan_v4
-        #  벽에서 후퇴하고 완료 플래그를 낸다
-        #
-        #  펜던트에서 "10_finish" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
-        #
-        #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
-        #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
-        #  ※ if / while 은 반드시 end 로 닫을 것
-        # =============================================================================
-        
-        tgt_pose = get_actual_tcp_pose()
-        tgt_pose[0] = get_actual_tcp_pose()[0] - back_off * 0.001
-        movel(tgt_pose, a = a_l, v = v_l)
-        
-        write_port_register(290, 5)
-        write_port_register(291, row_idx)
-        write_port_register(295, 1)
-        write_port_register(298, 100)
-        $ LINE: (45, "15 move_home")
-        $ LINE: (46, "If")
-        if (get_actual_tcp_pose()[2]<Home_pose[2]-0.001):
-          $ LINE: (47, "MoveL")
-          $ LINE: (48, "Direction Robot Z+")
-          global move_thread_flag_48
-          move_thread_flag_48 = 0
-          def move_thread_48():
-            global move_thread_flag_48
-            move_thread_flag_48 = 1
-            towardsPos = calculate_point_to_move_towards([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0,0.0,1.0], 1000.0)
-            movel(towardsPos, a=0.6, v=0.15)
-            move_thread_flag_48 = 2
-          end
-          move_thread_flag_48 = 0
-          move_thread_han_48 = start_thread(move_thread_48, (), detach_mode = False)
-          while (True):
-            if (get_actual_tcp_pose()[2]>=Home_pose[2]-0.001):
-              stop_thread(move_thread_han_48)
-              stopl(0.6)
-              $ LINE: (49, "Until (Expression)")
-              break
-            end
-            sync()
-          end
-        end
-        $ LINE: (50, "MoveJ")
-        $ LINE: (51, "Home_joint", "after")
-        movej(Home_joint, a=0.698131700835289, v=0.3490658503988659)
-        $ LINE: (52, "Halt")
-        halt()
-      end
-      Loop_1 = Loop_1 + 1
-    end
-    $ LINE: (53, "Halt")
+    rows = gaps + 1
+    pitch = app_height * 1.0 / gaps
+  end
+  
+  # 격자 **안**의 줄 겹침은 계산 결과다(화면/기록용).
+  # 259 로 받은 격자간 겹침과는 다른 값이라 여기서 덮어쓴다.
+  overlap = scan_h - pitch
+  if (overlap < 0):
+    overlap = 0
+  end
+  if (rows > 400):
+    popup(s = "ROWS OVER LIMIT(400). CHECK HEIGHT/SCAN_H/OVERLAP", title = "dusan_v4", blocking = True)
+    write_port_register(290, 9)
     halt()
   end
+  
+  row_idx = 0
+  dir_sign = 1
+  # 호 기준은 probe_l 이 매 사이클 다시 잡는다. 여기서 내려두지 않으면
+  # 지난 사이클 값(arc_ox/arc_oy/arc_phi0)으로 286/287 이 계속 나간다.
+  arc_ok = False
+  pass_done = 0
+  path_len = 0
+  alive = 0
+  zero_ok = False
+  n_probe = 0
+  n_hit = 0
+  qa = 0
+  qb = 0
+  qc = 0
+  
+  write_port_register(290, 0)
+  write_port_register(291, 0)
+  ini_w1(292, rows)
+  write_port_register(293, 0)
+  write_port_register(294, 0)
+  write_port_register(295, 0)
+  ini_w1(296, pitch)
+  write_port_register(297, 0)
+  write_port_register(298, 0)
+  write_port_register(299, 0)  # probe_error: 0=정상, 1/2/3=probe_c/l/r 접촉 실패
+  write_port_register(304, 0)
+  write_port_register(305, 0)
+  
+  # 실시간 발행 스레드 기동
+  # 발행 스레드는 태스크 한 번에 **하나만** 띄운다.
+  # 이 스크립트는 Robot Main Task 가 반복될 때마다 다시 실행되는데(루프판),
+  # 그때마다 새로 띄우면 pub_thread 가 while(True) 라 끝나지 않고 detached 라
+  # 회수도 안 되어 스레드가 쌓인다 -> 20 번째 사이클에서
+  # "Thread over the max size: 20" 으로 태스크가 멈춘다.
+  # pub_started 는 "Init Variables Value" 가 시작마다 0 으로 되돌려 주는
+  # 것을 전제로 한다. 그런데 그 노드가 비어 있으면(태스크 XML 의
+  # <InitVariables/> 에 항목이 없으면) 값이 1 로 남고, 스레드는 죽었는데
+  # 다시 띄우지 않아 **260~285 가 전부 멈춘다**. 펜던트 설정에 기대지
+  # 말고 워치독(293)으로 직접 확인한다 — 스레드가 살아 있으면 제어주기
+  # 마다 alive 를 올려 쓰므로, 두 주기 동안 값이 그대로면 죽은 것이다.
+  # (293 은 바로 위에서 0 으로 지웠다. 살아 있으면 곧 큰 값으로 덮인다.)
+  pub_a = read_port_register(293, True)
+  sync()
+  sync()
+  pub_b = read_port_register(293, True)
+  if (pub_a == pub_b):
+    pub_started = 0
+  end
+  
+  if (pub_started == 0):
+    pub_h = start_thread(pub_thread, (), detach_mode = True)
+    pub_started = 1
+  end
+  $ LINE: (5, "2 move_home")
+  $ LINE: (10, "If")
+  if (get_actual_tcp_pose()[2]<Home_pose[2]-0.001):
+    $ LINE: (11, "MoveL")
+    $ LINE: (12, "Direction Robot Z+")
+    global move_thread_flag_12
+    move_thread_flag_12 = 0
+    def move_thread_12():
+      global move_thread_flag_12
+      move_thread_flag_12 = 1
+      towardsPos = calculate_point_to_move_towards([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0,0.0,1.0], 1000.0)
+      movel(towardsPos, a=0.6, v=0.15)
+      move_thread_flag_12 = 2
+    end
+    move_thread_flag_12 = 0
+    move_thread_han_12 = start_thread(move_thread_12, (), detach_mode = False)
+    while (True):
+      if (get_actual_tcp_pose()[2] >= Home_pose[2]):
+        stop_thread(move_thread_han_12)
+        stopl(0.6)
+        $ LINE: (13, "Until (Expression)")
+        break
+      end
+      sync()
+    end
+  end
+  $ LINE: (14, "MoveJ")
+  $ LINE: (15, "Home_joint", "after")
+  movej(Home_joint, a=0.698131700835289, v=0.3490658503988659)
+  $ LINE: (16, "3 move_start")
+  $ LINE: (17, "Script")
+  # =============================================================================
+  #  dus_move_start.script — dusan_v4
+  #  각 프로브 동작 사이의 대기 자세로 이동한다 (Home_joint 이 아니라 start_pose)
+  #
+  #  펜던트에서 "2 move_home" 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
+  #  파일(File) 모드로 넣고 지정한다. 펜던트의 Move/Waypoint 노드를 쓰지 않고
+  #  스크립트로 두는 이유는, 티칭 값이 태스크 XML 안에 숨지 않고 설정 변수
+  #  (start_pose, a_l, v_l, r_l)로 한곳에 모이기 때문이다.
+  #
+  #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+  #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+  #  ※ if / while 은 반드시 end 로 닫을 것
+  #
+  #  start_pose 는 로봇 툴플렌지 기준이 아니라 실제 장착된 그리퍼(5축/8축)
+  #  기준으로 맞춰지도록 dus_init.script 가 매 작업마다 계산해 둔 값이다
+  #  (eoat_type + eoat5/8_offset_x/y/z 참고). 여기서는 그 결과만 쓴다.
+  #
+  #  move_home 과 같은 이유로 두 단계로 나눈다: 먼저 현재 위치에서 Z 만
+  #  start_pose 높이까지 올린 뒤(자세는 그대로 두고 벽/바닥을 스치지
+  #  않게), 그다음 start_pose 자세로 재배치한다. 좌우 이동은 movel(직선)로
+  #  가도록 한다.
+  #
+  #  이 판은 **블렌드 없이** 정확히 start_pose 에 선다. 홈에서 처음 들어올
+  #  때와 probe_c 로 넘어갈 때처럼, 다음 동작이 접촉 탐색이라 시작점이
+  #  흔들리면 안 되는 자리에 쓴다. 블렌드가 필요한 자리는
+  #  dus_move_start_waypoint.script 를 쓴다.
+  if (get_actual_tcp_pose()[2] < start_pose[2] - 0.001):
+    z_up = get_actual_tcp_pose()
+    z_up[2] = start_pose[2]
+    movel(z_up, a = a_l, v = v_l)
+  end
+  movel(start_pose, a = a_l, v = v_l)
+  $ LINE: (18, "4 [스크립트파일] dus_probe_c.script")
+  $ LINE: (19, "Script")
+  # =============================================================================
+  #  dus_probe_c.script — dusan_v4
+  #  호 중앙에서 벽을 짚어 '적정 눌림' 위치를 캘리브레이션한다
+  #
+  #  펜던트에서 "3_probe_center" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+  #
+  #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+  #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+  #  ※ if / while 은 반드시 end 로 닫을 것
+  #
+  #  센서는 손 **중앙에 하나**다. 좌우 막대 두 개로 기울기를 재던 방식은 없앴다.
+  #    di_touch : 적정 눌림 (OK)
+  #    di_limit : 눌림 한계 (뒤로 빼야 함)
+  #  하나뿐이라 기울기(Rz)는 잴 수 없다. 자세는 호 기하로 계산하고, 센서는
+  #  **얼마나 깊이 밀어야 하는지**(press_off) 하나만 잡아 준다.
+  #
+  #  전진/후진은 베이스가 아니라 **TCP 기준**이다 — 호를 그리며 도는 동안
+  #  손의 방향이 계속 바뀌기 때문이다.
+  #    TCP +Z = 전진(벽 쪽)   /   TCP -Z = 후진
+  # =============================================================================
+  
+  def pc_w1(a, v):
+    if (v > 32000):
+      v = 32000
+    end
+    if (v < -32000):
+      v = -32000
+    end
+    write_port_register(a, floor(v + 0.5))
+  end
+  
+  
+  # 로봇 자체 레지스터 384~389 와 같은 단위.  길이 0.1mm, 회전 mRad
+  def pc_w6(a, p):
+    pc_w1(a, p[0] * 10000)
+    pc_w1(a + 1, p[1] * 10000)
+    pc_w1(a + 2, p[2] * 10000)
+    pc_w1(a + 3, p[3] * 1000)
+    pc_w1(a + 4, p[4] * 1000)
+    pc_w1(a + 5, p[5] * 1000)
+  end
+  
+  
+  def pc_step(dmm):
+    # TCP 기준 Z 로 dmm [mm] 만큼 움직인다. 음수가 전진(벽 쪽) — dmm 부호의
+    # 의미는 예전(Y축) 그대로 두고, 축만 Y에서 Z로 바꾼다(그래서 부호가
+    # 한 번 뒤집힌다: 예전 [0,dmm,0,0,0,0] -> 이제 [0,0,-dmm,0,0,0]).
+    movel(pose_trans(get_actual_tcp_pose(), [0, 0, -dmm * 0.001, 0, 0, 0]),
+       a = a_l, v = v_l / 3.0)  # 접촉 탐색: 천천히
+  end
+  
+  
+  def pc_rush(t):
+    movel(t, a = a_l, v = v_l / 3.0)  # 접촉 탐색: 천천히
+  end
+  
+  
+  def pc_press():
+    # 벽에 닿아 '적정 눌림'이 될 때까지 TCP +Z 로 전진한다.
+    # 반환: 전진한 거리 [m] (양수). 못 찾으면 0.
+    # n_hit 는 preamble 전역이라, 이 함수 안에서 대입하려면 global 로
+    # 밝혀 둬야 한다 — 안 그러면 지역변수로 가려져 "초기화 안 됨" 에러가 난다.
+    global n_hit
+    x_home = get_actual_tcp_pose()
+    far = pose_trans(x_home, [0, 0, seek_limit * 0.001, 0, 0, 0])
+  
+    # 끊김 없이 한 번에 보내 놓고, 센서가 걸리는 순간 세운다.
+    mv_h = start_thread(pc_rush, (far,), detach_mode = False)
+    while (True):
+      if (get_standard_digital_in(di_touch) or get_standard_digital_in(di_limit)):
+        stop_thread(mv_h)
+        stopl(1.2)
+        break
+      end
+      if (pose_dist(get_actual_tcp_pose(), far) < 0.0005):
+        stop_thread(mv_h)
+        stopl(1.2)
+        break
+      end
+      sync()
+    end
+  
+    # 한계까지 들어갔으면 적정 눌림만 남을 때까지 뒤로(-Z) 뺀다.
+    tries = 0
+    while (get_standard_digital_in(di_limit) and tries < seek_tries):
+      tries = tries + 1
+      pc_step(seek_step)
+      sync()
+    end
+  
+    # 아직 안 닿았으면 적정 눌림이 될 때까지 조금씩 더 민다.
+    tries = 0
+    while (get_standard_digital_in(di_touch) == False and tries < seek_tries):
+      tries = tries + 1
+      pc_step(-seek_step)
+      sync()
+    end
+  
+    if (get_standard_digital_in(di_touch)):
+      n_hit = n_hit + 1
+      return pose_dist(x_home, get_actual_tcp_pose())
+    end
+    # 계산값 대신 쓸 값이 없다 — 여기서 조용히 넘어가면 잘못된 좌표로
+    # 스캔을 시작하게 되므로, 실패는 반드시 멈춰서 알려야 한다.
+    popup(s = "PROBE_C: WALL CONTACT NOT FOUND", title = "dusan_v4", blocking = True)
+    write_port_register(299, 1)
+    write_port_register(290, 9)
+    halt()
+    return 0
+  end
+  
+  
+  write_port_register(290, 2)
+  y_c = get_actual_tcp_pose()[1]
+  z_base = get_actual_tcp_pose()[2]
+  
+  # 아직 한 번도 돌리지 않은 지금 자세를 '정위치'로 기억해 둔다.
+  probe_rot = get_actual_tcp_pose()
+  
+  # 중앙 접근 — 여기서 잰 깊이가 세 점 전체에 쓰인다.
+  x_start = get_actual_tcp_pose()
+  press_off = pc_press()
+  
+  n_probe = n_probe + 1
+  write_port_register(304, n_probe)
+  write_port_register(305, n_hit)
+  pc_w1(303, press_off * 10000)
+  
+  # movec 의 경유점. 회전값까지 통째로 남긴다.
+  p_c_pose = get_actual_tcp_pose()
+  p_cx = p_c_pose[0]
+  write_port_register(300, floor(p_cx * 10000 + 0.5))
+  pc_w6(330, p_c_pose)
+  
+  # 벽에서 물러난다 (TCP -Z). 잰 깊이만큼만 되돌리면 제자리다.
+  movel(x_start, a = a_l, v = v_l)
+  $ LINE: (20, "5 move_start")
+  $ LINE: (21, "Script")
+  # =============================================================================
+  #  dus_move_start.script — dusan_v4
+  #  각 프로브 동작 사이의 대기 자세로 이동한다 (Home_joint 이 아니라 start_pose)
+  #
+  #  펜던트에서 "2 move_home" 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
+  #  파일(File) 모드로 넣고 지정한다. 펜던트의 Move/Waypoint 노드를 쓰지 않고
+  #  스크립트로 두는 이유는, 티칭 값이 태스크 XML 안에 숨지 않고 설정 변수
+  #  (start_pose, a_l, v_l, r_l)로 한곳에 모이기 때문이다.
+  #
+  #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+  #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+  #  ※ if / while 은 반드시 end 로 닫을 것
+  #
+  #  start_pose 는 로봇 툴플렌지 기준이 아니라 실제 장착된 그리퍼(5축/8축)
+  #  기준으로 맞춰지도록 dus_init.script 가 매 작업마다 계산해 둔 값이다
+  #  (eoat_type + eoat5/8_offset_x/y/z 참고). 여기서는 그 결과만 쓴다.
+  #
+  #  move_home 과 같은 이유로 두 단계로 나눈다: 먼저 현재 위치에서 Z 만
+  #  start_pose 높이까지 올린 뒤(자세는 그대로 두고 벽/바닥을 스치지
+  #  않게), 그다음 start_pose 자세로 재배치한다. 좌우 이동은 movel(직선)로
+  #  가도록 한다.
+  #
+  #  이 판은 **블렌드 없이** 정확히 start_pose 에 선다. 홈에서 처음 들어올
+  #  때와 probe_c 로 넘어갈 때처럼, 다음 동작이 접촉 탐색이라 시작점이
+  #  흔들리면 안 되는 자리에 쓴다. 블렌드가 필요한 자리는
+  #  dus_move_start_waypoint.script 를 쓴다.
+  if (get_actual_tcp_pose()[2] < start_pose[2] - 0.001):
+    z_up = get_actual_tcp_pose()
+    z_up[2] = start_pose[2]
+    movel(z_up, a = a_l, v = v_l)
+  end
+  movel(start_pose, a = a_l, v = v_l)
+  $ LINE: (22, "6 [스크립트파일] dus_probe_l.script")
+  $ LINE: (23, "Script")
+  # =============================================================================
+  #  dus_probe_l.script — dusan_v4
+  #  호의 양 끝점을 반지름·호각으로 **먼저 계산**하고, 원점(이 중 Y- 끝)은
+  #  그 계산값으로 접근해 실제 벽 접촉으로 다시 보정한다.
+  #
+  #  펜던트에서 "4_probe_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+  #
+  #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+  #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+  #  ※ if / while 은 반드시 end 로 닫을 것
+  #
+  #  센서가 중앙 하나뿐이라 계산만으로 끝내면, 도면 반지름이 실제 벽과 조금만
+  #  달라도(또는 벽이 완전한 원통이 아니어도) 원점이 벽에서 뜨거나 파고든다.
+  #  그래서 계산값은 "여기쯤일 것이다"라는 접근 목표로만 쓰고, 그 자리에 가서
+  #  중앙과 똑같이 눌림 센서로 다시 찾는다 — probe_c 의 pc_press() 와 같은
+  #  방식이다. Y- 끝(p_r_pose)은 여기서는 계산만 해 두고, dus_probe_r.script가
+  #  같은 방식으로 실측한다.
+  #
+  #  기하: 중앙 접점 P 에서 TCP +Z 로 R 만큼 간 곳이 곡률 중심 O 다
+  #  (바깥 볼록면을 훑으므로 중심은 벽 뒤에 있다). O 를 베이스 Z 로 t 만큼 돌린 뒤
+  #  다시 로컬 -Z 로 R 만큼 나오면 호 위의 점이 되고, **손 방향도 그 점의
+  #  법선으로 같이 돌아간다** — movec 에 그대로 쓸 수 있는 자세다.
+  # =============================================================================
+  
+  def al_w1(a, v):
+    if (v > 32000):
+      v = 32000
+    end
+    if (v < -32000):
+      v = -32000
+    end
+    write_port_register(a, floor(v + 0.5))
+  end
+  
+  
+  def al_w6(a, p):
+    al_w1(a, p[0] * 10000)
+    al_w1(a + 1, p[1] * 10000)
+    al_w1(a + 2, p[2] * 10000)
+    al_w1(a + 3, p[3] * 1000)
+    al_w1(a + 4, p[4] * 1000)
+    al_w1(a + 5, p[5] * 1000)
+  end
+  
+  
+  def al_arc(mid, th):
+    # 중앙 접점 mid 에서 호를 따라 th [rad] 만큼 돌아간 점(자세 포함).
+    #
+    # 원통은 세워져 있으므로 호는 **수평면** 안에 있다. 그래서
+    #   (1) 곡률 중심 O 는 접점에서 '전진 방향(TCP +Z)의 **수평 성분**'으로 R.
+    #       TCP +Z 가 조금 기울어 있어도 수평 성분만 써야 반지름이 맞는다.
+    #   (2) 회전은 O 를 지나는 **수직축(베이스 Z)** 으로 한다.
+    #       툴 로컬 Z 로 돌리면 호가 수평면을 벗어나 현이 짧아진다.
+    # 자세도 같이 돌아가므로 각 점에서 손이 그 자리의 법선을 본다.
+    if (scan_radius <= 0):
+      return mid
+    end
+    fwd = pose_trans(mid, [0, 0, 1.0, 0, 0, 0])
+    dx = fwd[0] - mid[0]
+    dy = fwd[1] - mid[1]
+    n = sqrt(dx * dx + dy * dy)
+    if (n < 0.0001):
+      # 전진 방향이 거의 수직이다 = 벽을 보고 있지 않다. 그대로 둔다.
+      return mid
+    end
+    r = scan_radius * 0.001
+    o_t = [mid[0] + dx / n * r, mid[1] + dy / n * r, 0, 0, 0, 0]
+    return pose_trans(o_t, pose_trans([0, 0, 0, 0, 0, th],
+                     pose_trans(pose_inv(o_t), mid)))
+  end
+  
+  
+  def al_step(dmm):
+    # TCP 기준 Z 로 dmm [mm] 만큼 움직인다. 음수가 전진(벽 쪽) — dmm 부호의
+    # 의미는 예전(Y축) 그대로 두고, 축만 Y에서 Z로 바꾼다(그래서 부호가
+    # 한 번 뒤집힌다: 예전 [0,dmm,0,0,0,0] -> 이제 [0,0,-dmm,0,0,0]).
+    movel(pose_trans(get_actual_tcp_pose(), [0, 0, -dmm * 0.001, 0, 0, 0]),
+       a = a_l, v = v_l / 3.0)
+  end
+  
+  
+  def al_rush(t):
+    movel(t, a = a_l, v = v_l / 3.0)
+  end
+  
+  
+  def al_press(target):
+    # target 자세(계산값) 그대로, 그 지점의 로컬 +Z 로 전진해 실제 벽
+    # 접촉을 찾는다 — probe_c 의 pc_press() 와 같은 방식이다.
+    # 반환: 실제로 닿은 pose(자세는 target 유지, 위치만 실측으로 보정됨).
+    # 못 찾으면 계산값으로 조용히 넘어가지 않는다 — 아래에서 멈춘다.
+    global n_hit
+    far = pose_trans(target, [0, 0, seek_limit * 0.001, 0, 0, 0])
+    mv_h = start_thread(al_rush, (far,), detach_mode = False)
+    while (True):
+      if (get_standard_digital_in(di_touch) or get_standard_digital_in(di_limit)):
+        stop_thread(mv_h)
+        stopl(1.2)
+        break
+      end
+      if (pose_dist(get_actual_tcp_pose(), far) < 0.0005):
+        stop_thread(mv_h)
+        stopl(1.2)
+        break
+      end
+      sync()
+    end
+  
+    tries = 0
+    while (get_standard_digital_in(di_limit) and tries < seek_tries):
+      tries = tries + 1
+      al_step(seek_step)
+      sync()
+    end
+  
+    tries = 0
+    while (get_standard_digital_in(di_touch) == False and tries < seek_tries):
+      tries = tries + 1
+      al_step(-seek_step)
+      sync()
+    end
+  
+    if (get_standard_digital_in(di_touch)):
+      n_hit = n_hit + 1
+      return get_actual_tcp_pose()
+    end
+    # 계산값 대신 쓸 값이 없다 — 원점이 실측 없이 계산값으로 넘어가면
+    # 스캔 전체가 잘못된 좌표로 돌게 되므로, 실패는 반드시 멈춰서 알려야 한다.
+    popup(s = "PROBE_L: WALL CONTACT NOT FOUND", title = "dusan_v4", blocking = True)
+    write_port_register(299, 2)
+    write_port_register(290, 9)
+    halt()
+    return target
+  end
+  
+  
+  write_port_register(290, 3)
+  
+  # 양 끝을 다 계산해 놓고, 베이스 Y 가 작은 쪽을 Y-(원점), 큰 쪽을 Y+ 로 나눈다.
+  # 손이 어느 방향을 보고 있느냐에 따라 +t 가 어느 쪽으로 갈지 달라지므로
+  # 부호를 미리 못 박지 않고 실제 좌표로 가른다.
+  # 호가 0 이면(반지름 0 또는 arc_run 0) al_arc 가 중앙점을 그대로 돌려줘
+  # 양 끝이 중앙과 겹친다. 그 상태로 진행하면 나중에 dus_pass_r 의 movec 이
+  # "Target pose ... coincident with auxiliary pose" 로 죽는데, 그 문구만
+  # 보고는 원인을 알 수 없다. 여기서 값을 짚어 멈춘다.
+  if (scan_radius <= 0 or arc_half == 0):
+    popup(s = "ARC IS ZERO: check radius(260) and arc length(256)",
+          title = "dusan_v4", blocking = True)
+    write_port_register(299, 4)
+    write_port_register(290, 9)
+    halt()
+  end
+  
+  end_a = al_arc(p_c_pose, arc_half)
+  end_b = al_arc(p_c_pose, -arc_half)
+  # 반시계 방향으로 훑는다. 원점은 베이스 Y 가 **큰** 쪽 끝이고, 거기서
+  # Y 가 줄어드는 방향으로 한 줄을 지난다. (예전에는 반대였다 — Y 가 작은
+  # 쪽이 원점이었다.) 발행하는 좌표는 dus_init 의 pub_rel 이 Rz 180 도로
+  # 뒤집어 내보내므로, 이렇게 훑어도 Y 는 계속 + 로만 커진다.
+  if (end_a[1] >= end_b[1]):
+    zero_est = end_a
+    p_r_pose = end_b
+  else:
+    zero_est = end_b
+    p_r_pose = end_a
+  end
+  
+  # 계산한 원점(zero_est)의 대기 지점(TCP -Z 로 물러난 곳)까지 안전하게
+  # 이동한 뒤, 그 자세 그대로 전진해 실제 벽 접촉으로 원점을 보정한다.
+  #
+  # 여기 오기 전 위치(중앙, p_c_pose)에서 l_stand 까지는 호의 절반 가까이
+  # 자세가 크게 돌아간다. 한때 movej(get_inverse_kin(...))로 바꿨었는데,
+  # 좌우 이동은 movel(직선)로 가도록 되돌린다.
+  l_stand = pose_trans(zero_est, [0, 0, -probe_dist * 0.001, 0, 0, 0])
+  movel(l_stand, a = a_l, v = v_l)
+  zero_pose = al_press(zero_est)
+  
+  # 이 자리가 원점이자 movec 의 시작점이다 (회전값 포함).
+  p_lx = zero_pose[0]
+  write_port_register(301, floor(p_lx * 10000 + 0.5))
+  al_w6(350, zero_pose)
+  zero_inv = pose_inv(zero_pose)
+  zero_ok = True
+  
+  # ---- 호 위 위치를 실시간으로 내보내기 위한 기준 ---------------------------
+  # TPAC 은 스캔 축 위치로 **호 길이**를 받아야 한다. 좌표를 그대로 주면
+  # 현(1031.8)으로 7% 눌리고, 게다가 호 위치에 비례하지 않아 1/4·3/4 지점에서
+  # 14.6mm 씩 어긋난다(C-scan 이 앞뒤로 밀려 찍힌다).
+  # 곡률 중심과 원점의 방위각을 남겨 두면, 발행 스레드가 매 주기
+  #   s = R * |현재각 - 원점각|
+  # 으로 호 위 실제 거리를 계산할 수 있다.
+  if (scan_radius > 0):
+    fwd0 = pose_trans(p_c_pose, [0, 0, 1.0, 0, 0, 0])
+    d0x = fwd0[0] - p_c_pose[0]
+    d0y = fwd0[1] - p_c_pose[1]
+    n0 = sqrt(d0x * d0x + d0y * d0y)
+    if (n0 > 0.0001):
+      arc_ox = p_c_pose[0] + d0x / n0 * scan_radius * 0.001
+      arc_oy = p_c_pose[1] + d0y / n0 * scan_radius * 0.001
+      arc_phi0 = atan2(zero_pose[1] - arc_oy, zero_pose[0] - arc_ox)
+      arc_ok = True
+    end
+  end
+  
+  n_probe = n_probe + 1
+  write_port_register(304, n_probe)
+  write_port_register(305, n_hit)
+  
+  # 벽에서 물러난다 (다음 동작에서 곡면을 가로지르지 않도록) — 좌우 이동은
+  # movel(직선)로 간다.
+  movel(l_stand, a = a_l, v = v_l)
+  $ LINE: (24, "7 move_start_waypoint")
+  $ LINE: (25, "Script")
+  # =============================================================================
+  #  dus_move_start_waypoint.script — dusan_v4
+  #  dus_move_start.script 와 같되 **블렌드 반경(r_l)** 을 걸고 지나간다
+  #
+  #  펜던트의 Waypoint(경유점) 기능 대신 쓰는 스크립트다. 마지막 movel 에
+  #  r = r_l 을 주면 로봇이 start_pose 에 정확히 서지 않고 반경 r_l 안에서
+  #  둥글게 스치며 다음 동작으로 이어진다 — 프로브 사이를 오갈 때 매번
+  #  완전히 정지했다 다시 가속하는 것을 없애 사이클이 짧아진다.
+  #
+  #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+  #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+  #  ※ if / while 은 반드시 end 로 닫을 것
+  #
+  #  블렌드를 걸면 **그 자리에 정확히 서지 않는다**. 그래서 다음 동작이
+  #  접촉 탐색(probe_c)처럼 시작점 정밀도를 요구하는 자리에는 쓰지 않고,
+  #  프로브 사이 이동처럼 지나가기만 하면 되는 자리에만 쓴다.
+  #  Z 올림(첫 movel)은 벽·바닥을 피하는 동작이라 블렌드를 걸지 않는다.
+  if (get_actual_tcp_pose()[2] < start_pose[2] - 0.001):
+    z_up = get_actual_tcp_pose()
+    z_up[2] = start_pose[2]
+    movel(z_up, a = a_l, v = v_l)
+  end
+  movel(start_pose, a = a_l, v = v_l, r = r_l)
+  $ LINE: (26, "8 [스크립트파일] dus_probe_r.script")
+  $ LINE: (27, "Script")
+  # =============================================================================
+  #  dus_probe_r.script — dusan_v4
+  #  Y+ 끝점을 실제 벽 접촉으로 보정한다. 계산 목표는 dus_probe_l 이 이미
+  #  해 두었다(p_r_pose, 아직 계산값).
+  #
+  #  펜던트에서 "5_probe_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+  #
+  #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+  #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+  #  ※ if / while 은 반드시 end 로 닫을 것
+  #
+  #  probe_l 과 같은 이유: 계산값만으로는 도면 반지름과 실제 벽의 오차가
+  #  그대로 남는다. probe_l이 계산해 둔 목표(p_r_pose)로 접근해 중앙과
+  #  똑같이 눌림 센서로 다시 찾는다(probe_c 의 pc_press() 와 같은 방식).
+  # =============================================================================
+  
+  def pr_w1(a, v):
+    if (v > 32000):
+      v = 32000
+    end
+    if (v < -32000):
+      v = -32000
+    end
+    write_port_register(a, floor(v + 0.5))
+  end
+  
+  
+  def pr_w6(a, p):
+    pr_w1(a, p[0] * 10000)
+    pr_w1(a + 1, p[1] * 10000)
+    pr_w1(a + 2, p[2] * 10000)
+    pr_w1(a + 3, p[3] * 1000)
+    pr_w1(a + 4, p[4] * 1000)
+    pr_w1(a + 5, p[5] * 1000)
+  end
+  
+  
+  def pr_step(dmm):
+    # TCP 기준 Z 로 dmm [mm] 만큼 움직인다. 음수가 전진(벽 쪽) — dmm 부호의
+    # 의미는 예전(Y축) 그대로 두고, 축만 Y에서 Z로 바꾼다(그래서 부호가
+    # 한 번 뒤집힌다: 예전 [0,dmm,0,0,0,0] -> 이제 [0,0,-dmm,0,0,0]).
+    movel(pose_trans(get_actual_tcp_pose(), [0, 0, -dmm * 0.001, 0, 0, 0]),
+       a = a_l, v = v_l / 3.0)
+  end
+  
+  
+  def pr_rush(t):
+    movel(t, a = a_l, v = v_l / 3.0)
+  end
+  
+  
+  def pr_press(target):
+    # target 자세(계산값) 그대로, 그 지점의 로컬 +Z 로 전진해 실제 벽
+    # 접촉을 찾는다. 반환: 실제로 닿은 pose. 못 찾으면 계산값으로 조용히
+    # 넘어가지 않는다 — 아래에서 멈춘다.
+    global n_hit
+    far = pose_trans(target, [0, 0, seek_limit * 0.001, 0, 0, 0])
+    mv_h = start_thread(pr_rush, (far,), detach_mode = False)
+    while (True):
+      if (get_standard_digital_in(di_touch) or get_standard_digital_in(di_limit)):
+        stop_thread(mv_h)
+        stopl(1.2)
+        break
+      end
+      if (pose_dist(get_actual_tcp_pose(), far) < 0.0005):
+        stop_thread(mv_h)
+        stopl(1.2)
+        break
+      end
+      sync()
+    end
+  
+    tries = 0
+    while (get_standard_digital_in(di_limit) and tries < seek_tries):
+      tries = tries + 1
+      pr_step(seek_step)
+      sync()
+    end
+  
+    tries = 0
+    while (get_standard_digital_in(di_touch) == False and tries < seek_tries):
+      tries = tries + 1
+      pr_step(-seek_step)
+      sync()
+    end
+  
+    if (get_standard_digital_in(di_touch)):
+      n_hit = n_hit + 1
+      return get_actual_tcp_pose()
+    end
+    # 계산값 대신 쓸 값이 없다 — 실패는 반드시 멈춰서 알려야 한다.
+    popup(s = "PROBE_R: WALL CONTACT NOT FOUND", title = "dusan_v4", blocking = True)
+    write_port_register(299, 3)
+    write_port_register(290, 9)
+    halt()
+    return target
+  end
+  
+  
+  # probe_l이 남겨 둔 계산 목표. 대기 지점(TCP -Z 로 물러난 곳)까지 안전하게
+  # 이동한 뒤, 그 자세 그대로 전진해 실제 벽 접촉으로 보정한다.
+  #
+  # 지금 로봇은 dus_probe_l 이 끝낸 자리(Y- 끝)에 있고 r_stand 는 호 반대쪽
+  # (Y+ 끝) 이라, 호 전체 폭만큼 자세가 크게 돌아간다. 한때
+  # movej(get_inverse_kin(...))로 바꿨었는데, 좌우 이동은 movel(직선)로
+  # 가도록 되돌린다.
+  p_r_est = p_r_pose
+  r_stand = pose_trans(p_r_est, [0, 0, -probe_dist * 0.001, 0, 0, 0])
+  movel(r_stand, a = a_l, v = v_l)
+  p_r_pose = pr_press(p_r_est)
+  
+  p_rx = p_r_pose[0]
+  write_port_register(302, floor(p_rx * 10000 + 0.5))
+  pr_w6(340, p_r_pose)
+  
+  n_probe = n_probe + 1
+  write_port_register(304, n_probe)
+  write_port_register(305, n_hit)
+  
+  # 벽에서 물러난다 (다음 동작에서 곡면을 가로지르지 않도록) — 좌우 이동은
+  # movel(직선)로 간다.
+  movel(r_stand, a = a_l, v = v_l)
+  
+  # 세 점이 그대로 movec 의 시작(원점) / 경유(중앙) / 도착(Y+ 끝) 이 된다.
+  write_port_register(346, arc_mode)
+  $ LINE: (28, "9 move_start_waypoint")
+  $ LINE: (29, "Script")
+  # =============================================================================
+  #  dus_move_start_waypoint.script — dusan_v4
+  #  dus_move_start.script 와 같되 **블렌드 반경(r_l)** 을 걸고 지나간다
+  #
+  #  펜던트의 Waypoint(경유점) 기능 대신 쓰는 스크립트다. 마지막 movel 에
+  #  r = r_l 을 주면 로봇이 start_pose 에 정확히 서지 않고 반경 r_l 안에서
+  #  둥글게 스치며 다음 동작으로 이어진다 — 프로브 사이를 오갈 때 매번
+  #  완전히 정지했다 다시 가속하는 것을 없애 사이클이 짧아진다.
+  #
+  #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+  #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+  #  ※ if / while 은 반드시 end 로 닫을 것
+  #
+  #  블렌드를 걸면 **그 자리에 정확히 서지 않는다**. 그래서 다음 동작이
+  #  접촉 탐색(probe_c)처럼 시작점 정밀도를 요구하는 자리에는 쓰지 않고,
+  #  프로브 사이 이동처럼 지나가기만 하면 되는 자리에만 쓴다.
+  #  Z 올림(첫 movel)은 벽·바닥을 피하는 동작이라 블렌드를 걸지 않는다.
+  if (get_actual_tcp_pose()[2] < start_pose[2] - 0.001):
+    z_up = get_actual_tcp_pose()
+    z_up[2] = start_pose[2]
+    movel(z_up, a = a_l, v = v_l)
+  end
+  movel(start_pose, a = a_l, v = v_l, r = r_l)
+  $ LINE: (30, "10 [스크립트파일] dus_goto_zero.script")
+  $ LINE: (31, "Script")
+  # =============================================================================
+  #  dus_goto_zero.script — dusan_v4
+  #  측정이 끝난 뒤 원점(Y- 끝)으로 돌아가 스캔을 시작할 준비를 한다
+  #
+  #  펜던트에서 "6_goto_zero" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+  #
+  #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+  #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+  #  ※ if / while 은 반드시 end 로 닫을 것
+  # =============================================================================
+  
+  def gz_w1(a, v):
+    if (v > 32000):
+      v = 32000
+    end
+    if (v < -32000):
+      v = -32000
+    end
+    write_port_register(a, floor(v + 0.5))
+  end
+  
+  
+  def gz_w6(a, p):
+    gz_w1(a, p[0] * 10000)
+    gz_w1(a + 1, p[1] * 10000)
+    gz_w1(a + 2, p[2] * 10000)
+    gz_w1(a + 3, p[3] * 1000)
+    gz_w1(a + 4, p[4] * 1000)
+    gz_w1(a + 5, p[5] * 1000)
+  end
+  
+  
+  write_port_register(290, 3)
+  
+  # 현재 TCP 자세를 기준으로 가면 안 된다 — 직전 지점(p_r_pose)의 회전이
+  # 그대로 남아 있어 zero_pose 의 회전과 다르고, 그 채로(베이스 좌표축을
+  # 하나씩 맞추며) 위치만 옮기면 정면을 본 자세로 볼록한 곡면을 파고들며
+  # 접근하다가 마지막에 Rz 를 한 번에 먹여 그리퍼가 벽을 쓸고 지나간다.
+  # probe_l/r 과 같은 방식으로, zero_pose 자세 그대로 **TCP 기준** +Z 반대
+  # 방향(로컬 -Z)으로 물러난 지점까지 먼저 이동한 뒤, 그 자세 그대로
+  # 로컬 +Z 로 전진해 들어간다 — 베이스 축을 하나씩 맞추는 방식이 아니다.
+  #
+  # 지금 로봇은 dus_probe_r 이 끝낸 자리(Y+ 끝)에 있고 z_stand 는 호 반대쪽
+  # (원점, Y- 끝) 이라 호 전체 폭만큼 자세가 크게 돌아간다. 한때
+  # movej(get_inverse_kin(...))로 바꿨었는데, 좌우 이동은 movel(직선)로
+  # 가도록 되돌린다.
+  z_stand = pose_trans(zero_pose, [0, 0, -probe_dist * 0.001, 0, 0, 0])
+  movel(z_stand, a = a_l, v = v_l)
+  # z_stand -> zero_pose 도 probe_dist 만큼밖에 안 되는 짧은 이동이지만,
+  # 막 큰 자세 변화(movej)를 거친 직후라 그 근처는 여전히 movel 의 직선
+  # 경로 역기구학이 빡빡할 수 있다(dus_probe_r.script 에서 실제로 발생).
+  # zero_pose 는 이미 probe_l.script 에서 눌림 센서로 확인해 둔 자리라
+  # 여기서는 계산값으로 바로 들어가는 것뿐이라 직선일 필요가 없다 —
+  # movel 대신 movej 를 쓴다.
+  movej(get_inverse_kin(zero_pose), a = a_j, v = v_j / 3.0)  # 접촉 위치 진입: 천천히
+  
+  gz_w6(270, zero_pose)      # 원점 pose (스캔 중 변하지 않는다)
+  write_port_register(294, 1)
+  path_len = 0
+  
+  # ---- 원점 도착 : ERUT 확인 대기 -------------------------------------------
+  # 프로브가 벽에 제대로 붙었는지는 여기서 판단할 수 없다(눌림 센서는 접촉
+  # 여부만 안다). 원점에 도착했다고 알린 뒤(290 = 7) 멈춰 서서, RCS 가
+  # 267 에 1 을 써 줄 때까지 기다린다. RCS 는 290 이 7 이 되는 걸 보고
+  # MQTT 로 도착을 알리고, ERUT 가 "작업 시작"을 보내면 267 을 세운다.
+  #
+  # 267 은 기다리기 **전에** 우리가 0 으로 지운다 — 지난 사이클에 남은
+  # 허가가 그대로 있으면 확인 없이 통과해 버린다(루프판에서 실제로 문제).
+  write_port_register(267, 0)
+  write_port_register(290, 7)
+  while (read_port_register(267, True) != 1):
+    sync()
+  end
+  write_port_register(267, 0)
+  
+  # ---- 적심(비비기) ---------------------------------------------------------
+  # 스캔 전에 검사면에 물을 퍼뜨린다. 원점에서 호 **안쪽**으로 조금 갔다가
+  # 돌아오기를 wet_cycles 번 반복한다.
+  #
+  # 방향은 **툴 로컬 X** 다. 프로브는 로컬 +Z 로 벽에 다가가므로(probe_*
+  # 스크립트가 전부 [0, 0, +-d] 로 전진·후퇴한다) 로컬 X/Y 는 벽면을 따라
+  # 미끄러지는 축이고, 그중 X 가 호(좌우) 방향, Y 가 상하다. 베이스 Y 로
+  # 밀면 안 된다 — 원점에서는 호가 arc_half 만큼 돌아 있어 그만큼 벽을
+  # 파고들거나 뜬다.
+  #
+  # 부호는 호 중앙(p_c_pose)이 로컬에서 어느 쪽에 있는지로 정한다. 원점
+  # 바깥으로는 나가지 않는다 — 작업 영역 끝이라 벽이 거기서 끝날 수 있다.
+  # 10mm 를 직선으로 가도 곡면에서 벗어나는 양은 10^2/(2R) = 0.06mm 라
+  # 무시할 수 있다.
+  write_port_register(290, 8)
+  # TODO: 여기에 물 분사 켜기를 넣는다. 비비기 전에 켜고 끝나면 끈다.
+  #       (밸브 출력 배정되면 set_standard_digital_out(n, True/False) 로)
+  wet_ref = pose_trans(pose_inv(zero_pose), p_c_pose)
+  wet_step = wet_amp
+  if (wet_ref[0] < 0):
+    wet_step = -wet_amp
+  end
+  wet_i = 0
+  while (wet_i < wet_cycles):
+    movel(pose_trans(zero_pose, [wet_step * 0.001, 0, 0, 0, 0, 0]),
+          a = a_scan, v = v_scan)
+    movel(zero_pose, a = a_scan, v = v_scan)
+    wet_i = wet_i + 1
+  end
+  # TODO: 여기서 물 분사 끄기.
+  
+  # 여기서부터 스캔 구간이다 — 호를 그리는 패스뿐 아니라 줄을 바꾸는
+  # 상승(dus_up)까지 포함한다. 이 구간에서만 제로점 기준 좌표(280~285)가
+  # 살아 있고(dus_init 의 pub_rel), RCS 도 state=6 으로 스캔 중을 안다.
+  write_port_register(290, 6)
+  $ LINE: (32, "Loop 200 times")
+  Loop_1 = 0
+  while (Loop_1 < 200):
+    $ LINE: (33, "Script")
+    pass_done=0
+    $ LINE: (34, "If")
+    if (row_idx<rows and dir_sign>0 and pass_done==0):
+      $ LINE: (35, "11 [스크립트파일] dus_pass_r.script")
+      $ LINE: (36, "Script")
+      # =============================================================================
+      #  dus_pass_r.script — dusan_v4
+      #  원점에서 반대쪽 끝으로 한 줄. 중앙을 경유점으로 하는 movec 원호
+      #
+      #  펜던트에서 "7_pass_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+      #
+      #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+      #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+      #  ※ if / while 은 반드시 end 로 닫을 것
+      # =============================================================================
+      
+      def pr2_w1(a, v):
+        if (v > 32000):
+          v = 32000
+        end
+        if (v < -32000):
+          v = -32000
+        end
+        write_port_register(a, floor(v + 0.5))
+      end
+      
+      
+      # 원점 -> p_r_pose 로 한 줄 — movec 원호 하나.
+      # 반시계 방향으로 바뀌면서 베이스 Y 는 **줄어드는** 쪽이다.
+      # 발행 좌표는 pub_rel 이 Rz 180 도로 뒤집어 + 로 내보낸다.
+      # 스캔 동작에 들어섰다고 알린다(6 = 스캔 중). 이 값이 6 인 동안에만
+      # 제로점 기준 좌표(280~285)가 나간다 — dus_init 의 pub_rel 참고.
+      # 스캔 동작마다 세워 둬야, 사이클이 반복되며 goto_zero 를 다시 지나지
+      # 않는 구성에서도 좌표가 끊기지 않는다.
+      write_port_register(290, 6)
+      
+      z_now = get_actual_tcp_pose()[2]
+      via_pose = p_c_pose.copy()
+      via_pose[2] = z_now
+      to_pose = p_r_pose.copy()
+      to_pose[2] = z_now
+      movec(via_pose, to_pose, a = a_scan, v = v_scan, r = 0, mode = arc_mode)
+      
+      row_idx = row_idx + 1
+      dir_sign = -1
+      pass_done = 1
+      # movec 는 호를 따라가므로 실제 지난 거리는 현(app_width)이 아니라
+      # **호 길이**(app_arc)다. 시험 벽에서 한 줄에 78mm 씩 차이가 난다.
+      # 총 작업 거리는 TCP 가 실제로 움직인 길이다. EOAT 폭만큼 짧으므로
+      # 덮는 길이(app_arc)가 아니라 arc_run 을 더한다.
+      path_len = path_len + arc_run
+      write_port_register(291, row_idx)
+      pr2_w1(297, path_len * 0.1)
+      pr2_w1(298, row_idx * 100.0 / rows)
+    end
+    $ LINE: (37, "If")
+    if (row_idx<rows and dir_sign<0 and pass_done==0):
+      $ LINE: (38, "12 [스크립트파일] dus_pass_l.script")
+      $ LINE: (39, "Script")
+      # =============================================================================
+      #  dus_pass_l.script — dusan_v4
+      #  반대쪽 끝에서 원점으로 한 줄. 중앙을 경유점으로 하는 movec 원호
+      #
+      #  펜던트에서 "8_pass_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+      #
+      #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+      #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+      #  ※ if / while 은 반드시 end 로 닫을 것
+      # =============================================================================
+      
+      def pl2_w1(a, v):
+        if (v > 32000):
+          v = 32000
+        end
+        if (v < -32000):
+          v = -32000
+        end
+        write_port_register(a, floor(v + 0.5))
+      end
+      
+      
+      # p_r_pose -> 원점 으로 한 줄 — movec 원호 하나.
+      # 반시계 방향이라 베이스 Y 는 **늘어나는** 쪽이다.
+      # 스캔 동작에 들어섰다고 알린다(6 = 스캔 중). 이 값이 6 인 동안에만
+      # 제로점 기준 좌표(280~285)가 나간다 — dus_init 의 pub_rel 참고.
+      # 스캔 동작마다 세워 둬야, 사이클이 반복되며 goto_zero 를 다시 지나지
+      # 않는 구성에서도 좌표가 끊기지 않는다.
+      write_port_register(290, 6)
+      
+      z_now = get_actual_tcp_pose()[2]
+      via_pose = p_c_pose.copy()
+      via_pose[2] = z_now
+      to_pose = zero_pose.copy()
+      to_pose[2] = z_now
+      movec(via_pose, to_pose, a = a_scan, v = v_scan, r = 0, mode = arc_mode)
+      
+      row_idx = row_idx + 1
+      dir_sign = 1
+      pass_done = 1
+      # movec 는 호를 따라가므로 실제 지난 거리는 현(app_width)이 아니라
+      # **호 길이**(app_arc)다. 시험 벽에서 한 줄에 78mm 씩 차이가 난다.
+      # 총 작업 거리는 TCP 가 실제로 움직인 길이다. EOAT 폭만큼 짧으므로
+      # 덮는 길이(app_arc)가 아니라 arc_run 을 더한다.
+      path_len = path_len + arc_run
+      write_port_register(291, row_idx)
+      pl2_w1(297, path_len * 0.1)
+      pl2_w1(298, row_idx * 100.0 / rows)
+    end
+    $ LINE: (40, "If")
+    if (row_idx<rows):
+      $ LINE: (41, "13 [스크립트파일] dus_up.script")
+      $ LINE: (42, "Script")
+      # =============================================================================
+      #  dus_up.script — dusan_v4
+      #  다음 줄로 한 피치만큼 상승한다
+      #
+      #  펜던트에서 "9_up" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+      #
+      #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+      #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+      #  ※ if / while 은 반드시 end 로 닫을 것
+      # =============================================================================
+      
+      def up_w1(a, v):
+        if (v > 32000):
+          v = 32000
+        end
+        if (v < -32000):
+          v = -32000
+        end
+        write_port_register(a, floor(v + 0.5))
+      end
+      
+      
+      # 목표 높이는 직전 위치가 아니라 원점(z_base) 기준 절대값으로 잡는다.
+      # 상대값으로 쌓으면 구간마다의 정지 오차가 행 수만큼 누적된다.
+      # 스캔 동작에 들어섰다고 알린다(6 = 스캔 중). 이 값이 6 인 동안에만
+      # 제로점 기준 좌표(280~285)가 나간다 — dus_init 의 pub_rel 참고.
+      # 스캔 동작마다 세워 둬야, 사이클이 반복되며 goto_zero 를 다시 지나지
+      # 않는 구성에서도 좌표가 끊기지 않는다.
+      write_port_register(290, 6)
+      
+      tgt_pose = get_actual_tcp_pose()
+      tgt_pose[2] = z_base + row_idx * pitch * 0.001
+      movel(tgt_pose, a = a_scan, v = v_scan)
+      
+      path_len = path_len + pitch
+      up_w1(297, path_len * 0.1)
+    end
+    $ LINE: (43, "If")
+    if (row_idx>=rows):
+      $ LINE: (44, "14 [스크립트파일] dus_finish.script")
+      $ LINE: (45, "Script")
+      # =============================================================================
+      #  dus_finish.script — dusan_v4
+      #  벽에서 후퇴하고 완료 플래그를 낸다
+      #
+      #  펜던트에서 "10_finish" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+      #
+      #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+      #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+      #  ※ if / while 은 반드시 end 로 닫을 것
+      # =============================================================================
+      
+      tgt_pose = get_actual_tcp_pose()
+      tgt_pose[0] = get_actual_tcp_pose()[0] - back_off * 0.001
+      movel(tgt_pose, a = a_l, v = v_l)
+      
+      write_port_register(290, 5)
+      write_port_register(291, row_idx)
+      write_port_register(295, 1)
+      write_port_register(298, 100)
+      $ LINE: (46, "15 move_home")
+      $ LINE: (47, "If")
+      if (get_actual_tcp_pose()[2]<Home_pose[2]-0.001):
+        $ LINE: (48, "MoveL")
+        $ LINE: (49, "Direction Robot Z+")
+        global move_thread_flag_49
+        move_thread_flag_49 = 0
+        def move_thread_49():
+          global move_thread_flag_49
+          move_thread_flag_49 = 1
+          towardsPos = calculate_point_to_move_towards([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0,0.0,1.0], 1000.0)
+          movel(towardsPos, a=0.6, v=0.15)
+          move_thread_flag_49 = 2
+        end
+        move_thread_flag_49 = 0
+        move_thread_han_49 = start_thread(move_thread_49, (), detach_mode = False)
+        while (True):
+          if (get_actual_tcp_pose()[2]>=Home_pose[2]-0.001):
+            stop_thread(move_thread_han_49)
+            stopl(0.6)
+            $ LINE: (50, "Until (Expression)")
+            break
+          end
+          sync()
+        end
+      end
+      $ LINE: (51, "MoveJ")
+      $ LINE: (52, "Home_joint", "after")
+      movej(Home_joint, a=0.698131700835289, v=0.3490658503988659)
+      $ LINE: (53, "Halt")
+      halt()
+    end
+    Loop_1 = Loop_1 + 1
+  end
+  $ LINE: (54, "Halt")
+  halt()
 end

@@ -1,13 +1,13 @@
-<EliTask name="dusan_v4" installationName="dusan_v4" robotType="CS612" toolType="1" createdVersion="2.15.0.477" lastSavedVersion="2.14.3.89" robotSN="09252312420001" savedTime="2026-09-03 14:07:48" directory="Dusan/dusan_v4" installationDirectory="/Dusan/dusan_v4" typeName="Robot Main Task">
+<EliTask name="dusan_v4" installationName="dusan_v4" robotType="CS612" toolType="1" createdVersion="2.15.0.477" lastSavedVersion="2.14.3.89" robotSN="09252312420001" savedTime="2026-09-15 15:54:29" directory="Dusan/dusan_v4" installationDirectory="/Dusan/dusan_v4" typeName="Robot Main Task">
   <InitVariables typeName="Init Variables Value"/>
-  <MainTask isTaskAlwaysLoops="true" hasBeforeStart="false" hasInitVariables="true" typeName="Robot Main Task">
+  <MainTask isTaskAlwaysLoops="false" hasBeforeStart="false" hasInitVariables="true" typeName="Robot Main Task">
     <FolderNode display="1 [스크립트파일] dus_init.script" isHideSubtree="false" typeName="Folder">
       <ScriptNode scriptType="FILE_TYPE" typeName="Script">
         <cachedFileContents># =============================================================================
 #  dus_init.script — dusan_v4
 #  파라미터를 읽고 피치·행수를 계산한다. 실시간 발행 스레드를 띄운다
 #
-#  펜던트에서 "1_init" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 &quot;1_init&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -38,7 +38,7 @@ end
 
 # 절대 TCP(260~265) 는 항상 발행한다. 원점기준 상대좌표(280~285)와 호
 # 위치(286/287)는 원점(zero_pose)이 잡혀 있으면(zero_ok/arc_ok) 항상
-# 내보낸다 — TPAC 의 "Plane" 이 실제 TCP 이동거리를 보여줘야 하므로 ㄹ자
+# 내보낸다 — TPAC 의 &quot;Plane&quot; 이 실제 TCP 이동거리를 보여줘야 하므로 ㄹ자
 # 스캔 중(state=4)만이 아니라 3점측정 후 원점복귀·다음 줄 이동 중에도
 # 값이 살아 있어야 한다. 원점이 아직 없으면(zero_ok==False) [0,0,0,0,0,0]
 # 을 쏜다.
@@ -76,7 +76,7 @@ def pub_rel():
     # 바꾸면서 원점이 베이스 Y 가 큰 쪽 끝이 되었는데, 그대로 빼면
     # Y 가 계속 음수로 나간다. 제로점 좌표계를 180 도 돌려 놓으면
     # 훑는 방향이 반대여도 Y 는 0 에서 + 로만 커진다.
-    #   x' = -x,  y' = -y,  z' = z   (Z 축 회전이라 높이는 그대로)
+    #   x&apos; = -x,  y&apos; = -y,  z&apos; = z   (Z 축 회전이라 높이는 그대로)
     rel_pose[0] = -rel_pose[0]
     rel_pose[1] = -rel_pose[1]
     ini_w6(280, rel_pose)
@@ -341,7 +341,7 @@ if (overlap &lt; 0):
   overlap = 0
 end
 if (rows &gt; 400):
-  popup(s = "ROWS OVER LIMIT(400). CHECK HEIGHT/SCAN_H/OVERLAP", title = "dusan_v4", blocking = True)
+  popup(s = &quot;ROWS OVER LIMIT(400). CHECK HEIGHT/SCAN_H/OVERLAP&quot;, title = &quot;dusan_v4&quot;, blocking = True)
   write_port_register(290, 9)
   halt()
 end
@@ -379,8 +379,8 @@ write_port_register(305, 0)
 # 이 스크립트는 Robot Main Task 가 반복될 때마다 다시 실행되는데(루프판),
 # 그때마다 새로 띄우면 pub_thread 가 while(True) 라 끝나지 않고 detached 라
 # 회수도 안 되어 스레드가 쌓인다 -&gt; 20 번째 사이클에서
-# "Thread over the max size: 20" 으로 태스크가 멈춘다.
-# pub_started 는 "Init Variables Value" 가 시작마다 0 으로 되돌려 주는
+# &quot;Thread over the max size: 20&quot; 으로 태스크가 멈춘다.
+# pub_started 는 &quot;Init Variables Value&quot; 가 시작마다 0 으로 되돌려 주는
 # 것을 전제로 한다. 그런데 그 노드가 비어 있으면(태스크 XML 의
 # &lt;InitVariables/&gt; 에 항목이 없으면) 값이 1 로 남고, 스레드는 죽었는데
 # 다시 띄우지 않아 **260~285 가 전부 멈춘다**. 펜던트 설정에 기대지
@@ -398,11 +398,136 @@ end
 if (pub_started == 0):
   pub_h = start_thread(pub_thread, (), detach_mode = True)
   pub_started = 1
-end</cachedFileContents>
+end
+</cachedFileContents>
         <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v4/scripts/dus_init.script"/>
       </ScriptNode>
     </FolderNode>
     <FolderNode display="2 move_home" isHideSubtree="false" typeName="Folder">
+      <CompressNode commentString="" typeName="Compress">
+        <CompressedNode>
+          <IfNode checkExpressionContinuous="false" typeName="If">
+            <Expression>
+              <ExpressionCharCell char="g"/>
+              <ExpressionCharCell char="e"/>
+              <ExpressionCharCell char="t"/>
+              <ExpressionCharCell char="_"/>
+              <ExpressionCharCell char="a"/>
+              <ExpressionCharCell char="c"/>
+              <ExpressionCharCell char="t"/>
+              <ExpressionCharCell char="u"/>
+              <ExpressionCharCell char="a"/>
+              <ExpressionCharCell char="l"/>
+              <ExpressionCharCell char="_"/>
+              <ExpressionCharCell char="t"/>
+              <ExpressionCharCell char="c"/>
+              <ExpressionCharCell char="p"/>
+              <ExpressionCharCell char="_"/>
+              <ExpressionCharCell char="p"/>
+              <ExpressionCharCell char="o"/>
+              <ExpressionCharCell char="s"/>
+              <ExpressionCharCell char="e"/>
+              <ExpressionCharCell char="("/>
+              <ExpressionCharCell char=")"/>
+              <ExpressionCharCell char="["/>
+              <ExpressionCharCell char="1"/>
+              <ExpressionCharCell char="]"/>
+              <ExpressionCharCell char="&lt;"/>
+              <ExpressionCharCell char="H"/>
+              <ExpressionCharCell char="o"/>
+              <ExpressionCharCell char="m"/>
+              <ExpressionCharCell char="e"/>
+              <ExpressionCharCell char="_"/>
+              <ExpressionCharCell char="p"/>
+              <ExpressionCharCell char="o"/>
+              <ExpressionCharCell char="s"/>
+              <ExpressionCharCell char="e"/>
+              <ExpressionCharCell char="["/>
+              <ExpressionCharCell char="1"/>
+              <ExpressionCharCell char="]"/>
+              <ExpressionCharCell char="+"/>
+              <ExpressionCharCell char="0"/>
+              <ExpressionCharCell char="."/>
+              <ExpressionCharCell char="0"/>
+              <ExpressionCharCell char="0"/>
+              <ExpressionCharCell char="2"/>
+            </Expression>
+            <children>
+              <MoveNode movementType="LINEAR_MOVEMENT" positionType="CARTESIAN_POSE" tcpType="ACTIVE_TCP" describe="" typeName="MoveL">
+                <frameReference>Ctrl_base_frame</frameReference>
+                <cartesianSpeed value="0.15" unit="M_S">
+                  <valueInSi>0.15</valueInSi>
+                  <siUnit class="cn.elibot.robot.plugin.domain.value.Speed$Unit">M_S</siUnit>
+                </cartesianSpeed>
+                <cartesianAcceleration value="0.6" unit="M_S2">
+                  <valueInSi>0.6</valueInSi>
+                  <siUnit class="cn.elibot.robot.plugin.domain.value.Acceleration$Unit">M_S2</siUnit>
+                </cartesianAcceleration>
+                <DirectionNode useSharedFrame="true" useDirection="true" selectedDirection="XNegative" useSharedParams="true" typeName="Direction">
+                  <children>
+                    <UntilNode type="EXPRESSION" typeName="Until">
+                      <Expression>
+                        <ExpressionCharCell char="g"/>
+                        <ExpressionCharCell char="e"/>
+                        <ExpressionCharCell char="t"/>
+                        <ExpressionCharCell char="_"/>
+                        <ExpressionCharCell char="a"/>
+                        <ExpressionCharCell char="c"/>
+                        <ExpressionCharCell char="t"/>
+                        <ExpressionCharCell char="u"/>
+                        <ExpressionCharCell char="a"/>
+                        <ExpressionCharCell char="l"/>
+                        <ExpressionCharCell char="_"/>
+                        <ExpressionCharCell char="t"/>
+                        <ExpressionCharCell char="c"/>
+                        <ExpressionCharCell char="p"/>
+                        <ExpressionCharCell char="_"/>
+                        <ExpressionCharCell char="p"/>
+                        <ExpressionCharCell char="o"/>
+                        <ExpressionCharCell char="s"/>
+                        <ExpressionCharCell char="e"/>
+                        <ExpressionCharCell char="("/>
+                        <ExpressionCharCell char=")"/>
+                        <ExpressionCharCell char="["/>
+                        <ExpressionCharCell char="1"/>
+                        <ExpressionCharCell char="]"/>
+                        <ExpressionCharCell char="≥"/>
+                        <ExpressionCharCell char="H"/>
+                        <ExpressionCharCell char="o"/>
+                        <ExpressionCharCell char="m"/>
+                        <ExpressionCharCell char="e"/>
+                        <ExpressionCharCell char="_"/>
+                        <ExpressionCharCell char="p"/>
+                        <ExpressionCharCell char="o"/>
+                        <ExpressionCharCell char="s"/>
+                        <ExpressionCharCell char="e"/>
+                        <ExpressionCharCell char="["/>
+                        <ExpressionCharCell char="1"/>
+                        <ExpressionCharCell char="]"/>
+                        <ExpressionCharCell char="+"/>
+                        <ExpressionCharCell char="0"/>
+                        <ExpressionCharCell char="."/>
+                        <ExpressionCharCell char="0"/>
+                        <ExpressionCharCell char="0"/>
+                        <ExpressionCharCell char="1"/>
+                      </Expression>
+                      <expressionDecelerationType>INHERITED</expressionDecelerationType>
+                      <jointDecelerationValue value="1.396263401670578" unit="RAD_S2">
+                        <valueInSi>1.396263401670578</valueInSi>
+                        <siUnit class="cn.elibot.robot.plugin.domain.value.AngularAcceleration$Unit">RAD_S2</siUnit>
+                      </jointDecelerationValue>
+                      <cartesianDeceleration value="1.2" unit="M_S2">
+                        <valueInSi>1.2</valueInSi>
+                        <siUnit class="cn.elibot.robot.plugin.domain.value.Acceleration$Unit">M_S2</siUnit>
+                      </cartesianDeceleration>
+                    </UntilNode>
+                  </children>
+                </DirectionNode>
+              </MoveNode>
+            </children>
+          </IfNode>
+        </CompressedNode>
+      </CompressNode>
       <IfNode checkExpressionContinuous="false" typeName="If">
         <Expression>
           <ExpressionCharCell char="g"/>
@@ -572,7 +697,7 @@ end</cachedFileContents>
 #  dus_move_start.script — dusan_v4
 #  각 프로브 동작 사이의 대기 자세로 이동한다 (Home_joint 이 아니라 start_pose)
 #
-#  펜던트에서 "2 move_home" 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
+#  펜던트에서 &quot;2 move_home&quot; 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
 #  파일(File) 모드로 넣고 지정한다. 펜던트의 Move/Waypoint 노드를 쓰지 않고
 #  스크립트로 두는 이유는, 티칭 값이 태스크 XML 안에 숨지 않고 설정 변수
 #  (start_pose, a_l, v_l, r_l)로 한곳에 모이기 때문이다.
@@ -608,9 +733,9 @@ movel(start_pose, a = a_l, v = v_l)
       <ScriptNode scriptType="FILE_TYPE" typeName="Script">
         <cachedFileContents># =============================================================================
 #  dus_probe_c.script — dusan_v4
-#  호 중앙에서 벽을 짚어 '적정 눌림' 위치를 캘리브레이션한다
+#  호 중앙에서 벽을 짚어 &apos;적정 눌림&apos; 위치를 캘리브레이션한다
 #
-#  펜던트에서 "3_probe_center" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 &quot;3_probe_center&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -664,10 +789,10 @@ end
 
 
 def pc_press():
-  # 벽에 닿아 '적정 눌림'이 될 때까지 TCP +Z 로 전진한다.
+  # 벽에 닿아 &apos;적정 눌림&apos;이 될 때까지 TCP +Z 로 전진한다.
   # 반환: 전진한 거리 [m] (양수). 못 찾으면 0.
   # n_hit 는 preamble 전역이라, 이 함수 안에서 대입하려면 global 로
-  # 밝혀 둬야 한다 — 안 그러면 지역변수로 가려져 "초기화 안 됨" 에러가 난다.
+  # 밝혀 둬야 한다 — 안 그러면 지역변수로 가려져 &quot;초기화 안 됨&quot; 에러가 난다.
   global n_hit
   x_home = get_actual_tcp_pose()
   far = pose_trans(x_home, [0, 0, seek_limit * 0.001, 0, 0, 0])
@@ -710,7 +835,7 @@ def pc_press():
   end
   # 계산값 대신 쓸 값이 없다 — 여기서 조용히 넘어가면 잘못된 좌표로
   # 스캔을 시작하게 되므로, 실패는 반드시 멈춰서 알려야 한다.
-  popup(s = "PROBE_C: WALL CONTACT NOT FOUND", title = "dusan_v4", blocking = True)
+  popup(s = &quot;PROBE_C: WALL CONTACT NOT FOUND&quot;, title = &quot;dusan_v4&quot;, blocking = True)
   write_port_register(299, 1)
   write_port_register(290, 9)
   halt()
@@ -722,7 +847,7 @@ write_port_register(290, 2)
 y_c = get_actual_tcp_pose()[1]
 z_base = get_actual_tcp_pose()[2]
 
-# 아직 한 번도 돌리지 않은 지금 자세를 '정위치'로 기억해 둔다.
+# 아직 한 번도 돌리지 않은 지금 자세를 &apos;정위치&apos;로 기억해 둔다.
 probe_rot = get_actual_tcp_pose()
 
 # 중앙 접근 — 여기서 잰 깊이가 세 점 전체에 쓰인다.
@@ -752,7 +877,7 @@ movel(x_start, a = a_l, v = v_l)
 #  dus_move_start.script — dusan_v4
 #  각 프로브 동작 사이의 대기 자세로 이동한다 (Home_joint 이 아니라 start_pose)
 #
-#  펜던트에서 "2 move_home" 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
+#  펜던트에서 &quot;2 move_home&quot; 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
 #  파일(File) 모드로 넣고 지정한다. 펜던트의 Move/Waypoint 노드를 쓰지 않고
 #  스크립트로 두는 이유는, 티칭 값이 태스크 XML 안에 숨지 않고 설정 변수
 #  (start_pose, a_l, v_l, r_l)로 한곳에 모이기 때문이다.
@@ -791,7 +916,7 @@ movel(start_pose, a = a_l, v = v_l)
 #  호의 양 끝점을 반지름·호각으로 **먼저 계산**하고, 원점(이 중 Y- 끝)은
 #  그 계산값으로 접근해 실제 벽 접촉으로 다시 보정한다.
 #
-#  펜던트에서 "4_probe_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 &quot;4_probe_left&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -799,7 +924,7 @@ movel(start_pose, a = a_l, v = v_l)
 #
 #  센서가 중앙 하나뿐이라 계산만으로 끝내면, 도면 반지름이 실제 벽과 조금만
 #  달라도(또는 벽이 완전한 원통이 아니어도) 원점이 벽에서 뜨거나 파고든다.
-#  그래서 계산값은 "여기쯤일 것이다"라는 접근 목표로만 쓰고, 그 자리에 가서
+#  그래서 계산값은 &quot;여기쯤일 것이다&quot;라는 접근 목표로만 쓰고, 그 자리에 가서
 #  중앙과 똑같이 눌림 센서로 다시 찾는다 — probe_c 의 pc_press() 와 같은
 #  방식이다. Y- 끝(p_r_pose)은 여기서는 계산만 해 두고, dus_probe_r.script가
 #  같은 방식으로 실측한다.
@@ -835,7 +960,7 @@ def al_arc(mid, th):
   # 중앙 접점 mid 에서 호를 따라 th [rad] 만큼 돌아간 점(자세 포함).
   #
   # 원통은 세워져 있으므로 호는 **수평면** 안에 있다. 그래서
-  #   (1) 곡률 중심 O 는 접점에서 '전진 방향(TCP +Z)의 **수평 성분**'으로 R.
+  #   (1) 곡률 중심 O 는 접점에서 &apos;전진 방향(TCP +Z)의 **수평 성분**&apos;으로 R.
   #       TCP +Z 가 조금 기울어 있어도 수평 성분만 써야 반지름이 맞는다.
   #   (2) 회전은 O 를 지나는 **수직축(베이스 Z)** 으로 한다.
   #       툴 로컬 Z 로 돌리면 호가 수평면을 벗어나 현이 짧아진다.
@@ -914,7 +1039,7 @@ def al_press(target):
   end
   # 계산값 대신 쓸 값이 없다 — 원점이 실측 없이 계산값으로 넘어가면
   # 스캔 전체가 잘못된 좌표로 돌게 되므로, 실패는 반드시 멈춰서 알려야 한다.
-  popup(s = "PROBE_L: WALL CONTACT NOT FOUND", title = "dusan_v4", blocking = True)
+  popup(s = &quot;PROBE_L: WALL CONTACT NOT FOUND&quot;, title = &quot;dusan_v4&quot;, blocking = True)
   write_port_register(299, 2)
   write_port_register(290, 9)
   halt()
@@ -929,11 +1054,11 @@ write_port_register(290, 3)
 # 부호를 미리 못 박지 않고 실제 좌표로 가른다.
 # 호가 0 이면(반지름 0 또는 arc_run 0) al_arc 가 중앙점을 그대로 돌려줘
 # 양 끝이 중앙과 겹친다. 그 상태로 진행하면 나중에 dus_pass_r 의 movec 이
-# "Target pose ... coincident with auxiliary pose" 로 죽는데, 그 문구만
+# &quot;Target pose ... coincident with auxiliary pose&quot; 로 죽는데, 그 문구만
 # 보고는 원인을 알 수 없다. 여기서 값을 짚어 멈춘다.
 if (scan_radius &lt;= 0 or arc_half == 0):
-  popup(s = "ARC IS ZERO: check radius(260) and arc length(256)",
-        title = "dusan_v4", blocking = True)
+  popup(s = &quot;ARC IS ZERO: check radius(260) and arc length(256)&quot;,
+        title = &quot;dusan_v4&quot;, blocking = True)
   write_port_register(299, 4)
   write_port_register(290, 9)
   halt()
@@ -1037,7 +1162,7 @@ movel(start_pose, a = a_l, v = v_l, r = r_l)
 #  Y+ 끝점을 실제 벽 접촉으로 보정한다. 계산 목표는 dus_probe_l 이 이미
 #  해 두었다(p_r_pose, 아직 계산값).
 #
-#  펜던트에서 "5_probe_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 &quot;5_probe_right&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -1123,7 +1248,7 @@ def pr_press(target):
     return get_actual_tcp_pose()
   end
   # 계산값 대신 쓸 값이 없다 — 실패는 반드시 멈춰서 알려야 한다.
-  popup(s = "PROBE_R: WALL CONTACT NOT FOUND", title = "dusan_v4", blocking = True)
+  popup(s = &quot;PROBE_R: WALL CONTACT NOT FOUND&quot;, title = &quot;dusan_v4&quot;, blocking = True)
   write_port_register(299, 3)
   write_port_register(290, 9)
   halt()
@@ -1196,7 +1321,7 @@ movel(start_pose, a = a_l, v = v_l, r = r_l)
 #  dus_goto_zero.script — dusan_v4
 #  측정이 끝난 뒤 원점(Y- 끝)으로 돌아가 스캔을 시작할 준비를 한다
 #
-#  펜던트에서 "6_goto_zero" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 &quot;6_goto_zero&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -1256,7 +1381,7 @@ path_len = 0
 # 프로브가 벽에 제대로 붙었는지는 여기서 판단할 수 없다(눌림 센서는 접촉
 # 여부만 안다). 원점에 도착했다고 알린 뒤(290 = 7) 멈춰 서서, RCS 가
 # 267 에 1 을 써 줄 때까지 기다린다. RCS 는 290 이 7 이 되는 걸 보고
-# MQTT 로 도착을 알리고, ERUT 가 "작업 시작"을 보내면 267 을 세운다.
+# MQTT 로 도착을 알리고, ERUT 가 &quot;작업 시작&quot;을 보내면 267 을 세운다.
 #
 # 267 은 기다리기 **전에** 우리가 0 으로 지운다 — 지난 사이클에 남은
 # 허가가 그대로 있으면 확인 없이 통과해 버린다(루프판에서 실제로 문제).
@@ -1379,7 +1504,7 @@ write_port_register(290, 6)
 #  dus_pass_r.script — dusan_v4
 #  원점에서 반대쪽 끝으로 한 줄. 중앙을 경유점으로 하는 movec 원호
 #
-#  펜던트에서 "7_pass_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 &quot;7_pass_right&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -1484,7 +1609,7 @@ pr2_w1(298, row_idx * 100.0 / rows)
 #  dus_pass_l.script — dusan_v4
 #  반대쪽 끝에서 원점으로 한 줄. 중앙을 경유점으로 하는 movec 원호
 #
-#  펜던트에서 "8_pass_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 &quot;8_pass_left&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -1556,7 +1681,7 @@ pl2_w1(298, row_idx * 100.0 / rows)
 #  dus_up.script — dusan_v4
 #  다음 줄로 한 피치만큼 상승한다
 #
-#  펜던트에서 "9_up" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 &quot;9_up&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -1617,7 +1742,7 @@ up_w1(297, path_len * 0.1)
 #  dus_finish.script — dusan_v4
 #  벽에서 후퇴하고 완료 플래그를 낸다
 #
-#  펜던트에서 "10_finish" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 &quot;10_finish&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
