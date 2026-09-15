@@ -1,0 +1,125 @@
+# =============================================================================
+#  dus5_probe_r.script — dusan_v5
+#  Y+ 끝점을 실제 벽 접촉으로 보정한다. 계산 목표는 dus5_probe_l 이 이미
+#  해 두었다(p_r_pose, 아직 계산값).
+#
+#  펜던트에서 "5_probe_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  probe_l 과 같은 이유: 계산값만으로는 도면 반지름과 실제 벽의 오차가
+#  그대로 남는다. probe_l이 계산해 둔 목표(p_r_pose)로 접근해 중앙과
+#  똑같이 눌림 센서로 다시 찾는다(probe_c 의 pc_press() 와 같은 방식).
+# =============================================================================
+
+def pr_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+def pr_w6(a, p):
+  pr_w1(a, p[0] * 10000)
+  pr_w1(a + 1, p[1] * 10000)
+  pr_w1(a + 2, p[2] * 10000)
+  pr_w1(a + 3, p[3] * 1000)
+  pr_w1(a + 4, p[4] * 1000)
+  pr_w1(a + 5, p[5] * 1000)
+end
+
+
+def pr_step(dmm):
+  # TCP 기준 Z 로 dmm [mm] 만큼 움직인다. 음수가 전진(벽 쪽) — dmm 부호의
+  # 의미는 예전(Y축) 그대로 두고, 축만 Y에서 Z로 바꾼다(그래서 부호가
+  # 한 번 뒤집힌다: 예전 [0,dmm,0,0,0,0] -> 이제 [0,0,-dmm,0,0,0]).
+  movel(pose_trans(get_actual_tcp_pose(), [0, 0, -dmm * 0.001, 0, 0, 0]),
+     a = a_l, v = v_l / 3.0)
+end
+
+
+def pr_rush(t):
+  movel(t, a = a_l, v = v_l / 3.0)
+end
+
+
+def pr_press(target):
+  # target 자세(계산값) 그대로, 그 지점의 로컬 +Z 로 전진해 실제 벽
+  # 접촉을 찾는다. 반환: 실제로 닿은 pose. 못 찾으면 계산값으로 조용히
+  # 넘어가지 않는다 — 아래에서 멈춘다.
+  global n_hit
+  far = pose_trans(target, [0, 0, seek_limit * 0.001, 0, 0, 0])
+  mv_h = start_thread(pr_rush, (far,), detach_mode = False)
+  while (True):
+    if (get_standard_digital_in(di_touch) or get_standard_digital_in(di_limit)):
+      stop_thread(mv_h)
+      stopl(1.2)
+      break
+    end
+    if (pose_dist(get_actual_tcp_pose(), far) < 0.0005):
+      stop_thread(mv_h)
+      stopl(1.2)
+      break
+    end
+    sync()
+  end
+
+  tries = 0
+  while (get_standard_digital_in(di_limit) and tries < seek_tries):
+    tries = tries + 1
+    pr_step(seek_step)
+    sync()
+  end
+
+  tries = 0
+  while (get_standard_digital_in(di_touch) == False and tries < seek_tries):
+    tries = tries + 1
+    pr_step(-seek_step)
+    sync()
+  end
+
+  if (get_standard_digital_in(di_touch)):
+    n_hit = n_hit + 1
+    return get_actual_tcp_pose()
+  end
+  # 계산값 대신 쓸 값이 없다 — 실패는 반드시 멈춰서 알려야 한다.
+  popup(s = "PROBE_R: WALL CONTACT NOT FOUND", title = "dusan_v5", blocking = True)
+  write_port_register(299, 3)
+  write_port_register(290, 9)
+  halt()
+  return target
+end
+
+
+# probe_l이 남겨 둔 계산 목표. 대기 지점(TCP -Z 로 물러난 곳)까지 안전하게
+# 이동한 뒤, 그 자세 그대로 전진해 실제 벽 접촉으로 보정한다.
+#
+# 지금 로봇은 dus5_probe_l 이 끝낸 자리(Y- 끝)에 있고 r_stand 는 호 반대쪽
+# (Y+ 끝) 이라, 호 전체 폭만큼 자세가 크게 돌아간다. 한때
+# movej(get_inverse_kin(...))로 바꿨었는데, 좌우 이동은 movel(직선)로
+# 가도록 되돌린다.
+p_r_est = p_r_pose
+r_stand = pose_trans(p_r_est, [0, 0, -probe_dist * 0.001, 0, 0, 0])
+movel(r_stand, a = a_l, v = v_l)
+p_r_pose = pr_press(p_r_est)
+
+p_rx = p_r_pose[0]
+write_port_register(302, floor(p_rx * 10000 + 0.5))
+pr_w6(340, p_r_pose)
+
+n_probe = n_probe + 1
+write_port_register(304, n_probe)
+write_port_register(305, n_hit)
+
+# 벽에서 물러난다 (다음 동작에서 곡면을 가로지르지 않도록) — 좌우 이동은
+# movel(직선)로 간다.
+movel(r_stand, a = a_l, v = v_l)
+
+# 세 점이 그대로 호의 시작(원점) / 중앙 / 끝(Y+) 이 된다.
+write_port_register(346, arc_mode)

@@ -1,0 +1,131 @@
+# =============================================================================
+#  dus5_mark_point.script — dusan_v5 (마킹 태스크)
+#  프로브 3점으로 잡은 호 위에서, 원점 기준 (u, v) 자리로 가서 벽에 붙는다
+#
+#  마킹 태스크(dusan_v5_mark.task)의 끝에서 두 번째 노드다. 앞에서
+#  probe_c/l/r 가 이 구간의 호(p_c_pose, zero_pose, arc_half, scan_radius)를
+#  새로 잡아 뒀으므로 그 기하를 그대로 쓴다.
+#
+#  입력 레지스터 (RCS 가 태스크를 틀기 전에 써 둔다):
+#    268 = u  원점에서 호를 따라 간 거리 [mm]
+#    269 = v  원점 높이에서 위로 [mm]
+#  상태 290:
+#    10 = 마킹 자리로 이동 중
+#    11 = 마킹 자리에 붙음 (여기서 마킹 — 아직 TODO)
+#  실패하면 299 = 5, 290 = 9 로 멈춘다.
+#
+#  바로 그 자리로 가지 않는다 — 프로브 때처럼 **TCP -Z 로 probe_dist 만큼
+#  물러난 자세**로 먼저 가서, 거기서 TCP +Z 로 전진하다 센서가 적정 눌림이
+#  되면 선다. 계산값만 믿고 들어가면 벽 두께·오차만큼 파고들거나 뜬다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 함수 이름은 mk_ 로 시작한다 — 태스크 전체가 한 스크립트로 이어
+#    붙기 때문에 다른 파일의 함수와 이름이 겹치면 안 된다.
+# =============================================================================
+
+def mk_arc(mid, th):
+  # dus5_probe_l.script 의 al_arc 와 같다: 중앙 접점 mid 에서 호를 따라
+  # th [rad] 돌아간 점(자세 포함). 곡률 중심은 전진 방향의 수평 성분으로 R,
+  # 회전은 그 중심을 지나는 수직축(베이스 Z)으로.
+  if (scan_radius <= 0):
+    return mid
+  end
+  fwd = pose_trans(mid, [0, 0, 1.0, 0, 0, 0])
+  dx = fwd[0] - mid[0]
+  dy = fwd[1] - mid[1]
+  n = sqrt(dx * dx + dy * dy)
+  if (n < 0.0001):
+    return mid
+  end
+  r = scan_radius * 0.001
+  o_t = [mid[0] + dx / n * r, mid[1] + dy / n * r, 0, 0, 0, 0]
+  return pose_trans(o_t, pose_trans([0, 0, 0, 0, 0, th],
+                   pose_trans(pose_inv(o_t), mid)))
+end
+
+
+def mk_step(dmm):
+  # TCP 기준 Z 로 dmm [mm] 이동. 음수가 전진(벽 쪽) — probe 스크립트와 같은 규칙.
+  movel(pose_trans(get_actual_tcp_pose(), [0, 0, -dmm * 0.001, 0, 0, 0]),
+     a = a_l, v = v_l / 3.0)
+end
+
+
+def mk_rush(t):
+  movel(t, a = a_l, v = v_l / 3.0)
+end
+
+
+def mk_press():
+  # dus5_probe_c.script 의 pc_press 와 같다: 적정 눌림이 될 때까지 TCP +Z 전진.
+  global n_hit
+  x_home = get_actual_tcp_pose()
+  far = pose_trans(x_home, [0, 0, seek_limit * 0.001, 0, 0, 0])
+  mv_h = start_thread(mk_rush, (far,), detach_mode = False)
+  while (True):
+    if (get_standard_digital_in(di_touch) or get_standard_digital_in(di_limit)):
+      stop_thread(mv_h)
+      stopl(1.2)
+      break
+    end
+    if (pose_dist(get_actual_tcp_pose(), far) < 0.0005):
+      stop_thread(mv_h)
+      stopl(1.2)
+      break
+    end
+    sync()
+  end
+  tries = 0
+  while (get_standard_digital_in(di_limit) and tries < seek_tries):
+    tries = tries + 1
+    mk_step(seek_step)
+    sync()
+  end
+  tries = 0
+  while (get_standard_digital_in(di_touch) == False and tries < seek_tries):
+    tries = tries + 1
+    mk_step(-seek_step)
+    sync()
+  end
+  if (get_standard_digital_in(di_touch)):
+    n_hit = n_hit + 1
+    return True
+  end
+  popup(s = "MARK: WALL CONTACT NOT FOUND", title = "dusan_v5", blocking = True)
+  write_port_register(299, 5)
+  write_port_register(290, 9)
+  halt()
+  return False
+end
+
+
+# ------------------------------------------------------------------ 본문
+write_port_register(290, 10)
+mk_u = read_port_register(268, True)
+mk_v = read_port_register(269, True)
+
+# 원점(zero_pose)이 호의 어느 끝인지 부호로 가린다. probe_l 은 베이스 Y 로
+# 끝을 골랐으므로(반시계), 여기서는 두 끝 중 zero_pose 에 가까운 쪽을 본다.
+mk_a = mk_arc(p_c_pose, arc_half)
+mk_b = mk_arc(p_c_pose, -arc_half)
+mk_s = 1
+if (pose_dist(mk_b, zero_pose) < pose_dist(mk_a, zero_pose)):
+  mk_s = -1
+end
+# u = 0 이면 원점(th = s*arc_half), u = arc_run 이면 반대쪽 끝(-s*arc_half).
+mk_th = mk_s * (arc_half - mk_u * 1.0 / scan_radius)
+mk_tgt = mk_arc(p_c_pose, mk_th)
+mk_tgt[2] = zero_pose[2] + mk_v * 0.001
+
+# 물러난 자세로 먼저 간다(곡면을 가로지르지 않게 probe 들과 같은 방식).
+mk_stand = pose_trans(mk_tgt, [0, 0, -probe_dist * 0.001, 0, 0, 0])
+movel(mk_stand, a = a_l, v = v_l)
+mk_press()
+write_port_register(290, 11)
+
+# TODO: 마킹. 스프레이/마커가 ERUT 쪽인지 로봇 쪽인지 정해지면 여기서
+#       켜고 끈다(로봇 쪽이면 set_standard_digital_out 으로).
+
+# 벽에서 물러난다 — 다음 노드(dus5_home)가 올라가며 곡면을 긁지 않게.
+movel(pose_trans(get_actual_tcp_pose(), [0, 0, -probe_dist * 0.001, 0, 0, 0]),
+      a = a_l, v = v_l)

@@ -1811,6 +1811,9 @@ class OperatorWindow(QMainWindow):
         2: ("E-PROBE-L", "좌측(원점) 프로브 벽 접촉 실패"),
         3: ("E-PROBE-R", "우측 프로브 벽 접촉 실패"),
         4: ("E-ARC-ZERO", "호 길이/반지름이 0 — 작업 영역 값을 확인하세요"),
+        # v5 (servoj 스캔) — 호를 도는 동안 눌림을 계속 확인한다.
+        6: ("E-SCAN-PRESS", "스캔 중 접촉(눌림)을 유지하지 못해 멈췄습니다 — 보정 한계(press_max) 초과"),
+        7: ("E-SCAN-IK", "스캔 호 경로에 역기구학 해가 없어 멈췄습니다 — 로봇 위치·자세를 확인하세요"),
     }
 
     def _handle_probe_error(self, values: list) -> None:

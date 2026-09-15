@@ -1,0 +1,54 @@
+Current Task: dusan_v5
+    Init Variables Value
+    Robot Main Task
+        1 [스크립트파일] dus5_init.script
+            Script: dus5_init.script
+        2 move_home
+            If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
+                MoveL
+                    Direction Robot Z+
+                        Until expression get_actual_tcp_pose()[2]≥Home_pose[2]
+            MoveJ
+                Home_joint
+        3 move_start
+            Script: dus5_move_start.script
+        4 [스크립트파일] dus5_probe_c.script
+            Script: dus5_probe_c.script
+        5 move_start
+            MoveL
+                start_pose
+        6 [스크립트파일] dus5_probe_l.script
+            Script: dus5_probe_l.script
+        7 move_start
+            MoveL
+                start_pose
+        8 [스크립트파일] dus5_probe_r.script
+            Script: dus5_probe_r.script
+        9 move_start
+            MoveL
+                start_pose
+        10 [스크립트파일] dus5_goto_zero.script
+            Script: dus5_goto_zero.script
+        Loop 200 times
+            pass_done=0
+            If row_idx<rows and dir_sign>0 and pass_done==0
+                11 [스크립트파일] dus5_pass_r.script
+                    Script: dus5_pass_r.script
+            If row_idx<rows and dir_sign<0 and pass_done==0
+                12 [스크립트파일] dus5_pass_l.script
+                    Script: dus5_pass_l.script
+            If row_idx<rows
+                13 [스크립트파일] dus5_up.script
+                    Script: dus5_up.script
+            If row_idx>=rows
+                14 [스크립트파일] dus5_finish.script
+                    Script: dus5_finish.script
+                15 move_home
+                    If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
+                        MoveL
+                            Direction Robot Z+
+                                Until expression get_actual_tcp_pose()[2]>=Home_pose[2]-0.001
+                    MoveJ
+                        Home_joint
+                Halt
+        Halt

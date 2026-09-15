@@ -1,0 +1,32 @@
+# =============================================================================
+#  dus5_move_start.script — dusan_v5
+#  각 프로브 동작 사이의 대기 자세로 이동한다 (Home_joint 이 아니라 start_pose)
+#
+#  펜던트에서 "2 move_home" 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
+#  파일(File) 모드로 넣고 지정한다. 펜던트의 Move/Waypoint 노드를 쓰지 않고
+#  스크립트로 두는 이유는, 티칭 값이 태스크 XML 안에 숨지 않고 설정 변수
+#  (start_pose, a_l, v_l, r_l)로 한곳에 모이기 때문이다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  start_pose 는 로봇 툴플렌지 기준이 아니라 실제 장착된 그리퍼(5축/8축)
+#  기준으로 맞춰지도록 dus5_init.script 가 매 작업마다 계산해 둔 값이다
+#  (eoat_type + eoat5/8_offset_x/y/z 참고). 여기서는 그 결과만 쓴다.
+#
+#  move_home 과 같은 이유로 두 단계로 나눈다: 먼저 현재 위치에서 Z 만
+#  start_pose 높이까지 올린 뒤(자세는 그대로 두고 벽/바닥을 스치지
+#  않게), 그다음 start_pose 자세로 재배치한다. 좌우 이동은 movel(직선)로
+#  가도록 한다.
+#
+#  이 판은 **블렌드 없이** 정확히 start_pose 에 선다. 홈에서 처음 들어올
+#  때와 probe_c 로 넘어갈 때처럼, 다음 동작이 접촉 탐색이라 시작점이
+#  흔들리면 안 되는 자리에 쓴다. 블렌드가 필요한 자리는
+#  dus5_move_start_waypoint.script 를 쓴다.
+if (get_actual_tcp_pose()[2] < start_pose[2] - 0.001):
+  z_up = get_actual_tcp_pose()
+  z_up[2] = start_pose[2]
+  movel(z_up, a = a_l, v = v_l)
+end
+movel(start_pose, a = a_l, v = v_l)

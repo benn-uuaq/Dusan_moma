@@ -1,0 +1,100 @@
+# =============================================================================
+#  dus5_goto_zero.script — dusan_v5
+#  측정이 끝난 뒤 원점(Y- 끝)으로 돌아가 스캔을 시작할 준비를 한다
+#
+#  펜던트에서 "6_goto_zero" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def gz_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+def gz_w6(a, p):
+  gz_w1(a, p[0] * 10000)
+  gz_w1(a + 1, p[1] * 10000)
+  gz_w1(a + 2, p[2] * 10000)
+  gz_w1(a + 3, p[3] * 1000)
+  gz_w1(a + 4, p[4] * 1000)
+  gz_w1(a + 5, p[5] * 1000)
+end
+
+
+write_port_register(290, 3)
+
+# 현재 TCP 자세를 기준으로 가면 안 된다 — 직전 지점(p_r_pose)의 회전이
+# 그대로 남아 있어 zero_pose 의 회전과 다르고, 그 채로 위치만 옮기면
+# 볼록한 곡면을 가로질러 충돌한다. probe_l/r 과 같은 방식으로, zero_pose
+# 자세 그대로 TCP 기준 -Z(뒤로) 물러난 지점까지 먼저 이동한 뒤
+# 그 자세로 +Z(전진)해 들어간다.
+#
+# 지금 로봇은 dus5_probe_r 이 끝낸 자리(Y+ 끝)에 있고 z_stand 는 호 반대쪽
+# (원점, Y- 끝) 이라 호 전체 폭만큼 자세가 크게 돌아간다. 한때
+# movej(get_inverse_kin(...))로 바꿨었는데, 좌우 이동은 movel(직선)로
+# 가도록 되돌린다.
+z_stand = pose_trans(zero_pose, [0, 0, -probe_dist * 0.001, 0, 0, 0])
+movel(z_stand, a = a_l, v = v_l)
+# z_stand -> zero_pose 도 probe_dist 만큼밖에 안 되는 짧은 이동이지만,
+# 막 큰 자세 변화(movej)를 거친 직후라 그 근처는 여전히 movel 의 직선
+# 경로 역기구학이 빡빡할 수 있다(dus5_probe_r.script 에서 실제로 발생).
+# 센서판과 달리 접촉을 눌림으로 찾는 게 아니라 계산값으로 바로 들어가는
+# 것뿐이라 직선일 필요가 없다 — movej 로 바꾼다.
+movej(get_inverse_kin(zero_pose), a = a_j, v = v_j / 3.0)  # 접촉 위치 진입: 천천히
+
+gz_w6(270, zero_pose)      # 원점 pose (스캔 중 변하지 않는다)
+write_port_register(294, 1)
+path_len = 0
+
+# ---- 원점 도착 : 진행 확인 -----------------------------------------------
+# 논센서판은 ERUT 와 주고받지 않는다. 대신 팝업으로 멈춰 서서 사람이
+# 프로브가 잘 붙었는지 보고 확인을 누르면 이어서 간다. 원 태스크는
+# 여기서 레지스터 267 로 ERUT 의 시작 신호를 기다린다.
+write_port_register(290, 7)
+popup(s = "AT ORIGIN. CHECK PROBES, THEN CONTINUE (WET -> SCAN)",
+      title = "dusan_v5", blocking = True)
+
+# ---- 적심(비비기) ---------------------------------------------------------
+# 스캔 전에 검사면에 물을 퍼뜨린다. 원점에서 호 **안쪽**으로 조금 갔다가
+# 돌아오기를 wet_cycles 번 반복한다.
+#
+# 방향은 **툴 로컬 X** 다. 프로브는 로컬 +Z 로 벽에 다가가므로(probe_*
+# 스크립트가 전부 [0, 0, +-d] 로 전진·후퇴한다) 로컬 X/Y 는 벽면을 따라
+# 미끄러지는 축이고, 그중 X 가 호(좌우) 방향, Y 가 상하다. 베이스 Y 로
+# 밀면 안 된다 — 원점에서는 호가 arc_half 만큼 돌아 있어 그만큼 벽을
+# 파고들거나 뜬다.
+#
+# 부호는 호 중앙(p_c_pose)이 로컬에서 어느 쪽에 있는지로 정한다. 원점
+# 바깥으로는 나가지 않는다 — 작업 영역 끝이라 벽이 거기서 끝날 수 있다.
+# 10mm 를 직선으로 가도 곡면에서 벗어나는 양은 10^2/(2R) = 0.06mm 라
+# 무시할 수 있다.
+write_port_register(290, 8)
+# TODO: 여기에 물 분사 켜기를 넣는다. 비비기 전에 켜고 끝나면 끈다.
+#       (밸브 출력 배정되면 set_standard_digital_out(n, True/False) 로)
+wet_ref = pose_trans(pose_inv(zero_pose), p_c_pose)
+wet_step = wet_amp
+if (wet_ref[0] < 0):
+  wet_step = -wet_amp
+end
+wet_i = 0
+while (wet_i < wet_cycles):
+  movel(pose_trans(zero_pose, [wet_step * 0.001, 0, 0, 0, 0, 0]),
+        a = a_scan, v = v_scan)
+  movel(zero_pose, a = a_scan, v = v_scan)
+  wet_i = wet_i + 1
+end
+# TODO: 여기서 물 분사 끄기.
+
+# 여기서부터 스캔 구간이다 — 호를 그리는 패스뿐 아니라 줄을 바꾸는
+# 상승(dus5_up)까지 포함한다. 이 구간에서만 제로점 기준 좌표(280~285)가
+# 살아 있고(dus5_init 의 pub_rel), RCS 도 state=6 으로 스캔 중을 안다.
+write_port_register(290, 6)

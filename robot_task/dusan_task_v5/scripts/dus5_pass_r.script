@@ -1,0 +1,168 @@
+# =============================================================================
+#  dus5_pass_r.script — dusan_v5
+#  원점에서 반대쪽 끝으로 한 줄. servoj 로 호를 따라가며 눌림을 계속 확인한다
+#
+#  펜던트에서 "7_pass_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  v4 는 movec 한 번으로 호를 그렸다. 그러면 호를 도는 동안 센서를 볼 수가
+#  없어서, 벽이 설계 반지름과 조금만 달라도 프로브가 떠 있는지 너무 눌렸는지
+#  알 수 없었다. v5 는 제어주기(sv_dt)마다 호 위 다음 점을 직접 계산해
+#  servoj 로 보내고, 그 사이마다 중앙 접촉 센서를 읽어 TCP Z(벽 방향)로
+#  눌림을 보정한다.
+#    di_touch 꺼짐          -> 덜 눌림: TCP +Z 로 조금 전진  (288 = 2)
+#    di_limit 켜짐          -> 너무 눌림: TCP -Z 로 조금 후진 (288 = 3)
+#    di_touch 켜짐·limit 꺼짐 -> 적정: 그대로                (288 = 1)
+#  한 주기 보정량은 press_rate[mm/s] x sv_dt 이고, 한 줄 동안 쌓인 보정이
+#  press_max[mm] 를 넘으면 벽을 놓쳤거나 파고드는 것이라 멈춘다(299 = 6).
+#  289 = 지금까지의 보정량 [0.01mm] (+ 가 전진).
+#
+#  호는 dus5_probe_l 이 잡은 곡률 중심(arc_ox, arc_oy)을 지나는 **수직축**
+#  둘레의 회전이다(al_arc 와 같은 방식) — 자세도 같이 돌아 손이 늘 그
+#  자리의 법선을 본다. 높이(Z)는 그대로다.
+# =============================================================================
+
+def sr_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+def sr_wrap(a):
+  if (a > 3.14159265):
+    a = a - 6.28318531
+  end
+  if (a < -3.14159265):
+    a = a + 6.28318531
+  end
+  return a
+end
+
+
+def sr_rot(o_t, rel, phi):
+  # 곡률 중심 o_t 를 지나는 수직축으로 rel 을 phi [rad] 만큼 돌린 자세.
+  return pose_trans(o_t, pose_trans([0, 0, 0, 0, 0, phi], rel))
+end
+
+
+def sr_fail(code, msg):
+  stopj(2.0)
+  write_port_register(288, 0)
+  write_port_register(299, code)
+  write_port_register(290, 9)
+  popup(s = msg, title = "dusan_v5", blocking = True)
+  halt()
+end
+
+
+def sr_servo_arc(end_pose):
+  # 지금 자세에서 end_pose 의 방위각까지 호를 그린다. 반환: 호 길이 [mm].
+  # 곡률 중심이 안 잡혔으면(dus5_probe_l 실패·반지름 0) 지난 사이클 값으로
+  # 엉뚱한 호를 그리게 된다. 그리지 않고 멈춘다.
+  if (arc_ok == False):
+    sr_fail(4, "SCAN ARC: NO ARC CENTER (radius 260 / arc 256)")
+  end
+  p0 = get_actual_tcp_pose()
+  o_t = [arc_ox, arc_oy, 0, 0, 0, 0]
+  rel = pose_trans(pose_inv(o_t), p0)
+  rx = p0[0] - arc_ox
+  ry = p0[1] - arc_oy
+  r_path = sqrt(rx * rx + ry * ry)
+  dphi = sr_wrap(atan2(end_pose[1] - arc_oy, end_pose[0] - arc_ox) - atan2(ry, rx))
+  sgn = 1
+  if (dphi < 0):
+    sgn = -1
+  end
+  sv_tot = dphi * sgn * r_path
+
+  # 가는 길에 역기구학 해가 없으면 도중에 알람으로 서 버린다. 미리 본다.
+  sv_q = get_actual_joint_positions()
+  p_mid = sr_rot(o_t, rel, dphi * 0.5)
+  p_end = sr_rot(o_t, rel, dphi)
+  if (get_inverse_kin_has_solution(p_mid, qnear = sv_q) == False or get_inverse_kin_has_solution(p_end, qnear = sv_q) == False):
+    sr_fail(7, "SCAN ARC: NO IK SOLUTION")
+  end
+
+  sv_stp = press_rate * 0.001 * sv_dt
+  sv_lim = press_max * 0.001
+  sv_d = 0
+  sv_s = 0
+  sv_v = 0
+  sv_st = 1
+  sv_set = 0
+  # 끝점에 닿은 뒤에도 lookahead 만큼 따라오는 중이다. 두 배를 기다린다.
+  sv_nset = ceil(sv_look * 2.0 / sv_dt)
+  while (sv_set < sv_nset):
+    # 1) 진행 — 사다리꼴 속도(a_scan, v_scan). 남은 거리로 감속한다.
+    if (sv_s < sv_tot):
+      v_top = sqrt(2.0 * a_scan * (sv_tot - sv_s))
+      if (v_top > v_scan):
+        v_top = v_scan
+      end
+      if (v_top < 0.002):
+        v_top = 0.002
+      end
+      sv_v = sv_v + a_scan * sv_dt
+      if (sv_v > v_top):
+        sv_v = v_top
+      end
+      sv_s = sv_s + sv_v * sv_dt
+      if (sv_tot - sv_s < 0.0002):
+        sv_s = sv_tot
+      end
+    else:
+      sv_set = sv_set + 1
+    end
+
+    # 2) 눌림 — 센서를 보고 TCP Z 로 보정한다.
+    if (get_standard_digital_in(di_limit)):
+      sv_d = sv_d - sv_stp
+      sv_st = 3
+    elif (get_standard_digital_in(di_touch) == False):
+      sv_d = sv_d + sv_stp
+      sv_st = 2
+    else:
+      sv_st = 1
+    end
+    if (sv_d > sv_lim or sv_d < -sv_lim):
+      sr_fail(6, "SCAN: PRESS NOT HELD (press_max)")
+    end
+    write_port_register(288, sv_st)
+    sr_w1(289, sv_d * 100000)
+
+    # 3) 목표 자세 -> 관절 -> servoj (sv_dt 동안 막힌다 = 루프 주기)
+    tgt = pose_trans(sr_rot(o_t, rel, sgn * sv_s / r_path), [0, 0, sv_d, 0, 0, 0])
+    sv_q = get_inverse_kin(tgt, qnear = sv_q)
+    servoj(sv_q, t = sv_dt, lookahead_time = sv_look, gain = sv_gain)
+  end
+  stopj(2.0)
+  write_port_register(288, 0)
+  return sv_tot * 1000.0
+end
+
+
+# 원점 -> p_r_pose 방위각까지 한 줄.
+# 반시계 방향으로 바뀌면서 베이스 Y 는 **줄어드는** 쪽이다.
+# 발행 좌표는 pub_rel 이 Rz 180 도로 뒤집어 + 로 내보낸다.
+# 스캔 동작에 들어섰다고 알린다(6 = 스캔 중). 이 값이 6 인 동안에만
+# 제로점 기준 좌표(280~285)가 나간다 — dus5_init 의 pub_rel 참고.
+write_port_register(290, 6)
+
+pass_len = sr_servo_arc(p_r_pose)
+
+row_idx = row_idx + 1
+dir_sign = -1
+pass_done = 1
+# 총 작업 거리는 TCP 가 실제로 지난 호 길이다(pass_len, mm).
+path_len = path_len + pass_len
+write_port_register(291, row_idx)
+sr_w1(297, path_len * 0.1)
+sr_w1(298, row_idx * 100.0 / rows)
