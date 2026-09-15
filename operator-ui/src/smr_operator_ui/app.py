@@ -54,6 +54,11 @@ from smr_operator_ui.services import (
     SettingsService,
 )
 from smr_operator_ui.services.data_recorder import DataRecorder
+from smr_operator_ui.services.motion_adapters import SwitchableMotion
+from smr_operator_ui.services.vehicle_adapters import (
+    VehicleAmrAdapter, VehicleLiftAdapter, VehicleOutriggerAdapter,
+)
+from smr_operator_ui.services.vehicle_client import VehicleClient
 from smr_operator_ui.services.job_sequencer import CellStatus
 from smr_operator_ui.services.erut_session import (
     HOME_BUSY_TEXT,
@@ -345,9 +350,16 @@ class OperatorWindow(QMainWindow):
         self.sequencer = JobSequencer(self)
         # ERUT(스테이션)와의 통신. doosan/* 규격과 봉투가 달라 접속을 따로 둔다.
         self.erut = ErutClient(parent=self)
-        self.lift = DummyMotionAdapter("리프트", parent=self)
-        self.amr = DummyMotionAdapter("AMR", parent=self)
-        self.outrigger = DummyMotionAdapter("아웃트리거", travel_ms=700, parent=self)
+        # 차량 쪽(리프트·AMR·아웃트리거)은 더미와 ROS 차량을 바꿔 끼운다
+        # (연결 설정의 '차량 제어'). ROS 차량 쪽은 ROS 노드가 생긴 뒤 붙인다.
+        self.lift = SwitchableMotion(
+            {"dummy": DummyMotionAdapter("리프트", parent=self)}, "dummy", parent=self)
+        self.amr = SwitchableMotion(
+            {"dummy": DummyMotionAdapter("AMR", parent=self)}, "dummy", parent=self)
+        self.outrigger = SwitchableMotion(
+            {"dummy": DummyMotionAdapter("아웃트리거", travel_ms=700, parent=self)},
+            "dummy", parent=self)
+        # 안전 위치 = 로봇이 물러나는 동작이라 차량과 상관없다(아직 더미).
         self.retractor = DummyMotionAdapter("안전 위치", travel_ms=700, parent=self)
         self.main_screen = MainScreen()
         # 화면 키를 탐색 시그널에도 사용하여, 화면 전환 로직이 구체적인
@@ -436,6 +448,7 @@ class OperatorWindow(QMainWindow):
         # 로봇 자세는 robot_control_node가 Modbus에서 읽어 발행한다. 화면은
         # ROS 실행기 스레드가 아닌 GUI 스레드에서 시그널로 값을 받는다.
         self.ros_status = RosStatusClient(parent=self)
+        self._setup_vehicle()
         self.ros_status.tcp_pose_changed.connect(self._show_tcp_pose)
         self.ros_status.tcp_pose_zero_changed.connect(self._show_tcp_pose_zero)
         self.ros_status.robot_mode_changed.connect(
@@ -994,6 +1007,7 @@ class OperatorWindow(QMainWindow):
 
     def _on_robot_task_state(self, state: int) -> None:
         self._robot_task_state = int(state)
+        self._sync_manual_interlock()
         self.cobot_manual_screen.apply_status({
             "task_state": TASK_STATE_NAMES.get(self._robot_task_state,
                                                f"알 수 없음({self._robot_task_state})"),
@@ -1263,6 +1277,7 @@ class OperatorWindow(QMainWindow):
             self._apply_system_settings(scope, values)
             if scope == "connection":
                 self._sync_cobot_endpoint()
+                self._apply_vehicle_mode()
 
     def _connect_robot(self) -> None:
         """"연결 설정" 화면의 주소로 로봇에 붙는다.
@@ -1315,6 +1330,7 @@ class OperatorWindow(QMainWindow):
             screen.mark_saved()
             if scope == "connection":
                 self._sync_cobot_endpoint()
+                self._apply_vehicle_mode()
         elif scope == "inspection_target":
             self.main_screen.show_activity("검사 대상 크기를 저장했습니다.")
 
@@ -2107,8 +2123,114 @@ class OperatorWindow(QMainWindow):
             return
         self.data_recorder.comms(direction, "MC", topic, payload)
 
+    # ------------------------------------------------------------ 차량
+    #: 차량 주행 속도 [m/s]. SetJob.set_speed 로 싣는다.
+    VEHICLE_SPEED_MPS = 0.2
+
+    def _setup_vehicle(self) -> None:
+        """ROS 차량 제어 노드와 붙는다(vehicle_interfaces). 없으면 더미로만 돈다."""
+        self.vehicle = VehicleClient(self.ros_status, parent=self)
+        self._vehicle_amr = VehicleAmrAdapter(self.vehicle, self.VEHICLE_SPEED_MPS, parent=self)
+        self.amr.add_backend("vehicle", self._vehicle_amr)
+        self.lift.add_backend("vehicle", VehicleLiftAdapter(self.vehicle, parent=self))
+        self.outrigger.add_backend("vehicle", VehicleOutriggerAdapter(self.vehicle, parent=self))
+        for motion in (self.amr, self.lift, self.outrigger):
+            motion.problem.connect(self._on_vehicle_problem)
+        self.vehicle.online_changed.connect(self._show_vehicle_link)
+        # 수동 제어 화면 — ManualCommand / RobotControl 로 보낸다.
+        manual = self.screens["manual"]
+        manual.manual_requested.connect(lambda fields: self.vehicle.manual(**fields))
+        manual.stop_requested.connect(lambda: self.vehicle.control("STOP"))
+        manual.reset_requested.connect(lambda: self.vehicle.control(reset=True))
+        self.vehicle.status_changed.connect(manual.set_status)
+        self.vehicle.command_result.connect(self._show_vehicle_command_result)
+        self.sequencer.state_changed.connect(self._sync_manual_interlock)
+        self.sequencer.state_changed.connect(self._vehicle_follow_pause)
+
+    def _vehicle_mode(self) -> str:
+        screen = self.screens["connection"]
+        field = screen.field("차량 제어")
+        return screen.VEHICLE_MODES.get(field.currentText(), "dummy") if field else "dummy"
+
+    def _apply_vehicle_mode(self) -> None:
+        """연결 설정의 '차량 제어'를 반영한다. 움직이는 중이면 다음에 바꾼다."""
+        mode = self._vehicle_mode()
+        if self.amr.active == mode:
+            return
+        motions = (self.amr, self.lift, self.outrigger)
+        # 셋이 늘 같은 쪽을 보게 한다 — 하나라도 움직이는 중이면 아무것도 안 바꾼다.
+        if any(m.moving for m in motions) or self._job_running():
+            self.main_screen.show_activity(
+                "차량이 움직이거나 작업 중이라 차량 제어를 바꾸지 않았습니다 — 멈춘 뒤 다시 저장하세요.")
+            return
+        for m in motions:
+            m.select(mode)
+        if mode == "vehicle":
+            note = "" if self.vehicle.available else " — ROS·vehicle_interfaces 가 없어 명령을 보낼 수 없습니다"
+            self.main_screen.show_activity(
+                f"차량 제어: ROS 차량 노드 ({self.vehicle.topic('robot_status')}){note}")
+        else:
+            self.main_screen.show_activity("차량 제어: 더미 (차량 없이 순서만 흉내 냅니다)")
+        self._show_vehicle_link(self.vehicle.online)
+
+    def _show_vehicle_link(self, online: bool) -> None:
+        # 더미일 때 AMR 표시는 예전처럼 자리표시자(연결됨)다.
+        vehicle = self.amr.active == "vehicle"
+        self.top_bar.badges["AMR"].set_connected(bool(online) if vehicle else True)
+        manual = self.screens["manual"]
+        if not vehicle:
+            manual.set_available(False, "차량 제어가 '더미'입니다 — 연결 설정에서 'ROS 차량 노드'로 바꾸면 쓸 수 있습니다.")
+        elif not online:
+            manual.set_available(False, f"차량 상태({self.vehicle.topic('robot_status')})가 들어오지 않습니다 — 차량 제어 노드를 확인하세요.")
+        else:
+            manual.set_available(True)
+
+    def _show_vehicle_command_result(self, name: str, ok: bool, message: str) -> None:
+        if not ok:
+            self.main_screen.show_activity(f"차량 {name} 거절: {message}")
+
+    def _vehicle_follow_pause(self, name: str) -> None:
+        """작업 일시정지·재개를 달리는 차량에도 전한다(PAUSED / RUNNING).
+
+        더미는 멈출 필요가 없지만 실제 차량은 일시정지 중에 계속 가면 안 된다.
+        """
+        if self.amr.active != "vehicle" or not self.amr.moving:
+            self._vehicle_paused = False
+            return
+        if name == SequencerState.PAUSED.name:
+            self._vehicle_paused = True
+            self.vehicle.control("PAUSED")
+        elif getattr(self, "_vehicle_paused", False):
+            self._vehicle_paused = False
+            self.vehicle.control("RUNNING")
+
+    def _sync_manual_interlock(self, *_args) -> None:
+        """로봇이 동작 중이면 수동 제어의 주행·아웃트리거 해제·리프트를 잠근다."""
+        self.screens["manual"].set_interlock(self._robot_busy())
+
+    def _on_vehicle_problem(self, message: str) -> None:
+        """차량이 도착을 못 냈다 — 장애로 올린다(작업을 멈추고 로봇도 세운다)."""
+        self.erut_session.raise_error({
+            "code": "E-VEHICLE", "message": "차량 동작 실패", "level": "stop",
+            "recovery": "manual", "detail": message,
+        })
+        self.cobot_manual_screen.add_alarm(f"차량: {message}")
+
+    def _set_vehicle_totals(self, plan) -> None:
+        """SetJob 의 total_distance / total_height (작업 전체 크기, m)."""
+        try:
+            cols, rows = int(plan.column_count), int(plan.row_count)
+            w, h = float(plan.cell_width), float(plan.cell_height)
+            px, py = float(plan.pitch_x or 0.0), float(plan.pitch_y or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            return
+        total_d = (max(cols - 1, 0) * max(w - px, 0.0) + w) / 1000.0
+        total_h = (max(rows - 1, 0) * max(h - py, 0.0) + h) / 1000.0
+        self._vehicle_amr.totals = (total_d, total_h)
+
     def _record_job(self, source: str, job_id: str, plan) -> None:
         self.data_recorder.begin_job(source, job_id, plan, nosensor=self._nosensor)
+        self._set_vehicle_totals(plan)
 
     def _record_cell_status(self, label: str, status: str) -> None:
         if status == CellStatus.EXECUTING.value:

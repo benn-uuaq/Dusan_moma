@@ -101,3 +101,81 @@ class DummyMotionAdapter(QObject):
         self.position_changed.emit(self._position)
         self.activity.emit(f"[더미] {self._name} {self._pending} 도착")
         self.arrived.emit()
+
+
+class SwitchableMotion(QObject):
+    """더미와 실제 장비를 바꿔 끼우는 자리.
+
+    시퀀서·마킹 순회·ERUT 응답은 이 객체 하나만 본다. 연결 설정의
+    '차량 제어'로 뒤의 장비(backend)를 고르고, 지금 고른 쪽의 시그널만
+    바깥으로 넘긴다. 움직이는 중에는 바꾸지 않는다.
+    """
+
+    arrived = pyqtSignal()
+    activity = pyqtSignal(str)
+    position_changed = pyqtSignal(float)
+    #: 실제 장비가 도착을 못 낸 이유(오류·거절·시간 초과). 더미는 내지 않는다.
+    problem = pyqtSignal(str)
+
+    def __init__(self, backends: dict, active: str, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._backends: dict = {}
+        self._active = active
+        for name, backend in backends.items():
+            self.add_backend(name, backend)
+
+    def add_backend(self, name: str, backend) -> None:
+        """나중에 준비되는 장비(ROS 차량 등)를 붙인다. 고르기 전에는 조용하다."""
+        self._backends[name] = backend
+        backend.arrived.connect(lambda n=name: self._forward(n, self.arrived))
+        backend.activity.connect(lambda text, n=name: self._forward(n, self.activity, text))
+        backend.position_changed.connect(
+            lambda value, n=name: self._forward(n, self.position_changed, value))
+        if hasattr(backend, "problem"):
+            backend.problem.connect(lambda text, n=name: self._forward(n, self.problem, text))
+
+    def _forward(self, name: str, signal, *args) -> None:
+        if name == self._active:
+            signal.emit(*args)
+
+    @property
+    def active(self) -> str:
+        return self._active
+
+    @property
+    def backend(self):
+        return self._backends[self._active]
+
+    def select(self, name: str) -> bool:
+        """뒤의 장비를 바꾼다. 없는 이름이거나 움직이는 중이면 False."""
+        if name not in self._backends:
+            return False
+        if name == self._active:
+            return True
+        if self.backend.moving:
+            return False
+        self._active = name
+        self.position_changed.emit(self.backend.position)
+        return True
+
+    # ---- DummyMotionAdapter 와 같은 모양 -------------------------------------
+    @property
+    def position(self) -> float:
+        return self.backend.position
+
+    @property
+    def target(self) -> float:
+        return self.backend.target
+
+    @property
+    def moving(self) -> bool:
+        return self.backend.moving
+
+    def move_to(self, target, unit: str = "", label: str = "") -> None:
+        self.backend.move_to(target, unit, label=label)
+
+    def cancel(self) -> None:
+        self.backend.cancel()
+
+    def reset(self, position: float = 0.0) -> None:
+        self.backend.reset(position)

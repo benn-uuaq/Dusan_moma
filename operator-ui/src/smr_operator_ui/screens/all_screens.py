@@ -6,8 +6,9 @@ import json
 import os
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QMessageBox,
     QAbstractItemView, QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QListWidget, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout,
@@ -77,34 +78,113 @@ class BaseScreen(QWidget):
 
 
 class ManualScreen(BaseScreen):
-    """AMR, 리프트, 아웃트리거 수동 제어 화면."""
+    """차량(AMR·리프트·아웃트리거) 수동 제어 — 차량 담당자의 ManualCommand 로 보낸다.
+
+    조그(전진·후진·회전)와 아웃트리거 개별 상승·하강은 **누르는 동안만**
+    움직인다. 누르고 있으면 REPEAT_MS 마다 같은 명령을 다시 보내고, 떼면
+    "명령 없음"을 보낸다 — 떼는 신호를 놓쳐도 차량이 계속 가지 않게(차량 쪽
+    deadman). 리프트는 목표 높이로, 아웃트리거 고정/해제는 한 번 누르면 된다.
+
+    화면은 명령만 알린다(manual_requested / stop_requested / reset_requested).
+    앱이 차량 제어가 'ROS 차량 노드'이고 상태가 들어올 때만 버튼을 연다.
+    로봇이 동작 중이면 주행·아웃트리거 해제·리프트 이동을 잠근다(set_interlock).
+    """
+
+    manual_requested = pyqtSignal(dict)
+    stop_requested = pyqtSignal()
+    reset_requested = pyqtSignal()
+
+    REPEAT_MS = 200
 
     def __init__(self) -> None:
-        super().__init__("수동 제어", "점검 모드에서만 사용할 수 있으며, 버튼을 누르는 동안에만 동작합니다.")
-        # 창을 작게 쓰면 카드 높이가 모자라 버튼끼리 겹쳐 보였다. 내용을
-        # 스크롤 영역에 담아, 모자라면 겹치는 대신 스크롤되게 한다.
+        super().__init__("수동 제어", "차량 담당자의 제어 노드로 AMR·리프트·아웃트리거를 움직입니다. 조그는 누르는 동안만 움직입니다.")
+        self._held: dict | None = None
+        self._enabled = False
+        self._interlock = False
+        self.confirm = lambda text: QMessageBox.question(
+            self, "차량 원점/초기화", text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
+        self._repeat = QTimer(self)
+        self._repeat.setInterval(self.REPEAT_MS)
+        self._repeat.timeout.connect(self._resend_held)
+
         page = QWidget()
         grid = QGridLayout(page); grid.setSpacing(12); grid.setContentsMargins(0, 0, 0, 0)
-        amr, a = self.surface("AMR 조그 제어")
+
+        amr, a = self.surface("AMR 조그")
         pad = QGridLayout()
-        for text, r, c in (("전진",0,1),("좌회전",1,0),("정지",1,1),("우회전",1,2),("후진",2,1)):
-            b=QPushButton(text); b.setMinimumHeight(64); pad.addWidget(b,r,c)
-        a.addLayout(pad); a.addWidget(QLabel("속도 설정  0.10 m/s   |   Cobot 안전 위치 확인됨"))
-        grid.addWidget(amr,0,0,2,1)
-        lift,l=self.surface("리프트")
-        l.addWidget(QLabel("현재 높이")); val=QLabel("1.20 m"); val.setObjectName("HeroValue"); l.addWidget(val)
-        row=QHBoxLayout(); row.addWidget(QPushButton("상승")); row.addWidget(QPushButton("하강")); l.addLayout(row)
-        grid.addWidget(lift,0,1)
-        out,o=self.surface("아웃트리거")
-        og=QGridLayout()
-        og.setSpacing(8)
-        for i in range(3):
-            label = QLabel(f"Outrigger {i+1}\n접지 · 정상")
-            label.setWordWrap(True)
-            og.addWidget(label,0,i)
-            og.addWidget(QPushButton("전개"),1,i); og.addWidget(QPushButton("회수"),2,i)
-        o.addLayout(og); level=QPushButton("자동 수평 보정"); level.setMinimumHeight(56); o.addWidget(level)
-        grid.addWidget(out,1,1)
+        self.jog_buttons: dict[str, QPushButton] = {}
+        for text, key, r, c in (("전진", "cmd_mv_fwd", 0, 1), ("좌회전", "cmd_trn_left", 1, 0),
+                                ("우회전", "cmd_trl_right", 1, 2), ("후진", "cmd_mv_rear", 2, 1)):
+            b = QPushButton(text); b.setMinimumHeight(64)
+            b.pressed.connect(lambda k=key: self._hold({k: True}))
+            b.released.connect(self._release)
+            self.jog_buttons[key] = b
+            pad.addWidget(b, r, c)
+        self.stop_button = QPushButton("정지"); self.stop_button.setObjectName("DangerButton")
+        self.stop_button.setMinimumHeight(64)
+        self.stop_button.clicked.connect(self._stop)
+        pad.addWidget(self.stop_button, 1, 1)
+        a.addLayout(pad)
+        grid.addWidget(amr, 0, 0)
+
+        lift, l = self.surface("리프트")
+        self.lift_value = QLabel("- mm"); self.lift_value.setObjectName("HeroValue")
+        l.addWidget(QLabel("현재 높이")); l.addWidget(self.lift_value)
+        row = QHBoxLayout()
+        self.lift_target = spin(0, 0, 3000); self.lift_target.setSuffix(" mm")
+        self.lift_button = QPushButton("이 높이로 이동")
+        self.lift_button.clicked.connect(self._move_lift)
+        row.addWidget(self.lift_target, 1); row.addWidget(self.lift_button)
+        l.addLayout(row)
+        note = QLabel("아웃트리거가 고정돼 있을 때만 움직입니다."); note.setObjectName("Muted")
+        l.addWidget(note)
+        l.addStretch()
+        grid.addWidget(lift, 0, 1)
+
+        out, o = self.surface("아웃트리거")
+        sets = QHBoxLayout()
+        self.outrigger_set_button = QPushButton("전체 고정")
+        self.outrigger_release_button = QPushButton("전체 해제")
+        self.outrigger_set_button.clicked.connect(lambda: self._send({"cmd_outrg_set": 2}))
+        self.outrigger_release_button.clicked.connect(lambda: self._send({"cmd_outrg_set": 1}))
+        sets.addWidget(self.outrigger_set_button); sets.addWidget(self.outrigger_release_button)
+        o.addLayout(sets)
+        og = QGridLayout(); og.setSpacing(8)
+        self.outrigger_buttons: list[QPushButton] = []
+        # 아웃트리거마다 [상승][하강] 을 옆으로 붙인다(한 줄로 — 화면 높이를 아낀다).
+        for i in range(1, 4):
+            og.addWidget(QLabel(f"아웃트리거 {i}"), 0, (i - 1) * 2, 1, 2)
+            for col, (text, value) in enumerate((("상승", 1), ("하강", 2))):
+                b = QPushButton(text)
+                b.pressed.connect(lambda k=f"cmd_man_outrg{i}", v=value: self._hold({k: v}))
+                b.released.connect(self._release)
+                self.outrigger_buttons.append(b)
+                og.addWidget(b, 1, (i - 1) * 2 + col)
+        o.addLayout(og)
+        grid.addWidget(out, 1, 0, 1, 2)
+
+        status, st = self.surface("차량 상태")
+        self.status_blocks: dict[str, StatusBlock] = {}
+        sg = QGridLayout(); sg.setSpacing(6)
+        for index, (key, label) in enumerate((
+                ("state", "상태"), ("hold", "아웃트리거"), ("error", "오류"), ("job_id", "작업 ID"),
+                ("dist", "이동 / 목표"), ("speed", "속도"), ("sensors", "센서 1 / 2"), ("position", "위치 x / yaw"))):
+            block = StatusBlock(label)
+            self.status_blocks[key] = block
+            sg.addWidget(block, index // 2, index % 2)
+        st.addLayout(sg)
+        tools = QHBoxLayout()
+        self.reset_button = QPushButton("오류 리셋")
+        self.init_button = QPushButton("원점/초기화")
+        self.reset_button.clicked.connect(self.reset_requested)
+        self.init_button.clicked.connect(self._init)
+        tools.addWidget(self.reset_button); tools.addWidget(self.init_button)
+        st.addStretch()
+        st.addLayout(tools)
+        grid.addWidget(status, 0, 2, 2, 1)
+        grid.setColumnStretch(0, 3); grid.setColumnStretch(1, 3); grid.setColumnStretch(2, 3)
 
         scroll = QScrollArea()
         scroll.setObjectName("SettingsScroll")
@@ -114,8 +194,85 @@ class ManualScreen(BaseScreen):
         scroll.setWidget(page)
         self.body.addWidget(scroll, 1)
 
-        alert=QLabel("안전 인터락: Cobot 검사 중에는 AMR 이동과 아웃트리거 회수가 비활성화됩니다.")
-        alert.setObjectName("StatusWarn"); alert.setWordWrap(True); self.body.addWidget(alert)
+        self.notice = QLabel("")
+        self.notice.setObjectName("StatusWarn"); self.notice.setWordWrap(True)
+        self.body.addWidget(self.notice)
+        self.set_available(False, "차량 제어가 '더미'입니다 — 연결 설정에서 'ROS 차량 노드'로 바꾸면 쓸 수 있습니다.")
+
+    # ---- 상태 --------------------------------------------------------------
+    def set_available(self, on: bool, reason: str = "") -> None:
+        """차량에 명령을 보낼 수 있는지(ROS 차량 노드 + 상태 수신)."""
+        self._enabled = bool(on)
+        self._refresh_enabled(reason)
+
+    def set_interlock(self, on: bool) -> None:
+        """로봇이 동작 중이면 주행·아웃트리거 해제·리프트 이동을 잠근다."""
+        self._interlock = bool(on)
+        self._refresh_enabled()
+
+    def _refresh_enabled(self, reason: str = "") -> None:
+        free = self._enabled and not self._interlock
+        for b in (*self.jog_buttons.values(), self.lift_button, self.outrigger_release_button,
+                  *self.outrigger_buttons):
+            b.setEnabled(free)
+        for b in (self.outrigger_set_button, self.reset_button, self.init_button, self.stop_button):
+            b.setEnabled(self._enabled)
+        if not free and self._held is not None:
+            self._release()
+        if not self._enabled:
+            self.notice.setText(reason or "차량 상태가 들어오지 않습니다 — 차량 제어 노드를 확인하세요.")
+        elif self._interlock:
+            self.notice.setText("안전 인터락: 로봇이 동작 중이라 주행·아웃트리거 해제·리프트 이동을 잠갔습니다.")
+        else:
+            self.notice.setText("")
+        # 할 말이 없으면 줄을 숨겨 화면 높이를 돌려준다.
+        self.notice.setVisible(bool(self.notice.text()))
+
+    def set_status(self, status: dict) -> None:
+        b = self.status_blocks
+        b["state"].set_value(status.get("state", "-") or "-")
+        b["hold"].set_value({"SET": "고정", "RELEASE": "해제"}.get(status.get("hold"), status.get("hold") or "-"))
+        code = int(status.get("error_code", 0) or 0)
+        b["error"].set_value("정상" if code == 0 else f"{code} {status.get('error_msg', '')}".strip())
+        b["job_id"].set_value(status.get("job_id") or "-")
+        b["dist"].set_value(f"{status.get('mv_dist', 0.0):.3f} / {status.get('set_dist', 0.0):.3f} m")
+        b["speed"].set_value(f"{status.get('speed', 0.0):.2f} m/s")
+        b["sensors"].set_value(f"{status.get('sen1_dist', 0.0):.3f} / {status.get('sen2_dist', 0.0):.3f} m")
+        b["position"].set_value(f"{status.get('x', 0.0):.3f} m / {status.get('yaw', 0.0):.2f} rad")
+        self.lift_value.setText(f"{status.get('lift_h', 0.0) * 1000:,.0f} mm")
+
+    # ---- 명령 --------------------------------------------------------------
+    def _send(self, fields: dict) -> None:
+        if self._enabled:
+            self.manual_requested.emit(dict(fields))
+
+    def _hold(self, fields: dict) -> None:
+        if not self._enabled or self._interlock:
+            return
+        self._held = dict(fields)
+        self._send(self._held)
+        self._repeat.start()
+
+    def _resend_held(self) -> None:
+        if self._held is not None:
+            self._send(self._held)
+
+    def _release(self) -> None:
+        self._repeat.stop()
+        if self._held is not None:
+            self._held = None
+            self._send({})                      # 명령 없음 = 멈춤
+
+    def _stop(self) -> None:
+        self._release()
+        self.stop_requested.emit()
+
+    def _move_lift(self) -> None:
+        self._send({"cmd_mv_lift": 1, "lift_height": self.lift_target.value() / 1000.0})
+
+    def _init(self) -> None:
+        if self.confirm("차량 원점/초기화를 보냅니다(수동 모드에서만 동작)."):
+            self._send({"cmd_init": 1})
 
 
 class StatusBlock(QWidget):
@@ -916,6 +1073,9 @@ class CobotSettingsScreen(FormScreen):
 
 
 class ConnectionSettingsScreen(FormScreen):
+    #: '차량 제어' 목록 -> 앱이 쓰는 장비 이름. 앞의 것이 기본.
+    VEHICLE_MODES = {"더미 (차량 없이)": "dummy", "ROS 차량 노드": "vehicle"}
+
     """협동로봇, 차량용 PLC, MQTT Broker의 유선 연결 정보를 한 화면에서 설정한다.
 
     로봇 연결/연결 해제도 **이 화면에서만** 한다. 예전에는 Cobot 수동 제어와
@@ -941,6 +1101,11 @@ class ConnectionSettingsScreen(FormScreen):
 
     def __init__(self):
         plc_protocol=TouchComboBox(); plc_protocol.addItems(["KEYENCE MC Protocol","Modbus TCP"])
+        # 차량(AMR·리프트·아웃트리거)을 무엇으로 움직일지. 더미는 장비 없이
+        # 순서만 흉내 내고, ROS 차량 노드는 차량 담당자의 제어 노드
+        # (vehicle_interfaces: robot_status / set_job / robot_control /
+        # manual_command)로 실제로 움직인다. 기본은 더미.
+        vehicle_mode=TouchComboBox(); vehicle_mode.addItems(list(self.VEHICLE_MODES))
         super().__init__(
             "connection","연결 설정",
             "각 장비의 유선 연결 정보를 설정합니다. 변경한 값은 다음 연결 시도부터 적용됩니다.",
@@ -951,6 +1116,7 @@ class ConnectionSettingsScreen(FormScreen):
                 ("Primary 포트",spin(30001,1,65535)),
                 ("Modbus 포트",spin(502,1,65535)),
                 ("차량용 PLC",None),
+                ("차량 제어",vehicle_mode),
                 ("PLC IP",line("192.168.0.10")),
                 ("PLC 포트",spin(5000,1,65535)),
                 ("PLC 프로토콜",plc_protocol),

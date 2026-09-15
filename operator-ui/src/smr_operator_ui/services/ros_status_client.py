@@ -164,6 +164,8 @@ class RosStatusClient(QObject):
         self._connected_last: bool | None = None
         # 속도 비율도 같은 이유로 직전 값을 들고 있는다.
         self._speed_scale_last: int | None = None
+        # 같은 노드에 붙는 확장(차량 클라이언트 등). 노드가 생기면 부른다.
+        self._extensions: list = []
         if REGISTER_MAP_AVAILABLE:
             try:
                 self._registers = register_map.load()
@@ -183,6 +185,16 @@ class RosStatusClient(QObject):
     def available(self) -> bool:
         """rclpy를 불러올 수 있는지 알려준다."""
         return ROS_AVAILABLE
+
+    def add_extension(self, attach) -> None:
+        """이 노드에 구독·서비스를 더 붙일 함수(attach(node))를 등록한다.
+
+        노드가 이미 있으면 바로 부르고, 아니면 start() 에서 노드를 만든 뒤
+        부른다. 차량 클라이언트가 로봇과 같은 노드·실행기를 쓰게 하려고 둔다.
+        """
+        self._extensions.append(attach)
+        if self._node is not None:
+            attach(self._node)
 
     def start(self) -> None:
         """ROS 노드를 만들고 별도 스레드에서 구독을 시작한다."""
@@ -258,6 +270,8 @@ class RosStatusClient(QObject):
             # 서비스라 메시지를 새로 정의할 필요가 없다.
             self._param_client = self._node.create_client(
                 SetParameters, f"{self.ROBOT_NODE_NAME}/set_parameters")
+            for attach in self._extensions:
+                attach(self._node)
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
             self._thread = threading.Thread(target=self._spin, daemon=True)

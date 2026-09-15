@@ -197,3 +197,48 @@ def test_late_startup_load_does_not_wipe_a_fresh_slot(window) -> None:
     window._apply_stored_settings("mode_slots", {})     # 늦게 도착한 옛 값
     assert "방금 저장" in screen.slot_buttons[0].text()
     assert screen.load_button.isEnabled()
+
+
+# ---- 수동 제어 (차량) -------------------------------------------------------------------
+def test_manual_jog_repeats_while_held_and_stops_on_release(window, qtbot) -> None:
+    screen = window.screens["manual"]
+    sent = []
+    screen.manual_requested.connect(sent.append)
+    fwd = screen.jog_buttons["cmd_mv_fwd"]
+    assert not fwd.isEnabled(), "차량 제어가 더미면 잠겨 있다"
+
+    screen.set_available(True)
+    fwd.pressed.emit()
+    qtbot.wait(screen.REPEAT_MS * 2 + 80)
+    fwd.released.emit()
+    assert sent[0] == {"cmd_mv_fwd": True}
+    assert sent.count({"cmd_mv_fwd": True}) >= 2, "누르는 동안 다시 보낸다"
+    assert sent[-1] == {}, "떼면 '명령 없음'으로 멈춘다"
+
+    sent.clear()
+    screen.lift_target.setValue(1200)
+    screen.lift_button.click()
+    assert sent == [{"cmd_mv_lift": 1, "lift_height": 1.2}]
+
+
+def test_manual_interlock_while_the_robot_works(window) -> None:
+    screen = window.screens["manual"]
+    screen.set_available(True)
+    window._on_robot_task_state(1)                  # 로봇 태스크 실행 중
+    assert not screen.jog_buttons["cmd_mv_fwd"].isEnabled()
+    assert not screen.outrigger_release_button.isEnabled()
+    assert not screen.lift_button.isEnabled()
+    assert screen.outrigger_set_button.isEnabled() and screen.stop_button.isEnabled()
+    assert "인터락" in screen.notice.text()
+    window._on_robot_task_state(3)
+    assert screen.jog_buttons["cmd_mv_fwd"].isEnabled()
+
+
+def test_manual_status_panel(window) -> None:
+    screen = window.screens["manual"]
+    screen.set_status({"state": "HOLD", "hold": "SET", "error_code": 0, "job_id": "RCS-0003",
+                       "mv_dist": 0.7, "set_dist": 0.7, "speed": 0.0, "sen1_dist": 0.51,
+                       "sen2_dist": 0.49, "x": 2.1, "yaw": 0.0, "lift_h": 0.96})
+    assert screen.lift_value.text() == "960 mm"
+    assert screen.status_blocks["hold"].value_label.text() == "고정"
+    assert screen.status_blocks["error"].value_label.text() == "정상"

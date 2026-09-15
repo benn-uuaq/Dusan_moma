@@ -1,0 +1,10 @@
+# Request
+string state
+uint8 reset
+uint8 job_cancel
+---
+# Response
+# 받은 자료에는 "bool success" 가 세 번 적혀 있었다 — 같은 이름은 ROS 에서
+# 쓸 수 없어 하나로 둔다(차량 담당자 확인 필요).
+bool success           # 명령 접수 성공 여부
+string message         # 처리 결과 또는 실패 사유

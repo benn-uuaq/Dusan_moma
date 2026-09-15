@@ -1,0 +1,17 @@
+# Request
+# 명령 타입 정의
+bool cmd_mv_fwd        # 전진
+bool cmd_mv_rear       # 후진
+bool cmd_trn_left      # 좌회전
+bool cmd_trl_right     # 우회전 (받은 자료의 이름 그대로 — cmd_trn_right 의 오타일 수 있다, 확인 필요)
+uint8 cmd_outrg_set    # 아웃트리거 1해제/2고정/0none
+uint8 cmd_man_outrg1   # 아웃트리거1 1상승/2하강/0none
+uint8 cmd_man_outrg2   # 아웃트리거2 1상승/2하강/0none
+uint8 cmd_man_outrg3   # 아웃트리거3 1상승/2하강/0none
+uint8 cmd_mv_lift      # 리프트 이동(outrig set에서만 동작)
+uint8 cmd_init         # 수동 모드 원점/초기화
+float64 lift_height    # CMD_MV_LIFT 등에서 사용할 리프트 목표 높이
+---
+# Response
+bool success           # 수동 모드가 아니면 false 반환
+string message         # 결과 안내 (예: "Rejected: Not in manual mode", "Done")

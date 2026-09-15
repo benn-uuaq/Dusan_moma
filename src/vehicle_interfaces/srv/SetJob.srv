@@ -1,0 +1,12 @@
+# Request
+string job_id          # 작업 식별자
+float64 set_dist       # 목표 이동 거리
+float64 set_speed      # 목표 속도
+float64 offset_dist    # 오프셋 거리
+float64 offset_height  # offset lift 높이
+float64 total_distance
+float64 total_height
+---
+# Response
+bool success           # 명령 접수 성공 여부
+string message         # 처리 결과 또는 실패 사유
