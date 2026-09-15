@@ -1508,7 +1508,8 @@ def test_checking_nosensor_switches_and_loads_the_scan_task(qtbot) -> None:
     assert pushed[-1] == ("Dusan/dusan_v4/dusan_v4_nosensor_seq.task",
                           "Dusan/dusan_v4/dusan_v4_nosensor_mark.task")
     assert calls[-1] == "load_scan_task"
-    assert ("robot_task", {"nosensor": True}) in saved
+    # 판과 버전을 늘 함께 저장한다 — 파일 저장소는 범위를 통째로 바꿔 쓴다.
+    assert ("robot_task", {"nosensor": True, "task_version": "dusan_v4"}) in saved
     window.close()
 
 
@@ -1796,4 +1797,61 @@ def test_saving_system_settings_moves_the_record_folder(qtbot, tmp_path, monkeyp
     assert window.data_recorder.root == target
     assert window.data_recorder._retention_days == 30
     assert str(target) in window.screens["system"].field("데이터 저장 위치").toolTip()
+    window.close()
+
+
+# ---- 태스크 선택 (dusan_v4 / dusan_v5) ---------------------------------------------
+def test_task_selector_lists_versions_with_v4_default(qtbot) -> None:
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    cobot = window.screens["cobot"]
+    combo = cobot.task_version_combo
+    assert [combo.itemText(i) for i in range(combo.count())] == ["dusan_v4", "dusan_v5"]
+    assert cobot.task_version() == "dusan_v4"
+    assert window._task_paths() == ("Dusan/dusan_v4/dusan_v4.task",
+                                    "Dusan/dusan_v4/dusan_v4_mark.task")
+    # 폼 필드가 아니다 — Cobot '저장' 때 cobot 설정에 따로 들어가지 않는다.
+    assert "태스크 선택" not in cobot.values()
+    window.close()
+
+
+def test_choosing_v5_switches_paths_saves_and_loads(qtbot) -> None:
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    pushed, calls = _task_spy(window)
+    saved: list[tuple] = []
+    window.settings_service.save = lambda scope, values: saved.append((scope, dict(values)))
+    combo = window.screens["cobot"].task_version_combo
+
+    combo.setCurrentIndex(1)
+    combo.activated.emit(1)                     # 사용자가 목록에서 고른 것
+
+    assert pushed[-1] == ("Dusan/dusan_v5/dusan_v5.task", "Dusan/dusan_v5/dusan_v5_mark.task")
+    assert calls[-1] == "load_scan_task"
+    assert saved[-1] == ("robot_task", {"nosensor": False, "task_version": "dusan_v5"})
+
+    # 태스크 판(논센서)과 함께 쓴다.
+    window.screens["cobot"].nosensor_check.setChecked(True)
+    assert pushed[-1] == ("Dusan/dusan_v5/dusan_v5_nosensor_seq.task",
+                          "Dusan/dusan_v5/dusan_v5_nosensor_mark.task")
+    assert saved[-1] == ("robot_task", {"nosensor": True, "task_version": "dusan_v5"})
+    window.close()
+
+
+def test_stored_task_version_is_restored_without_loading(qtbot) -> None:
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    pushed, calls = _task_spy(window)
+
+    window._apply_stored_settings("robot_task", {"nosensor": False, "task_version": "dusan_v5"})
+    assert window.screens["cobot"].task_version() == "dusan_v5"
+    assert pushed[-1][0] == "Dusan/dusan_v5/dusan_v5.task"
+    assert "load_scan_task" not in calls, "불러오기만으로 로봇을 건드리면 안 된다"
+
+    # 예전 설정(버전 없음)이나 목록에 없는 값이면 기본 v4 로 둔다.
+    window._apply_stored_settings("robot_task", {"nosensor": False})
+    assert window.screens["cobot"].task_version() == "dusan_v4"
+    window._apply_stored_settings("robot_task", {"task_version": "dusan_v9"})
+    assert window.screens["cobot"].task_version() == "dusan_v4"
+    assert window._task_paths()[0] == "Dusan/dusan_v4/dusan_v4.task"
     window.close()

@@ -828,6 +828,12 @@ class CobotSettingsScreen(FormScreen):
     task_refresh_requested = pyqtSignal()
     # 논센서 태스크를 쓸지. 센서 없이 시험할 때만 켠다(기본은 센서판).
     nosensor_changed = pyqtSignal(bool)
+    # 불러올 태스크 버전(로봇 폴더 이름). 사용자가 목록에서 고를 때만 나간다.
+    task_version_changed = pyqtSignal(str)
+
+    #: 고를 수 있는 태스크 버전 = 로봇의 Dusan/<버전> 폴더. 앞의 것이 기본값.
+    #: v5 는 스캔 호를 servoj 로 그리며 눌림을 계속 확인한다.
+    TASK_VERSIONS = ("dusan_v4", "dusan_v5")
 
     def __init__(self):
         # pyqtSignal은 QObject.__init__()이 돌기 전에는 바인딩되지 않으므로,
@@ -847,12 +853,23 @@ class CobotSettingsScreen(FormScreen):
         task_layout.addWidget(self.task_status_label, 1)
         refresh = QPushButton("새로고침")
         task_layout.addWidget(refresh)
+        # 태스크 버전. 폼 필드로 두면 Cobot '저장' 때 cobot 설정에도 따로
+        # 들어가 두 곳 값이 어긋날 수 있어서, 줄 위젯으로 감싸 폼이 모으지
+        # 않게 한다 — 값은 태스크 판과 함께 robot_task 설정에만 둔다.
+        self.task_version_combo = TouchComboBox()
+        self.task_version_combo.addItems(self.TASK_VERSIONS)
+        self.task_version_combo.setCurrentIndex(0)
+        version_row = QWidget()
+        version_layout = QHBoxLayout(version_row)
+        version_layout.setContentsMargins(0, 0, 0, 0)
+        version_layout.addWidget(self.task_version_combo, 1)
         super().__init__(
             "cobot","Cobot 설정",
             "작업 슬롯과 속도를 관리합니다. 작업 속도는 movel 속도로 안전 기준상 "
             "최대 150 mm/s 이고, 속도 비율은 로봇 전체 속도에 곱해집니다(2~100 %).",
             [
                 ("현재 태스크",task_row),
+                ("태스크 선택",version_row),
                 ("태스크 판",self.nosensor_check),
                 (self.SPEED_FIELD,spin(150,1,150)),
                 (self.RATIO_FIELD,spin(100,2,100)),
@@ -862,6 +879,22 @@ class CobotSettingsScreen(FormScreen):
         )
         refresh.clicked.connect(self.task_refresh_requested)
         self.nosensor_check.toggled.connect(self.nosensor_changed)
+        self.task_version_combo.activated.connect(
+            lambda index: self.task_version_changed.emit(self.task_version_combo.itemText(index)))
+
+    def task_version(self) -> str:
+        """지금 고른 태스크 버전 (예: "dusan_v4")."""
+        return self.task_version_combo.currentText()
+
+    def set_task_version(self, version: str) -> None:
+        """저장된 값으로 목록을 맞춘다. 신호는 내지 않는다(불러오기용).
+
+        목록에 없는 값(지워진 버전 등)이면 기본값으로 둔다.
+        """
+        index = self.task_version_combo.findText(str(version))
+        self.task_version_combo.blockSignals(True)
+        self.task_version_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.task_version_combo.blockSignals(False)
 
     def set_nosensor(self, on: bool) -> None:
         """저장된 값으로 체크 상태를 맞춘다. 신호는 내지 않는다(불러오기용)."""

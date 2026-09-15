@@ -75,14 +75,24 @@ MAX_LINEAR_SPEED_MM_S = 150
 # 정리할 시간을 주지 않으면 play 가 거부된다.
 ROBOT_RESTART_DELAY_MS = 1200
 
-#: 로봇 컨트롤러 안의 태스크 폴더. 29999 `task -p` 에 붙는다. 현장에서
-#: 실제 경로를 한 번 확인해야 한다(펜던트의 태스크 목록 기준).
-ROBOT_TASK_DIR = "Dusan/dusan_v4"
-#: 태스크 판 -> (스캔 태스크, 마킹 태스크). Cobot 설정의 체크박스로 고른다.
-ROBOT_TASKS = {
-    False: ("dusan_v4.task", "dusan_v4_mark.task"),                        # 센서판
-    True: ("dusan_v4_nosensor_seq.task", "dusan_v4_nosensor_mark.task"),   # 논센서판
-}
+#: 기본 태스크 버전. Cobot 설정의 '태스크 선택'으로 바꾼다(dusan_v4 / dusan_v5).
+DEFAULT_TASK_VERSION = "dusan_v4"
+
+
+def robot_task_paths(version: str, nosensor: bool) -> tuple[str, str]:
+    """(스캔 태스크, 마킹 태스크) 경로. 29999 `task -p` 에 붙는다.
+
+    로봇 컨트롤러 안의 폴더는 `Dusan/<버전>` 이고, 파일 이름도 버전으로
+    시작한다(robot_task/dusan_task_v4, dusan_task_v5 와 같은 구성).
+      센서판   : <버전>.task,               <버전>_mark.task
+      논센서판 : <버전>_nosensor_seq.task,  <버전>_nosensor_mark.task
+    현장에서 실제 경로를 한 번 확인해야 한다(펜던트의 태스크 목록 기준).
+    """
+    folder = f"Dusan/{version}"
+    if nosensor:
+        return (f"{folder}/{version}_nosensor_seq.task",
+                f"{folder}/{version}_nosensor_mark.task")
+    return f"{folder}/{version}.task", f"{folder}/{version}_mark.task"
 # abort 뒤 홈을 보내기까지 [ms]. 정지·태스크 교체가 먼저 처리되게 둔다.
 ABORT_HOME_DELAY_MS = 500
 
@@ -401,9 +411,11 @@ class OperatorWindow(QMainWindow):
         self.settings_service.failed.connect(self._show_settings_error)
         # 태스크 판(센서/논센서). 기본은 센서판 — 불러온 값이 있으면 덮는다.
         self._nosensor = False
+        self._task_version = DEFAULT_TASK_VERSION
         cobot_screen = self.screens.get("cobot")
         if cobot_screen is not None:
             cobot_screen.nosensor_changed.connect(self._set_nosensor)
+            cobot_screen.task_version_changed.connect(self._set_task_version)
         for scope in (*self._settings_screens.keys(), "inspection_target",
                       "work_area", "robot_task"):
             self.settings_service.load(scope)
@@ -909,9 +921,20 @@ class OperatorWindow(QMainWindow):
             self._push_task_paths()
 
     def _task_paths(self) -> tuple[str, str]:
-        """지금 고른 판의 (스캔, 마킹) 태스크 경로."""
-        scan, mark = ROBOT_TASKS[bool(getattr(self, "_nosensor", False))]
-        return f"{ROBOT_TASK_DIR}/{scan}", f"{ROBOT_TASK_DIR}/{mark}"
+        """지금 고른 버전·판의 (스캔, 마킹) 태스크 경로."""
+        return robot_task_paths(getattr(self, "_task_version", DEFAULT_TASK_VERSION),
+                                bool(getattr(self, "_nosensor", False)))
+
+    def _save_robot_task(self) -> None:
+        """태스크 판·버전을 함께 저장한다.
+
+        파일 저장소는 범위(robot_task)를 통째로 바꿔 쓰므로, 하나만 저장하면
+        다른 하나가 지워진다. 늘 둘 다 넣는다.
+        """
+        self.settings_service.save("robot_task", {
+            "nosensor": bool(getattr(self, "_nosensor", False)),
+            "task_version": getattr(self, "_task_version", DEFAULT_TASK_VERSION),
+        })
 
     def _push_task_paths(self) -> bool:
         """고른 판의 태스크 경로를 로봇 노드 파라미터로 넘긴다."""
@@ -926,21 +949,33 @@ class OperatorWindow(QMainWindow):
         돌게 하려고. 작업 중이면 지금 구간을 흔들지 않고 다음 작업부터 쓴다.
         """
         self._nosensor = bool(on)
-        self.settings_service.save("robot_task", {"nosensor": self._nosensor})
+        self._apply_task_choice("논센서판" if self._nosensor else "센서판", "태스크 판")
+
+    def _set_task_version(self, version: str) -> None:
+        """Cobot 설정의 '태스크 선택'이 바뀌었다 (dusan_v4 / dusan_v5).
+
+        태스크 판 체크와 같다 — 저장하고, 노드에 경로를 넘기고, 작업 중이
+        아니면 바로 그 버전의 스캔 태스크를 불러온다.
+        """
+        self._task_version = str(version)
+        self._apply_task_choice(self._task_version, "태스크")
+
+    def _apply_task_choice(self, label: str, what: str) -> None:
+        self._save_robot_task()
         pushed = self._push_task_paths()
-        label = "논센서판" if self._nosensor else "센서판"
         busy = (self.sequencer.state not in (
             SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED)
             or self.mark_runner.running)
         if not pushed:
             self.main_screen.show_activity(
-                f"태스크 판을 {label}으로 저장했습니다 — 로봇 노드가 연결되면 적용됩니다.")
+                f"{what}을(를) {label}(으)로 저장했습니다 — 로봇 노드가 연결되면 적용됩니다.")
             return
         if busy:
             self.main_screen.show_activity(
-                f"태스크 판을 {label}으로 바꿨습니다 — 다음 작업부터 적용됩니다.")
+                f"{what}을(를) {label}(으)로 바꿨습니다 — 다음 작업부터 적용됩니다.")
             return
-        self.main_screen.show_activity(f"{label} 스캔 태스크를 불러옵니다.")
+        scan, _mark = self._task_paths()
+        self.main_screen.show_activity(f"스캔 태스크를 불러옵니다: {scan}")
         self._load_scan_task()
 
     def _load_scan_task(self) -> None:
@@ -1159,9 +1194,13 @@ class OperatorWindow(QMainWindow):
         """DB 조회 결과를 해당 설정 범위의 소유 화면으로 전달한다."""
         if scope == "robot_task":
             self._nosensor = bool(values.get("nosensor", False))
+            self._task_version = str(values.get("task_version", DEFAULT_TASK_VERSION))
             cobot_screen = self.screens.get("cobot")
             if cobot_screen is not None:
                 cobot_screen.set_nosensor(self._nosensor)
+                cobot_screen.set_task_version(self._task_version)
+                # 목록에 없는 값이었으면 화면이 기본값으로 둔다 — 그 값을 따른다.
+                self._task_version = cobot_screen.task_version()
             self._push_task_paths()
             return
         if scope == "inspection_target":
