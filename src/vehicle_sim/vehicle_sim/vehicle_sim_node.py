@@ -28,6 +28,7 @@
      job_cancel=1 작업 취소, reset=1 오류 해제.
 
 시험용으로 오류를 넣을 수 있다: ros2 param set /vehicle_sim fault_code 21
+움직이는 모습을 보려면 화면판을 쓴다: ros2 run vehicle_sim vehicle_sim_ui
 """
 
 from __future__ import annotations
@@ -70,6 +71,11 @@ class VehicleSim(Node):
         self.lift_target = None
         self.outrigger_timer = 0.0
         self.outrigger_goal = None  # "SET" / "RELEASE" 로 가는 중
+        # 아웃트리거 다리 3개의 내림 정도 (0 = 올림/해제, 1 = 내려 접지).
+        # 화면(vehicle_sim_ui)이 그대로 그린다.
+        self.legs = [0.0, 0.0, 0.0]
+        self.leg_cmd = [0, 0, 0]    # 1 상승 / 2 하강 / 0 없음 (누르는 동안)
+        self.leg_age = 0.0
         self.drive_after_release = False
         self.jog = (0.0, 0.0)       # (전후 속도, 회전 속도)
         self.jog_age = 0.0
@@ -158,6 +164,13 @@ class VehicleSim(Node):
                 res.success, res.message = False, "Rejected: outriggers not set"
                 return res
             self.lift_target = max(0.0, min(self.lift_max, float(req.lift_height)))
+        # 아웃트리거 개별 상승(1)·하강(2) — 누르는 동안만(조그와 같은 deadman)
+        legs = (req.cmd_man_outrg1, req.cmd_man_outrg2, req.cmd_man_outrg3)
+        if any(legs):
+            self.leg_cmd = [int(v) for v in legs]
+            self.leg_age = 0.0
+        else:
+            self.leg_cmd = [0, 0, 0]
         if req.cmd_init:
             self.odometer = self.mv_dist = 0.0
             self.yaw = 0.0
@@ -177,6 +190,29 @@ class VehicleSim(Node):
         self.outrigger_goal = goal
         self.outrigger_timer = self.outrigger_s
 
+    @property
+    def outrigger_ratio(self) -> float:
+        """아웃트리거 전체 내림 정도 0~1 (다리 3개 평균) — 화면이 쓴다."""
+        return sum(self.legs) / len(self.legs)
+
+    @property
+    def lift_moving(self) -> bool:
+        return self.lift_target is not None and abs(self.lift_target - self.lift_h) > 1e-6
+
+    def snapshot(self) -> dict:
+        """화면(vehicle_sim_ui)이 그릴 값 한 벌."""
+        return {
+            "state": self.state, "hold": self.hold,
+            "error_code": self.error_code, "error_msg": self.error_msg,
+            "job_id": self.job.job_id if self.job is not None else "",
+            "set_dist": self.set_dist, "mv_dist": self.mv_dist, "speed": self.speed,
+            "odometer": self.odometer, "yaw": self.yaw,
+            "lift_h": self.lift_h, "lift_max": self.lift_max,
+            "lift_moving": self.lift_moving,
+            "legs": list(self.legs), "outrigger_moving": self.outrigger_goal is not None,
+            "jog": self.jog,
+        }
+
     def tick(self) -> None:
         dt = self.dt
         fault = int(self.get_parameter("fault_code").value)
@@ -185,6 +221,30 @@ class VehicleSim(Node):
             self.error_msg = f"모의 오류 {fault}"
             self.speed = 0.0
             self.lift_target = None
+
+        # 아웃트리거 다리: 전체 명령이 있으면 그 목표로, 개별 명령은 누르는 동안.
+        leg_step = dt / max(self.outrigger_s, 1e-6)
+        if self.outrigger_goal is not None:
+            goal = 1.0 if self.outrigger_goal == "SET" else 0.0
+            self.legs = [min(1.0, max(0.0, v + math.copysign(leg_step, goal - v)))
+                         if abs(goal - v) > 1e-9 else goal for v in self.legs]
+        elif any(self.leg_cmd):
+            self.leg_age += dt
+            if self.leg_age > self.deadman_s:
+                self.leg_cmd = [0, 0, 0]
+            for i, cmd in enumerate(self.leg_cmd):
+                if cmd == 2:      # 하강 = 내림
+                    self.legs[i] = min(1.0, self.legs[i] + leg_step)
+                elif cmd == 1:    # 상승 = 올림
+                    self.legs[i] = max(0.0, self.legs[i] - leg_step)
+            if all(v >= 0.999 for v in self.legs):
+                self.hold = "SET"
+                if self.state == "STOP":
+                    self.state = "HOLD"
+            elif all(v <= 0.001 for v in self.legs) and self.hold == "SET":
+                self.hold = "RELEASE"
+                if self.state == "HOLD":
+                    self.state = "STOP"
 
         if self.outrigger_goal is not None:
             self.outrigger_timer -= dt

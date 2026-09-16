@@ -21,6 +21,7 @@ setup(
     entry_points={
         "console_scripts": [
             "vehicle_sim_node = vehicle_sim.vehicle_sim_node:main",
+            "vehicle_sim_ui = vehicle_sim.vehicle_sim_ui:main",
         ],
     },
 )

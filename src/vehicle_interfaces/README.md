@@ -42,8 +42,13 @@ RCS(`operator-ui/.../services/vehicle_adapters.py`)와 모의기(`vehicle_sim`)�
 ```bash
 colcon build --packages-select vehicle_interfaces vehicle_sim
 source install/setup.bash
-ros2 launch vehicle_sim vehicle_sim.launch.py
+ros2 launch vehicle_sim vehicle_sim.launch.py            # 화면 있는 모의기
+ros2 launch vehicle_sim vehicle_sim.launch.py ui:=false  # 화면 없이
 ```
+
+모의기 화면(`vehicle_sim_ui`)은 움직임을 눈으로 보여 준다 — 바퀴 회전(주행),
+아웃트리거 다리 3개, 리프트 발판, 3색 경광등(빨강 오류 / 노랑 움직이는 중 /
+초록 정지·대기). 창의 버튼으로 오류를 넣고 풀고 정지시킬 수 있다.
 
 RCS: 연결 설정 → **차량 제어 = ROS 차량 노드** → 저장. 상태가 들어오면 상단 AMR 이 초록이 되고
 수동 제어 화면의 버튼이 열린다. 모의기 오류 시험: `ros2 param set /vehicle_sim fault_code 21`.
