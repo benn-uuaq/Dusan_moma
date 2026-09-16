@@ -427,6 +427,11 @@ class OperatorWindow(QMainWindow):
         # 운전 모드 슬롯 {"1": {...}, ...}. 비운 슬롯은 {} 로 둔다(DB 저장소는
         # 키를 지우지 않고 덮어쓰기만 하므로).
         self._mode_slots: dict[str, dict] = {}
+        # 로봇 태스크가 끝나기를 기다리는 차량·리프트 이동. (문구, 실행 함수)
+        self._pending_motions: list = []
+        self._motion_wait_timer = QTimer(self)
+        self._motion_wait_timer.setSingleShot(True)
+        self._motion_wait_timer.timeout.connect(lambda: self._run_pending_motions(True))
         # 켤 때 불러오기는 비동기라, 그 전에 슬롯을 저장·비웠으면 늦게 온
         # 옛 값이 방금 바꾼 슬롯을 덮는다. 바꾼 뒤에는 불러온 값을 버린다.
         self._mode_slots_touched = False
@@ -682,6 +687,8 @@ class OperatorWindow(QMainWindow):
         먼저 물러난 뒤 올라가므로(노드 move_home) 곡면을 긁지 않는다.
         """
         self._cancel_play()                 # 걸려 있던 play 가 뒤늦게 가지 않게
+        self._pending_motions.clear()       # 미뤄 둔 차량·리프트 이동도 버린다
+        self._motion_wait_timer.stop()
         self.sequencer.stop()
         for adapter in (self.lift, self.amr, self.outrigger, self.retractor):
             adapter.cancel()
@@ -711,11 +718,15 @@ class OperatorWindow(QMainWindow):
         self.retractor.activity.connect(self.main_screen.show_activity)
 
         # 이동 요청 → 더미 어댑터 → 도착 신호 → 시퀀서
-        seq.lift_target_requested.connect(lambda mm: self.lift.move_to(mm, " mm"))
+        seq.lift_target_requested.connect(
+            lambda mm: self._defer_until_robot_idle(
+                f"리프트 {mm:,.0f} mm", lambda: self.lift.move_to(mm, " mm")))
         # AMR 은 시퀀서가 **열 번호**로 부르는데, 바깥에는 이동 거리(mm)를
         # 알려야 한다(ERUT 규격 탭5 progress.moved). 열 간격으로 환산해
         # 어댑터에는 거리를 주고, 화면 문구에만 열 번호를 남긴다.
-        seq.amr_move_requested.connect(self._move_amr_to_column)
+        seq.amr_move_requested.connect(
+            lambda column: self._defer_until_robot_idle(
+                f"{column}구역 차량 이동", lambda: self._move_amr_to_column(column)))
         self.lift.arrived.connect(seq.lift_arrived)
         self.amr.arrived.connect(seq.amr_arrived)
         # 아웃트리거 고정(1단계)과 안전 위치 복귀(4단계)도 아직 더미다.
@@ -1005,8 +1016,46 @@ class OperatorWindow(QMainWindow):
         self.ros_status.call_command("stop")
         self.ros_status.call_command("load_scan_task")
 
+    #: 로봇 태스크가 끝나기를 기다리는 한도 [ms]. 넘으면 그냥 진행한다
+    #: (루프판처럼 태스크가 스스로 안 끝나는 구성에서 멈춰 있지 않게).
+    ROBOT_TASK_WAIT_MS = 30_000
+
+    def _robot_task_running(self) -> bool:
+        return getattr(self, "_robot_task_state", 0) == self._TASK_STATE_RUNNING
+
+    def _defer_until_robot_idle(self, label: str, run) -> None:
+        """로봇 태스크가 도는 중이면 끝난 뒤에 실행한다.
+
+        로봇은 한 셀을 마칠 때 **완료 플래그(290 = 5)를 먼저 쓰고 그 다음에
+        홈으로 이동**한다(dus_finish -> 홈). 플래그만 보고 리프트를 올리면
+        로봇이 아직 움직이는 중에 발판이 올라간다. 태스크가 실제로 끝난 뒤
+        (레지스터 500 != 1) 차량·리프트를 움직인다.
+        """
+        if not self._robot_task_running():
+            run()
+            return
+        self._pending_motions.append((label, run))
+        self.main_screen.show_activity(f"로봇 태스크가 끝나면 {label}을(를) 진행합니다.")
+        if not self._motion_wait_timer.isActive():
+            self._motion_wait_timer.start(self.ROBOT_TASK_WAIT_MS)
+
+    def _run_pending_motions(self, timed_out: bool = False) -> None:
+        pending, self._pending_motions = self._pending_motions, []
+        self._motion_wait_timer.stop()
+        if not pending:
+            return
+        if timed_out:
+            self.main_screen.show_activity(
+                f"로봇 태스크가 {self.ROBOT_TASK_WAIT_MS // 1000}초 안에 끝나지 않아 그대로 진행합니다: "
+                + ", ".join(label for label, _ in pending))
+        for label, run in pending:
+            run()
+
     def _on_robot_task_state(self, state: int) -> None:
         self._robot_task_state = int(state)
+        if not self._robot_task_running():
+            # 태스크가 끝났다 — 홈 이동까지 마친 시점이다. 미뤄 둔 것을 한다.
+            self._run_pending_motions()
         self._sync_manual_interlock()
         self.cobot_manual_screen.apply_status({
             "task_state": TASK_STATE_NAMES.get(self._robot_task_state,
@@ -1092,6 +1141,8 @@ class OperatorWindow(QMainWindow):
         ERUT 는 오지 않을 complete 를 계속 기다린다(규격 탭2).
         """
         self._cancel_play()
+        self._pending_motions.clear()          # 미뤄 둔 차량·리프트 이동도 버린다
+        self._motion_wait_timer.stop()
         self.simulator.stop_cycle()
         self.sequencer.stop()
         self.mark_runner.cancel()

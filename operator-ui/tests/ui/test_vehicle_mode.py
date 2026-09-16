@@ -95,3 +95,47 @@ def test_mode_is_not_switched_while_a_job_runs(window) -> None:
     assert window.amr.active == "dummy", "작업 중에는 바꾸지 않는다"
     assert "작업 중" in window.main_screen.activity_label.text()
     window._stop_inspection()
+
+
+# ---- 로봇이 끝난 뒤에 차량·리프트를 움직인다 ------------------------------------------
+def test_lift_waits_until_the_robot_task_ends(window, qtbot) -> None:
+    """로봇은 완료 플래그를 먼저 쓰고 홈으로 간다 — 그동안 리프트를 올리면 안 된다."""
+    window._on_robot_task_state(1)                      # 로봇 태스크 실행 중(홈 이동 중)
+    window.sequencer.lift_target_requested.emit(480.0)
+
+    assert window.lift.target != 480.0, "아직 올리면 안 된다"
+    assert "로봇 태스크가 끝나면" in window.main_screen.activity_label.text()
+
+    window._on_robot_task_state(3)                      # 태스크 종료(홈 도착)
+    assert window.lift.target == 480.0
+
+
+def test_deferred_move_runs_anyway_after_the_wait_limit(window, qtbot) -> None:
+    """태스크가 스스로 안 끝나는 구성도 있으므로 한도를 넘기면 진행한다."""
+    said: list[str] = []
+    window.main_screen.activity_shown.connect(said.append)   # 뒤 문구에 덮이므로 모아 둔다
+    window.ROBOT_TASK_WAIT_MS = 120
+    window._on_robot_task_state(1)
+    window.sequencer.lift_target_requested.emit(300.0)
+    assert window.lift.target != 300.0
+
+    qtbot.waitUntil(lambda: window.lift.target == 300.0, timeout=2000)
+    assert any("그대로 진행합니다" in text for text in said), said
+
+
+def test_stopping_drops_the_deferred_moves(window) -> None:
+    window._start_inspection()
+    window._on_robot_task_state(1)
+    window.sequencer.amr_move_requested.emit(2)
+    assert window._pending_motions
+
+    window._stop_inspection()
+    assert not window._pending_motions
+    window._on_robot_task_state(3)
+    assert window.amr.target == 0.0, "정지한 뒤에는 미뤄 둔 이동이 나가면 안 된다"
+
+
+def test_motion_runs_at_once_when_the_robot_is_idle(window) -> None:
+    window._on_robot_task_state(3)
+    window.sequencer.lift_target_requested.emit(167.5)
+    assert window.lift.target == 167.5

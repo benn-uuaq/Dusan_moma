@@ -46,7 +46,9 @@ def test_vehicle_moves_through_the_real_interfaces(qtbot, tmp_path, monkeypatch)
             window.lift.move_to(400.0, " mm")
         assert window.vehicle.last_status["lift_h"] == pytest.approx(0.4)
         assert window.screens["manual"].lift_value.text() == "400 mm"
-        # 수동 제어는 상태가 들어온 뒤에 열린다 — 잠깐 기다린다.
+        # 수동 제어는 차량 상태가 들어오면 열린다. 로봇 태스크가 도는 중이면
+        # 안전 인터락이 잠그므로(다른 노드가 500=1 을 내보낼 수 있다) 쉬는 것으로 둔다.
+        window._on_robot_task_state(3)
         qtbot.waitUntil(lambda: window.screens["manual"].jog_buttons["cmd_mv_fwd"].isEnabled(),
                         timeout=3000)
     finally:
