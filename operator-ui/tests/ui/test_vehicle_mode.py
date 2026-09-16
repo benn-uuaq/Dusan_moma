@@ -65,3 +65,26 @@ def test_mode_is_not_switched_while_a_job_runs(window) -> None:
     assert window.amr.active == "dummy", "작업 중에는 바꾸지 않는다"
     assert "작업 중" in window.main_screen.activity_label.text()
     window._stop_inspection()
+
+
+def test_top_bar_shows_dummy_so_it_is_not_mistaken_for_a_real_vehicle(window) -> None:
+    badge = window.top_bar.badges["AMR"]
+    assert badge.state_label.text() == "● 더미"
+
+    combo = window.screens["connection"].field("차량 제어")
+    combo.setCurrentIndex(1)
+    combo.activated.emit(1)
+    assert badge.state_label.text() == "● 연결 안 됨", "차량을 골랐는데 상태가 없으면 그대로 보여 준다"
+
+    window.vehicle.online_changed.emit(True)
+    assert badge.state_label.text() == "● 연결됨"
+
+
+def test_status_arriving_while_dummy_hints_once(window) -> None:
+    window.vehicle.online_changed.emit(True)
+    hint = [t for t in _alarms(window) if "ROS 차량 노드" in t]
+    assert len(hint) == 1, _alarms(window)
+
+    window.vehicle.online_changed.emit(False)
+    window.vehicle.online_changed.emit(True)
+    assert len([t for t in _alarms(window) if "ROS 차량 노드" in t]) == 1, "한 번만 알린다"

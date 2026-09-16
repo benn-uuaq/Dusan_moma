@@ -2134,9 +2134,11 @@ class OperatorWindow(QMainWindow):
         self.amr.add_backend("vehicle", self._vehicle_amr)
         self.lift.add_backend("vehicle", VehicleLiftAdapter(self.vehicle, parent=self))
         self.outrigger.add_backend("vehicle", VehicleOutriggerAdapter(self.vehicle, parent=self))
+        self._vehicle_hinted = False
         for motion in (self.amr, self.lift, self.outrigger):
             motion.problem.connect(self._on_vehicle_problem)
         self.vehicle.online_changed.connect(self._show_vehicle_link)
+        self.vehicle.online_changed.connect(self._hint_vehicle_available)
         # 수동 제어 화면 — ManualCommand / RobotControl 로 보낸다.
         manual = self.screens["manual"]
         manual.manual_requested.connect(lambda fields: self.vehicle.manual(**fields))
@@ -2149,6 +2151,7 @@ class OperatorWindow(QMainWindow):
             lambda _text: self._apply_vehicle_mode())
         self.sequencer.state_changed.connect(self._sync_manual_interlock)
         self.sequencer.state_changed.connect(self._vehicle_follow_pause)
+        self._show_vehicle_link(False)      # 시작할 때부터 '더미'라고 보이게
 
     def _vehicle_mode(self) -> str:
         screen = self.screens["connection"]
@@ -2177,9 +2180,13 @@ class OperatorWindow(QMainWindow):
         self._show_vehicle_link(self.vehicle.online)
 
     def _show_vehicle_link(self, online: bool) -> None:
-        # 더미일 때 AMR 표시는 예전처럼 자리표시자(연결됨)다.
+        # 상단 AMR 표시에 '더미'를 그대로 드러낸다 — 예전에는 늘 "연결됨"이라
+        # 더미인 줄 모르고 작업을 돌리다 차량이 안 움직이는 일이 있었다.
         vehicle = self.amr.active == "vehicle"
-        self.top_bar.badges["AMR"].set_connected(bool(online) if vehicle else True)
+        if vehicle:
+            self.top_bar.badges["AMR"].set_connected(bool(online))
+        else:
+            self.top_bar.badges["AMR"].set_state("더미")
         manual = self.screens["manual"]
         if not vehicle:
             manual.set_available(False, "차량 제어가 '더미'입니다 — 연결 설정에서 'ROS 차량 노드'로 바꾸면 쓸 수 있습니다.")
@@ -2187,6 +2194,20 @@ class OperatorWindow(QMainWindow):
             manual.set_available(False, f"차량 상태({self.vehicle.topic('robot_status')})가 들어오지 않습니다 — 차량 제어 노드를 확인하세요.")
         else:
             manual.set_available(True)
+
+    def _hint_vehicle_available(self, online: bool) -> None:
+        """더미인데 차량 상태가 들어오면 한 번 알려 준다.
+
+        차량 노드는 떠 있는데 RCS 가 더미인 채로 작업을 돌리면, 화면 순서만
+        흐르고 차량은 가만히 있는다. 그 상황을 먼저 짚어 준다.
+        """
+        if not online or self.amr.active == "vehicle" or getattr(self, "_vehicle_hinted", False):
+            return
+        self._vehicle_hinted = True
+        message = (f"차량 상태({self.vehicle.topic('robot_status')})가 들어옵니다 — "
+                   "연결 설정 > 차량 제어를 'ROS 차량 노드'로 바꾸면 실제 차량이 움직입니다.")
+        self.main_screen.show_activity(message)
+        self.cobot_manual_screen.add_alarm(message)
 
     def _show_vehicle_command_result(self, name: str, ok: bool, message: str) -> None:
         if not ok:

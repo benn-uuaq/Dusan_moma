@@ -92,6 +92,13 @@ class ConnectionBadge(QFrame):
         layout.addWidget(self.state_label)
         self.set_connected(initial_connected)
 
+    def set_state(self, text: str, kind: str = "StatusWarn") -> None:
+        """연결 여부가 아닌 상태를 직접 쓴다(예: 차량이 '더미'일 때)."""
+        self.state_label.setText(f"● {text}")
+        self.state_label.setObjectName(kind)
+        self.state_label.style().unpolish(self.state_label)
+        self.state_label.style().polish(self.state_label)
+
     def set_connected(self, connected: bool, label: str | None = None) -> None:
         """연결 여부를 반영한다. `label`을 주면 문구를 대신 쓴다(예: 상태 불명)."""
         text = label or ("연결됨" if connected else "연결 안 됨")
