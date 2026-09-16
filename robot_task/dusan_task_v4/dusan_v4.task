@@ -7,7 +7,7 @@
 #  dus_init.script — dusan_v4
 #  파라미터를 읽고 피치·행수를 계산한다. 실시간 발행 스레드를 띄운다
 #
-#  펜던트에서 &quot;1_init&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 "1_init" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -36,9 +36,91 @@ def ini_w6(a, p):
 end
 
 
+# ---- 홈 위치 플래그 (276) -------------------------------------------------
+# 로봇이 **홈 관절자세**(또는 홈 pose)에 있으면 276 = 1, 벗어나면 0 이다.
+# 발행 스레드가 제어주기마다 다시 판단하므로 홈을 떠나는 순간 0 이 된다.
+# RCS 는 이 값과 태스크 상태(500)를 **둘 다** 확인한 뒤에야 차량·리프트를
+# 움직인다 — 완료 플래그(290 = 5)만 보면 로봇이 아직 홈으로 가는 중에
+# 발판이 올라간다.
+#
+# 관절값으로 먼저 보고(홈은 관절로 티칭한 자세다), 관절이 달라도 TCP 가
+# 홈 pose 자리에 있으면 홈으로 본다(같은 자리를 다른 해로 잡은 경우).
+def hm_flag():
+  hm_q = get_actual_joint_positions()
+  hm_i = 0
+  hm_far = 0
+  while (hm_i &lt; 6):
+    hm_dq = hm_q[hm_i] - Home_joint[hm_i]
+    if (hm_dq &lt; 0):
+      hm_dq = -hm_dq
+    end
+    if (hm_dq &gt; hm_far):
+      hm_far = hm_dq
+    end
+    hm_i = hm_i + 1
+  end
+  if (hm_far &lt;= home_tol_j):
+    write_port_register(276, 1)
+    return True
+  end
+  # 관절이 달라도 TCP 가 홈 자리에 있으면 홈으로 본다(같은 자리를 다른
+  # 해로 잡은 경우). x, y, z 를 하나씩 본다 — pose_dist 는 회전까지
+  # 섞어 재기 때문에(스크립트 매뉴얼 3.2.27) mm 로 다루기 어렵다.
+  hm_p = get_actual_tcp_pose()
+  hm_i = 0
+  hm_far = 0
+  while (hm_i &lt; 3):
+    hm_dq = hm_p[hm_i] - Home_pose[hm_i]
+    if (hm_dq &lt; 0):
+      hm_dq = -hm_dq
+    end
+    if (hm_dq &gt; hm_far):
+      hm_far = hm_dq
+    end
+    hm_i = hm_i + 1
+  end
+  if (hm_far &lt;= home_tol_p * 0.001):
+    write_port_register(276, 1)
+    return True
+  end
+  write_port_register(276, 0)
+  return False
+end
+
+
+# ---- 차량 고정 확인 (309) -------------------------------------------------
+# 로봇이 움직이기 전에 **차량 쪽이 굳어 있는지** 확인한다. 리프트가 서고,
+# 차량이 정지하고, 아웃트리거 고정이 끝난 것을 RCS 가 확인해서 309 에 1 을
+# 쓴다(움직이기 시작하면 다시 0). 1 이 될 때까지 기다린다 — 290 = 14 로
+# 왜 서 있는지 알린다.
+#
+# 외부 제어(266 = 1)일 때만 본다. 펜던트 변수값으로 로봇만 단독으로
+# 돌리는 판에는 차량도 RCS 도 없어서 영영 1 이 되지 않는다.
+# veh_wait_cyc 회(제어주기 기준 약 2 분) 안에 안 되면 299 = 8 로 알리고
+# 멈춘다 — 말없이 매달려 있으면 원인을 알 수 없다.
+def ini_veh_wait():
+  if (read_port_register(266, True) != 1):
+    return True
+  end
+  ini_vt = 0
+  while (read_port_register(309, True) != 1):
+    write_port_register(290, 14)
+    sync()
+    ini_vt = ini_vt + 1
+    if (ini_vt &gt; veh_wait_cyc):
+      write_port_register(299, 8)
+      write_port_register(290, 9)
+      halt()
+    end
+  end
+  write_port_register(290, 0)
+  return True
+end
+
+
 # 절대 TCP(260~265) 는 항상 발행한다. 원점기준 상대좌표(280~285)와 호
 # 위치(286/287)는 원점(zero_pose)이 잡혀 있으면(zero_ok/arc_ok) 항상
-# 내보낸다 — TPAC 의 &quot;Plane&quot; 이 실제 TCP 이동거리를 보여줘야 하므로 ㄹ자
+# 내보낸다 — TPAC 의 "Plane" 이 실제 TCP 이동거리를 보여줘야 하므로 ㄹ자
 # 스캔 중(state=4)만이 아니라 3점측정 후 원점복귀·다음 줄 이동 중에도
 # 값이 살아 있어야 한다. 원점이 아직 없으면(zero_ok==False) [0,0,0,0,0,0]
 # 을 쏜다.
@@ -76,7 +158,7 @@ def pub_rel():
     # 바꾸면서 원점이 베이스 Y 가 큰 쪽 끝이 되었는데, 그대로 빼면
     # Y 가 계속 음수로 나간다. 제로점 좌표계를 180 도 돌려 놓으면
     # 훑는 방향이 반대여도 Y 는 0 에서 + 로만 커진다.
-    #   x&apos; = -x,  y&apos; = -y,  z&apos; = z   (Z 축 회전이라 높이는 그대로)
+    #   x' = -x,  y' = -y,  z' = z   (Z 축 회전이라 높이는 그대로)
     rel_pose[0] = -rel_pose[0]
     rel_pose[1] = -rel_pose[1]
     ini_w6(280, rel_pose)
@@ -116,6 +198,7 @@ def pub_rel():
     alive = 0
   end
   write_port_register(293, alive)
+  hm_flag()
 end
 
 
@@ -341,7 +424,7 @@ if (overlap &lt; 0):
   overlap = 0
 end
 if (rows &gt; 400):
-  popup(s = &quot;ROWS OVER LIMIT(400). CHECK HEIGHT/SCAN_H/OVERLAP&quot;, title = &quot;dusan_v4&quot;, blocking = True)
+  popup(s = "ROWS OVER LIMIT(400). CHECK HEIGHT/SCAN_H/OVERLAP", title = "dusan_v4", blocking = True)
   write_port_register(290, 9)
   halt()
 end
@@ -373,14 +456,15 @@ write_port_register(298, 0)
 write_port_register(299, 0)  # probe_error: 0=정상, 1/2/3=probe_c/l/r 접촉 실패
 write_port_register(304, 0)
 write_port_register(305, 0)
+hm_flag()        # 276 = 지금 홈에 있는가
 
 # 실시간 발행 스레드 기동
 # 발행 스레드는 태스크 한 번에 **하나만** 띄운다.
 # 이 스크립트는 Robot Main Task 가 반복될 때마다 다시 실행되는데(루프판),
 # 그때마다 새로 띄우면 pub_thread 가 while(True) 라 끝나지 않고 detached 라
 # 회수도 안 되어 스레드가 쌓인다 -&gt; 20 번째 사이클에서
-# &quot;Thread over the max size: 20&quot; 으로 태스크가 멈춘다.
-# pub_started 는 &quot;Init Variables Value&quot; 가 시작마다 0 으로 되돌려 주는
+# "Thread over the max size: 20" 으로 태스크가 멈춘다.
+# pub_started 는 "Init Variables Value" 가 시작마다 0 으로 되돌려 주는
 # 것을 전제로 한다. 그런데 그 노드가 비어 있으면(태스크 XML 의
 # &lt;InitVariables/&gt; 에 항목이 없으면) 값이 1 로 남고, 스레드는 죽었는데
 # 다시 띄우지 않아 **260~285 가 전부 멈춘다**. 펜던트 설정에 기대지
@@ -399,6 +483,11 @@ if (pub_started == 0):
   pub_h = start_thread(pub_thread, (), detach_mode = True)
   pub_started = 1
 end
+
+# ---- 차량 고정을 확인하고 나서 움직인다 -----------------------------------
+# 이 다음 노드(move_home)부터 로봇이 실제로 움직인다. 그 전에 차량·리프트가
+# 굳어 있는지 확인한다.
+ini_veh_wait()
 </cachedFileContents>
         <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v4/scripts/dus_init.script"/>
       </ScriptNode>
@@ -697,7 +786,7 @@ end
 #  dus_move_start.script — dusan_v4
 #  각 프로브 동작 사이의 대기 자세로 이동한다 (Home_joint 이 아니라 start_pose)
 #
-#  펜던트에서 &quot;2 move_home&quot; 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
+#  펜던트에서 "2 move_home" 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
 #  파일(File) 모드로 넣고 지정한다. 펜던트의 Move/Waypoint 노드를 쓰지 않고
 #  스크립트로 두는 이유는, 티칭 값이 태스크 XML 안에 숨지 않고 설정 변수
 #  (start_pose, a_l, v_l, r_l)로 한곳에 모이기 때문이다.
@@ -733,9 +822,9 @@ movel(start_pose, a = a_l, v = v_l)
       <ScriptNode scriptType="FILE_TYPE" typeName="Script">
         <cachedFileContents># =============================================================================
 #  dus_probe_c.script — dusan_v4
-#  호 중앙에서 벽을 짚어 &apos;적정 눌림&apos; 위치를 캘리브레이션한다
+#  호 중앙에서 벽을 짚어 '적정 눌림' 위치를 캘리브레이션한다
 #
-#  펜던트에서 &quot;3_probe_center&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 "3_probe_center" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -789,10 +878,10 @@ end
 
 
 def pc_press():
-  # 벽에 닿아 &apos;적정 눌림&apos;이 될 때까지 TCP +Z 로 전진한다.
+  # 벽에 닿아 '적정 눌림'이 될 때까지 TCP +Z 로 전진한다.
   # 반환: 전진한 거리 [m] (양수). 못 찾으면 0.
   # n_hit 는 preamble 전역이라, 이 함수 안에서 대입하려면 global 로
-  # 밝혀 둬야 한다 — 안 그러면 지역변수로 가려져 &quot;초기화 안 됨&quot; 에러가 난다.
+  # 밝혀 둬야 한다 — 안 그러면 지역변수로 가려져 "초기화 안 됨" 에러가 난다.
   global n_hit
   x_home = get_actual_tcp_pose()
   far = pose_trans(x_home, [0, 0, seek_limit * 0.001, 0, 0, 0])
@@ -835,7 +924,7 @@ def pc_press():
   end
   # 계산값 대신 쓸 값이 없다 — 여기서 조용히 넘어가면 잘못된 좌표로
   # 스캔을 시작하게 되므로, 실패는 반드시 멈춰서 알려야 한다.
-  popup(s = &quot;PROBE_C: WALL CONTACT NOT FOUND&quot;, title = &quot;dusan_v4&quot;, blocking = True)
+  popup(s = "PROBE_C: WALL CONTACT NOT FOUND", title = "dusan_v4", blocking = True)
   write_port_register(299, 1)
   write_port_register(290, 9)
   halt()
@@ -847,7 +936,7 @@ write_port_register(290, 2)
 y_c = get_actual_tcp_pose()[1]
 z_base = get_actual_tcp_pose()[2]
 
-# 아직 한 번도 돌리지 않은 지금 자세를 &apos;정위치&apos;로 기억해 둔다.
+# 아직 한 번도 돌리지 않은 지금 자세를 '정위치'로 기억해 둔다.
 probe_rot = get_actual_tcp_pose()
 
 # 중앙 접근 — 여기서 잰 깊이가 세 점 전체에 쓰인다.
@@ -877,7 +966,7 @@ movel(x_start, a = a_l, v = v_l)
 #  dus_move_start.script — dusan_v4
 #  각 프로브 동작 사이의 대기 자세로 이동한다 (Home_joint 이 아니라 start_pose)
 #
-#  펜던트에서 &quot;2 move_home&quot; 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
+#  펜던트에서 "2 move_home" 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
 #  파일(File) 모드로 넣고 지정한다. 펜던트의 Move/Waypoint 노드를 쓰지 않고
 #  스크립트로 두는 이유는, 티칭 값이 태스크 XML 안에 숨지 않고 설정 변수
 #  (start_pose, a_l, v_l, r_l)로 한곳에 모이기 때문이다.
@@ -916,7 +1005,7 @@ movel(start_pose, a = a_l, v = v_l)
 #  호의 양 끝점을 반지름·호각으로 **먼저 계산**하고, 원점(이 중 Y- 끝)은
 #  그 계산값으로 접근해 실제 벽 접촉으로 다시 보정한다.
 #
-#  펜던트에서 &quot;4_probe_left&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 "4_probe_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -924,7 +1013,7 @@ movel(start_pose, a = a_l, v = v_l)
 #
 #  센서가 중앙 하나뿐이라 계산만으로 끝내면, 도면 반지름이 실제 벽과 조금만
 #  달라도(또는 벽이 완전한 원통이 아니어도) 원점이 벽에서 뜨거나 파고든다.
-#  그래서 계산값은 &quot;여기쯤일 것이다&quot;라는 접근 목표로만 쓰고, 그 자리에 가서
+#  그래서 계산값은 "여기쯤일 것이다"라는 접근 목표로만 쓰고, 그 자리에 가서
 #  중앙과 똑같이 눌림 센서로 다시 찾는다 — probe_c 의 pc_press() 와 같은
 #  방식이다. Y- 끝(p_r_pose)은 여기서는 계산만 해 두고, dus_probe_r.script가
 #  같은 방식으로 실측한다.
@@ -960,7 +1049,7 @@ def al_arc(mid, th):
   # 중앙 접점 mid 에서 호를 따라 th [rad] 만큼 돌아간 점(자세 포함).
   #
   # 원통은 세워져 있으므로 호는 **수평면** 안에 있다. 그래서
-  #   (1) 곡률 중심 O 는 접점에서 &apos;전진 방향(TCP +Z)의 **수평 성분**&apos;으로 R.
+  #   (1) 곡률 중심 O 는 접점에서 '전진 방향(TCP +Z)의 **수평 성분**'으로 R.
   #       TCP +Z 가 조금 기울어 있어도 수평 성분만 써야 반지름이 맞는다.
   #   (2) 회전은 O 를 지나는 **수직축(베이스 Z)** 으로 한다.
   #       툴 로컬 Z 로 돌리면 호가 수평면을 벗어나 현이 짧아진다.
@@ -1039,7 +1128,7 @@ def al_press(target):
   end
   # 계산값 대신 쓸 값이 없다 — 원점이 실측 없이 계산값으로 넘어가면
   # 스캔 전체가 잘못된 좌표로 돌게 되므로, 실패는 반드시 멈춰서 알려야 한다.
-  popup(s = &quot;PROBE_L: WALL CONTACT NOT FOUND&quot;, title = &quot;dusan_v4&quot;, blocking = True)
+  popup(s = "PROBE_L: WALL CONTACT NOT FOUND", title = "dusan_v4", blocking = True)
   write_port_register(299, 2)
   write_port_register(290, 9)
   halt()
@@ -1054,11 +1143,11 @@ write_port_register(290, 3)
 # 부호를 미리 못 박지 않고 실제 좌표로 가른다.
 # 호가 0 이면(반지름 0 또는 arc_run 0) al_arc 가 중앙점을 그대로 돌려줘
 # 양 끝이 중앙과 겹친다. 그 상태로 진행하면 나중에 dus_pass_r 의 movec 이
-# &quot;Target pose ... coincident with auxiliary pose&quot; 로 죽는데, 그 문구만
+# "Target pose ... coincident with auxiliary pose" 로 죽는데, 그 문구만
 # 보고는 원인을 알 수 없다. 여기서 값을 짚어 멈춘다.
 if (scan_radius &lt;= 0 or arc_half == 0):
-  popup(s = &quot;ARC IS ZERO: check radius(260) and arc length(256)&quot;,
-        title = &quot;dusan_v4&quot;, blocking = True)
+  popup(s = "ARC IS ZERO: check radius(260) and arc length(256)",
+        title = "dusan_v4", blocking = True)
   write_port_register(299, 4)
   write_port_register(290, 9)
   halt()
@@ -1162,7 +1251,7 @@ movel(start_pose, a = a_l, v = v_l, r = r_l)
 #  Y+ 끝점을 실제 벽 접촉으로 보정한다. 계산 목표는 dus_probe_l 이 이미
 #  해 두었다(p_r_pose, 아직 계산값).
 #
-#  펜던트에서 &quot;5_probe_right&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 "5_probe_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -1248,7 +1337,7 @@ def pr_press(target):
     return get_actual_tcp_pose()
   end
   # 계산값 대신 쓸 값이 없다 — 실패는 반드시 멈춰서 알려야 한다.
-  popup(s = &quot;PROBE_R: WALL CONTACT NOT FOUND&quot;, title = &quot;dusan_v4&quot;, blocking = True)
+  popup(s = "PROBE_R: WALL CONTACT NOT FOUND", title = "dusan_v4", blocking = True)
   write_port_register(299, 3)
   write_port_register(290, 9)
   halt()
@@ -1321,12 +1410,37 @@ movel(start_pose, a = a_l, v = v_l, r = r_l)
 #  dus_goto_zero.script — dusan_v4
 #  측정이 끝난 뒤 원점(Y- 끝)으로 돌아가 스캔을 시작할 준비를 한다
 #
-#  펜던트에서 &quot;6_goto_zero&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 "6_goto_zero" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
 #  ※ if / while 은 반드시 end 로 닫을 것
 # =============================================================================
+
+# ---- 차량 고정 확인 (309) -------------------------------------------------
+# 스캔을 시작하기 전에 차량 쪽이 굳어 있는지 한 번 더 본다. 리프트가 서고,
+# 차량이 정지하고, 아웃트리거 고정이 끝나야 RCS 가 309 에 1 을 쓴다.
+# 움직이는 중이면 0 이므로 여기서 기다린다(290 = 14). 외부 제어(266 = 1)가
+# 아니면 차량이 없는 판이라 그냥 지나간다. dus_init 의 ini_veh_wait 와
+# 같은 규칙이다 — 스크립트 노드마다 따로 돌아서 함수를 다시 둔다.
+def gz_veh_wait():
+  if (read_port_register(266, True) != 1):
+    return True
+  end
+  gz_vt = 0
+  while (read_port_register(309, True) != 1):
+    write_port_register(290, 14)
+    sync()
+    gz_vt = gz_vt + 1
+    if (gz_vt &gt; veh_wait_cyc):
+      write_port_register(299, 8)
+      write_port_register(290, 9)
+      halt()
+    end
+  end
+  return True
+end
+
 
 def gz_w1(a, v):
   if (v &gt; 32000):
@@ -1381,7 +1495,7 @@ path_len = 0
 # 프로브가 벽에 제대로 붙었는지는 여기서 판단할 수 없다(눌림 센서는 접촉
 # 여부만 안다). 원점에 도착했다고 알린 뒤(290 = 7) 멈춰 서서, RCS 가
 # 267 에 1 을 써 줄 때까지 기다린다. RCS 는 290 이 7 이 되는 걸 보고
-# MQTT 로 도착을 알리고, ERUT 가 &quot;작업 시작&quot;을 보내면 267 을 세운다.
+# MQTT 로 도착을 알리고, ERUT 가 "작업 시작"을 보내면 267 을 세운다.
 #
 # 267 은 기다리기 **전에** 우리가 0 으로 지운다 — 지난 사이클에 남은
 # 허가가 그대로 있으면 확인 없이 통과해 버린다(루프판에서 실제로 문제).
@@ -1391,6 +1505,10 @@ while (read_port_register(267, True) != 1):
   sync()
 end
 write_port_register(267, 0)
+
+# 차량·리프트가 굳어 있어야 스캔에 들어간다(아웃트리거 고정 전에 팔을
+# 뻗으면 차량이 흔들린다).
+gz_veh_wait()
 
 # ---- 적심(비비기) ---------------------------------------------------------
 # 스캔 전에 검사면에 물을 퍼뜨린다. 원점에서 호 **안쪽**으로 조금 갔다가
@@ -1504,7 +1622,7 @@ write_port_register(290, 6)
 #  dus_pass_r.script — dusan_v4
 #  원점에서 반대쪽 끝으로 한 줄. 중앙을 경유점으로 하는 movec 원호
 #
-#  펜던트에서 &quot;7_pass_right&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 "7_pass_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -1609,7 +1727,7 @@ pr2_w1(298, row_idx * 100.0 / rows)
 #  dus_pass_l.script — dusan_v4
 #  반대쪽 끝에서 원점으로 한 줄. 중앙을 경유점으로 하는 movec 원호
 #
-#  펜던트에서 &quot;8_pass_left&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 "8_pass_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -1681,7 +1799,7 @@ pl2_w1(298, row_idx * 100.0 / rows)
 #  dus_up.script — dusan_v4
 #  다음 줄로 한 피치만큼 상승한다
 #
-#  펜던트에서 &quot;9_up&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 "9_up" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
@@ -1742,7 +1860,7 @@ up_w1(297, path_len * 0.1)
 #  dus_finish.script — dusan_v4
 #  벽에서 후퇴하고 완료 플래그를 낸다
 #
-#  펜던트에서 &quot;10_finish&quot; 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  펜던트에서 "10_finish" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
 #  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)

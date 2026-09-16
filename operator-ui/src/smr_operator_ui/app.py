@@ -432,6 +432,8 @@ class OperatorWindow(QMainWindow):
         self._mode_slots: dict[str, dict] = {}
         # 로봇이 홈에 있는지(레지스터 276). None = 아직 받은 적 없음.
         self._robot_at_home: bool | None = None
+        # 홈 플래그를 1 로 받아 본 적이 있는가 — 그때부터 인터락에 넣는다.
+        self._home_flag_seen = False
         # 로봇 태스크가 끝나기를 기다리는 차량·리프트 이동. (문구, 실행 함수)
         self._pending_motions: list = []
         self._motion_wait_timer = QTimer(self)
@@ -1027,22 +1029,19 @@ class OperatorWindow(QMainWindow):
     #: (루프판처럼 태스크가 스스로 안 끝나는 구성에서 멈춰 있지 않게).
     ROBOT_TASK_WAIT_MS = 30_000
 
-    #: 홈 위치 플래그(레지스터 276)를 쓰는 태스크 판. 이 판으로 돌 때만
-    #: 홈 확인까지 인터락에 넣는다 — v4 태스크는 276 을 쓰지 않아 값이 늘
-    #: 0 이라, 그대로 걸면 차량이 영영 못 움직인다.
-    HOME_FLAG_TASKS = ("dusan_v5",)
-
     def _robot_task_running(self) -> bool:
         return getattr(self, "_robot_task_state", 0) == self._TASK_STATE_RUNNING
 
     def _home_interlock_active(self) -> bool:
         """홈 위치까지 확인해야 하는 상황인가.
 
-        홈 플래그를 쓰는 판이고, 실제로 그 값을 받고 있을 때만 건다.
-        로봇 노드가 없으면(값을 받은 적이 없으면) 태스크 상태만 본다.
+        홈 플래그(276)를 **한 번이라도 1 로 받아 본 뒤에만** 건다. 로봇에
+        올라가 있는 태스크가 이 값을 쓰는지 RCS 는 미리 알 수 없다 —
+        v4·v5 는 쓰지만, 예전에 올려 둔 판은 안 쓴다. 안 쓰는 판이면
+        레지스터가 계속 0 이라 그대로 걸면 차량이 영영 못 움직인다.
+        1 을 한 번 본 뒤부터는 그 값을 믿는다(그때부터는 0 = 홈 밖).
         """
-        return (getattr(self, "_task_version", "") in self.HOME_FLAG_TASKS
-                and self._robot_at_home is not None)
+        return bool(getattr(self, "_home_flag_seen", False))
 
     def _robot_motion_block_reason(self) -> str:
         """지금 차량·리프트를 움직이면 안 되는 이유. 움직여도 되면 빈 문자열."""
@@ -1092,6 +1091,9 @@ class OperatorWindow(QMainWindow):
     def _on_robot_at_home(self, at_home: bool) -> None:
         """홈 위치 플래그(276)가 바뀌었다. 홈에 닿으면 미뤄 둔 이동을 한다."""
         self._robot_at_home = bool(at_home)
+        if self._robot_at_home:
+            # 이 값을 쓰는 태스크가 올라가 있다는 뜻 — 이제부터 믿는다.
+            self._home_flag_seen = True
         self._run_pending_motions()
         self._sync_manual_interlock()
 

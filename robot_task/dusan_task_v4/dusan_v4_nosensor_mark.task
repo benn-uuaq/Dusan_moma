@@ -36,6 +36,88 @@ def ini_w6(a, p):
 end
 
 
+# ---- 홈 위치 플래그 (276) -------------------------------------------------
+# 로봇이 **홈 관절자세**(또는 홈 pose)에 있으면 276 = 1, 벗어나면 0 이다.
+# 발행 스레드가 제어주기마다 다시 판단하므로 홈을 떠나는 순간 0 이 된다.
+# RCS 는 이 값과 태스크 상태(500)를 **둘 다** 확인한 뒤에야 차량·리프트를
+# 움직인다 — 완료 플래그(290 = 5)만 보면 로봇이 아직 홈으로 가는 중에
+# 발판이 올라간다.
+#
+# 관절값으로 먼저 보고(홈은 관절로 티칭한 자세다), 관절이 달라도 TCP 가
+# 홈 pose 자리에 있으면 홈으로 본다(같은 자리를 다른 해로 잡은 경우).
+def hm_flag():
+  hm_q = get_actual_joint_positions()
+  hm_i = 0
+  hm_far = 0
+  while (hm_i &lt; 6):
+    hm_dq = hm_q[hm_i] - Home_joint[hm_i]
+    if (hm_dq &lt; 0):
+      hm_dq = -hm_dq
+    end
+    if (hm_dq &gt; hm_far):
+      hm_far = hm_dq
+    end
+    hm_i = hm_i + 1
+  end
+  if (hm_far &lt;= home_tol_j):
+    write_port_register(276, 1)
+    return True
+  end
+  # 관절이 달라도 TCP 가 홈 자리에 있으면 홈으로 본다(같은 자리를 다른
+  # 해로 잡은 경우). x, y, z 를 하나씩 본다 — pose_dist 는 회전까지
+  # 섞어 재기 때문에(스크립트 매뉴얼 3.2.27) mm 로 다루기 어렵다.
+  hm_p = get_actual_tcp_pose()
+  hm_i = 0
+  hm_far = 0
+  while (hm_i &lt; 3):
+    hm_dq = hm_p[hm_i] - Home_pose[hm_i]
+    if (hm_dq &lt; 0):
+      hm_dq = -hm_dq
+    end
+    if (hm_dq &gt; hm_far):
+      hm_far = hm_dq
+    end
+    hm_i = hm_i + 1
+  end
+  if (hm_far &lt;= home_tol_p * 0.001):
+    write_port_register(276, 1)
+    return True
+  end
+  write_port_register(276, 0)
+  return False
+end
+
+
+# ---- 차량 고정 확인 (309) -------------------------------------------------
+# 로봇이 움직이기 전에 **차량 쪽이 굳어 있는지** 확인한다. 리프트가 서고,
+# 차량이 정지하고, 아웃트리거 고정이 끝난 것을 RCS 가 확인해서 309 에 1 을
+# 쓴다(움직이기 시작하면 다시 0). 1 이 될 때까지 기다린다 — 290 = 14 로
+# 왜 서 있는지 알린다.
+#
+# 외부 제어(266 = 1)일 때만 본다. 펜던트 변수값으로 로봇만 단독으로
+# 돌리는 판에는 차량도 RCS 도 없어서 영영 1 이 되지 않는다.
+# veh_wait_cyc 회(제어주기 기준 약 2 분) 안에 안 되면 299 = 8 로 알리고
+# 멈춘다 — 말없이 매달려 있으면 원인을 알 수 없다.
+def ini_veh_wait():
+  if (read_port_register(266, True) != 1):
+    return True
+  end
+  ini_vt = 0
+  while (read_port_register(309, True) != 1):
+    write_port_register(290, 14)
+    sync()
+    ini_vt = ini_vt + 1
+    if (ini_vt &gt; veh_wait_cyc):
+      write_port_register(299, 8)
+      write_port_register(290, 9)
+      halt()
+    end
+  end
+  write_port_register(290, 0)
+  return True
+end
+
+
 # 절대 TCP(260~265) 는 항상 발행한다. 원점기준 상대좌표(280~285)와 호
 # 위치(286/287)는 원점(zero_pose)이 잡혀 있으면(zero_ok/arc_ok) 항상
 # 내보낸다 — TPAC 의 "Plane" 이 실제 TCP 이동거리를 보여줘야 하므로 ㄹ자
@@ -116,6 +198,7 @@ def pub_rel():
     alive = 0
   end
   write_port_register(293, alive)
+  hm_flag()
 end
 
 
@@ -368,6 +451,7 @@ write_port_register(298, 0)
 write_port_register(299, 0)  # probe_error: 0=정상, 1/2/3=probe_c/l/r 접촉 실패
 write_port_register(304, 0)
 write_port_register(305, 0)
+hm_flag()        # 276 = 지금 홈에 있는가
 
 # 실시간 발행 스레드 기동
 # 발행 스레드는 태스크 한 번에 **하나만** 띄운다.
@@ -393,7 +477,13 @@ end
 if (pub_started == 0):
   pub_h = start_thread(pub_thread, (), detach_mode = True)
   pub_started = 1
-end</cachedFileContents>
+end
+
+# ---- 차량 고정을 확인하고 나서 움직인다 -----------------------------------
+# 이 다음 노드(move_home)부터 로봇이 실제로 움직인다. 그 전에 차량·리프트가
+# 굳어 있는지 확인한다.
+ini_veh_wait()
+</cachedFileContents>
         <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v4/scripts_nosensor/dus_init.script"/>
       </ScriptNode>
     </FolderNode>

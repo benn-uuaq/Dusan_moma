@@ -142,42 +142,46 @@ def test_motion_runs_at_once_when_the_robot_is_idle(window) -> None:
 
 
 # ---- 홈 위치 플래그(레지스터 276)까지 확인한다 ----------------------------------------
-def _v5_home(window, at_home: bool) -> None:
-    """홈 플래그를 쓰는 판(v5)으로 두고 홈 여부를 알려 준다."""
-    window._task_version = "dusan_v5"
+def _home(window, at_home: bool) -> None:
+    """홈 플래그를 한 번 1 로 보여 준 뒤(그 판이 쓴다는 뜻) 값을 바꾼다."""
+    window._on_robot_at_home(True)
     window._on_robot_at_home(at_home)
 
 
 def test_lift_waits_until_the_robot_reaches_home(window) -> None:
     """태스크가 멈췄어도 팔이 벽 앞에 있으면(276 = 0) 리프트를 올리지 않는다."""
     window._on_robot_task_state(3)                      # 태스크는 끝났다
-    _v5_home(window, False)                             # 그런데 홈이 아니다
+    _home(window, False)                                # 그런데 홈이 아니다
     window.sequencer.lift_target_requested.emit(480.0)
 
     assert window.lift.target != 480.0
     assert "홈 위치" in window.main_screen.activity_label.text()
 
-    _v5_home(window, True)                              # 홈 도착
+    window._on_robot_at_home(True)                      # 홈 도착
     assert window.lift.target == 480.0
 
 
-def test_home_flag_is_ignored_on_the_v4_task(window) -> None:
-    """v4 태스크는 276 을 쓰지 않는다 — 0 이 계속 와도 막으면 안 된다."""
-    window._task_version = "dusan_v4"
+def test_home_flag_is_ignored_until_the_robot_reports_home_once(window) -> None:
+    """이 값을 안 쓰는 옛 태스크가 올라가 있으면 0 만 계속 온다 — 막으면 안 된다."""
     window._on_robot_task_state(3)
     window._on_robot_at_home(False)
     window.sequencer.lift_target_requested.emit(300.0)
     assert window.lift.target == 300.0
 
+    # 한 번이라도 홈이라고 알려 오면 그때부터는 믿고 건다.
+    _home(window, False)
+    window.sequencer.lift_target_requested.emit(600.0)
+    assert window.lift.target != 600.0
+
 
 def test_manual_control_is_locked_while_the_robot_is_away_from_home(window) -> None:
     window.screens["manual"].set_available(True)
     window._on_robot_task_state(3)
-    _v5_home(window, False)
+    _home(window, False)
     assert not window.screens["manual"].jog_buttons["cmd_mv_fwd"].isEnabled()
     assert "홈 위치" in window.screens["manual"].notice.text()
 
-    _v5_home(window, True)
+    window._on_robot_at_home(True)
     assert window.screens["manual"].jog_buttons["cmd_mv_fwd"].isEnabled()
 
 
