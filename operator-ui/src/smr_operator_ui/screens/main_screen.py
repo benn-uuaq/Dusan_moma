@@ -106,11 +106,6 @@ class MainScreen(QWidget):
             sequence.addWidget(step, 1)
         content.addLayout(sequence)
 
-        safety_note = QLabel("Cobot 검사 단계와 AMR 이동 단계는 동시에 수행되지 않습니다.")
-        safety_note.setObjectName("Muted")
-        safety_note.setWordWrap(True)
-        content.addWidget(safety_note)
-
         workspace = QHBoxLayout()
         self.orbit_view = OrbitView()
         self.orbit_view.target_clicked.connect(self._edit_target_dimensions)

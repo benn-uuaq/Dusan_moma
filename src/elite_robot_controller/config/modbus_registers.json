@@ -19,6 +19,17 @@
     "센서판 pc_press/al_press/pr_press가 halt() 직전에 쓴다(dus_init이 0으로",
     "되돌린다). operator-ui가 이 값이 바뀌는 걸 보고 알람 처리 + MQTT",
     "evt/error 로 내보낸다(erut_session.raise_error 경로, app.py 참고).",
+    "home_flag(276)은 로봇이 홈에 있는지다(1 홈, 0 벗어남). 태스크의 발행 스레드가",
+    "제어주기마다 관절값을 Home_joint와 비교해 쓰고(TCP가 Home_pose에 있어도 1),",
+    "홈을 떠나는 순간 0이 된다. 태스크가 돌지 않을 때는 이 노드가 대신 관리한다 —",
+    "조그를 보내면 0으로, move_home이 끝나면 1로 쓴다. RCS는 이 값과 task_state를",
+    "둘 다 확인한 뒤에야 차량·리프트를 움직인다(로봇이 홈으로 가는 중에 발판이",
+    "올라가지 않게).",
+    "vehicle_ready(309)는 그 반대 방향의 인터락이다. 차량이 정지하고 아웃트리거",
+    "고정이 끝나고 리프트가 섰다고 RCS가 확인하면 1을 쓰고, 셋 중 하나라도",
+    "움직이기 시작하면 0으로 내린다. 로봇 태스크는 움직이기 전(dus5_init)과",
+    "스캔 직전(dus5_goto_zero)에 이 값이 1이 될 때까지 기다린다(상태 290 = 14).",
+    "약 2분 안에 1이 안 되면 로봇이 299 = 8을 쓰고 멈춘다.",
     "task_state(500)는 로봇 컨트롤러가 주는 태스크 상태다(1 실행 중, 2 일시 중지,",
     "3 중지됨). holding이 아니라 input register라 드라이버의 폴백 경로로 읽힌다.",
     "29999로 상태를 물으면 매번 명령을 던져야 해서 이쪽으로 모니터링한다.",
@@ -90,6 +101,10 @@
       "count": 10,
       "kind": "raw"
     },
+    "home_flag": {
+      "address": 276,
+      "count": 1
+    },
     "task_state": {
       "address": 500,
       "count": 1
@@ -139,6 +154,14 @@
       "address": 268,
       "count": 2,
       "kind": "raw"
+    },
+    "vehicle_ready": {
+      "address": 309,
+      "count": 1
+    },
+    "home_flag": {
+      "address": 276,
+      "count": 1
     }
   }
 }

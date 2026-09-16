@@ -104,7 +104,7 @@ def test_lift_waits_until_the_robot_task_ends(window, qtbot) -> None:
     window.sequencer.lift_target_requested.emit(480.0)
 
     assert window.lift.target != 480.0, "아직 올리면 안 된다"
-    assert "로봇 태스크가 끝나면" in window.main_screen.activity_label.text()
+    assert "로봇 태스크가 실행 중" in window.main_screen.activity_label.text()
 
     window._on_robot_task_state(3)                      # 태스크 종료(홈 도착)
     assert window.lift.target == 480.0
@@ -139,3 +139,74 @@ def test_motion_runs_at_once_when_the_robot_is_idle(window) -> None:
     window._on_robot_task_state(3)
     window.sequencer.lift_target_requested.emit(167.5)
     assert window.lift.target == 167.5
+
+
+# ---- 홈 위치 플래그(레지스터 276)까지 확인한다 ----------------------------------------
+def _v5_home(window, at_home: bool) -> None:
+    """홈 플래그를 쓰는 판(v5)으로 두고 홈 여부를 알려 준다."""
+    window._task_version = "dusan_v5"
+    window._on_robot_at_home(at_home)
+
+
+def test_lift_waits_until_the_robot_reaches_home(window) -> None:
+    """태스크가 멈췄어도 팔이 벽 앞에 있으면(276 = 0) 리프트를 올리지 않는다."""
+    window._on_robot_task_state(3)                      # 태스크는 끝났다
+    _v5_home(window, False)                             # 그런데 홈이 아니다
+    window.sequencer.lift_target_requested.emit(480.0)
+
+    assert window.lift.target != 480.0
+    assert "홈 위치" in window.main_screen.activity_label.text()
+
+    _v5_home(window, True)                              # 홈 도착
+    assert window.lift.target == 480.0
+
+
+def test_home_flag_is_ignored_on_the_v4_task(window) -> None:
+    """v4 태스크는 276 을 쓰지 않는다 — 0 이 계속 와도 막으면 안 된다."""
+    window._task_version = "dusan_v4"
+    window._on_robot_task_state(3)
+    window._on_robot_at_home(False)
+    window.sequencer.lift_target_requested.emit(300.0)
+    assert window.lift.target == 300.0
+
+
+def test_manual_control_is_locked_while_the_robot_is_away_from_home(window) -> None:
+    window.screens["manual"].set_available(True)
+    window._on_robot_task_state(3)
+    _v5_home(window, False)
+    assert not window.screens["manual"].jog_buttons["cmd_mv_fwd"].isEnabled()
+    assert "홈 위치" in window.screens["manual"].notice.text()
+
+    _v5_home(window, True)
+    assert window.screens["manual"].jog_buttons["cmd_mv_fwd"].isEnabled()
+
+
+def test_vehicle_ready_needs_outriggers_and_everything_stopped(window) -> None:
+    """로봇에 보내는 차량 고정 확인(레지스터 309)의 판단."""
+    sent: list[tuple] = []
+    window.ros_status.send_vehicle_ready = lambda ready, force=False: sent.append((ready, force))
+
+    assert not window._vehicle_secured(), "아웃트리거를 안 고정했다"
+    window.outrigger.move_to(1, " 고정")
+    assert not window._vehicle_secured(), "움직이는 중에는 아니다"
+    window.outrigger.backend.reset(1)                   # 고정 완료 상태로 둔다
+    assert window._vehicle_secured()
+
+    window.lift.move_to(500.0, " mm")
+    assert not window._vehicle_secured(), "리프트가 움직이면 내린다"
+    window.lift.cancel()
+
+    window._push_vehicle_ready()
+    assert sent and sent[-1][0] is True
+
+
+def test_robot_waiting_for_the_vehicle_is_announced(window) -> None:
+    """로봇이 차량 고정을 기다리며 서 있으면(290 = 14) 화면에 이유를 남긴다."""
+    said: list[str] = []
+    window.main_screen.activity_shown.connect(said.append)
+    window._handle_vehicle_wait([14, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    assert any("차량 고정 확인을 기다립니다" in text for text in said), said
+
+    said.clear()
+    window._handle_vehicle_wait([14, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    assert said == [], "같은 상태가 10Hz 로 계속 와도 한 번만 알린다"

@@ -111,7 +111,7 @@ def test_cobot_badge_reflects_real_connection_state(qtbot) -> None:
 
 
 def test_top_bar_shrinks_font_to_fit_narrow_width(qtbot) -> None:
-    """상단바 내용(브랜드+부제+날짜/시간+배지 5개+배터리)을 기본 글자
+    """상단바 내용(브랜드+날짜/시간+배지 5개+배터리)을 기본 글자
 
     크기 그대로 늘어놓으면 좁은 창에서는 다 안 들어가 잘렸다("상단부
     글자와 날짜 잘리는 문제"). 개별 라벨을 눌러 찌그러뜨리는 대신,
@@ -128,10 +128,12 @@ def test_top_bar_shrinks_font_to_fit_narrow_width(qtbot) -> None:
     base_px = top_bar.clock.font().pixelSize()
     assert base_px == 20
 
-    # 실제 배포 최소 폭(OperatorWindow.setMinimumSize)에서는 잘리는 대신
-    # 전체 글자 크기가 줄어야 하고, 그 결과 실제 필요한 폭이 지금 폭
-    # 안에 들어와야 한다(=잘림 없음).
-    top_bar.resize(1280, top_bar.height())
+    # 배지 다섯 개가 다 못 들어가는 폭에서는 잘리는 대신 전체 글자 크기가
+    # 줄어야 하고, 그 결과 필요한 폭이 지금 폭 안에 들어와야 한다.
+    # (배포 최소 폭 1280 px 에서는 이제 줄이지 않고도 들어간다 — 상단
+    #  제품 문구를 뺐다.)
+    narrow = top_bar.layout().sizeHint().width() - 120
+    top_bar.resize(narrow, top_bar.height())
     top_bar._rescale_to_fit()
     narrow_px = top_bar.clock.font().pixelSize()
     assert narrow_px < base_px
@@ -141,6 +143,18 @@ def test_top_bar_shrinks_font_to_fit_narrow_width(qtbot) -> None:
     top_bar.resize(3000, top_bar.height())
     top_bar._rescale_to_fit()
     assert top_bar.clock.font().pixelSize() == base_px
+    window.close()
+
+
+def test_connection_badges_all_have_the_same_width(qtbot) -> None:
+    """연결 상태 배지는 문구가 달라도 크기가 같아야 한다(들쭉날쭉 금지)."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    badges = window.top_bar.badges
+    badges["PLC"].set_connected(True)            # "연결됨"
+    badges["AMR"].set_connected(False)           # "연결 안 됨"
+    widths = {name: badge.width() for name, badge in badges.items()}
+    assert len(set(widths.values())) == 1, widths
     window.close()
 
 

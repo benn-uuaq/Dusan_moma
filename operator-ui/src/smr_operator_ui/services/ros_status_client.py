@@ -51,6 +51,8 @@ class RosTopics:
     CONNECTED = "robot/status/connected"
     SCAN_STATE = "robot/status/scan_state"
     TASK_STATE = "robot/status/task_state"
+    # 로봇이 홈에 있는지(레지스터 276). 홈을 벗어나면 0 이 된다.
+    AT_HOME = "robot/status/at_home"
     SPEED_SCALE = "robot/status/speed_scale"
 
     DASHBOARD = "robot/dashboard"
@@ -65,6 +67,9 @@ class RosTopics:
     SCAN_GO = "robot/command/scan_go"
     # 마킹 자리 [u, v] mm (레지스터 268~269).
     MARK_TARGET = "robot/command/mark_target"
+    # 차량 고정 확인(레지스터 309). 차량 정지·아웃트리거 고정·리프트 정지를
+    # RCS 가 확인해 1 을 쓴다. 로봇은 1 이어야 움직인다.
+    VEHICLE_READY = "robot/command/vehicle_ready"
     JOG_TCP = "robot/command/jog_tcp"
 
     MOVE_HOME = "robot/command/move_home"
@@ -113,6 +118,8 @@ class RosStatusClient(QObject):
     scan_state_changed = pyqtSignal(list)
     # 로봇 컨트롤러가 주는 태스크 상태(레지스터 500). 1 = 실행 중.
     task_state_changed = pyqtSignal(int)
+    # 로봇이 홈에 있는지(레지스터 276). 값이 바뀔 때만 나간다.
+    at_home_changed = pyqtSignal(bool)
     # 로봇이 실제로 쓰고 있는 속도 비율[%]. 펜던트에서 바꿔도 여기로 온다.
     speed_scale_changed = pyqtSignal(int)
 
@@ -164,6 +171,9 @@ class RosStatusClient(QObject):
         self._connected_last: bool | None = None
         # 속도 비율도 같은 이유로 직전 값을 들고 있는다.
         self._speed_scale_last: int | None = None
+        # 홈 위치 플래그(276)와 차량 고정 확인(309)도 바뀔 때만 오간다.
+        self._at_home_last: bool | None = None
+        self._vehicle_ready_last: bool | None = None
         # 같은 노드에 붙는 확장(차량 클라이언트 등). 노드가 생기면 부른다.
         self._extensions: list = []
         if REGISTER_MAP_AVAILABLE:
@@ -244,12 +254,17 @@ class RosStatusClient(QObject):
             self._node.create_subscription(
                 Int32, RosTopics.TASK_STATE, self._on_task_state, 10
             )
+            self._node.create_subscription(
+                Int32, RosTopics.AT_HOME, self._on_at_home, 10
+            )
             self._publishers = {
                 "linear_speed": self._node.create_publisher(Int32, RosTopics.LINEAR_SPEED, 10),
                 "speed_ratio": self._node.create_publisher(Int32, RosTopics.SPEED_RATIO, 10),
                 "jog_joint": self._node.create_publisher(Int32, RosTopics.JOG_JOINT, 10),
                 "jog_tcp": self._node.create_publisher(Int32, RosTopics.JOG_TCP, 10),
                 "scan_go": self._node.create_publisher(Int32, RosTopics.SCAN_GO, 10),
+                "vehicle_ready": self._node.create_publisher(
+                    Int32, RosTopics.VEHICLE_READY, 10),
             }
             self._pose_publishers = {
                 "home_joint": self._node.create_publisher(
@@ -282,6 +297,8 @@ class RosStatusClient(QObject):
 
     def stop(self) -> None:
         """구독을 끝내고 실행기와 노드를 정리한다."""
+        self._vehicle_ready_last = None
+        self._at_home_last = None
         executor, self._executor = self._executor, None
         if executor is not None:
             executor.shutdown()
@@ -326,6 +343,26 @@ class RosStatusClient(QObject):
             return False
         publisher.publish(Int32(data=int(value)))
         self.command_result.emit(name, True, f"{name} 전송: {value}")
+        return True
+
+    def send_vehicle_ready(self, ready: bool, force: bool = False) -> bool:
+        """차량 고정 확인(309)을 로봇에 알린다. 값이 바뀔 때만 보낸다.
+
+        `send_value` 와 달리 결과를 통신 기록에 남기지 않는다 — 작업 내내
+        오가는 인터락 신호라 기록이 이것만으로 가득 찬다.
+
+        `force` 는 값이 그대로여도 다시 보낸다. 로봇 노드가 다시 뜨면
+        레지스터가 0 으로 돌아가 있을 수 있어 가끔 되풀이해 준다.
+        """
+        ready = bool(ready)
+        publisher = self._publishers.get("vehicle_ready")
+        if publisher is None or not self.writable("vehicle_ready"):
+            self._vehicle_ready_last = None
+            return False
+        if ready == self._vehicle_ready_last and not force:
+            return True
+        self._vehicle_ready_last = ready
+        publisher.publish(Int32(data=1 if ready else 0))
         return True
 
     def send_pose(self, name: str, values: list) -> bool:
@@ -500,6 +537,14 @@ class RosStatusClient(QObject):
 
     def _on_task_state(self, msg) -> None:
         self.task_state_changed.emit(int(msg.data))
+
+    def _on_at_home(self, msg) -> None:
+        """홈 위치 플래그(276). 10 Hz 로 오므로 바뀔 때만 내보낸다."""
+        at_home = bool(int(msg.data))
+        if at_home == self._at_home_last:
+            return
+        self._at_home_last = at_home
+        self.at_home_changed.emit(at_home)
 
     def _on_scan_state(self, msg) -> None:
         """스캔 진행 상태를 정수 목록 그대로 전달한다.

@@ -101,6 +101,7 @@ class ManualScreen(BaseScreen):
         self._held: dict | None = None
         self._enabled = False
         self._interlock = False
+        self._interlock_reason = ""
         self.confirm = lambda text: QMessageBox.question(
             self, "차량 원점/초기화", text,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -205,9 +206,14 @@ class ManualScreen(BaseScreen):
         self._enabled = bool(on)
         self._refresh_enabled(reason)
 
-    def set_interlock(self, on: bool) -> None:
-        """로봇이 동작 중이면 주행·아웃트리거 해제·리프트 이동을 잠근다."""
+    def set_interlock(self, on: bool, reason: str = "") -> None:
+        """로봇이 동작 중이거나 홈을 벗어나 있으면 주행·리프트를 잠근다.
+
+        `reason` 은 왜 잠겼는지다(예: "로봇이 홈 위치가 아님"). 안 주면
+        기본 문구를 쓴다.
+        """
         self._interlock = bool(on)
+        self._interlock_reason = reason
         self._refresh_enabled()
 
     def _refresh_enabled(self, reason: str = "") -> None:
@@ -222,7 +228,9 @@ class ManualScreen(BaseScreen):
         if not self._enabled:
             self.notice.setText(reason or "차량 상태가 들어오지 않습니다 — 차량 제어 노드를 확인하세요.")
         elif self._interlock:
-            self.notice.setText("안전 인터락: 로봇이 동작 중이라 주행·아웃트리거 해제·리프트 이동을 잠갔습니다.")
+            why = getattr(self, "_interlock_reason", "") or "로봇이 동작 중입니다"
+            self.notice.setText(
+                f"안전 인터락 — {why}. 주행·아웃트리거 해제·리프트 이동을 잠갔습니다.")
         else:
             self.notice.setText("")
         # 할 말이 없으면 줄을 숨겨 화면 높이를 돌려준다.

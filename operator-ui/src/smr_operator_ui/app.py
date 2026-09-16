@@ -176,17 +176,13 @@ class TopBar(QFrame):
         self._scalable_labels: list[tuple[QLabel, int]] = []
         brand = QLabel("3S-Robotics")
         brand.setObjectName("Brand")
-        product = QLabel("SMR 비파괴 검사 시스템  |  Operator Console")
-        product.setObjectName("Product")
         layout.addWidget(brand)
-        layout.addWidget(product)
         layout.addStretch()
         self.clock = QLabel()
         self.clock.setObjectName("TopMeta")
         self.clock.setAlignment(Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.clock)
         self._register_scalable(brand, 26)
-        self._register_scalable(product, 20)
         self._register_scalable(self.clock, 20)
         self.badges: dict[str, ConnectionBadge] = {}
         # PLC/AMR/UT는 아직 실제 연결 신호가 붙어 있지 않은 자리표시자라
@@ -258,6 +254,13 @@ class TopBar(QFrame):
                 continue
             alive.append((label, base_px))
         self._scalable_labels = alive
+        # 배지 폭은 글자 폭으로 계산해 고정해 두므로, 글자 크기가 바뀌면
+        # 다시 재야 한다(안 그러면 줄인 글자에 옛 폭이 남는다).
+        for badge in getattr(self, "badges", {}).values():
+            try:
+                badge.sync_width()
+            except RuntimeError:
+                continue
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -427,6 +430,8 @@ class OperatorWindow(QMainWindow):
         # 운전 모드 슬롯 {"1": {...}, ...}. 비운 슬롯은 {} 로 둔다(DB 저장소는
         # 키를 지우지 않고 덮어쓰기만 하므로).
         self._mode_slots: dict[str, dict] = {}
+        # 로봇이 홈에 있는지(레지스터 276). None = 아직 받은 적 없음.
+        self._robot_at_home: bool | None = None
         # 로봇 태스크가 끝나기를 기다리는 차량·리프트 이동. (문구, 실행 함수)
         self._pending_motions: list = []
         self._motion_wait_timer = QTimer(self)
@@ -518,6 +523,7 @@ class OperatorWindow(QMainWindow):
         # 작업 영역을 실시간으로 밀어 주려면 연결·태스크 상태를 알아야 한다.
         self.ros_status.connected_changed.connect(self._on_robot_link_changed)
         self.ros_status.task_state_changed.connect(self._on_robot_task_state)
+        self.ros_status.at_home_changed.connect(self._on_robot_at_home)
         self._update_jog_enabled(False)
         self.ros_status.speed_scale_changed.connect(self._show_speed_scale)
         self.ros_status.error_occurred.connect(self._show_ros_error)
@@ -743,6 +749,7 @@ class OperatorWindow(QMainWindow):
         self.ros_status.scan_state_changed.connect(self._handle_probe_error)
         self.ros_status.scan_state_changed.connect(self._handle_alive)
         self.ros_status.scan_state_changed.connect(self._handle_origin_wait)
+        self.ros_status.scan_state_changed.connect(self._handle_vehicle_wait)
 
         # 화면과 외부 MQTT
         seq.state_changed.connect(self._show_sequencer_state)
@@ -1020,36 +1027,73 @@ class OperatorWindow(QMainWindow):
     #: (루프판처럼 태스크가 스스로 안 끝나는 구성에서 멈춰 있지 않게).
     ROBOT_TASK_WAIT_MS = 30_000
 
+    #: 홈 위치 플래그(레지스터 276)를 쓰는 태스크 판. 이 판으로 돌 때만
+    #: 홈 확인까지 인터락에 넣는다 — v4 태스크는 276 을 쓰지 않아 값이 늘
+    #: 0 이라, 그대로 걸면 차량이 영영 못 움직인다.
+    HOME_FLAG_TASKS = ("dusan_v5",)
+
     def _robot_task_running(self) -> bool:
         return getattr(self, "_robot_task_state", 0) == self._TASK_STATE_RUNNING
 
+    def _home_interlock_active(self) -> bool:
+        """홈 위치까지 확인해야 하는 상황인가.
+
+        홈 플래그를 쓰는 판이고, 실제로 그 값을 받고 있을 때만 건다.
+        로봇 노드가 없으면(값을 받은 적이 없으면) 태스크 상태만 본다.
+        """
+        return (getattr(self, "_task_version", "") in self.HOME_FLAG_TASKS
+                and self._robot_at_home is not None)
+
+    def _robot_motion_block_reason(self) -> str:
+        """지금 차량·리프트를 움직이면 안 되는 이유. 움직여도 되면 빈 문자열."""
+        if self._robot_task_running():
+            return "로봇 태스크가 실행 중입니다"
+        if self._home_interlock_active() and not self._robot_at_home:
+            return "로봇이 홈 위치에 있지 않습니다"
+        return ""
+
     def _defer_until_robot_idle(self, label: str, run) -> None:
-        """로봇 태스크가 도는 중이면 끝난 뒤에 실행한다.
+        """로봇이 홈에서 쉬고 있을 때만 차량·리프트를 움직인다.
 
         로봇은 한 셀을 마칠 때 **완료 플래그(290 = 5)를 먼저 쓰고 그 다음에
         홈으로 이동**한다(dus_finish -> 홈). 플래그만 보고 리프트를 올리면
-        로봇이 아직 움직이는 중에 발판이 올라간다. 태스크가 실제로 끝난 뒤
-        (레지스터 500 != 1) 차량·리프트를 움직인다.
+        로봇이 아직 움직이는 중에 발판이 올라간다. 두 가지를 다 보고서야
+        움직인다.
+          * 태스크 상태(레지스터 500)가 실행 중이 아니다
+          * 홈 위치 플래그(레지스터 276)가 1 이다 — 홈을 벗어나면 0 이므로
+            펜던트에서 직접 돌리거나 조그로 빼낸 경우도 걸린다
         """
-        if not self._robot_task_running():
+        reason = self._robot_motion_block_reason()
+        if not reason:
             run()
             return
         self._pending_motions.append((label, run))
-        self.main_screen.show_activity(f"로봇 태스크가 끝나면 {label}을(를) 진행합니다.")
+        self.main_screen.show_activity(f"{reason} — {label}은(는) 로봇이 홈에서 멈춘 뒤에 합니다.")
         if not self._motion_wait_timer.isActive():
             self._motion_wait_timer.start(self.ROBOT_TASK_WAIT_MS)
 
     def _run_pending_motions(self, timed_out: bool = False) -> None:
+        if not self._pending_motions:
+            self._motion_wait_timer.stop()
+            return
+        reason = self._robot_motion_block_reason()
+        if reason and not timed_out:
+            return                      # 아직 로봇이 움직인다 — 더 기다린다
         pending, self._pending_motions = self._pending_motions, []
         self._motion_wait_timer.stop()
-        if not pending:
-            return
         if timed_out:
             self.main_screen.show_activity(
-                f"로봇 태스크가 {self.ROBOT_TASK_WAIT_MS // 1000}초 안에 끝나지 않아 그대로 진행합니다: "
+                f"{reason or '로봇 태스크가 실행 중입니다'} — "
+                f"{self.ROBOT_TASK_WAIT_MS // 1000}초가 지나 그대로 진행합니다: "
                 + ", ".join(label for label, _ in pending))
         for label, run in pending:
             run()
+
+    def _on_robot_at_home(self, at_home: bool) -> None:
+        """홈 위치 플래그(276)가 바뀌었다. 홈에 닿으면 미뤄 둔 이동을 한다."""
+        self._robot_at_home = bool(at_home)
+        self._run_pending_motions()
+        self._sync_manual_interlock()
 
     def _on_robot_task_state(self, state: int) -> None:
         self._robot_task_state = int(state)
@@ -1934,6 +1978,8 @@ class OperatorWindow(QMainWindow):
         # v5 (servoj 스캔) — 호를 도는 동안 눌림을 계속 확인한다.
         6: ("E-SCAN-PRESS", "스캔 중 접촉(눌림)을 유지하지 못해 멈췄습니다 — 보정 한계(press_max) 초과"),
         7: ("E-SCAN-IK", "스캔 호 경로에 역기구학 해가 없어 멈췄습니다 — 로봇 위치·자세를 확인하세요"),
+        # v5 인터락 — 차량 고정 확인(레지스터 309)을 기다리다 시간이 넘었다.
+        8: ("E-VEHICLE-HOLD", "차량 고정 확인을 못 받아 로봇이 멈췄습니다 — 아웃트리거 고정·차량 정지를 확인하세요"),
     }
 
     def _handle_probe_error(self, values: list) -> None:
@@ -1977,6 +2023,24 @@ class OperatorWindow(QMainWindow):
     # dus_goto_zero.script 가 세우고, 레지스터 267 에 1 이 들어오면 푼다.
     _SCAN_STATE_INDEX = 0
     _STATE_AT_ORIGIN = 7
+    #: 로봇이 차량 고정 확인(레지스터 309)을 기다리는 중 (v5 dus5_init/goto_zero).
+    _STATE_WAIT_VEHICLE = 14
+
+    def _handle_vehicle_wait(self, values: list) -> None:
+        """로봇이 차량 고정을 기다리며 서 있으면 한 번 알린다.
+
+        이 상태로 오래 서 있으면 원인을 알기 어렵다 — 아웃트리거가 안
+        고정됐거나, 차량 상태가 안 들어와 RCS 가 309 를 못 세운 것이다.
+        """
+        if not values:
+            return
+        waiting = int(values[self._SCAN_STATE_INDEX]) == self._STATE_WAIT_VEHICLE
+        if waiting == getattr(self, "_robot_waiting_vehicle", False):
+            return
+        self._robot_waiting_vehicle = waiting
+        if waiting:
+            self.main_screen.show_activity(
+                "로봇이 차량 고정 확인을 기다립니다 — 아웃트리거 고정·차량 정지를 확인하세요.")
 
     def _handle_origin_wait(self, values: list) -> None:
         """로봇이 원점에 도착해 멈춰 서면 ERUT 에 알린다.
@@ -2203,6 +2267,43 @@ class OperatorWindow(QMainWindow):
         self.sequencer.state_changed.connect(self._sync_manual_interlock)
         self.sequencer.state_changed.connect(self._vehicle_follow_pause)
         self._show_vehicle_link(False)      # 시작할 때부터 '더미'라고 보이게
+        # 차량 고정 확인(레지스터 309)을 로봇에 계속 알린다 — 로봇은 이
+        # 값이 1 이어야 움직인다(dus5_init / dus5_goto_zero).
+        self._vehicle_ready_ticks = 0
+        self._vehicle_ready_timer = QTimer(self)
+        self._vehicle_ready_timer.setInterval(self.VEHICLE_READY_MS)
+        self._vehicle_ready_timer.timeout.connect(self._push_vehicle_ready)
+        self._vehicle_ready_timer.start()
+
+    #: 차량 고정 확인을 다시 재는 주기 [ms].
+    VEHICLE_READY_MS = 500
+    #: 값이 그대로여도 다시 보내는 간격(위 주기의 배수). 로봇 노드가 다시
+    #: 뜨면 레지스터가 0 으로 돌아가 있어 되풀이가 필요하다.
+    VEHICLE_READY_REPEAT = 10
+
+    def _vehicle_secured(self) -> bool:
+        """차량 쪽이 굳어 있는가 — 로봇이 팔을 뻗어도 되는 상태인가.
+
+        아웃트리거 고정 + 차량 정지 + 리프트 정지, 셋을 다 본다. 실제
+        차량이면 차량이 주는 상태로, 더미면 어댑터 상태로 판단한다.
+        """
+        if any(m.moving for m in (self.amr, self.lift, self.outrigger)):
+            return False
+        if self.outrigger.position < 1:
+            return False                    # 아웃트리거가 고정돼 있지 않다
+        if self.amr.active != "vehicle":
+            return True                     # 더미는 여기까지로 본다
+        status = self.vehicle.last_status
+        if not self.vehicle.online or not status:
+            return False                    # 상태가 안 오면 확인할 수 없다
+        return (status.get("hold") == "SET"
+                and not int(status.get("error_code", 0) or 0)
+                and status.get("state") in ("STOP", "HOLD"))
+
+    def _push_vehicle_ready(self) -> None:
+        self._vehicle_ready_ticks += 1
+        force = self._vehicle_ready_ticks % self.VEHICLE_READY_REPEAT == 0
+        self.ros_status.send_vehicle_ready(self._vehicle_secured(), force=force)
 
     def _vehicle_mode(self) -> str:
         """설정값 — "auto" / "dummy" / "vehicle"."""
@@ -2287,8 +2388,15 @@ class OperatorWindow(QMainWindow):
             self.vehicle.control("RUNNING")
 
     def _sync_manual_interlock(self, *_args) -> None:
-        """로봇이 동작 중이면 수동 제어의 주행·아웃트리거 해제·리프트를 잠근다."""
-        self.screens["manual"].set_interlock(self._robot_busy())
+        """로봇이 동작 중이거나 홈을 벗어나 있으면 수동 주행·리프트를 잠근다.
+
+        태스크가 멈춰 있어도 팔이 벽 앞에 뻗어 있으면(홈 플래그 0) 차량을
+        움직이면 안 된다. 잠겨 있으면 먼저 로봇을 홈으로 보낸다.
+        """
+        reason = self._robot_motion_block_reason()
+        if not reason and self._job_running():
+            reason = "작업이 진행 중입니다"
+        self.screens["manual"].set_interlock(bool(reason), reason)
 
     def _on_vehicle_problem(self, message: str) -> None:
         """차량이 도착을 못 냈다 — 장애로 올린다(작업을 멈추고 로봇도 세운다)."""

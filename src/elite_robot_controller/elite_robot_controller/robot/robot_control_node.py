@@ -65,6 +65,10 @@ class RobotControlNode(Node):
         # 로봇 컨트롤러가 주는 태스크 상태(1 실행 중, 2 일시 중지, 3 중지됨).
         # 29999로 물으면 매번 명령을 던져야 하므로 Modbus로 상시 읽는다.
         self.pub_task_state = self.create_publisher(Int32, 'robot/status/task_state', 10)
+        # 로봇이 홈에 있는지(레지스터 276). 태스크가 제어주기마다 쓰고,
+        # 태스크가 안 돌 때는 이 노드가 대신 관리한다(조그 0 / 홈 도착 1).
+        # RCS 는 이 값과 태스크 상태를 같이 보고 차량·리프트를 움직인다.
+        self.pub_home_flag = self.create_publisher(Int32, 'robot/status/at_home', 10)
         # 로봇이 실제로 쓰고 있는 속도 비율[%]. 펜던트에서 바꿔도 여기로 나온다.
         self.pub_speed_scale = self.create_publisher(Int32, 'robot/status/speed_scale', 10)
 
@@ -110,6 +114,11 @@ class RobotControlNode(Node):
         self.create_subscription(Float32MultiArray, 'robot/command/work_area', self.cb_work_area, 10)
         # 스캔 시작 허가(267). 로봇이 원점에서 멈춰 기다리는 것을 풀어 준다.
         self.create_subscription(Int32, 'robot/command/scan_go', self.cb_scan_go, 10)
+        # 차량 고정 확인(309). 차량이 서고 아웃트리거가 고정되고 리프트가
+        # 멈췄다고 RCS 가 확인해 주면 1, 하나라도 움직이면 0 이다. 로봇
+        # 태스크는 이 값이 1 이어야 움직인다(dus5_init / dus5_goto_zero).
+        self.create_subscription(
+            Int32, 'robot/command/vehicle_ready', self.cb_vehicle_ready, 10)
         # 마킹 자리 [u, v] mm (268~269). 마킹 태스크를 틀기 전에 쓴다.
         self.create_subscription(
             Float32MultiArray, 'robot/command/mark_target', self.cb_mark_target, 10)
@@ -224,6 +233,7 @@ class RobotControlNode(Node):
         self.publish_pose('joint_position', self.pub_joint_position)
         self.publish_raw('scan_state', self.pub_scan_state)
         self.publish_code('task_state', self.pub_task_state)
+        self.publish_code('home_flag', self.pub_home_flag)
         self.publish_code('speed_scale', self.pub_speed_scale)
 
         # 30001 포트 비동기 백그라운드 실시간 알람 스트림 처리
@@ -431,6 +441,22 @@ class RobotControlNode(Node):
         """29999 stop으로 즉시 멈춘다. 조그는 눌린 동안만 움직여야 한다."""
         self.robot_dash.robot_stop()
 
+    def cb_vehicle_ready(self, msg):
+        """차량 고정 확인을 레지스터 309 에 그대로 전한다(1 고정 / 0 아님)."""
+        self._write_topic('vehicle_ready', Int32(data=1 if int(msg.data) else 0))
+
+    def _leaving_home(self):
+        """로봇을 홈 밖으로 움직이기 직전에 홈 플래그를 내린다.
+
+        태스크가 돌 때는 태스크의 발행 스레드가 제어주기마다 276 을
+        갱신하지만, 조그·홈 이동은 태스크 **밖**에서 30001 스크립트로
+        돌기 때문에 그동안은 아무도 값을 갱신하지 않는다. 그대로 두면
+        홈에서 조그로 빠져나가도 플래그가 1 로 남아, RCS 가 로봇이 홈에
+        있는 줄 알고 차량을 움직인다.
+        """
+        if self.connected:
+            self.write_register('home_flag', 0)
+
     def cb_jog_joint(self, msg):
         if not self.connected:
             return
@@ -446,6 +472,7 @@ class RobotControlNode(Node):
         accel = self.get_parameter('jog_accel_max').value * scale
         qd = self._round6([value * speed for value in unit])
         hold = self.get_parameter('jog_hold_time').value
+        self._leaving_home()
         self.robot_primary.send_script(f"speedj({qd}, {round(accel, 6)}, {hold})")
 
     def cb_jog_tcp(self, msg):
@@ -468,6 +495,7 @@ class RobotControlNode(Node):
             for index, value in enumerate(unit)
         ])
         hold = self.get_parameter('jog_hold_time').value
+        self._leaving_home()
         self.robot_primary.send_script(f"speedl({xd}, {round(accel, 6)}, {hold})")
 
     # get_variable이 실패했을 때만 쓰는 마지막 안전망. 정상 경로에서는
@@ -564,6 +592,9 @@ class RobotControlNode(Node):
             "    movel(cur_pose, a=1.2, v=0.25)\n"
             "  end\n"
             "  movej(tgt_j, a=1.4, v=0.5)\n"
+            # 홈에 닿았다 — 레지스터 276 을 세운다. 태스크가 돌지 않는
+            # 동안에는 이 스크립트 말고 아무도 이 값을 갱신하지 않는다.
+            "  write_port_register(276, 1)\n"
             "end"
         )
         # 돌고 있는 태스크(스캔·마킹)를 **먼저 세운다.** 태스크가 도는 채로
@@ -574,6 +605,9 @@ class RobotControlNode(Node):
             self.get_logger().warn(
                 f"[move_home] 태스크 정지 응답 없음 — {self.robot_dash.last_error}")
         time.sleep(self._HOME_AFTER_STOP_S)
+        # 홈으로 가는 **동안**은 홈이 아니다. 태스크를 세운 뒤에 내린다 —
+        # 먼저 내리면 아직 도는 태스크의 발행 스레드가 다시 덮어쓴다.
+        self._leaving_home()
         ok = self.robot_primary.send_script(script)
         res.success = bool(ok)
         res.message = "[move_home] 홈 이동을 요청했습니다." if ok else "[move_home] 스크립트 전송 실패"

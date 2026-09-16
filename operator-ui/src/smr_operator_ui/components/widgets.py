@@ -78,34 +78,56 @@ class ConnectionBadge(QFrame):
     수 있게 해 뒀다 — 실제 장비가 붙어 있는 항목(예: TPAC)부터 쓴다.
     """
 
+    #: 폭을 맞출 때 기준으로 삼는 상태 문구. 어떤 상태가 들어와도 배지
+    #: 크기가 변하지 않게 **가장 긴 문구**로 폭을 잡아 둔다.
+    STATE_TEXTS = ("연결됨", "연결 안 됨")
+
     def __init__(self, name: str, initial_connected: bool = True,
                 parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 5, 10, 5)
         layout.setSpacing(1)
-        name_label = QLabel(name)
-        name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.name_label = QLabel(name)
+        self.name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.state_label = QLabel()
         self.state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(name_label)
+        layout.addWidget(self.name_label)
         layout.addWidget(self.state_label)
+        self._state_text = ""
         self.set_connected(initial_connected)
 
     def set_state(self, text: str, kind: str = "StatusWarn") -> None:
         """연결 여부가 아닌 상태를 직접 쓴다(예: 차량이 '더미'일 때)."""
+        self._show(text, kind)
+
+    def set_connected(self, connected: bool, label: str | None = None) -> None:
+        """연결 여부를 반영한다. `label`을 주면 문구를 대신 쓴다(예: 상태 불명)."""
+        self._show(label or ("연결됨" if connected else "연결 안 됨"),
+                   "StatusGood" if connected else "StatusDanger")
+
+    def _show(self, text: str, kind: str) -> None:
+        self._state_text = text
         self.state_label.setText(f"● {text}")
         self.state_label.setObjectName(kind)
         self.state_label.style().unpolish(self.state_label)
         self.state_label.style().polish(self.state_label)
+        self.sync_width()
 
-    def set_connected(self, connected: bool, label: str | None = None) -> None:
-        """연결 여부를 반영한다. `label`을 주면 문구를 대신 쓴다(예: 상태 불명)."""
-        text = label or ("연결됨" if connected else "연결 안 됨")
-        self.state_label.setText(f"● {text}")
-        self.state_label.setObjectName("StatusGood" if connected else "StatusDanger")
-        self.state_label.style().unpolish(self.state_label)
-        self.state_label.style().polish(self.state_label)
+    def sync_width(self) -> None:
+        """배지 폭을 장비마다 똑같이 맞춘다.
+
+        글자 길이대로 두면 "연결됨"과 "연결 안 됨"의 폭이 달라 배지가
+        들쭉날쭉하고, 상태가 바뀔 때마다 옆 배지가 밀린다. 이름과 상태
+        문구 중 **가장 넓은 것**에 맞춰 고정 폭을 준다 — 상태 문구가
+        이름보다 늘 넓으므로 결과적으로 모든 배지가 같은 폭이 된다.
+        글자 크기가 바뀌면(상단바 축소) 다시 불러야 한다.
+        """
+        margins = self.layout().contentsMargins()
+        state = max(self.state_label.fontMetrics().horizontalAdvance(f"● {text}")
+                    for text in (*self.STATE_TEXTS, self._state_text))
+        name = self.name_label.fontMetrics().horizontalAdvance(self.name_label.text())
+        self.setFixedWidth(max(state, name) + margins.left() + margins.right() + 2)
 
 
 class MetricRow(QFrame):
