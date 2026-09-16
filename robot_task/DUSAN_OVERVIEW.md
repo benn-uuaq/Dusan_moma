@@ -266,7 +266,7 @@ rows  = ceil((app_height - scan_h) / pitch) + 1
 ## 5. Modbus 레지스터 맵 (요약)
 
 **주소별 전체 표는 `docs/3S-Elite_Modbus_인터페이스_20260916.xlsx`** 에 있다
-(통신 채널 / 주소별 레지스터 / RCS 변환 / TPAC 변환 / 코드표 다섯 장).
+(전송속도 / 로봇 레지스터 / 브리지 레지스터 세 장, 모드버스만 정리했다).
 `python3 tools/build_modbus_interface_xlsx.py` 로 다시 만든다 — 값을 고칠 때는
 코드를 먼저 고치고 이 스크립트를 돌린다.
 
