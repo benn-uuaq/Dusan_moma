@@ -167,13 +167,14 @@ class VehicleSimUI:
         error = s["state"] == "ERROR"
         on = [False, False, False]
         if error:
-            on[0] = self.blink < 0.65                     # 빨강 깜빡
+            on[0] = self.blink < 0.65                     # 빨강 깜빡 — 오류
         elif moving:
-            on[1] = self.blink < 0.65                     # 노랑 깜빡
-        elif s["state"] == "PAUSED":
+            on[1] = self.blink < 0.65                     # 노랑 깜빡 — 움직이는 중
+        elif s["state"] == "PAUSED" or s["hold"] == "SET":
+            # 아웃트리거를 내리고 서 있는 동안(로봇이 검사 중)도 '작업 중'이다.
             on[1] = True                                  # 노랑 켜짐
         else:
-            on[2] = True                                  # 초록 켜짐
+            on[2] = True                                  # 초록 켜짐 — 정지·대기
         c.create_rectangle(x - 4, top - 96, x + 4, top, fill="#5A6A78", outline="")
         for i, (off_color, on_color) in enumerate(LAMPS):
             cy = top - 88 + i * 26

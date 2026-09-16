@@ -1073,8 +1073,11 @@ class CobotSettingsScreen(FormScreen):
 
 
 class ConnectionSettingsScreen(FormScreen):
-    #: '차량 제어' 목록 -> 앱이 쓰는 장비 이름. 앞의 것이 기본.
-    VEHICLE_MODES = {"더미 (차량 없이)": "dummy", "ROS 차량 노드": "vehicle"}
+    #: '차량 제어' 목록 -> 앱이 쓰는 값. 앞의 것이 기본.
+    #: 자동 = 차량 상태가 들어오면 차량으로, 없으면 더미로 스스로 고른다.
+    VEHICLE_MODES = {"자동 (차량이 있으면 차량)": "auto",
+                     "더미 (차량 없이)": "dummy",
+                     "ROS 차량 노드 고정": "vehicle"}
     #: 목록에서 고르는 즉시 나간다 — 저장을 눌러야만 바뀌면, 바꿔 놓고도
     #: 차량이 안 움직이는 이유를 알기 어렵다(실제로 그렇게 헤맸다).
     vehicle_mode_changed = pyqtSignal(str)

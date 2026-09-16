@@ -34,8 +34,7 @@ def test_vehicle_moves_through_the_real_interfaces(qtbot, tmp_path, monkeypatch)
     threading.Thread(target=executor.spin, daemon=True).start()
     try:
         qtbot.waitUntil(lambda: window.vehicle.online, timeout=5000)
-        window.screens["connection"].field("차량 제어").setCurrentIndex(1)
-        window._apply_vehicle_mode()
+        # 차량 제어 기본값은 '자동' — 상태가 들어오면 스스로 차량으로 붙는다.
         assert window.amr.active == "vehicle"
 
         with qtbot.waitSignal(window.amr.arrived, timeout=8000):
@@ -47,7 +46,9 @@ def test_vehicle_moves_through_the_real_interfaces(qtbot, tmp_path, monkeypatch)
             window.lift.move_to(400.0, " mm")
         assert window.vehicle.last_status["lift_h"] == pytest.approx(0.4)
         assert window.screens["manual"].lift_value.text() == "400 mm"
-        assert window.screens["manual"].jog_buttons["cmd_mv_fwd"].isEnabled()
+        # 수동 제어는 상태가 들어온 뒤에 열린다 — 잠깐 기다린다.
+        qtbot.waitUntil(lambda: window.screens["manual"].jog_buttons["cmd_mv_fwd"].isEnabled(),
+                        timeout=3000)
     finally:
         executor.shutdown()
         sim.destroy_node()

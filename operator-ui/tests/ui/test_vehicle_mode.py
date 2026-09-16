@@ -1,8 +1,11 @@
-"""차량 제어 선택(더미 / ROS 차량)과 작업 시작 시 안내 시험.
+"""차량 제어 선택(자동 / 더미 / ROS 차량 고정)과 작업 시작 안내 시험.
 
-실제로 겪은 문제: 차량 제어가 기본 '더미'인 채로 MQTT 작업을 시작하면 화면
-순서는 다 흐르는데 차량은 가만히 있었다. 무엇이 잘못됐는지 알기 어려웠다.
+실제로 겪은 문제: 차량 모의기를 띄워 놨는데도 RCS 가 더미로 돌아 차량이
+가만히 있었다. 그래서 기본을 '자동'으로 두고, 차량 상태가 들어오면 스스로
+차량으로 붙는다.
 """
+
+import time
 
 import pytest
 
@@ -25,15 +28,49 @@ def _alarms(window) -> list[str]:
     return [lst.item(i).text() for i in range(lst.count())]
 
 
-def test_choosing_from_the_list_applies_without_saving(window) -> None:
+def _status(window, arriving: bool) -> None:
+    """차량 상태가 들어오는/끊긴 상황을 만든다(클라이언트의 실제 판정 경로)."""
+    client = window.vehicle
+    client._last_time = time.monotonic() if arriving else 0.0
+    client._check_online()
+
+
+def _pick(window, text: str) -> None:
     combo = window.screens["connection"].field("차량 제어")
-    assert window.amr.active == "dummy"
+    index = combo.findText(text)
+    assert index >= 0, text
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)          # 목록에서 고른 것 — 저장은 안 누른다
 
-    combo.setCurrentIndex(1)
-    combo.activated.emit(1)                      # 목록에서 고른 것 — 저장은 안 누른다
 
+def test_auto_follows_the_vehicle_status(window) -> None:
+    combo = window.screens["connection"].field("차량 제어")
+    assert combo.currentText().startswith("자동"), "기본은 자동"
+    assert window.amr.active == "dummy", "차량 상태가 없으면 더미"
+
+    _status(window, True)         # 차량 노드가 떴다
     assert window.amr.active == "vehicle"
     assert window.lift.active == "vehicle" and window.outrigger.active == "vehicle"
+
+    _status(window, False)        # 꺼지면 더미로 돌아온다
+    assert window.amr.active == "dummy"
+
+
+def test_fixed_choices_win_over_auto(window) -> None:
+    _pick(window, "더미 (차량 없이)")
+    _status(window, True)
+    assert window.amr.active == "dummy", "더미로 고정했으면 차량이 있어도 더미"
+    assert any("더미" in text for text in _alarms(window)), _alarms(window)
+
+    _pick(window, "ROS 차량 노드 고정")
+    assert window.amr.active == "vehicle"
+
+
+def test_top_bar_shows_only_the_link_state(window) -> None:
+    badge = window.top_bar.badges["AMR"]
+    assert badge.state_label.text() == "● 연결 안 됨"
+    _status(window, True)
+    assert badge.state_label.text() == "● 연결됨"
 
 
 def test_starting_a_job_says_the_vehicle_is_only_a_dummy(window) -> None:
@@ -46,45 +83,15 @@ def test_starting_a_job_says_the_vehicle_is_only_a_dummy(window) -> None:
 
 
 def test_starting_a_job_warns_when_the_vehicle_is_not_reachable(window) -> None:
-    combo = window.screens["connection"].field("차량 제어")
-    combo.setCurrentIndex(1)
-    combo.activated.emit(1)
-
+    _pick(window, "ROS 차량 노드 고정")
     window._start_inspection()
-
-    # ROS·vehicle_interfaces 가 없는 환경이면 그 사실을, 있으면 상태 없음을 알린다.
     assert any("차량" in text for text in _alarms(window)), _alarms(window)
     window._stop_inspection()
 
 
 def test_mode_is_not_switched_while_a_job_runs(window) -> None:
     window._start_inspection()
-    combo = window.screens["connection"].field("차량 제어")
-    combo.setCurrentIndex(1)
-    combo.activated.emit(1)
+    _pick(window, "ROS 차량 노드 고정")
     assert window.amr.active == "dummy", "작업 중에는 바꾸지 않는다"
     assert "작업 중" in window.main_screen.activity_label.text()
     window._stop_inspection()
-
-
-def test_top_bar_shows_dummy_so_it_is_not_mistaken_for_a_real_vehicle(window) -> None:
-    badge = window.top_bar.badges["AMR"]
-    assert badge.state_label.text() == "● 더미"
-
-    combo = window.screens["connection"].field("차량 제어")
-    combo.setCurrentIndex(1)
-    combo.activated.emit(1)
-    assert badge.state_label.text() == "● 연결 안 됨", "차량을 골랐는데 상태가 없으면 그대로 보여 준다"
-
-    window.vehicle.online_changed.emit(True)
-    assert badge.state_label.text() == "● 연결됨"
-
-
-def test_status_arriving_while_dummy_hints_once(window) -> None:
-    window.vehicle.online_changed.emit(True)
-    hint = [t for t in _alarms(window) if "ROS 차량 노드" in t]
-    assert len(hint) == 1, _alarms(window)
-
-    window.vehicle.online_changed.emit(False)
-    window.vehicle.online_changed.emit(True)
-    assert len([t for t in _alarms(window) if "ROS 차량 노드" in t]) == 1, "한 번만 알린다"

@@ -2137,7 +2137,7 @@ class OperatorWindow(QMainWindow):
         self._vehicle_hinted = False
         for motion in (self.amr, self.lift, self.outrigger):
             motion.problem.connect(self._on_vehicle_problem)
-        self.vehicle.online_changed.connect(self._show_vehicle_link)
+        self.vehicle.online_changed.connect(self._apply_vehicle_mode)
         self.vehicle.online_changed.connect(self._hint_vehicle_available)
         # 수동 제어 화면 — ManualCommand / RobotControl 로 보낸다.
         manual = self.screens["manual"]
@@ -2154,14 +2154,23 @@ class OperatorWindow(QMainWindow):
         self._show_vehicle_link(False)      # 시작할 때부터 '더미'라고 보이게
 
     def _vehicle_mode(self) -> str:
+        """설정값 — "auto" / "dummy" / "vehicle"."""
         screen = self.screens["connection"]
         field = screen.field("차량 제어")
-        return screen.VEHICLE_MODES.get(field.currentText(), "dummy") if field else "dummy"
+        return screen.VEHICLE_MODES.get(field.currentText(), "auto") if field else "auto"
+
+    def _wanted_backend(self) -> str:
+        """지금 써야 할 장비. 자동이면 차량 상태가 들어오는지로 고른다."""
+        mode = self._vehicle_mode()
+        if mode != "auto":
+            return mode
+        return "vehicle" if self.vehicle.online else "dummy"
 
     def _apply_vehicle_mode(self) -> None:
         """연결 설정의 '차량 제어'를 반영한다. 움직이는 중이면 다음에 바꾼다."""
-        mode = self._vehicle_mode()
+        mode = self._wanted_backend()
         if self.amr.active == mode:
+            self._show_vehicle_link(self.vehicle.online)
             return
         motions = (self.amr, self.lift, self.outrigger)
         # 셋이 늘 같은 쪽을 보게 한다 — 하나라도 움직이는 중이면 아무것도 안 바꾼다.
@@ -2171,22 +2180,20 @@ class OperatorWindow(QMainWindow):
             return
         for m in motions:
             m.select(mode)
+        auto = " (자동)" if self._vehicle_mode() == "auto" else ""
         if mode == "vehicle":
             note = "" if self.vehicle.available else " — ROS·vehicle_interfaces 가 없어 명령을 보낼 수 없습니다"
             self.main_screen.show_activity(
-                f"차량 제어: ROS 차량 노드 ({self.vehicle.topic('robot_status')}){note}")
+                f"차량 제어{auto}: 차량 노드로 움직입니다 ({self.vehicle.topic('robot_status')}){note}")
         else:
-            self.main_screen.show_activity("차량 제어: 더미 (차량 없이 순서만 흉내 냅니다)")
+            self.main_screen.show_activity(
+                f"차량 제어{auto}: 더미 — 차량·리프트·아웃트리거는 실제로 움직이지 않습니다.")
         self._show_vehicle_link(self.vehicle.online)
 
     def _show_vehicle_link(self, online: bool) -> None:
-        # 상단 AMR 표시에 '더미'를 그대로 드러낸다 — 예전에는 늘 "연결됨"이라
-        # 더미인 줄 모르고 작업을 돌리다 차량이 안 움직이는 일이 있었다.
+        # 상단 AMR 은 차량 상태가 실제로 들어오는지만 보여 준다.
+        self.top_bar.badges["AMR"].set_connected(bool(online))
         vehicle = self.amr.active == "vehicle"
-        if vehicle:
-            self.top_bar.badges["AMR"].set_connected(bool(online))
-        else:
-            self.top_bar.badges["AMR"].set_state("더미")
         manual = self.screens["manual"]
         if not vehicle:
             manual.set_available(False, "차량 제어가 '더미'입니다 — 연결 설정에서 'ROS 차량 노드'로 바꾸면 쓸 수 있습니다.")
@@ -2204,8 +2211,8 @@ class OperatorWindow(QMainWindow):
         if not online or self.amr.active == "vehicle" or getattr(self, "_vehicle_hinted", False):
             return
         self._vehicle_hinted = True
-        message = (f"차량 상태({self.vehicle.topic('robot_status')})가 들어옵니다 — "
-                   "연결 설정 > 차량 제어를 'ROS 차량 노드'로 바꾸면 실제 차량이 움직입니다.")
+        message = (f"차량 상태({self.vehicle.topic('robot_status')})가 들어오는데 차량 제어가 "
+                   "'더미'로 고정돼 있습니다 — 연결 설정에서 '자동'이나 'ROS 차량 노드 고정'으로 바꾸세요.")
         self.main_screen.show_activity(message)
         self.cobot_manual_screen.add_alarm(message)
 
