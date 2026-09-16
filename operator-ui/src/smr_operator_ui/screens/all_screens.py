@@ -1075,6 +1075,9 @@ class CobotSettingsScreen(FormScreen):
 class ConnectionSettingsScreen(FormScreen):
     #: '차량 제어' 목록 -> 앱이 쓰는 장비 이름. 앞의 것이 기본.
     VEHICLE_MODES = {"더미 (차량 없이)": "dummy", "ROS 차량 노드": "vehicle"}
+    #: 목록에서 고르는 즉시 나간다 — 저장을 눌러야만 바뀌면, 바꿔 놓고도
+    #: 차량이 안 움직이는 이유를 알기 어렵다(실제로 그렇게 헤맸다).
+    vehicle_mode_changed = pyqtSignal(str)
 
     """협동로봇, 차량용 PLC, MQTT Broker의 유선 연결 정보를 한 화면에서 설정한다.
 
@@ -1106,6 +1109,8 @@ class ConnectionSettingsScreen(FormScreen):
         # (vehicle_interfaces: robot_status / set_job / robot_control /
         # manual_command)로 실제로 움직인다. 기본은 더미.
         vehicle_mode=TouchComboBox(); vehicle_mode.addItems(list(self.VEHICLE_MODES))
+        vehicle_mode.activated.connect(
+            lambda index, c=vehicle_mode: self.vehicle_mode_changed.emit(c.itemText(index)))
         super().__init__(
             "connection","연결 설정",
             "각 장비의 유선 연결 정보를 설정합니다. 변경한 값은 다음 연결 시도부터 적용됩니다.",

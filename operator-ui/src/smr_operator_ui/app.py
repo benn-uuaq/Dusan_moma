@@ -2144,6 +2144,9 @@ class OperatorWindow(QMainWindow):
         manual.reset_requested.connect(lambda: self.vehicle.control(reset=True))
         self.vehicle.status_changed.connect(manual.set_status)
         self.vehicle.command_result.connect(self._show_vehicle_command_result)
+        # 목록에서 고르는 즉시 적용한다(저장은 값을 남길 뿐이다).
+        self.screens["connection"].vehicle_mode_changed.connect(
+            lambda _text: self._apply_vehicle_mode())
         self.sequencer.state_changed.connect(self._sync_manual_interlock)
         self.sequencer.state_changed.connect(self._vehicle_follow_pause)
 
@@ -2231,6 +2234,27 @@ class OperatorWindow(QMainWindow):
     def _record_job(self, source: str, job_id: str, plan) -> None:
         self.data_recorder.begin_job(source, job_id, plan, nosensor=self._nosensor)
         self._set_vehicle_totals(plan)
+        self._warn_vehicle_mode()
+
+    def _warn_vehicle_mode(self) -> None:
+        """작업을 시작할 때 차량이 실제로 붙어 있는지 알려 준다.
+
+        더미인 채로 작업을 돌리면 화면 순서는 다 흐르는데 차량은 가만히
+        있는다 — 무엇이 잘못됐는지 알기 어려우므로 시작할 때 못박아 둔다.
+        """
+        if self.amr.active != "vehicle":
+            self.main_screen.show_activity(
+                "차량 제어가 '더미'입니다 — 차량·리프트·아웃트리거는 실제로 움직이지 않습니다"
+                " (연결 설정 > 차량 제어).")
+            return
+        if not self.vehicle.available:
+            self.cobot_manual_screen.add_alarm(
+                "차량 인터페이스를 쓸 수 없습니다 — ROS 워크스페이스를 소싱하고 RCS 를 다시 띄우세요"
+                " (source install/setup.bash).")
+        elif not self.vehicle.online:
+            self.cobot_manual_screen.add_alarm(
+                f"차량 상태({self.vehicle.topic('robot_status')})가 들어오지 않습니다 —"
+                " 차량 제어 노드를 확인하세요. 이대로 두면 첫 동작에서 멈춥니다.")
 
     def _record_cell_status(self, label: str, status: str) -> None:
         if status == CellStatus.EXECUTING.value:
