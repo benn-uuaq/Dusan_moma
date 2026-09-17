@@ -311,3 +311,28 @@ def test_task_state_is_shown_on_the_status_card(qtbot) -> None:
     assert "7" in block.value_label.text()
     assert block.isVisible(), "항목이 레이아웃에서 빠졌다"
     window.close()
+
+
+def test_brake_release_waits_for_idle_and_guides_each_step(qtbot) -> None:
+    """전원 ON 뒤 IDLE 이 될 때까지 브레이크 해제를 막고, 지금 할 일을 보여 준다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.cobot_manual_screen
+    brake = screen.power_buttons["brake_release"]
+    emit = window.ros_status.robot_mode_changed.emit
+
+    emit(3, "POWER_OFF")
+    assert not brake.isEnabled() and "[전원 ON]" in screen.power_guide.text()
+    emit(4, "POWER_ON")
+    assert not brake.isEnabled() and "켜는 중" in screen.power_guide.text()
+    emit(5, "IDLE")
+    assert brake.isEnabled() and "[브레이크 해제]" in screen.power_guide.text()
+    assert screen.power_guide.objectName() == "StatusGood"
+    emit(7, "RUNNING")
+    assert not brake.isEnabled() and "준비 완료" in screen.power_guide.text()
+
+    # 연결이 끊기면 모드를 모른다 — 막지 않고 알리기만 한다.
+    window.ros_status.connected_changed.emit(True)
+    window.ros_status.connected_changed.emit(False)
+    assert brake.isEnabled() and "모릅니다" in screen.power_guide.text()
+    window.close()

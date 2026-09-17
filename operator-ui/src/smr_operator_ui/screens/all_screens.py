@@ -347,7 +347,12 @@ class CobotManualScreen(BaseScreen):
         top.addWidget(conn,0,0)
 
         power,p=self.surface("전원 · 브레이크")
-        p.addLayout(self._button_row(self._POWER))
+        self.power_buttons: dict[str, QPushButton] = {}
+        p.addLayout(self._button_row(self._POWER, self.power_buttons))
+        # 전원 ON 뒤 로봇이 IDLE 이 될 때까지 기다렸다가 브레이크를 풀어야 한다.
+        # 로봇 모드(레지스터 66)를 보고 지금 무엇을 누를 차례인지 바로 보여 준다.
+        self.power_guide=QLabel(); self.power_guide.setWordWrap(True)
+        p.addWidget(self.power_guide)
         p.addWidget(self._note("브레이크 해제 전 로봇 주변을 확인하십시오."))
         p.addStretch()
         top.addWidget(power,0,1)
@@ -405,6 +410,7 @@ class CobotManualScreen(BaseScreen):
         self._alarm_empty = True
         self.set_endpoint("192.168.227.134")
         self.set_alarms([])
+        self.set_robot_mode(-1, "")
 
     def _note(self, text: str) -> QLabel:
         """카드 폭을 넘지 않도록 줄바꿈되는 안내 문구를 만든다."""
@@ -428,11 +434,14 @@ class CobotManualScreen(BaseScreen):
         parent.addWidget(card,1)
         return rows
 
-    def _button_row(self, items: tuple[tuple[str, str], ...]) -> QHBoxLayout:
+    def _button_row(self, items: tuple[tuple[str, str], ...],
+                    keep: dict[str, QPushButton] | None = None) -> QHBoxLayout:
         """명령 버튼을 한 줄로 배치하고 눌림을 시그널로 전달한다."""
         row=QHBoxLayout()
         for text,command in items:
             button=QPushButton(text); button.setMinimumHeight(52)
+            if keep is not None:
+                keep[command]=button
             # command를 기본 인자로 고정하지 않으면 모든 버튼이 반복문의
             # 마지막 명령만 전달하게 된다.
             button.clicked.connect(lambda _,key=command,label=text:self._request(key,label))
@@ -454,6 +463,42 @@ class CobotManualScreen(BaseScreen):
         self.connection_state.setObjectName("StatusGood" if connected else "StatusDanger")
         self.connection_state.style().unpolish(self.connection_state)
         self.connection_state.style().polish(self.connection_state)
+
+    #: 로봇 모드(레지스터 66)별 안내 — (문구, 색, 브레이크 해제 가능)
+    #: 0 DISCONNECTED 1 CONFIRM_SAFETY 2 BOOTING 3 POWER_OFF 4 POWER_ON
+    #: 5 IDLE 6 BACKDRIVE 7 RUNNING 8 UPDATING_FW 9 WAIT_CALIB
+    _POWER_STEPS = {
+        0: ("로봇 컨트롤러가 준비되지 않았습니다.", "StatusDanger", False),
+        1: ("안전 설정 확인이 필요합니다 — 펜던트에서 확인하세요.", "StatusWarn", False),
+        2: ("로봇 부팅 중… 잠시 기다리세요.", "StatusWarn", False),
+        3: ("① 전원 OFF 상태 — [전원 ON]을 누르세요.", "StatusWarn", False),
+        4: ("전원 켜는 중… IDLE 이 되면 브레이크를 해제할 수 있습니다.", "StatusWarn", False),
+        5: ("② IDLE — 지금 [브레이크 해제]를 누르세요.", "StatusGood", True),
+        6: ("백드라이브 모드입니다.", "StatusWarn", False),
+        7: ("✔ 브레이크 해제됨 (RUNNING) — 준비 완료.", "StatusGood", False),
+        8: ("펌웨어 업데이트 중입니다.", "StatusDanger", False),
+        9: ("캘리브레이션 대기 중입니다.", "StatusWarn", False),
+    }
+
+    def set_robot_mode(self, code: int, name: str) -> None:
+        """로봇 모드에 맞춰 전원·브레이크 안내와 브레이크 해제 버튼을 바꾼다.
+
+        브레이크 해제는 **IDLE 일 때만** 누를 수 있다. 전원 ON 직후에는
+        POWER_ON(전원 켜는 중)을 거쳐 IDLE 이 되는데, 그 전에 누르면 먹지
+        않아 언제 눌러야 할지 알 수 없었다. 모드를 모르면(연결 전·읽기 실패)
+        막지 않고 그렇다고만 알린다.
+        """
+        code = int(code)
+        if code < 0:
+            text, kind, brake = "로봇 모드를 모릅니다 — 연결을 확인하세요.", "Muted", True
+        else:
+            text, kind, brake = self._POWER_STEPS.get(
+                code, (f"로봇 모드 {name or code}", "Muted", True))
+        self.power_guide.setText(text)
+        self.power_guide.setObjectName(kind)
+        self.power_guide.style().unpolish(self.power_guide)
+        self.power_guide.style().polish(self.power_guide)
+        self.power_buttons["brake_release"].setEnabled(brake)
 
     def apply_status(self, values: dict[str, str]) -> None:
         """robot/status/* 토픽에 대응하는 표시값을 갱신한다."""

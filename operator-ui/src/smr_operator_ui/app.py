@@ -466,6 +466,10 @@ class OperatorWindow(QMainWindow):
         self.ros_status.robot_mode_changed.connect(
             lambda _code, name: self.cobot_manual_screen.apply_status({"robot_mode": name})
         )
+        # 전원·브레이크 카드의 단계 안내와 브레이크 해제 버튼(IDLE 에서만).
+        self.ros_status.robot_mode_changed.connect(self.cobot_manual_screen.set_robot_mode)
+        self.ros_status.connected_changed.connect(
+            lambda connected: None if connected else self.cobot_manual_screen.set_robot_mode(-1, ""))
         self.ros_status.control_method_changed.connect(
             lambda _code, name: self.cobot_manual_screen.apply_status({"control_method": name})
         )
