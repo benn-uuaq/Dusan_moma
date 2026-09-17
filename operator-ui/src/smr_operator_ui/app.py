@@ -506,6 +506,7 @@ class OperatorWindow(QMainWindow):
         conn_screen.connect_requested.connect(self._connect_robot)
         conn_screen.disconnect_requested.connect(self._disconnect_robot)
         self.ros_status.connected_changed.connect(conn_screen.set_link_state)
+        self.ros_status.connected_changed.connect(self._announce_robot_link)
         self.cobot_jog_screen.jog_pressed.connect(self._send_jog)
         self.cobot_jog_screen.jog_released.connect(self._stop_jog)
         self.cobot_jog_screen.command_requested.connect(self._save_reference_pose)
@@ -1398,8 +1399,27 @@ class OperatorWindow(QMainWindow):
         if tpac_screen.poller is None:
             tpac_screen._start_robot()
 
+    def _announce_robot_link(self, connected: bool) -> None:
+        """운영자가 끊은 게 아닌데 연결이 바뀌면 알린다(끊김 / 자동 재연결)."""
+        was = getattr(self, "_robot_link_announced", None)
+        self._robot_link_announced = bool(connected)
+        if was is None or was == bool(connected):
+            return
+        conn = self.screens["connection"]
+        if connected:
+            text = "로봇에 다시 연결됐습니다."
+        elif getattr(self, "_robot_disconnect_requested", False):
+            self._robot_disconnect_requested = False
+            return
+        else:
+            text = "로봇 연결이 끊겼습니다 — 연결 가능해지면 자동으로 다시 연결합니다."
+            self.cobot_manual_screen.add_alarm(text)
+        conn.set_link_message(text)
+        self.main_screen.show_activity(text)
+
     def _disconnect_robot(self) -> None:
         """연결한 경로를 같이 끊는다."""
+        self._robot_disconnect_requested = True
         tpac_screen = self.screens["tpac_bridge"]
         if tpac_screen.poller is not None:
             tpac_screen._stop_robot()

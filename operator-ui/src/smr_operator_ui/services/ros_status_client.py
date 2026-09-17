@@ -10,8 +10,9 @@ ROS가 없는 환경에서도 UI가 실행되어야 하므로 rclpy는 선택 �
 from __future__ import annotations
 
 import threading
+import time
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 try:  # ROS가 설치되지 않은 환경에서도 화면은 그대로 동작해야 한다.
     import rclpy
@@ -169,6 +170,14 @@ class RosStatusClient(QObject):
         self._registers = None
         # 연결 상태는 10 Hz 로 계속 오므로 바뀔 때만 알리려고 직전 값을 둔다.
         self._connected_last: bool | None = None
+        # 노드가 멈추거나 죽으면 상태 토픽 자체가 끊긴다. 그러면 마지막 값
+        # ('연결됨')이 그대로 남으므로, CONNECTED_STALE_S 동안 아무것도 안 오면
+        # 끊긴 것으로 본다.
+        self._connected_seen = 0.0
+        self._stale_timer = QTimer(self)
+        self._stale_timer.setInterval(500)
+        self._stale_timer.timeout.connect(self._check_connected_stale)
+        # ROS 를 실제로 시작했을 때만 돈다(start/stop).
         # 속도 비율도 같은 이유로 직전 값을 들고 있는다.
         self._speed_scale_last: int | None = None
         # 홈 위치 플래그(276)와 차량 고정 확인(309)도 바뀔 때만 오간다.
@@ -287,6 +296,8 @@ class RosStatusClient(QObject):
                 SetParameters, f"{self.ROBOT_NODE_NAME}/set_parameters")
             for attach in self._extensions:
                 attach(self._node)
+            self._connected_seen = time.monotonic()
+            self._stale_timer.start()
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
             self._thread = threading.Thread(target=self._spin, daemon=True)
@@ -297,6 +308,7 @@ class RosStatusClient(QObject):
 
     def stop(self) -> None:
         """구독을 끝내고 실행기와 노드를 정리한다."""
+        self._stale_timer.stop()
         self._vehicle_ready_last = None
         self._at_home_last = None
         executor, self._executor = self._executor, None
@@ -507,11 +519,25 @@ class RosStatusClient(QObject):
         저장값을 다시 밀어 넣어, 운영자가 방금 바꾼 속도를 곧바로 덮어쓴다.
         첫 수신은 이전 값이 없으므로 그대로 알린다.
         """
+        self._connected_seen = time.monotonic()
         connected = bool(msg.data)
         if connected == self._connected_last:
             return
         self._connected_last = connected
         self.connected_changed.emit(connected)
+
+    #: 이 시간 동안 연결 상태 토픽이 안 오면 끊긴 것으로 본다 [s].
+    #: 노드는 연결 직후 저장값(기준 위치·작업 영역·속도)을 레지스터에 쓰느라
+    #: 몇 초씩 토픽을 못 내보낼 수 있다 — 너무 짧으면 끊김/연결이 깜빡인다.
+    #: 로봇 쪽 끊김은 노드가 따로 1 초 안쪽으로 알린다(LINK_FAIL_LIMIT).
+    CONNECTED_STALE_S = 10.0
+
+    def _check_connected_stale(self) -> None:
+        if not self._connected_last:
+            return
+        if time.monotonic() - self._connected_seen > self.CONNECTED_STALE_S:
+            self._connected_last = False
+            self.connected_changed.emit(False)
 
     def _on_alarm(self, msg) -> None:
         text = str(msg.data).strip()

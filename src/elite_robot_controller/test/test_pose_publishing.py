@@ -4,6 +4,7 @@
 RobotControlNode.__init__은 세 채널 연결을 요구하므로 우회한다.
 """
 
+import threading
 from unittest.mock import patch
 
 from elite_robot_controller import register_map
@@ -67,6 +68,10 @@ def make_node(registers=None, map_data=None):
     node.registers = register_map.RegisterMap(map_data or _default_map())
     node._logger = FakeLogger()
     node.get_logger = lambda: node._logger
+    # __init__ 을 건너뛰므로 연결 감시 상태를 직접 채운다.
+    node._connect_lock = threading.Lock()
+    node._want_connected = True
+    node._link_fails = 0
     return node
 
 
@@ -534,3 +539,55 @@ def test_connect_keeps_channels_when_ip_is_unchanged():
 
     assert node.connect_all_servers("10.0.0.9") is True
     assert node.robot_dash is dash_before
+
+
+# ---- 연결 감시: 끊김 감지와 자동 재연결 ---------------------------------------------
+def _linked_node(fail_reads):
+    """연결된 노드. fail_reads 가 True 면 Modbus 읽기가 None 을 돌려준다(로봇 응답 없음)."""
+    node = make_connectable_node()
+    assert node.connect_all_servers() is True
+    for name in ("pub_robot_mode", "pub_control_method", "pub_op_mode", "pub_tcp_pose",
+                 "pub_tcp_pose_zero", "pub_joint_position", "pub_scan_state", "pub_task_state",
+                 "pub_home_flag", "pub_speed_scale", "pub_alarm"):
+        setattr(node, name, FakePublisher())
+    node.alarm_mgr = type("M", (), {"process": lambda self, a: False})()
+    node.robot_primary.get_data = lambda: None
+    node.robot_primary.alarm_queue = type("Q", (), {"empty": lambda self: True})()
+    node.robot_modbus.get_register = (lambda address: None) if fail_reads else (lambda address: 5)
+    return node
+
+
+def test_link_is_dropped_after_consecutive_read_failures():
+    """로봇이 응답을 안 하면 '연결됨'을 계속 내보내지 않고 끊김으로 바꾼다."""
+    node = _linked_node(fail_reads=True)
+    for _ in range(node.LINK_FAIL_LIMIT - 1):
+        node.update_robot_loop()
+    assert node.connected is True, "한두 번 실패로는 끊지 않는다"
+    node.update_robot_loop()
+    assert node.connected is False
+    assert node.pub_connected.messages[-1] is False
+    assert node._want_connected is True, "운영자가 끊은 게 아니므로 다시 붙는다"
+
+
+def test_a_good_read_resets_the_failure_count():
+    node = _linked_node(fail_reads=True)
+    node.update_robot_loop()
+    node.update_robot_loop()
+    node.robot_modbus.get_register = lambda address: 5
+    node.update_robot_loop()
+    assert node._link_fails == 0 and node.connected is True
+
+
+def test_auto_reconnect_only_when_the_operator_wants_it():
+    node = _linked_node(fail_reads=True)
+    for _ in range(node.LINK_FAIL_LIMIT):
+        node.update_robot_loop()
+    assert node.connected is False
+    assert node._try_reconnect() is True and node.connected is True
+
+    res = type("R", (), {})()
+    node.cb_disconnect(None, res)
+    assert node._want_connected is False and node.connected is False
+    assert node._try_reconnect() is False and node.connected is False, "연결 해제 뒤에는 안 붙는다"
+    node.cb_connect(None, res)
+    assert node._want_connected is True and node.connected is True

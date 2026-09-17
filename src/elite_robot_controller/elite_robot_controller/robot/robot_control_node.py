@@ -1,3 +1,4 @@
+import threading
 import time
 
 import rclpy
@@ -49,6 +50,12 @@ class RobotControlNode(Node):
         self.robot_modbus = Robot_modbus(robot_ip, modbus_port)
         self.alarm_mgr = AlarmManager()
         self.connected = False
+        # 연결 감시. 로봇 쪽 Modbus 읽기가 LINK_FAIL_LIMIT 주기 연속으로 실패하면
+        # 끊긴 것으로 보고 connected 를 내린다. 운영자가 '연결 해제'를 누르지
+        # 않았다면(_want_connected) 배경 스레드가 RECONNECT_S 마다 다시 붙는다.
+        self._want_connected = True
+        self._link_fails = 0
+        self._connect_lock = threading.Lock()
         # 로봇 자체 속도 비율 [%]. 조그 속도도 이 값을 따른다.
         self.speed_ratio = 100
 
@@ -139,8 +146,43 @@ class RobotControlNode(Node):
         # 연결 버튼을 쓸 수 있다.
         if not self.connect_all_servers(robot_ip):
             self.get_logger().warn(
-                "[WARN] 로봇에 연결하지 못했습니다. robot/dashboard/connect 로 다시 시도하십시오."
+                f"[WARN] 로봇에 연결하지 못했습니다 — {self.RECONNECT_S:g}초마다 다시 시도합니다."
             )
+        self._reconnect_thread = threading.Thread(
+            target=self._reconnect_loop, name="robot-reconnect", daemon=True)
+        self._reconnect_thread.start()
+
+    #: Modbus 읽기가 이만큼 연속 실패하면 끊긴 것으로 본다(주기 0.1 s + 읽기 대기).
+    LINK_FAIL_LIMIT = 3
+    #: 끊긴 뒤 다시 붙어 보는 간격 [s].
+    RECONNECT_S = 2.0
+
+    def _reconnect_loop(self):
+        """끊겨 있고 운영자가 연결을 원하면 주기적으로 다시 붙는다.
+
+        타이머 콜백(update_robot_loop)에서 붙으면 연결 시도 동안(소켓마다
+        수 초) 노드의 다른 서비스·토픽이 모두 멈춘다. 그래서 따로 돈다.
+        """
+        while rclpy.ok():
+            time.sleep(self.RECONNECT_S)
+            self._try_reconnect()
+
+    def _try_reconnect(self):
+        """끊겨 있고 연결을 원하면 한 번 붙어 본다. 붙으면 True."""
+        if self.connected or not self._want_connected:
+            return False
+        if not self._connect_lock.acquire(blocking=False):
+            return False            # 운영자가 누른 connect 가 이미 붙는 중
+        try:
+            if self.connected or not self._want_connected:
+                return False
+            self.disconnect_all_servers(quiet=True)
+            if self._connect_unlocked():
+                self.get_logger().info(f"[connect] {self.robot_ip} 다시 연결됨")
+                return True
+            return False
+        finally:
+            self._connect_lock.release()
 
     def _param_str(self, name, fallback):
         """파라미터를 못 읽어도 연결 자체는 진행한다(기존 주소를 그대로 쓴다)."""
@@ -156,6 +198,10 @@ class RobotControlNode(Node):
             return fallback
 
     def connect_all_servers(self, robot_ip=None):
+        with self._connect_lock:
+            return self._connect_unlocked(robot_ip)
+
+    def _connect_unlocked(self, robot_ip=None):
         """세 채널을 모두 연결한다. 하나라도 실패하면 연결로 보지 않는다.
 
         연결할 때마다 `robot_ip` 파라미터를 다시 읽는다 — 운영 UI가 화면에서
@@ -179,13 +225,14 @@ class RobotControlNode(Node):
             p_ok = self.robot_primary.connect_30001()
             m_ok = self.robot_modbus.connect()
             self.connected = bool(d_ok and p_ok and m_ok)
+            self._link_fails = 0
         except Exception as e:
             self.get_logger().error(f"[ERROR] 소켓 연결 중 예외 발생: {e}")
             self.connected = False
         self.publish_connected()
         return self.connected
 
-    def disconnect_all_servers(self):
+    def disconnect_all_servers(self, quiet=False):
         """세 채널을 정리한다. 개별 실패는 남은 채널 정리를 막지 않는다."""
         for close in (self.robot_dash.disconnect_29999,
                       self.robot_primary.disconnect_30001,
@@ -193,7 +240,8 @@ class RobotControlNode(Node):
             try:
                 close()
             except Exception as e:
-                self.get_logger().warn(f"[WARN] 연결 해제 중 예외: {e}")
+                if not quiet:
+                    self.get_logger().warn(f"[WARN] 연결 해제 중 예외: {e}")
         self.connected = False
         self.publish_connected()
         return True
@@ -203,6 +251,8 @@ class RobotControlNode(Node):
         self.pub_connected.publish(Bool(data=self.connected))
 
     def cb_connect(self, req, res):
+        # 운영자가 연결을 원한다 — 지금 실패해도 배경에서 계속 다시 붙는다.
+        self._want_connected = True
         ok = self.connect_all_servers()
         res.success = ok
         res.message = (
@@ -214,6 +264,8 @@ class RobotControlNode(Node):
         return res
 
     def cb_disconnect(self, req, res):
+        # 운영자가 끊었다 — 자동으로 다시 붙지 않는다.
+        self._want_connected = False
         self.disconnect_all_servers()
         res.success = True
         res.message = "[disconnect] 연결을 해제했습니다."
@@ -227,7 +279,15 @@ class RobotControlNode(Node):
         if not self.connected:
             return
 
-        self.publish_code('robot_mode', self.pub_robot_mode)
+        # 첫 읽기를 생존 확인으로 쓴다. 실패하면 이번 주기의 나머지 읽기는
+        # 건너뛴다 — 끊긴 채로 열 번을 다 읽으면 번마다 타임아웃(1 s)을 기다려
+        # 노드가 몇 초씩 멈추고, 그 사이 '연결됨'을 계속 내보내게 된다.
+        if not self.publish_code('robot_mode', self.pub_robot_mode):
+            self._link_fails += 1
+            if self._link_fails >= self.LINK_FAIL_LIMIT:
+                self._link_lost()
+            return
+        self._link_fails = 0
         self.publish_code('control_method', self.pub_control_method)
         self.publish_code('operation_mode', self.pub_op_mode)
         self.publish_pose('tcp_absolute', self.pub_tcp_pose)
@@ -247,14 +307,27 @@ class RobotControlNode(Node):
                 alarm_msg.data = f"[ALARM] {alarm.msg}" if alarm.msg else f"[ALARM CODE] E{alarm.code} S{alarm.sub}"
                 self.pub_alarm.publish(alarm_msg)
 
+    def _link_lost(self):
+        """로봇 응답이 끊겼다. 연결 끊김을 알리고 소켓을 정리한다(재연결은 배경 스레드)."""
+        self.get_logger().warn(
+            f"[connect] {self.robot_ip} 응답 없음({self._link_fails}회 연속) — 연결 끊김. "
+            f"{self.RECONNECT_S:g}초마다 다시 연결합니다.")
+        self._link_fails = 0
+        self.disconnect_all_servers(quiet=True)
+
     def publish_code(self, name, publisher):
-        """레지스터 한 개를 읽어 그대로 발행한다."""
+        """레지스터 한 개를 읽어 그대로 발행한다. 읽었으면 True."""
         entry = self.registers.read_entry(name)
         if not entry.available:
-            return
-        value = self.robot_modbus.get_register(entry.address)
-        if value is not None:
-            publisher.publish(Int32(data=value))
+            return True
+        try:
+            value = self.robot_modbus.get_register(entry.address)
+        except Exception:
+            value = None
+        if value is None:
+            return False
+        publisher.publish(Int32(data=value))
+        return True
 
     def publish_pose(self, name, publisher):
         """자세 레지스터 6개를 읽어 [X, Y, Z, Rx, Ry, Rz]로 발행한다.

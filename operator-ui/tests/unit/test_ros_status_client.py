@@ -320,3 +320,48 @@ def test_speed_bar_shows_no_value_when_robot_has_none(qtbot):
 
     bar.set_actual(0)
     assert bar.value() == 65, "값 없음이 슬라이더를 하한으로 끌어내렸다"
+
+
+def test_silent_node_is_shown_as_disconnected(qtbot, monkeypatch):
+    """노드가 죽거나 멈춰 연결 토픽이 끊기면 마지막 '연결됨'을 붙들고 있지 않는다."""
+    from smr_operator_ui.services import ros_status_client as rsc
+
+    class Msg:
+        def __init__(self, data):
+            self.data = data
+
+    now = [100.0]
+    monkeypatch.setattr(rsc.time, "monotonic", lambda: now[0])
+    client = rsc.RosStatusClient()
+    seen = []
+    client.connected_changed.connect(seen.append)
+    client._on_connected(Msg(True))
+    now[0] += client.CONNECTED_STALE_S - 1
+    client._check_connected_stale()
+    assert seen == [True], "아직 한도 안쪽"
+    now[0] += 2
+    client._check_connected_stale()
+    assert seen == [True, False]
+    client._check_connected_stale()
+    assert seen == [True, False], "한 번만 알린다"
+    client._on_connected(Msg(True))                 # 노드가 다시 살아났다
+    assert seen == [True, False, True]
+
+
+def test_unexpected_link_loss_is_announced_but_manual_disconnect_is_not(qtbot):
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    conn = window.screens["connection"]
+    window.ros_status.call_command = lambda name: True
+    window.ros_status.connected_changed.emit(True)
+    window.ros_status.connected_changed.emit(False)            # 로봇이 끊겼다
+    assert "끊겼습니다" in conn.save_status.text()
+    assert "연결 안 됨" in conn.link_state.text()
+    assert "연결 안 됨" in window.top_bar.badges["Cobot"].state_label.text()
+    window.ros_status.connected_changed.emit(True)             # 자동 재연결
+    assert "다시 연결됐습니다" in conn.save_status.text()
+
+    window._disconnect_robot()                                  # 운영자가 끊음
+    window.ros_status.connected_changed.emit(False)
+    assert conn.save_status.text() == "연결을 끊었습니다.", "운영자가 끊은 건 끊김 경고가 아니다"
+    window.close()
