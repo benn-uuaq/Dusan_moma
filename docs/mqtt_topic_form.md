@@ -84,6 +84,8 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 | `T-008` | `doosan/robot/tcp` | `status` | `mc` | `Operator UI` | `1` | `N` | `상시 출력` | `Y` |
 | `T-009` | `doosan/robot/job_state` | `status` | `mc` | `Operator UI` | `1` | `N` | `상시 출력` | `Y` |
 | `T-010` | `doosan/robot/req/speed` | `command` | `mc` | `Operator UI` | `1` | `N` | `속도 변경이 필요할 때` | `Y` |
+| `T-011` | `doosan/robot/req/mark_cmd` | `command` | `mc` | `Operator UI` | `1` | `N` | `마킹이 필요할 때` | `Y` |
+| `T-012` | `doosan/robot/mark_state` | `status` | `Operator UI` | `mc` | `1` | `N` | `마킹 진행이 바뀔 때` | `Y` |
 
 ---
 
@@ -783,6 +785,72 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 **동작:** Operator UI 가 받아 `robot/command/speed_ratio` 로 넘기면, 노드가 29999 `speed -v <N>` 으로 로봇에 실시간 전달한다. 로봇이 실제로 쓰고 있는 값은 Modbus **레지스터 17**(읽기)로 확인하며 `robot/status/speed_scale` 토픽으로 나온다. 펜던트에서 직접 바꿔도 이 토픽으로 들어온다.
 
 > **속도 상한:** TCP 직선 속도는 운영 기준상 **100 mm/s**(가속도 400 mm/s²)를 넘지 않는다. 로봇 태스크(`dus_init.script`)가 직선 속도를 0.100 m/s, 가속도를 0.4 m/s² 로 자르므로 비율 100 % 가 곧 100 mm/s 다. 여기의 `speed` 는 그 위에 곱해지는 비율이라 상한을 넘길 수 없다.
+
+---
+
+### T-011: 격자 지정 마킹 명령
+
+몇 열·몇 행 격자의 **격자 안 좌표**로 가서 마킹한다.
+
+#### 기본 정보
+
+| 항목 | 입력값 |
+|---|---|
+| Topic | `doosan/robot/req/mark_cmd` |
+| 목적 | 격자 지정 마킹 |
+| 분류 | `command` |
+| 발행자 | `MC` |
+| 구독자 | `Operator UI` |
+| 발행 조건 | 마킹이 필요할 때 (작업이 돌지 않을 때) |
+| QoS | `1` |
+| Retain | `N` |
+
+```json
+{
+    "timestamp": "1784727779111",
+    "mark_id": "m001",
+    "cell": { "column": "2", "row": "C" },
+    "point": { "x": "250", "y": "35" },
+    "plan": { "column_count": "3", "row_count": "4", "cell_width": "721", "cell_height": "140",
+              "overlap": "20", "radius": "834.6", "thickness": "10", "eoat": "5" }
+}
+```
+
+#### Payload 필드
+
+| 필드 경로 | 자료형 | 필수 | 단위 | 허용값/범위 | 설명 |
+|---|---|---|---|---|---|
+| `mark_id` | `string` | `Y` | - | 비어 있지 않음 | 결과(T-012)를 짝짓는 번호 |
+| `cell.column` | `string` | `Y` | - | `1` ~ `plan.column_count` | 열 (AMR 정차 구역) |
+| `cell.row` | `string` | `Y` | - | `A` ~ (행 수) | 행 (리프트 높이) |
+| `point.x` | `string` | `Y` | `mm` | `0` ~ `cell_width` | 격자 안 가로: 원점(스캔 시작 끝)부터 호를 따라 |
+| `point.y` | `string` | `Y` | `mm` | `0` ~ `cell_height` | 격자 안 세로: 격자 아래 끝부터 위로 |
+| `plan.*` | `string` | `Y` | - | T-005 `plan` 과 같음 | 격자 크기 계산에 쓴다 |
+
+**동작:** 스캔 순회와 같은 계산으로 자리를 잡는다 — 차량 `(열-1) × (cell_width - overlap)`,
+리프트 `(행-1) × (cell_height - overlap)`, 로봇 마킹 목표 `(u, v) = (x, y)` (레지스터 268/269).
+격자 크기를 로봇에 먼저 쓰고 마킹 태스크를 돌린다. 범위 밖이거나 작업이 도는 중이면
+T-012 `rejected` 로 이유를 돌려준다.
+
+---
+
+### T-012: 마킹 진행 상태
+
+| 항목 | 입력값 |
+|---|---|
+| Topic | `doosan/robot/mark_state` |
+| 분류 | `status` |
+| 발행자 | `Operator UI` |
+| 구독자 | `MC` |
+
+```json
+{ "timestamp": "1784727779999", "mark_id": "m001", "cell": "2C", "state": "completed" }
+```
+
+| 필드 | 설명 |
+|---|---|
+| `state` | `executing` 진행 중 / `completed` 완료 / `failed` 실패 / `rejected` 거절 |
+| `detail` | (거절·실패 때만) 이유 |
 
 ---
 

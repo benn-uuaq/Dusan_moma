@@ -51,6 +51,12 @@ JOB_COMMAND_RESPONSE = "doosan/robot/resp/job_cmd"
 PROBE_GATE = "doosan/robot/probe_gate"
 PROBE_ACK = "doosan/robot/req/probe_ack"
 
+# 격자 지정 마킹.
+#   여기 -> RCS : 몇 열·몇 행 격자의 격자 안 (x, y) 로 가서 마킹하라
+#   RCS -> 여기 : 진행 (executing / completed / failed / rejected)
+MARK_COMMAND = "doosan/robot/req/mark_cmd"
+MARK_STATE = "doosan/robot/mark_state"
+
 # 오가는 것을 전부 보기 위해 두 규격을 통째로 구독한다.
 #   doosan/#  사내 MC 규격 (job_cmd, tcp, job_state …)
 #   erut/#    협력사 ERUT 규격 (res, evt/*)
@@ -156,6 +162,10 @@ class MqttJobSimApp:
         self._last_stream_topic: str | None = None
 
         self._build_ui()
+        # 패널이 늘어 기본 크기(680)로는 아래가 잘린다 — 내용 높이에 맞추되 화면 안으로.
+        self.root.update_idletasks()
+        height = min(self.root.winfo_reqheight() + 20, self.root.winfo_screenheight() - 80)
+        self.root.geometry(f"880x{max(680, height)}")
         self.root.after(100, self._process_events)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
@@ -164,11 +174,12 @@ class MqttJobSimApp:
         outer = ttk.Frame(self.root, padding=10)
         outer.pack(fill=tk.BOTH, expand=True)
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(5, weight=1)
+        outer.rowconfigure(6, weight=1)
 
         self._build_connection_row(outer)
         self._build_job_frame(outer)
         self._build_probe_frame(outer)
+        self._build_mark_frame(outer)
         self._build_motion_frame(outer)
         self._build_speed_frame(outer)
         self._build_log_frame(outer)
@@ -363,7 +374,7 @@ class MqttJobSimApp:
         """
         frame = ttk.LabelFrame(
             parent, text="진행 상황 (RCS 반환값)", padding=8)
-        frame.grid(row=3, column=0, sticky=tk.EW, pady=(0, 8))
+        frame.grid(row=4, column=0, sticky=tk.EW, pady=(0, 8))
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(3, weight=1)
 
@@ -431,7 +442,7 @@ class MqttJobSimApp:
 
     def _build_speed_frame(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(parent, text="로봇 동작 속도 (2~100 %)", padding=8)
-        frame.grid(row=4, column=0, sticky=tk.EW, pady=(0, 8))
+        frame.grid(row=5, column=0, sticky=tk.EW, pady=(0, 8))
         frame.columnconfigure(1, weight=1)
 
         ttk.Label(frame, text="속도").grid(row=0, column=0, sticky=tk.W)
@@ -474,11 +485,12 @@ class MqttJobSimApp:
 
     def _build_log_frame(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(parent, text="송수신 로그", padding=8)
-        frame.grid(row=5, column=0, sticky=tk.NSEW)
+        frame.grid(row=6, column=0, sticky=tk.NSEW)
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
 
-        self.log_text = scrolledtext.ScrolledText(frame, height=18, state=tk.DISABLED)
+        # 처음 높이는 낮게 두고 창을 키우면 늘어난다(패널이 늘어 창 밖으로 밀리지 않게).
+        self.log_text = scrolledtext.ScrolledText(frame, height=6, state=tk.DISABLED)
         self.log_text.grid(row=0, column=0, sticky=tk.NSEW)
         bar = ttk.Frame(frame)
         bar.grid(row=1, column=0, sticky=tk.EW, pady=(6, 0))
@@ -579,6 +591,8 @@ class MqttJobSimApp:
                         self._handle_job_state(payload)
                     elif topic == PROBE_GATE:
                         self._handle_probe_gate(payload)
+                    elif topic == MARK_STATE:
+                        self._handle_mark_state(payload)
                     elif topic.startswith("erut/") and (
                             topic.endswith("/evt/progress") or topic.endswith("/res")):
                         self._handle_motion_values(payload)
@@ -641,6 +655,123 @@ class MqttJobSimApp:
         self.amr_moved_var.set("—")
         self.lift_height_var.set("—")
         self.active_job_var.set(self.job_id_var.get().strip() or "—")
+
+    def _plan_block(self) -> dict[str, str] | None:
+        """위 입력칸의 plan(격자 분할) 값. 빈 칸이 있으면 None."""
+        plan = {
+            "column_count": self.column_count_var.get().strip(),
+            "row_count": self.row_count_var.get().strip(),
+            "cell_width": self.cell_width_var.get().strip(),
+            "cell_height": self.cell_height_var.get().strip(),
+            "overlap": self.overlap_var.get().strip(),
+            "radius": self.radius_var.get().strip(),
+            "thickness": self.thickness_var.get().strip(),
+            "eoat": self.eoat_var.get().strip(),
+        }
+        return None if any(not v for v in plan.values()) else plan
+
+    # ------------------------------------------------------------- 마킹 명령
+    ROW_LETTERS = "ABCDEF"
+
+    def _build_mark_frame(self, parent: ttk.Frame) -> None:
+        """몇 열·몇 행 격자의 격자 안 좌표로 가서 마킹하라는 명령.
+
+        격자 크기·겹침·반지름은 위 "전체 작업 시작 값"을 그대로 싣는다 —
+        RCS 가 스캔 때와 같은 계산으로 차량(열)·리프트(행) 자리를 잡는다.
+        """
+        frame = ttk.LabelFrame(parent, text="마킹 명령 (격자 지정)", padding=8)
+        frame.grid(row=3, column=0, sticky=tk.EW, pady=(0, 8))
+        self.mark_id_var = tk.StringVar(value="m001")
+        self.mark_column_var = tk.StringVar(value="1")
+        self.mark_row_var = tk.StringVar(value="A")
+        self.mark_x_var = tk.StringVar(value="360")
+        self.mark_y_var = tk.StringVar(value="70")
+        self.mark_state_var = tk.StringVar(value="—")
+
+        cells = (("마킹 ID", ttk.Entry(frame, textvariable=self.mark_id_var, width=8)),
+                 ("열", ttk.Spinbox(frame, from_=1, to=12, textvariable=self.mark_column_var, width=4)),
+                 ("행", ttk.Combobox(frame, values=list(self.ROW_LETTERS), textvariable=self.mark_row_var,
+                                    width=3, state="readonly")),
+                 ("격자 안 x (mm)", ttk.Entry(frame, textvariable=self.mark_x_var, width=7)),
+                 ("y (mm)", ttk.Entry(frame, textvariable=self.mark_y_var, width=7)))
+        col = 0
+        for label, widget in cells:
+            ttk.Label(frame, text=label).grid(row=0, column=col, sticky=tk.W, padx=(0 if col == 0 else 10, 4))
+            widget.grid(row=0, column=col + 1, sticky=tk.W)
+            col += 2
+        frame.columnconfigure(col, weight=1)
+        ttk.Button(frame, text="▶ 마킹 이동", command=self._publish_mark_command).grid(
+            row=0, column=col + 1, sticky=tk.E)
+
+        self.mark_hint_var = tk.StringVar()
+        ttk.Label(frame, textvariable=self.mark_hint_var, foreground="#666").grid(
+            row=1, column=0, columnspan=col, sticky=tk.W, pady=(6, 0))
+        self.mark_state_label = ttk.Label(frame, textvariable=self.mark_state_var, foreground="#666")
+        self.mark_state_label.grid(row=1, column=col, columnspan=2, sticky=tk.E, pady=(6, 0))
+        for var in (self.cell_width_var, self.cell_height_var):
+            var.trace_add("write", lambda *_: self._update_mark_hint())
+        self._update_mark_hint()
+
+    def _update_mark_hint(self) -> None:
+        self.mark_hint_var.set(
+            f"x: 원점(스캔 시작 끝)부터 호를 따라 0~{self.cell_width_var.get().strip() or '?'} mm · "
+            f"y: 격자 아래 끝부터 위로 0~{self.cell_height_var.get().strip() or '?'} mm")
+
+    def _publish_mark_command(self) -> None:
+        plan = self._plan_block()
+        if plan is None:
+            messagebox.showwarning("입력 누락", "위 '전체 작업 시작 값'을 모두 채워 주세요(격자 크기에 씁니다).")
+            return
+        try:
+            columns, rows = int(plan["column_count"]), int(plan["row_count"])
+            width, height = float(plan["cell_width"]), float(plan["cell_height"])
+            column = int(self.mark_column_var.get())
+            row = self.mark_row_var.get().strip().upper()
+            x, y = float(self.mark_x_var.get()), float(self.mark_y_var.get())
+        except ValueError:
+            messagebox.showwarning("입력 오류", "열·좌표는 숫자로 입력해 주세요.")
+            return
+        mark_id = self.mark_id_var.get().strip() or "m001"
+        problems = []
+        if not 1 <= column <= columns:
+            problems.append(f"열은 1~{columns}")
+        if row not in self.ROW_LETTERS[:max(1, rows)]:
+            problems.append(f"행은 A~{self.ROW_LETTERS[max(1, min(rows, 6)) - 1]}")
+        if not 0 <= x <= width:
+            problems.append(f"x 는 0~{width:g} mm")
+        if not 0 <= y <= height:
+            problems.append(f"y 는 0~{height:g} mm")
+        if problems:
+            messagebox.showwarning("범위 밖", " / ".join(problems))
+            return
+        self._publish(MARK_COMMAND, {
+            "timestamp": utc_epoch_ms(),
+            "mark_id": mark_id,
+            "cell": {"column": str(column), "row": row},
+            "point": {"x": f"{x:g}", "y": f"{y:g}"},
+            "plan": plan,
+        })
+        self.mark_state_var.set(f"{mark_id} 보냄 — {column}{row} ({x:g}, {y:g})")
+        self.mark_state_label.configure(foreground="#b26a00")
+        # 다음 번호로 올려 둔다(m001 -> m002).
+        head = mark_id.rstrip("0123456789")
+        digits = mark_id[len(head):]
+        if digits:
+            self.mark_id_var.set(f"{head}{int(digits) + 1:0{len(digits)}d}")
+
+    MARK_STATES = {"executing": ("진행 중", "#b26a00"), "completed": ("완료", "#0a6"),
+                   "failed": ("실패", "#c62828"), "rejected": ("거절", "#c62828")}
+
+    def _handle_mark_state(self, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        state = str(payload.get("state", ""))
+        text, color = self.MARK_STATES.get(state, (state, "#666"))
+        detail = str(payload.get("detail", "")).strip()
+        cell = str(payload.get("cell", "")).strip()
+        self.mark_state_var.set(
+            f"{payload.get('mark_id', '')} {cell} {text}" + (f" — {detail}" if detail else ""))
+        self.mark_state_label.configure(foreground=color)
 
     def _publish_job_command(self) -> None:
         """job_info + plan(격자 분할)으로 "전체 작업 시작" 명령을 발행한다."""

@@ -120,3 +120,15 @@ def test_cancel_when_idle_does_nothing(qtbot):
     r, _axes, calls, _log = _runner(qtbot)
     r.cancel()
     assert calls["restore"] == 0
+
+
+def test_grid_mark_point_uses_given_vehicle_lift_and_cell_coordinates(qtbot):
+    """사내 MC mark_cmd: 자리가 정해져 오면 가운데 맞춤 대신 그대로 쓴다."""
+    r, (amr, lift, outrigger, retractor), calls, log = _runner(qtbot)
+    r.start([{"id": "m001", "amr_mm": 1402.0, "lift_mm": 120.0, "u": 250.0, "v": 35.0}], 721.0, 140.0)
+    assert amr.targets == [1402.0]
+    amr.arrived.emit()
+    outrigger.arrived.emit()
+    assert lift.targets == [120.0]
+    lift.arrived.emit()
+    assert calls["target"] == [(250.0, 35.0)] and calls["play"] == 1

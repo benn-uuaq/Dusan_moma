@@ -52,6 +52,7 @@ from smr_operator_ui.services import (
     RosStatusClient,
     SequencerState,
     SettingsService,
+    cell_label,
 )
 from smr_operator_ui.services.data_recorder import DataRecorder
 from smr_operator_ui.services.motion_adapters import SwitchableMotion
@@ -623,6 +624,7 @@ class OperatorWindow(QMainWindow):
         )
         self.mark_runner.activity.connect(self.main_screen.show_activity)
         self.mark_runner.finished.connect(self.erut_session.finish_mark)
+        self.mark_runner.finished.connect(self._finish_mqtt_mark)
         self.erut_session.mark_requested.connect(self._start_marking)
         self.ros_status.scan_state_changed.connect(self.mark_runner.handle_scan_state)
         self.erut_session.resume_requested.connect(self.sequencer.resume)
@@ -1488,6 +1490,10 @@ class OperatorWindow(QMainWindow):
             self._handle_probe_ack(payload)
             return
 
+        if topic == MqttTopics.MARK_COMMAND:
+            self._apply_mqtt_mark(payload)
+            return
+
         if topic == MqttTopics.JOB_CLEAR:
             # 전체 작업 정지(중단). RCS '정지' 버튼과 같은 경로로 순회·마킹·
             # 로봇 태스크까지 멈춘다 — 예전에는 순회만 멈춰 로봇 태스크가 계속
@@ -1580,47 +1586,7 @@ class OperatorWindow(QMainWindow):
         if not isinstance(plan, dict):
             return
         try:
-            overlap = float(str(plan["overlap"]).strip())
-            grid = GridPlan(
-                column_count=int(str(plan["column_count"]).strip()),
-                row_count=int(str(plan["row_count"]).strip()),
-                cell_width=float(str(plan["cell_width"]).strip()),
-                cell_height=float(str(plan["cell_height"]).strip()),
-                # 받는 겹침은 **격자끼리**의 겹침이다 — 한 격자 안 ㄹ자 줄
-                # 겹침이 아니다. 이 값만큼 차량과 리프트가 덜 이동해서
-                # 옆·위 격자와 겹치고, 로봇은 그 겹친 자리에서 다시 영점을
-                # 잡는다(ERUT 화면의 "오버랩 간격"과 같은 값이다).
-                # 가로·세로 모두 같은 값을 쓴다 — 규격에 하나로 온다.
-                # 격자 안 줄 간격은 로봇이 프로브 커버로 스스로 정하므로
-                # scan_overlap 은 건드리지 않는다.
-                scan_overlap=0.0, pitch_x=overlap, pitch_y=overlap,
-                # 로봇이 호를 계산하는 데 쓴다. 없으면 0 -> 평면(직선 스캔).
-                # cell_width 는 **호 길이**로 해석한다(현이 아니다).
-                radius=float(str(plan.get("radius", 0)).strip() or 0),
-                thickness=float(str(plan.get("thickness", 0)).strip() or 0),
-                # 검사장비 종류. 프로브 축 수(5 또는 8)로 고른다.
-                eoat_probes=int(float(str(plan.get("eoat", 0)).strip() or 0)),
-            )
-            if grid.column_count <= 0 or grid.row_count <= 0:
-                raise ValueError("열/행 수는 1 이상이어야 합니다.")
-            # EOAT 를 골랐으면 그 세로가 스캐너 밴드가 된다.
-            scan_h_mm = self._scan_band_mm(grid)
-            # 어느 값이 문제인지 짚어 준다 — 뭉뚱그리면 화면만 보고는
-            # 무엇을 고쳐야 할지 알 수 없다.
-            for name, value in (("셀 가로", grid.cell_width),
-                                ("셀 세로", grid.cell_height),
-                                ("스캐너 높이", scan_h_mm)):
-                if not isfinite(value) or value <= 0:
-                    raise ValueError(
-                        f"{name}는 0보다 큰 값이어야 합니다 (받은 값 {value:g}).")
-            # 겹침은 0 이어도 된다(격자를 딱 붙여 놓는 경우). 다만 격자보다
-            # 크면 차량·리프트가 뒤로 가거나 제자리를 맴돈다.
-            if not isfinite(overlap) or overlap < 0:
-                raise ValueError("겹침은 0 이상이어야 합니다.")
-            if overlap >= min(grid.cell_width, grid.cell_height):
-                raise ValueError(
-                    f"겹침 {overlap:g} mm 가 격자({grid.cell_width:g} x "
-                    f"{grid.cell_height:g} mm)보다 큽니다.")
+            grid, scan_h_mm = self._parse_mqtt_plan(plan)
         except (KeyError, TypeError, ValueError) as exc:
             self.main_screen.show_activity(f"MQTT 작업 계획 적용 실패: {exc}")
             return
@@ -1630,6 +1596,115 @@ class OperatorWindow(QMainWindow):
         # 아직 1A에 있는데도 화면만 12구역까지 가버린다.
         self._begin_grid_job(grid, scan_h_mm, source="MC",
                              job_id=getattr(self, "_mc_job_id", ""))
+
+    def _parse_mqtt_plan(self, plan: dict):
+        """사내 MC plan 블록 -> (GridPlan, 스캐너 밴드 mm). 잘못되면 ValueError.
+
+        job_cmd 와 mark_cmd 가 같이 쓴다 — 마킹도 같은 격자 크기로 자리를 잡는다.
+        """
+        overlap = float(str(plan["overlap"]).strip())
+        grid = GridPlan(
+            column_count=int(str(plan["column_count"]).strip()),
+            row_count=int(str(plan["row_count"]).strip()),
+            cell_width=float(str(plan["cell_width"]).strip()),
+            cell_height=float(str(plan["cell_height"]).strip()),
+            # 받는 겹침은 **격자끼리**의 겹침이다 — 한 격자 안 ㄹ자 줄
+            # 겹침이 아니다. 이 값만큼 차량과 리프트가 덜 이동해서
+            # 옆·위 격자와 겹치고, 로봇은 그 겹친 자리에서 다시 영점을
+            # 잡는다(ERUT 화면의 "오버랩 간격"과 같은 값이다).
+            # 가로·세로 모두 같은 값을 쓴다 — 규격에 하나로 온다.
+            # 격자 안 줄 간격은 로봇이 프로브 커버로 스스로 정하므로
+            # scan_overlap 은 건드리지 않는다.
+            scan_overlap=0.0, pitch_x=overlap, pitch_y=overlap,
+            # 로봇이 호를 계산하는 데 쓴다. 없으면 0 -> 평면(직선 스캔).
+            # cell_width 는 **호 길이**로 해석한다(현이 아니다).
+            radius=float(str(plan.get("radius", 0)).strip() or 0),
+            thickness=float(str(plan.get("thickness", 0)).strip() or 0),
+            # 검사장비 종류. 프로브 축 수(5 또는 8)로 고른다.
+            eoat_probes=int(float(str(plan.get("eoat", 0)).strip() or 0)),
+        )
+        if grid.column_count <= 0 or grid.row_count <= 0:
+            raise ValueError("열/행 수는 1 이상이어야 합니다.")
+        # EOAT 를 골랐으면 그 세로가 스캐너 밴드가 된다.
+        scan_h_mm = self._scan_band_mm(grid)
+        # 어느 값이 문제인지 짚어 준다 — 뭉뚱그리면 화면만 보고는
+        # 무엇을 고쳐야 할지 알 수 없다.
+        for name, value in (("셀 가로", grid.cell_width),
+                            ("셀 세로", grid.cell_height),
+                            ("스캐너 높이", scan_h_mm)):
+            if not isfinite(value) or value <= 0:
+                raise ValueError(
+                    f"{name}는 0보다 큰 값이어야 합니다 (받은 값 {value:g}).")
+        # 겹침은 0 이어도 된다(격자를 딱 붙여 놓는 경우). 다만 격자보다
+        # 크면 차량·리프트가 뒤로 가거나 제자리를 맴돈다.
+        if not isfinite(overlap) or overlap < 0:
+            raise ValueError("겹침은 0 이상이어야 합니다.")
+        if overlap >= min(grid.cell_width, grid.cell_height):
+            raise ValueError(
+                f"겹침 {overlap:g} mm 가 격자({grid.cell_width:g} x "
+                f"{grid.cell_height:g} mm)보다 큽니다.")
+        return grid, scan_h_mm
+
+    #: 사내 MC 마킹 명령 하나를 돌고 있으면 (mark_id, 격자 이름).
+    _mc_mark: tuple[str, str] | None = None
+
+    def _apply_mqtt_mark(self, payload: dict) -> None:
+        """사내 MC `mark_cmd` — 몇 열·몇 행 격자의 격자 안 (x, y) 에 마킹한다.
+
+          차량 : 그 열 격자의 원점 쪽 끝   (열 - 1) × (셀 가로 - 겹침)
+          리프트: 그 행 격자의 아래 끝     (행 - 1) × (셀 세로 - 겹침)
+          로봇 : 격자 안 좌표 그대로        u = x (원점부터 호를 따라), v = y (아래에서 위로)
+
+        스캔 순회와 같은 자리 계산이라, 스캔했던 격자의 같은 좌표를 다시 찾아간다.
+        """
+        mark_id = str(payload.get("mark_id", "")).strip()
+        cell_in, point = payload.get("cell") or {}, payload.get("point") or {}
+        try:
+            grid, scan_h_mm = self._parse_mqtt_plan(payload.get("plan") or {})
+            column = int(str(cell_in["column"]).strip())
+            row_text = str(cell_in["row"]).strip().upper()
+            row = ord(row_text) - ord("A") + 1 if row_text.isalpha() else int(row_text)
+            x, y = float(str(point["x"]).strip()), float(str(point["y"]).strip())
+            if not 1 <= column <= grid.column_count:
+                raise ValueError(f"열 {column} 이 1~{grid.column_count} 밖입니다.")
+            if not 1 <= row <= grid.row_count:
+                raise ValueError(f"행 {row_text} 이 A~{chr(ord('A') + grid.row_count - 1)} 밖입니다.")
+            if not (0 <= x <= grid.cell_width and 0 <= y <= grid.cell_height):
+                raise ValueError(f"격자 안 좌표 ({x:g}, {y:g}) 가 0~{grid.cell_width:g} × "
+                                 f"0~{grid.cell_height:g} mm 밖입니다.")
+        except (KeyError, TypeError, ValueError) as exc:
+            self.main_screen.show_activity(f"MQTT 마킹 명령 거절: {exc}")
+            self.mqtt_server.publish_mark_state(mark_id, "rejected", detail=str(exc))
+            return
+        cell = cell_label(column - 1, row - 1)
+        if self._job_running():
+            detail = "작업이나 마킹이 도는 중입니다 — 끝나거나 정지한 뒤 보내세요."
+            self.main_screen.show_activity(f"MQTT 마킹 명령 거절({cell}): {detail}")
+            self.mqtt_server.publish_mark_state(mark_id, "rejected", cell, detail)
+            return
+        # 로봇 마킹 태스크가 호를 계산하려면 이 격자 크기가 로봇에 있어야 한다.
+        eoat_w, eoat_h = grid.eoat_size
+        self._send_work_area(grid.cell_width, grid.cell_height, scan_h_mm, grid.pitch_y,
+                             grid.radius, grid.thickness, eoat_w, eoat_h,
+                             float(grid.eoat_probes))
+        amr_mm = (column - 1) * grid.column_pitch
+        lift_mm = (row - 1) * grid.lift_pitch
+        self._mc_mark = (mark_id, cell)
+        self.main_screen.show_activity(
+            f"MQTT 마킹 {mark_id}: {cell} 격자 ({x:g}, {y:g}) mm — 차량 {amr_mm:.0f} mm, "
+            f"리프트 {lift_mm:.0f} mm")
+        self.mqtt_server.publish_mark_state(mark_id, "executing", cell)
+        self.mark_runner.start(
+            [{"id": mark_id or cell, "amr_mm": amr_mm, "lift_mm": lift_mm, "u": x, "v": y}],
+            grid.cell_width, grid.cell_height)
+
+    def _finish_mqtt_mark(self, marked: list, failed: list) -> None:
+        """MC 마킹 명령이 끝났으면 결과를 알린다(ERUT 마킹이면 아무것도 안 한다)."""
+        current, self._mc_mark = self._mc_mark, None
+        if current is None:
+            return
+        mark_id, cell = current
+        self.mqtt_server.publish_mark_state(mark_id, "completed" if marked and not failed else "failed", cell)
 
     def _begin_grid_job(self, grid, scan_h_mm: float, source: str = "MC",
                         job_id: str = "") -> None:

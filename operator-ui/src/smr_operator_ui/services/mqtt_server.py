@@ -24,6 +24,9 @@ class MqttTopics:
     # 원점에서 프로브 눌림 확인을 받고 스캔을 시작해도 된다는 회신 (MC -> RCS).
     # ERUT 규격의 req/start 게이트와 같은 자리이고, 사내 MC 규격 쪽 통로다.
     PROBE_ACK = "doosan/robot/req/probe_ack"
+    # 마킹 명령 (MC -> RCS). 몇 열·몇 행 격자의 어느 좌표(격자 안 x, y mm)로
+    # 가서 마킹하라. 격자 크기 계산에 필요한 plan 을 job_cmd 와 같은 모양으로 싣는다.
+    MARK_COMMAND = "doosan/robot/req/mark_cmd"
 
     ROBOT_STATE = "doosan/robot/robot_state"
     ERROR = "doosan/robot/error"
@@ -32,6 +35,8 @@ class MqttTopics:
     # 로봇이 원점에 서서 프로브 확인을 기다린다 / 풀렸다 (RCS -> MC).
     # ERUT 규격의 evt/ready(stage=at_origin)와 같은 뜻이다.
     PROBE_GATE = "doosan/robot/probe_gate"
+    # 마킹 진행 (RCS -> MC): executing / completed / failed / rejected
+    MARK_STATE = "doosan/robot/mark_state"
 
     MC_COMMAND_RESPONSE = "doosan/robot/resp/mc_cmd"
     RESET_RESPONSE = "doosan/robot/resp/reset"
@@ -50,6 +55,7 @@ class MqttTopics:
         JOB_COMMAND,
         SPEED,
         PROBE_ACK,
+        MARK_COMMAND,
     )
     STATUSES = (
         ROBOT_STATE,
@@ -57,6 +63,7 @@ class MqttTopics:
         TCP,
         JOB_STATE,
         PROBE_GATE,
+        MARK_STATE,
     )
     RESPONSES = (
         MC_COMMAND_RESPONSE,
@@ -128,6 +135,7 @@ SPEED_MIN, SPEED_MAX = 2, 100
 # `job_state`의 상태 값. 셀 하나가 거치는 세 단계다.
 # `services/job_sequencer.py`의 `CellStatus`와 값이 같아야 한다.
 JOB_STATES = frozenset({"waiting", "executing", "completed"})
+MARK_STATES = frozenset({"executing", "completed", "failed", "rejected"})
 
 
 class MqttServer(QObject):
@@ -352,6 +360,18 @@ class MqttServer(QObject):
                 "state": state,
             },
         )
+
+    def publish_mark_state(self, mark_id: str, state: str, cell_id: str = "",
+                           detail: str = "") -> bool:
+        """마킹 명령 하나의 진행을 외부(MC)에 알린다."""
+        if state not in MARK_STATES:
+            raise MqttPayloadError(
+                f"허용되지 않은 마킹 상태입니다: {state!r} (가능: {', '.join(sorted(MARK_STATES))})")
+        payload = {"timestamp": _utc_epoch_ms(), "mark_id": str(mark_id).strip(),
+                   "cell": str(cell_id).strip(), "state": state}
+        if detail:
+            payload["detail"] = str(detail)
+        return self.publish(MqttTopics.MARK_STATE, payload)
 
     def publish_probe_gate(self, waiting: bool, cell_id: str = "") -> bool:
         """원점에서 프로브 확인을 기다리는지 외부(MC)에 알린다.
@@ -676,6 +696,21 @@ def validate_command_payload(topic: str, payload: dict[str, Any]) -> None:
             raise MqttPayloadError(
                 f"plan 필드가 없거나 비어 있습니다: {', '.join(plan_missing)}"
             )
+        return
+
+    if topic == MqttTopics.MARK_COMMAND:
+        mark_id = payload.get("mark_id")
+        if not isinstance(mark_id, str) or not mark_id.strip():
+            raise MqttPayloadError("비어 있지 않은 문자열 mark_id가 필요합니다.")
+        for block, names in (("cell", ("column", "row")), ("point", ("x", "y")),
+                             ("plan", ("column_count", "row_count", "cell_width",
+                                       "cell_height", "overlap"))):
+            value = payload.get(block)
+            if not isinstance(value, dict):
+                raise MqttPayloadError(f"{block}는 JSON object여야 합니다.")
+            missing = [n for n in names if not isinstance(value.get(n), str) or not value[n].strip()]
+            if missing:
+                raise MqttPayloadError(f"{block} 필드가 없거나 비어 있습니다: {', '.join(missing)}")
         return
 
     raise MqttPayloadError(f"정의되지 않은 Command Topic입니다: {topic}")

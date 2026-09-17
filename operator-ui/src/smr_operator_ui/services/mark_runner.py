@@ -13,6 +13,11 @@ ERUT 는 결함 자리를 검사면 좌표(x = 원주 전개, y = 높이 — are
 (u, v) = (W/2, 0) 이 되어 **가운데 프로브가 이미 닿아 본 자리**와 같다.
 호 계산이 틀릴 여지가 가장 적다. (로봇 스크립트는 임의의 u, v 도 받는다.)
 
+**격자 지정 마킹**(사내 MC `mark_cmd`)은 점에 자리가 이미 정해져 온다 —
+`amr_mm`(차량 위치 = 그 열 격자의 원점 쪽 끝), `lift_mm`(그 행 격자의 아래
+끝 높이), `u`·`v`(격자 안 좌표: 원점부터 호를 따라 u, 아래에서 위로 v). 이
+값이 있으면 위의 가운데 맞춤 대신 그대로 쓴다.
+
 다 끝나면 스캔 태스크를 다시 불러 두고 `finished(marked, failed)` 를 낸다.
 마킹 동작 자체(스프레이/마커)는 아직 TODO 다 — 로봇은 그 자리에 붙었다가
 홈으로 돌아올 뿐이다.
@@ -108,7 +113,10 @@ class MarkRunner(QObject):
             self.finished.emit(list(self._marked), list(self._failed))
             return
         pt = self._point()
-        x0 = float(pt["x"]) - self._cell_w / 2.0
+        if "amr_mm" in pt:
+            x0 = float(pt["amr_mm"])
+        else:
+            x0 = float(pt["x"]) - self._cell_w / 2.0
         self._step = "amr"
         self._timer.start(self.POINT_TIMEOUT_MS)
         self.activity.emit(
@@ -125,12 +133,13 @@ class MarkRunner(QObject):
             self._outrigger.move_to(1, " 고정")
         elif arrived == "secure":
             self._step = "lift"
-            self._lift.move_to(float(pt["y"]), " mm")
+            self._lift.move_to(float(pt["lift_mm"] if "lift_mm" in pt else pt["y"]), " mm")
         elif arrived == "lift":
             self._step = "robot"
             self._saw_busy = False
             # 점을 격자 가운데·원점 높이에 뒀으므로 로봇 목표는 (W/2, 0).
-            self._send_target(self._cell_w / 2.0, 0.0)
+            # 격자 지정 마킹이면 격자 안 좌표(u, v)를 그대로 준다.
+            self._send_target(float(pt.get("u", self._cell_w / 2.0)), float(pt.get("v", 0.0)))
             self._start_mark_task()
             self.activity.emit(f"마킹 {pt['id']}: 로봇이 프로브 후 마킹 자리로 갑니다.")
         elif arrived == "retract":
