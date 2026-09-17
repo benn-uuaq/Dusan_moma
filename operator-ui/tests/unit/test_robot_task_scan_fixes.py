@@ -120,3 +120,29 @@ def test_new_variables_are_declared(version) -> None:
     assert 'name="eoat5_offset" value="[0, 0, 0]"' in text
     assert 'name="v_scan_set" value="0.1"' in text
     assert "eoat5_offset_x" not in text, "옛 스칼라 오프셋(m)은 뺐다"
+
+
+# ---- TPAC 동기 신호: 스캔 구간 레지스터 277 ---------------------------------------
+@pytest.mark.parametrize("version", sorted(VERSIONS))
+@pytest.mark.parametrize("folder", INIT_FOLDERS)
+@pytest.mark.parametrize("side,segment", (("pass_r", 1), ("pass_l", 3)))
+def test_scan_lines_announce_their_segment_before_moving(version, folder, side, segment) -> None:
+    code = _code(_script(version, folder, side))
+    lines = [l.strip() for l in code.splitlines() if l.strip()]
+    motion = next(i for i, l in enumerate(lines)
+                  if l.startswith("movec(") or "_servo_arc(" in l and l.startswith("pass_len ="))
+    # 줄 시작: 구간 번호 -> sig_hold -> 움직임 -> 0 -> sig_hold
+    assert lines[motion - 2:motion] == [f"write_port_register(277, {segment})", "sleep(sig_hold)"]
+    assert lines[motion + 1:motion + 3] == ["write_port_register(277, 0)", "sleep(sig_hold)"]
+
+
+@pytest.mark.parametrize("version", sorted(VERSIONS))
+@pytest.mark.parametrize("folder", INIT_FOLDERS)
+def test_index_finish_and_init_set_the_segment(version, folder) -> None:
+    up = _code(_script(version, folder, "up"))
+    assert up.index("write_port_register(277, 2)") < up.index("movel(tgt_pose")
+    finish = _code(_script(version, folder, "finish"))
+    assert finish.index("write_port_register(277, 0)") < finish.index("write_port_register(290, 5)")
+    init_lines = _code(_script(version, folder, "init")).splitlines()
+    assert "write_port_register(277, 0)" in [l.rstrip() for l in init_lines], "최상위(들여쓰기 없이)에서 0 으로"
+    assert 'name="sig_hold" value="0.25"' in _variables(version)

@@ -34,7 +34,19 @@ via_pose = p_c_pose.copy()
 via_pose[2] = z_now
 to_pose = p_r_pose.copy()
 to_pose[2] = z_now
+# ---- TPAC 동기 신호 --------------------------------------------------------
+# 277 = 지금 도는 스캔 구간. RCS 브리지가 이 값을 TPAC 엔코더 보드의 DO 신호
+# (Coil 16~18 / Reg 1)로 바꿔 보낸다 — 1 전진 스캔, 2 줄 바꿈(동결), 3 후진 스캔.
+# 브리지가 값을 읽고(100 ms 주기) 방향 -> 스캔 순서로 신호를 50 ms 이상씩
+# 붙잡아 둘 시간을 주고 나서 움직인다(sig_hold). 안 기다리면 줄 앞부분이
+# 펄스 없이 지나가 TPAC 이 그만큼을 못 센다.
+write_port_register(277, 1)
+sleep(sig_hold)
 movec(via_pose, to_pose, a = a_scan, v = v_scan, r = 0, mode = 1)
+# 끝점 도착 — 스캔 동결(277 = 0 -> DO[1] = 0). 동결이 TPAC 에 닿은 뒤에
+# 다음 동작(줄 바꿈 상승)으로 간다.
+write_port_register(277, 0)
+sleep(sig_hold)
 
 row_idx = row_idx + 1
 dir_sign = -1

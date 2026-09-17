@@ -1058,6 +1058,39 @@ def test_tpac_pose_source_defaults_to_scan_value(qtbot) -> None:
     window.close()
 
 
+def test_tpac_screen_serves_scan_sync_signals(qtbot) -> None:
+    """TPAC 동기 신호(Coil 16~18 / Reg 1)가 기본으로 켜지고 화면에 보인다."""
+    import socket
+
+    from smr_operator_ui.services.tpac_bridge.robot_map import RobotData
+
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.screens["tpac_bridge"]
+    assert screen.srv_signals.isChecked() and screen.srv_latch_ms.value() == 50
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    screen.srv_bind_ip.setText("127.0.0.1")
+    screen.srv_port.setValue(port)
+    screen._start_server()
+    try:
+        assert screen.server.signals is not None
+        for state, segment in ((7, 0), (6, 1)):
+            screen._on_data(RobotData.from_registers({277: segment, 290: state, 500: 1}))
+        qtbot.waitUntil(lambda: screen.server.signals.current.bits == [1, 1, 0], timeout=2000)
+        qtbot.waitUntil(lambda: "스캔 유효" in screen.do_status.text(), timeout=2000)
+        screen._on_data(RobotData.from_registers({277: 1, 290: 6, 500: 1}))
+        rows = {screen.serve_table.item(r, 0).text(): screen.serve_table.item(r, 2).text()
+                for r in range(screen.serve_table.rowCount())}
+        assert rows["Coil 16"] == "Forward" and rows["Coil 17"] == "유효"
+        assert rows["Coil 18"] == "준비 완료" and rows["Reg 1"].startswith("3 ")
+        assert screen.server.covers(16, 3, fc=1) == "TPAC DO 신호"
+    finally:
+        screen._stop_server()
+    window.close()
+
+
 # ---------------------------------------------------------------------------
 # 원점 도착 -> ERUT 확인 -> 적심 -> 스캔
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import time
 import threading
 
 from .modbus_io import RobotModbus, ServerBridge
+from .scan_signals import COIL_BASE, LATCH_MS, STATUS_REGISTER, ScanSignalOutput
 from .robot_map import (READ_BLOCKS, RobotData, OUT_FORMATS,
                         encode_payload, to_uint16, clamp_int16,
                         build_read_blocks)
@@ -265,6 +266,14 @@ class ExternalServer:
         self._last_pose = None      # 속도 계산용 (좌표, 시각)
         self.update_count = 0
         self.alive = 0
+        # TPAC 엔코더 보드 동기 신호 DO[0..2] (Coil 16~18 / Register 1 bit 0~2).
+        # 로봇 스캔 구간(277)·진행 상태(290)로 정하고, 바뀔 때마다 latch_ms 이상
+        # 유지하며 한 비트씩 내보낸다 — scan_signals.py 참고.
+        self.scan_signals = True
+        self.signal_latch_ms = LATCH_MS
+        self.signals = None
+        self.on_signal = None       # (Outputs, 사유) — 화면·로그용
+        self._warned_block_overlap = False
 
     @property
     def running(self):
@@ -278,7 +287,8 @@ class ExternalServer:
     def start(self, host="0.0.0.0", port=502, start_addr=0, mirror=True,
               fmt="int16_raw", word_order="hi_lo", pos_unit="raw",
               mirror_map=None, delay_ms=0, mirror_shift=0, pose_only=False,
-              ur_mode=False, pose_source="scan"):
+              ur_mode=False, pose_source="scan", scan_signals=True,
+              signal_latch_ms=LATCH_MS):
         # 응답 지연: 폴링 속도 제한이 없는 장치가 폭주해 스스로 죽는 것을 막는다
         self.bridge = ServerBridge(log=self.on_log, on_request=self._on_request,
                                    delay_ms=delay_ms)
@@ -294,12 +304,38 @@ class ExternalServer:
         if mirror_map:
             self.mirror_map.update({k: int(v) for k, v in mirror_map.items()})
         ok = self.bridge.start(host, int(port))
+        self.scan_signals = bool(scan_signals)
+        self.signal_latch_ms = int(signal_latch_ms)
+        self._warned_block_overlap = False
+        if ok and self.scan_signals:
+            self.signals = ScanSignalOutput(self._write_signals, self.signal_latch_ms,
+                                            on_change=self._signal_changed)
+            self.signals.start()
         self.on_state(ok, (f"동작중 {host}:{port}" if ok else "시작 실패"))
         return ok
 
     def stop(self):
+        signals, self.signals = self.signals, None
+        if signals is not None:
+            signals.stop()
         self.bridge.stop()
         self.on_state(False, "정지")
+
+    # ------------------------------------------------------------------
+    def _write_signals(self, outputs):
+        """DO[0..2] 를 코일 16~18(FC1)과 레지스터 1(FC3·FC4)에 같이 쓴다."""
+        self.bridge.set_coils(COIL_BASE, outputs.bits)
+        self.bridge.set_hr(STATUS_REGISTER, [outputs.word])
+
+    def _signal_changed(self, outputs, reason):
+        self.on_log(f"[TPAC 신호] {outputs.describe()} (DO={outputs.word:03b}) — {reason}")
+        if self.on_signal is not None:
+            self.on_signal(outputs, reason)
+
+    @property
+    def signal_word(self):
+        """지금 내보내고 있는 DO 워드(신호를 끈 경우 0)."""
+        return self.signals.current.word if self.signals is not None else 0
 
     # ------------------------------------------------------------------
     def update(self, data: RobotData):
@@ -308,6 +344,18 @@ class ExternalServer:
         self.alive = (self.alive + 1) & 0xFFFF
         block = (encode_payload(data, self.fmt, self.word_order)
                  + data.payload_status(self.alive))
+        if self.signals is not None:
+            self.signals.observe(data.scan_state, data.scan_segment, data.running_state)
+            # 데이터 블록이 레지스터 1(DO 신호)을 덮으면 TPAC 이 엉뚱한 비트를
+            # 읽는다. 그 한 칸은 신호 값으로 채워 넣는다.
+            offset = STATUS_REGISTER - self.start_addr
+            if 0 <= offset < len(block):
+                block[offset] = self.signal_word
+                if not self._warned_block_overlap:
+                    self._warned_block_overlap = True
+                    self.on_log(f"[TPAC 신호] 데이터 블록(시작 주소 {self.start_addr})이 "
+                                f"레지스터 {STATUS_REGISTER} 과 겹칩니다 — 그 칸은 DO 신호로 씁니다. "
+                                "데이터 블록 시작 주소를 옮기는 것을 권합니다.")
         ok = self.bridge.set_hr(self.start_addr, block)     # 한 번에 통째로
         if self.mirror:
             self._write_mirror(data)
@@ -332,14 +380,29 @@ class ExternalServer:
                     (m["pose"], m["pose"] + 5, "pose 재현"),
                     (m["speed"], m["speed"] + 5, "속도 재현"),
                     (m["offset"], m["offset"] + 5, "offset 재현")]
+        if self.signals is not None:
+            out += [(STATUS_REGISTER, STATUS_REGISTER, "TPAC DO 신호")]
         if self.ur_mode:
             out += [(1, 1, "UR Outputs"), (256, 258, "UR 버전·모드"),
                     (260, 265, "UR 전원·정지"), (450, 451, "UR 전류")]
         return out
 
-    def covers(self, addr, count):
-        """요청 구간이 채워진 범위 안에 완전히 들어가면 설명을, 아니면 None."""
+    def covers(self, addr, count, fc=3):
+        """요청 구간이 채워진 범위 안에 완전히 들어가면 설명을, 아니면 None.
+
+        fc 1·2(코일·디스크리트 입력)는 레지스터와 주소 공간이 따로다.
+        """
         end = addr + count - 1
+        if fc in (1, 2):
+            bit_ranges = []
+            if self.signals is not None:
+                bit_ranges.append((COIL_BASE, COIL_BASE + 2, "TPAC DO 신호"))
+            if self.ur_mode:
+                bit_ranges.append((260, 265, "UR 전원·정지 비트"))
+            for lo, hi, label in bit_ranges:
+                if lo <= addr and end <= hi:
+                    return label
+            return None
         for lo, hi, label in self.filled_ranges():
             if lo <= addr and end <= hi:
                 return label
@@ -379,7 +442,8 @@ class ExternalServer:
           450/451  로봇·I/O 전류
         """
         b = self.bridge
-        b.set_hr(1, [0])                                   # Outputs bits
+        # Outputs bits — TPAC 동기 신호 DO[0..2] 가 bit 0~2 다(신호를 끄면 0).
+        b.set_hr(STATUS_REGISTER, [self.signal_word])
         b.set_hr(256, [data.version[0], data.version[1]])
         b.set_hr(258, [to_uint16(data.robot_mode)])
         estop = 1 if data.emergency_stop else 0

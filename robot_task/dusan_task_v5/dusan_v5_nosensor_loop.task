@@ -462,6 +462,7 @@ qc = 0
 
 # 288 = 스캔 중 눌림 상태(0 감시 안 함, 1 적정, 2 덜 눌림, 3 너무 눌림)
 # 289 = 한 줄 동안의 눌림 보정량 [0.01mm] — dus5_pass_r/l 이 채운다
+write_port_register(277, 0)   # TPAC 동기 신호 구간(0 없음/1 전진/2 줄 바꿈/3 후진)
 write_port_register(288, 0)
 write_port_register(289, 0)
 write_port_register(290, 0)
@@ -981,6 +982,7 @@ qc = 0
 
 # 288 = 스캔 중 눌림 상태(0 감시 안 함, 1 적정, 2 덜 눌림, 3 너무 눌림)
 # 289 = 한 줄 동안의 눌림 보정량 [0.01mm] — dus5_pass_r/l 이 채운다
+write_port_register(277, 0)   # TPAC 동기 신호 구간(0 없음/1 전진/2 줄 바꿈/3 후진)
 write_port_register(288, 0)
 write_port_register(289, 0)
 write_port_register(290, 0)
@@ -1936,7 +1938,19 @@ end
 # 제로점 기준 좌표(280~285)가 나간다 — dus5_init 의 pub_rel 참고.
 write_port_register(290, 6)
 
+# ---- TPAC 동기 신호 --------------------------------------------------------
+# 277 = 지금 도는 스캔 구간. RCS 브리지가 이 값을 TPAC 엔코더 보드의 DO 신호
+# (Coil 16~18 / Reg 1)로 바꿔 보낸다 — 1 전진 스캔, 2 줄 바꿈(동결), 3 후진 스캔.
+# 브리지가 값을 읽고(100 ms 주기) 방향 -&gt; 스캔 순서로 신호를 50 ms 이상씩
+# 붙잡아 둘 시간을 주고 나서 움직인다(sig_hold). 안 기다리면 줄 앞부분이
+# 펄스 없이 지나가 TPAC 이 그만큼을 못 센다.
+write_port_register(277, 1)
+sleep(sig_hold)
 pass_len = nr_servo_arc(p_r_pose)
+# 끝점 도착 — 스캔 동결(277 = 0 -&gt; DO[1] = 0). 동결이 TPAC 에 닿은 뒤에
+# 다음 동작(줄 바꿈 상승)으로 간다.
+write_port_register(277, 0)
+sleep(sig_hold)
 
 row_idx = row_idx + 1
 dir_sign = -1
@@ -2145,7 +2159,19 @@ end
 # 제로점 기준 좌표(280~285)가 나간다 — dus5_init 의 pub_rel 참고.
 write_port_register(290, 6)
 
+# ---- TPAC 동기 신호 --------------------------------------------------------
+# 277 = 지금 도는 스캔 구간. RCS 브리지가 이 값을 TPAC 엔코더 보드의 DO 신호
+# (Coil 16~18 / Reg 1)로 바꿔 보낸다 — 1 전진 스캔, 2 줄 바꿈(동결), 3 후진 스캔.
+# 브리지가 값을 읽고(100 ms 주기) 방향 -&gt; 스캔 순서로 신호를 50 ms 이상씩
+# 붙잡아 둘 시간을 주고 나서 움직인다(sig_hold). 안 기다리면 줄 앞부분이
+# 펄스 없이 지나가 TPAC 이 그만큼을 못 센다.
+write_port_register(277, 3)
+sleep(sig_hold)
 pass_len = nl_servo_arc(zero_pose)
+# 끝점 도착 — 스캔 동결(277 = 0 -&gt; DO[1] = 0). 동결이 TPAC 에 닿은 뒤에
+# 다음 동작(줄 바꿈 상승)으로 간다.
+write_port_register(277, 0)
+sleep(sig_hold)
 
 row_idx = row_idx + 1
 dir_sign = 1
@@ -2208,6 +2234,8 @@ end
 # 스캔 동작마다 세워 둬야, 사이클이 반복되며 goto_zero 를 다시 지나지
 # 않는 구성에서도 좌표가 끊기지 않는다.
 write_port_register(290, 6)
+# TPAC 동기 신호: 줄 바꿈 상승 구간 — 스캔 동결(DO[1] = 0) 유지.
+write_port_register(277, 2)
 
 tgt_pose = get_actual_tcp_pose()
 tgt_pose[2] = z_base + row_idx * pitch * 0.001
@@ -2255,6 +2283,8 @@ tgt_pose = get_actual_tcp_pose()
 tgt_pose[0] = get_actual_tcp_pose()[0] - back_off * 0.001
 movel(tgt_pose, a = a_l, v = v_l)
 
+# TPAC 동기 신호: 스캔 구간 끝(격자 완료 -&gt; 브리지가 리셋으로 구분한다).
+write_port_register(277, 0)
 write_port_register(290, 5)
 write_port_register(291, row_idx)
 write_port_register(295, 1)

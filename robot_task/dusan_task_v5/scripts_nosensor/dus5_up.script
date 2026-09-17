@@ -27,6 +27,8 @@ end
 # 스캔 동작마다 세워 둬야, 사이클이 반복되며 goto_zero 를 다시 지나지
 # 않는 구성에서도 좌표가 끊기지 않는다.
 write_port_register(290, 6)
+# TPAC 동기 신호: 줄 바꿈 상승 구간 — 스캔 동결(DO[1] = 0) 유지.
+write_port_register(277, 2)
 
 tgt_pose = get_actual_tcp_pose()
 tgt_pose[2] = z_base + row_idx * pitch * 0.001

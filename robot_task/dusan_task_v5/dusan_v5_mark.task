@@ -468,6 +468,7 @@ qc = 0
 
 # 288 = 스캔 중 눌림 상태(0 감시 안 함, 1 적정, 2 덜 눌림, 3 너무 눌림)
 # 289 = 한 줄 동안의 눌림 보정량 [0.01mm] — dus5_pass_r/l 이 채운다
+write_port_register(277, 0)   # TPAC 동기 신호 구간(0 없음/1 전진/2 줄 바꿈/3 후진)
 write_port_register(288, 0)
 write_port_register(289, 0)
 write_port_register(290, 0)

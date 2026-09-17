@@ -60,6 +60,24 @@ python3 mqtt_test/erut_sim.py
 
 **지금은 로봇만 진짜다** — `start`만 실제로 로봇이 움직이고, 캘리브레이션·마킹·배터리는 RCS가 시험용으로 답한다.
 
+## TPAC 엔코더 보드 모의기 (`tpac_encoder_sim.py`)
+
+RCS 의 TPAC 브리지(Modbus TCP 서버)에 **클라이언트로 붙어** TPAC 엔코더 보드가 읽는
+자리를 그대로 읽는다 — 브리지가 보내는 동기 신호가 제대로 가는지 보는 모니터다.
+브리지는 여러 클라이언트를 받으므로 **실제 TPAC 과 동시에** 붙여도 된다.
+
+```bash
+python3 mqtt_test/tpac_encoder_sim.py --host 127.0.0.1 --port 502 --connect
+mqtt_test/win_sim.sh tpac_encoder_sim --connect      # WSL 에서 포인터가 안 보일 때
+```
+
+- 읽는 자리: Coil 16~18(FC1) DO[0] 방향 / DO[1] 스캔 / DO[2] 리셋, Register 1 bit 0~2(FC3),
+  Register 400~405 TCP.
+- 보여 주는 것: DO 램프와 **FC1 / FC3 일치 여부**, 엔코더 보드처럼 센 라인 수·C-scan 카운터·
+  누적 거리·동결 중 이동, 라인별 기록, 신호 변화 로그(직전 상태 유지 시간 — 50 ms 미만이면 빨강),
+  최근 20 초 로직 분석기.
+- 표준 라이브러리만 쓴다(Windows 파이썬 그대로 실행).
+
 ## TPAC Modbus TCP 이동 시뮬레이터 (`tpac_tcp_sim.py`)
 
 TPAC이 Modbus TCP로 로봇 TCP 값을 잘 읽어가는지만 시험하기 위한 독립 도구다.

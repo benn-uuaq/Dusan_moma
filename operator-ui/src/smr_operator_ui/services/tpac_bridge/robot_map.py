@@ -47,17 +47,22 @@ REG_WORK_SPEED      = 306    # 306 작업 속도 / 307 속도 비율
 # 있으므로 이 쪽을 쓴다 — 폴링 주기에 따라 추정값이 흔들리는 문제가 없다.
 REG_TCP_SPEED       = 400    # 400~402 X,Y,Z speed(mm/s) / 403~405 Rx,Ry,Rz speed(mRad/s)
 REG_RUNNING_STATE   = 500    # 1=Running 2=Pause 3=Stopped
+# TPAC 동기 신호용 — 로봇 태스크가 쓰는 스캔 구간(277)과 진행 상태(290).
+REG_SCAN_SIGNAL     = 277    # 277 스캔 구간 ... 290 진행 상태 (14 워드)
 
 # 각 항목이 차지하는 워드 수
 # scan 은 8 워드다: 280~285 제로점 기준 pose + 286 호 위치[0.1mm] +
 # 287 누적 호 길이[mm]. 한 블록으로 읽어야 좌표와 호 위치가 같은
 # 시점의 값이 된다 — 나눠 읽으면 그 사이 로봇이 움직여 어긋난다.
-READ_SPEC = {"scan": 8, "pose": 6, "speed": 2, "tcp_speed": 6}
+# signal 은 14 워드다: 277 스캔 구간(TPAC 동기 신호) ~ 290 진행 상태.
+# 스캔 좌표 블록(280~287)과 붙어 있어 한 번에 읽힌다.
+READ_SPEC = {"scan": 8, "pose": 6, "speed": 2, "tcp_speed": 6, "signal": 14}
 
 # 위 주소는 UI "로봇에서 읽기"의 '읽기 주소' 칸에서 바꿀 수 있다.
 # 여기 값은 프로그램을 처음 켤 때의 기본값일 뿐이다.
 DEFAULT_READ_MAP = {"scan": REG_TCP_SCAN, "pose": REG_TCP_POSE,
-                    "speed": REG_WORK_SPEED, "tcp_speed": REG_TCP_SPEED}
+                    "speed": REG_WORK_SPEED, "tcp_speed": REG_TCP_SPEED,
+                    "signal": REG_SCAN_SIGNAL}
 
 
 def build_read_blocks(amap=None, max_words=48):
@@ -143,6 +148,10 @@ class RobotData:
         # tcp_spd(위)는 ExternalServer._calc_speed 가 좌표 변화량으로
         # 추정한 값이라 이것과는 다르다 — 실제 값이 있으면 이쪽을 쓴다.
         self.tcp_spd_real = [0] * 6
+        # TPAC 동기 신호 입력 — 277 스캔 구간(0 없음/1 전진/2 줄 바꿈/3 후진),
+        # 290 진행 상태. bridge_core.ExternalServer 가 DO 신호로 바꾼다.
+        self.scan_segment = 0
+        self.scan_state = 0
         self.work_speed = 0        # 306 작업 속도
         self.speed_ratio = 0       # 307 속도 비율
         self.version = (0, 0, 0)
@@ -186,6 +195,8 @@ class RobotData:
         d.arc_total = s(m["scan"] + 7)          # 287: mm
         # mm/s, mRad/s 로 이미 실제 단위라 배율 변환이 필요 없다(0.1mm 아님).
         d.tcp_spd_real = [s(m["tcp_speed"] + i) for i in range(6)]
+        d.scan_segment = g(m["signal"])
+        d.scan_state = g(m["signal"] + 13)          # 290
         d.work_speed = s(m["speed"])
         d.speed_ratio = s(m["speed"] + 1)
         d.ok = True

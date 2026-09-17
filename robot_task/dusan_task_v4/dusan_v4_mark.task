@@ -466,6 +466,7 @@ qa = 0
 qb = 0
 qc = 0
 
+write_port_register(277, 0)   # TPAC 동기 신호 구간(0 없음/1 전진/2 줄 바꿈/3 후진)
 write_port_register(290, 0)
 write_port_register(291, 0)
 ini_w1(292, rows)

@@ -13,6 +13,8 @@ tgt_pose = get_actual_tcp_pose()
 tgt_pose[0] = get_actual_tcp_pose()[0] - back_off * 0.001
 movel(tgt_pose, a = a_l, v = v_l)
 
+# TPAC 동기 신호: 스캔 구간 끝(격자 완료 -> 브리지가 리셋으로 구분한다).
+write_port_register(277, 0)
 write_port_register(290, 5)
 write_port_register(291, row_idx)
 write_port_register(295, 1)

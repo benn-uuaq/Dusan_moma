@@ -63,6 +63,8 @@ class _BridgeSignals(QObject):
     robot_conn = pyqtSignal(bool, str)
     srv_state = pyqtSignal(bool, str)
     srv_request = pyqtSignal(float, str, int, int, int)
+    # TPAC 동기 신호(DO[0..2])가 바뀌었다 — (Outputs, 사유). 출력 스레드에서 온다.
+    do_changed = pyqtSignal(object, str)
 
 
 class TpacBridgeScreen(BaseScreen):
@@ -84,6 +86,7 @@ class TpacBridgeScreen(BaseScreen):
             on_state=self.sig.srv_state.emit,
             on_request=self.sig.srv_request.emit,
         )
+        self.server.on_signal = self.sig.do_changed.emit
         self._last_ext_request_ts = 0.0
         self._tpac_connected = False
         # 작업 평면(제로점 기준 스캔 좌표) 위치 — 표 갱신용으로 마지막 값만
@@ -128,6 +131,7 @@ class TpacBridgeScreen(BaseScreen):
         self.sig.robot_conn.connect(self._on_robot_conn)
         self.sig.srv_state.connect(self._on_srv_state)
         self.sig.srv_request.connect(self._on_srv_request)
+        self.sig.do_changed.connect(self._on_do_changed)
 
         # 외부(TPAC)가 최근에 실제로 읽어갔는지 주기적으로 확인한다.
         # on_request 콜백만으로는 "더 이상 안 읽어간다"를 알 수 없어서다.
@@ -321,6 +325,23 @@ class TpacBridgeScreen(BaseScreen):
         self.srv_ur_mode.setChecked(True)
         layout.addWidget(self.srv_ur_mode)
 
+        # TPAC 엔코더 보드 동기 신호 — DO[0] 방향 / DO[1] 스캔 / DO[2] 리셋을
+        # Coil 16~18 과 Register 1 bit 0~2 에 같은 값으로 낸다. 로봇 태스크가
+        # 쓰는 스캔 구간(277)·진행 상태(290)로 정하고, 바뀔 때마다 latch 시간
+        # 이상 유지한다(services/tpac_bridge/scan_signals.py).
+        self.srv_signals = QCheckBox("TPAC 동기 신호 (Coil 16~18 / Reg 1 bit 0~2)")
+        self.srv_signals.setChecked(True)
+        layout.addWidget(self.srv_signals)
+        latch_form = QFormLayout(); latch_form.setSpacing(8)
+        self.srv_latch_ms = TouchSpinBox(); self.srv_latch_ms.setRange(20, 1000)
+        self.srv_latch_ms.setValue(50); self.srv_latch_ms.setSuffix(" ms")
+        latch_form.addRow("신호 최소 유지(Latch)", self.srv_latch_ms)
+        layout.addLayout(latch_form)
+        self.do_status = QLabel("DO 신호: 서버 정지")
+        self.do_status.setObjectName("Muted")
+        self.do_status.setWordWrap(True)
+        layout.addWidget(self.do_status)
+
         self.srv_status = QLabel("● 정지됨")
         self.srv_status.setObjectName("StatusDanger")
         layout.addWidget(self.srv_status)
@@ -396,7 +417,8 @@ class TpacBridgeScreen(BaseScreen):
         for field in (self.srv_bind_ip, self.srv_port, self.srv_start_addr,
                       self.srv_fmt, self.srv_word_order, self.srv_delay_ms,
                       self.srv_ur_addr, self.srv_ur_mode, self.srv_pose_source,
-                      self.plane_pos_addr, self.odometer_addr, self.cscan_addr):
+                      self.plane_pos_addr, self.odometer_addr, self.cscan_addr,
+                      self.srv_signals, self.srv_latch_ms):
             field.setEnabled(enabled)
 
     def _start_server(self) -> None:
@@ -412,9 +434,13 @@ class TpacBridgeScreen(BaseScreen):
             # 으로 스캔 좌표를 받지만, pose·속도 두 블록만 읽는 TPAC은 그
             # 자리를 아예 안 물어보므로 이 pose 자리로 골라 보내야 한다.
             pose_source=self.srv_pose_source.currentData(),
+            scan_signals=self.srv_signals.isChecked(),
+            signal_latch_ms=self.srv_latch_ms.value(),
         )
         if not ok:
             return
+        if not self.srv_signals.isChecked():
+            self.do_status.setText("DO 신호: 꺼짐")
         self._set_server_fields_enabled(False)
         self.srv_start_btn.setEnabled(False)
         self.srv_stop_btn.setEnabled(True)
@@ -427,6 +453,7 @@ class TpacBridgeScreen(BaseScreen):
         self.srv_start_btn.setEnabled(True)
         self.srv_stop_btn.setEnabled(False)
         self.serve_table.setRowCount(0)
+        self.do_status.setText("DO 신호: 서버 정지")
 
     # ------------------------------------------------------------ 콜백 슬롯
     def _on_data(self, data) -> None:
@@ -521,9 +548,16 @@ class TpacBridgeScreen(BaseScreen):
                 "'authbind --deep python -m smr_operator_ui'로 실행하세요."
             )
 
+    def _on_do_changed(self, outputs, reason: str) -> None:
+        """출력 스레드가 DO 신호를 바꿨다 — 화면에 지금 값을 보인다."""
+        self.do_status.setText(
+            f"DO 신호: [0] {'Forward' if outputs.direction else 'Backward'} · "
+            f"[1] {'스캔 유효' if outputs.scan else '동결'} · "
+            f"[2] {'리셋' if outputs.reset else '준비 완료'}  (Reg 1 = {outputs.word})\n{reason}")
+
     def _on_srv_request(self, ts: float, who: str, fc: int, addr: int, count: int) -> None:
         self._last_ext_request_ts = time.monotonic()
-        covers = self.server.covers(addr, count)
+        covers = self.server.covers(addr, count, fc)
         note = "" if covers else "  ⚠ 채워지지 않은 주소"
         self._append_log(f"[외부요청] {who} FC{fc} addr {addr}~{addr + count - 1} ({count}개){note}")
 
@@ -660,6 +694,16 @@ class TpacBridgeScreen(BaseScreen):
                 (262, "[UR] E-Stop", estop, "-"),
                 (450, "[UR] 관절 전류합", cur_sum, "mA"),
             ]
+        if self.server.signals is not None:
+            do = self.server.signals.current
+            # 코일은 레지스터와 주소 공간이 따로라 "Coil 16" 처럼 적는다
+            # (데이터 블록의 레지스터 16 과 헷갈리지 않게).
+            rows = [
+                ("Coil 16", "[TPAC] DO[0] 스캔 방향", "Forward" if do.direction else "Backward", "bit"),
+                ("Coil 17", "[TPAC] DO[1] 스캔 플래그", "유효" if do.scan else "동결", "bit"),
+                ("Coil 18", "[TPAC] DO[2] 호밍/초기화", "리셋" if do.reset else "준비 완료", "bit"),
+                ("Reg 1", "[TPAC] DO 워드 (bit 0~2)", f"{do.word} ({do.word:03b})", "bits"),
+            ] + rows
         self._fill_table(self.serve_table, rows)
 
     @staticmethod

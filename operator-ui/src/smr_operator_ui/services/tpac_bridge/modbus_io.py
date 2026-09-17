@@ -391,6 +391,29 @@ class ServerBridge:
             self._log(f"서버 값 갱신 오류: {e}")
             return False
 
+    def set_coils(self, addr, bits):
+        """코일(FC1)과 디스크리트 입력(FC2) 동시 갱신. 스레드 세이프."""
+        if not self.running or self.bank is None:
+            return False
+        vals = [bool(b) for b in bits]
+        try:
+            with self._lock:
+                self.bank.set_coils(int(addr), vals)
+                self.bank.set_discrete_inputs(int(addr), vals)
+            return True
+        except Exception as e:                          # noqa: BLE001
+            self._log(f"서버 코일 갱신 오류: {e}")
+            return False
+
+    def get_coils(self, addr, count=1):
+        if not self.running or self.bank is None:
+            return []
+        try:
+            v = self.bank.get_coils(int(addr), int(count))
+            return [int(b) for b in v] if v else []
+        except Exception:
+            return []
+
     def get_hr(self, addr, count=1):
         if not self.running or self.bank is None:
             return []
