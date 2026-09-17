@@ -347,6 +347,7 @@ def make_jog_node(ratio=100):
         'jog_tcp_speed_max': 0.10,
         'jog_tcp_rot_speed_max': 0.50,
         'jog_accel_max': 1.00,
+        'jog_tcp_accel_max': 0.40,
         'jog_hold_time': 0.5,
     }
     node.get_parameter = lambda name: FakeParameter(params[name])
@@ -384,7 +385,7 @@ def test_jog_values_have_no_float_noise():
     node = make_jog_node(20)
     node.cb_jog_tcp(FakeMessageInt(3))
 
-    assert node.sent[0] == "speedl([0.0, 0.0, 0.02, 0.0, 0.0, 0.0], 0.2, 0.5)"
+    assert node.sent[0] == "speedl([0.0, 0.0, 0.02, 0.0, 0.0, 0.0], 0.08, 0.5)"
 
 
 def test_jog_tcp_uses_separate_linear_and_angular_speeds():
@@ -393,8 +394,8 @@ def test_jog_tcp_uses_separate_linear_and_angular_speeds():
     node.cb_jog_tcp(FakeMessageInt(1))     # X+
     node.cb_jog_tcp(FakeMessageInt(4))     # RX+
 
-    assert node.sent[0] == "speedl([0.05, 0.0, 0.0, 0.0, 0.0, 0.0], 0.5, 0.5)"
-    assert node.sent[1] == "speedl([0.0, 0.0, 0.0, 0.25, 0.0, 0.0], 0.5, 0.5)"
+    assert node.sent[0] == "speedl([0.05, 0.0, 0.0, 0.0, 0.0, 0.0], 0.2, 0.5)"
+    assert node.sent[1] == "speedl([0.0, 0.0, 0.0, 0.25, 0.0, 0.0], 0.2, 0.5)"
 
 
 def test_jog_stop_uses_dashboard_stop():

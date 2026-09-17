@@ -85,7 +85,7 @@
 - [ ] start 가 prepare 와 값이 겹치는 건에 대한 협의 (규격 20260818 탭3 12행 3S 검토 요청)
 - [x] 안전 순서 5단계를 시퀀서에 대응 — 1 정지·고정(SECURING) / 2 수평 보정(LEVELING) / 3 Cobot 검사(SCANNING·MOVING_LIFT) / 4 안전 위치(RETRACTING) / 5 다음 구간 이동(MOVING_AMR). 5단계는 구간(열)마다 반복되며 열 안의 셀 이동은 3단계 안이다. 차량이 이미 1구역에 있으므로 1번부터 시작
 - [x] 로봇 속도 조절 UI — RCS 메인 화면 오른쪽 세로 바(SpeedBar), MQTT 시뮬레이터 슬라이더+프리셋
-- [x] TCP 속도 안전 상한 150 mm/s 를 로봇 태스크(dus_init.script)와 UI 양쪽에 적용
+- [x] TCP 직선 속도 운영 상한 100 mm/s · 가속도 400 mm/s² 를 로봇 태스크(dus_init.script)·로봇 노드(홈·조그)·UI 에 적용 (2026-09-17, 이전 150 mm/s)
 - [x] 로봇 동작 속도 비율(2~100 %) 실시간 제어 — 29999 `speed -v N` 으로 전송, Modbus 레지스터 17 로 읽기, MQTT `doosan/robot/req/speed`(T-010) 및 Cobot 설정 화면에서 조절
 - [x] 속도가 바뀌었다 100 으로 되돌아가던 버그 수정 — `robot/status/connected` 가 10 Hz 로 계속 오는데 `_on_connected` 가 그대로 흘려보내, `_restore_robot_settings()` 가 초당 열 번 저장값(100 %)을 다시 밀어 넣고 있었다. 연결 상태가 **바뀔 때만** 알리도록 수정
 - [ ] **실장비 확인 필요: 속도 비율이 로봇에 반영되는지.** (2026-09-17) 원인 후보 — 대시보드 명령표의 형식은 `speed -v N` 인데 `speed -set N` 을 보내고 있었다. `speed -v` 로 고쳤으니 레지스터 17 이 바뀌는지 다시 볼 것. 예전 기록: 명령은 `setting speed to N` 으로 응답하는데 레지스터 17 이 100 에서 안 바뀜(원격 제어 모드·safety NORMAL·태스크 정지 상태에서도 동일). 초기 1회는 정상 반영됐었음. 태스크 실행/정지·원격 제어 모드·safety NORMAL 어느 조합에서도 동일하고, 로봇 태스크 스크립트에도 속도를 되돌리는 코드는 없음. 펜던트에서 속도 슬라이더가 잠겨 있는지, operationMode 가 NONE 인 것이 원인인지 확인 필요

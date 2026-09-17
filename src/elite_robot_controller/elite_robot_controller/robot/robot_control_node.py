@@ -27,7 +27,9 @@ class RobotControlNode(Node):
         self.declare_parameter('jog_joint_speed_max', 0.50)    # rad/s
         self.declare_parameter('jog_tcp_speed_max', 0.10)      # m/s
         self.declare_parameter('jog_tcp_rot_speed_max', 0.50)  # rad/s
-        self.declare_parameter('jog_accel_max', 1.00)
+        self.declare_parameter('jog_accel_max', 1.00)          # speedj rad/s^2
+        # TCP 조그(speedl) 가속도 [m/s^2]. 직선 동작 운영 기준 400 mm/s^2.
+        self.declare_parameter('jog_tcp_accel_max', 0.40)
         # speedj/speedl 의 t. 이 시간이 지나면 로봇이 스스로 멈춘다.
         # UI는 버튼을 누른 순간 딱 한 번만 명령을 보낸다(2026-08-31 이전에는
         # held 동안 짧은 간격으로 되풀이했는데, 그때마다 로봇이 새 스크립트를
@@ -493,7 +495,7 @@ class RobotControlNode(Node):
         scale = self._jog_scale()
         linear = self.get_parameter('jog_tcp_speed_max').value * scale
         angular = self.get_parameter('jog_tcp_rot_speed_max').value * scale
-        accel = self.get_parameter('jog_accel_max').value * scale
+        accel = self.get_parameter('jog_tcp_accel_max').value * scale
         xd = self._round6([
             value * (linear if index < 3 else angular)
             for index, value in enumerate(unit)
@@ -588,12 +590,12 @@ class RobotControlNode(Node):
             f"    hm_back = {retreat_m}\n"
             "  end\n"
             "  if (hm_back > 0.001):\n"
-            "    movel(pose_trans(cur_pose, [0, 0, -hm_back, 0, 0, 0]), a=1.2, v=0.1)\n"
+            "    movel(pose_trans(cur_pose, [0, 0, -hm_back, 0, 0, 0]), a=0.4, v=0.1)\n"
             "  end\n"
             "  cur_pose = get_actual_tcp_pose()\n"
             "  if (cur_pose[2] < tgt_h[2] - 0.001):\n"
             "    cur_pose[2] = tgt_h[2]\n"
-            "    movel(cur_pose, a=1.2, v=0.25)\n"
+            "    movel(cur_pose, a=0.4, v=0.1)\n"
             "  end\n"
             "  movej(tgt_j, a=1.4, v=0.5)\n"
             # 홈에 닿았다 — 레지스터 276 을 세운다. 태스크가 돌지 않는

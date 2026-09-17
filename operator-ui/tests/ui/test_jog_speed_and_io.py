@@ -91,7 +91,7 @@ def test_cobot_settings_has_linear_speed(qtbot) -> None:
     screen = window.screens["cobot"]
 
     assert CobotSettingsScreen.SPEED_FIELD in screen.values()
-    assert screen.linear_speed() == 150
+    assert screen.linear_speed() == 100
     window.close()
 
 
@@ -334,7 +334,7 @@ def test_reconnect_rewrites_volatile_registers(qtbot, tmp_path, monkeypatch) -> 
     assert ("home_joint", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) in poses
     assert ("start_pose", [10.0, 20.0, 30.0, 0.0, 0.0, 0.0]) in poses
     # 속도 설정도 같은 이유로 다시 올린다.
-    assert ("linear_speed", 150) in values
+    assert ("linear_speed", 100) in values
     assert ("speed_ratio", 100) in values
     window.close()
 

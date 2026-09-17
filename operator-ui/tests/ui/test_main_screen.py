@@ -575,7 +575,7 @@ def test_mqtt_speed_command_rejects_out_of_range(qtbot, monkeypatch) -> None:
 
 
 def test_linear_speed_is_capped_at_safety_limit(qtbot, monkeypatch) -> None:
-    """작업 속도는 안전 기준상 150 mm/s 를 넘겨 보낼 수 없다."""
+    """작업 속도는 운영 기준상 100 mm/s 를 넘겨 보낼 수 없다."""
     from smr_operator_ui.app import MAX_LINEAR_SPEED_MM_S
     from smr_operator_ui.screens import CobotSettingsScreen
 
@@ -594,7 +594,7 @@ def test_linear_speed_is_capped_at_safety_limit(qtbot, monkeypatch) -> None:
     })
 
     assert ("linear_speed", MAX_LINEAR_SPEED_MM_S) in sent
-    assert MAX_LINEAR_SPEED_MM_S == 150
+    assert MAX_LINEAR_SPEED_MM_S == 100
     window.close()
 
 

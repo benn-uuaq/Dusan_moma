@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QFrame, QLabel, QSlider, QVBoxLayout, QWidget
 # 로봇 컨트롤러가 받는 범위. 0 %는 정지가 아니라 거부이므로 2가 하한이다.
 SPEED_MIN, SPEED_MAX = 2, 100
 # 안전 기준상 TCP 직선 속도 상한. 로봇 태스크(dus_init.script)도 같은 값으로 자른다.
-MAX_LINEAR_SPEED_MM_S = 150
+MAX_LINEAR_SPEED_MM_S = 100
 
 
 class SpeedBar(QFrame):
@@ -28,7 +28,7 @@ class SpeedBar(QFrame):
         self.setObjectName("SpeedBar")
         # 폭은 app.qss의 QFrame#SpeedBar min/max-width로 고정한다. 여기서
         # setFixedWidth로 못박으면 전체 UI 배율(전체화면 등)이 커져도 이
-        # 폭만 그대로라 "150 mm/s" 글자가 패널 밖으로 잘린다.
+        # 폭만 그대로라 "100 mm/s" 글자가 패널 밖으로 잘린다.
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 12, 8, 12)
         layout.setSpacing(8)
@@ -54,7 +54,7 @@ class SpeedBar(QFrame):
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self.value_label)
 
-        # 안전 상한(150 mm/s)을 곱해 실제 몇 mm/s 로 도는지 함께 보여준다.
+        # 운영 상한(100 mm/s)을 곱해 실제 몇 mm/s 로 도는지 함께 보여준다.
         # % 만으로는 안전 기준을 넘는지 아닌지 눈으로 알 수 없다.
         self.mms_label = QLabel("- mm/s")
         self.mms_label.setObjectName("SectionTitle")

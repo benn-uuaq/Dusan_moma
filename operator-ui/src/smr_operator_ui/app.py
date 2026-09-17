@@ -74,7 +74,7 @@ from smr_operator_ui.styles import load_stylesheet
 
 # TCP 직선 속도의 안전 상한 [mm/s]. 로봇 태스크(dus_init.script)도 같은
 # 값으로 자르지만, 넘는 값을 애초에 보내지 않는다.
-MAX_LINEAR_SPEED_MM_S = 150
+MAX_LINEAR_SPEED_MM_S = 100
 
 # 로봇 태스크를 stop 한 뒤 play 하기까지 두는 간격. 컨트롤러가 태스크를
 # 정리할 시간을 주지 않으면 play 가 거부된다.
@@ -1892,7 +1892,7 @@ class OperatorWindow(QMainWindow):
         """Cobot 설정을 저장할 때 작업 속도를 로봇에도 반영한다."""
         if scope != "cobot":
             return
-        # 작업 속도(movel v)는 안전 기준상 150 mm/s 를 넘길 수 없다. 로봇
+        # 작업 속도(movel v)는 운영 기준상 100 mm/s 를 넘길 수 없다(가속도 400 mm/s^2). 로봇
         # 태스크도 같은 값으로 자르지만, 넘는 값을 아예 보내지 않는다.
         speed = values.get(CobotSettingsScreen.SPEED_FIELD)
         if speed is not None and self.ros_status.writable("linear_speed"):

@@ -318,7 +318,7 @@ end
 # 접촉 탐색처럼 더 천천히 움직여야 할 때는 v_l 을 따로 두지 않고
 # `v_l / 3.0` 처럼 그 movel 호출 하나에만 적용한다(전역값 자체는 안 바뀜).
 #
-# 안전 규정: 스캔 외 동작은 150 mm/s 를 넘으면 안 된다. 관절 이동의
+# 안전 규정: 스캔 외 동작도 100 mm/s(가속도 400 mm/s^2)를 넘으면 안 된다. 관절 이동의
 # 각속도도 여기에 맞춰 조그와 같은 상한(0.50 rad/s)을 넘지 않게 자른다.
 # 306 = 작업 속도 [mm/s]. v_l 로 쓴다. 0 이면 펜던트 기준값(v_l_set)을 쓴다.
 # 307 = 로봇 속도 비율 [%]. **태스크는 쓰지 않는다**(아래 ※).
@@ -344,13 +344,22 @@ end
 v_j = v_j_set
 v_scan = v_scan_set
 
-v_l_limit = 0.150
+v_l_limit = 0.100
 if (v_l &gt; v_l_limit):
   v_l = v_l_limit
 end
 v_j_limit = 0.50
 if (v_j &gt; v_j_limit):
   v_j = v_j_limit
+end
+# 직선 동작 가속도도 운영 기준(400 mm/s^2)으로 자른다 — 스캔 밖 movel(a_l)과
+# 스캔(a_scan) 모두. 펜던트 변수가 더 크게 남아 있어도 여기서 줄어든다.
+a_lin_limit = 0.400
+if (a_l &gt; a_lin_limit):
+  a_l = a_lin_limit
+end
+if (a_scan &gt; a_lin_limit):
+  a_scan = a_lin_limit
 end
 # 스캔은 고정 스펙(100 mm/s). 값이 비었으면 스펙으로 되돌린다.
 if (v_scan &lt;= 0):

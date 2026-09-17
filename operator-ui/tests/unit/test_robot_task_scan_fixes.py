@@ -146,3 +146,15 @@ def test_index_finish_and_init_set_the_segment(version, folder) -> None:
     init_lines = _code(_script(version, folder, "init")).splitlines()
     assert "write_port_register(277, 0)" in [l.rstrip() for l in init_lines], "최상위(들여쓰기 없이)에서 0 으로"
     assert 'name="sig_hold" value="0.25"' in _variables(version)
+
+
+# ---- 직선 동작 운영 상한: 100 mm/s · 400 mm/s² ------------------------------------
+@pytest.mark.parametrize("version", sorted(VERSIONS))
+@pytest.mark.parametrize("folder", INIT_FOLDERS)
+def test_linear_motion_is_capped_at_100_mm_s_and_400_mm_s2(version, folder) -> None:
+    code = _code(_script(version, folder, "init"))
+    assert "v_l_limit = 0.100" in code and "a_lin_limit = 0.400" in code
+    assert "a_l = a_lin_limit" in code and "a_scan = a_lin_limit" in code
+    text = _variables(version)
+    assert 'name="v_l_set" value="0.1"' in text and 'name="a_l" value="0.4"' in text
+    assert 'name="v_scan_set" value="0.1"' in text and 'name="a_scan" value="0.4"' in text

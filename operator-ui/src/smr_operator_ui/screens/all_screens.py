@@ -1031,12 +1031,12 @@ class CobotSettingsScreen(FormScreen):
         super().__init__(
             "cobot","Cobot 설정",
             "작업 슬롯과 속도를 관리합니다. 작업 속도는 movel 속도로 안전 기준상 "
-            "최대 150 mm/s 이고, 속도 비율은 로봇 전체 속도에 곱해집니다(2~100 %).",
+            "최대 100 mm/s(가속도 400 mm/s²)이고, 속도 비율은 로봇 전체 속도에 곱해집니다(2~100 %).",
             [
                 ("현재 태스크",task_row),
                 ("태스크 선택",version_row),
                 ("태스크 판",self.nosensor_check),
-                (self.SPEED_FIELD,spin(150,1,150)),
+                (self.SPEED_FIELD,spin(100,1,100)),
                 (self.RATIO_FIELD,spin(100,2,100)),
                 ("연결 상태",QLabel("● 연결됨")),
                 ("마지막 응답",QLabel("12 ms")),

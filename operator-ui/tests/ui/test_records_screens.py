@@ -137,7 +137,7 @@ def test_mode_slot_saves_and_restores_job_conditions(window) -> None:
                                                            real_save(scope, values))
     screen = _modes(window)
     cobot = window.screens["cobot"]
-    cobot.field("작업 속도").setValue(120)
+    cobot.field("작업 속도").setValue(90)
     window._task_version = "dusan_v5"
     cobot.set_task_version("dusan_v5")
     window.main_screen.set_work_area(700.0, 450.0, 30.0, 15.0)
@@ -146,7 +146,7 @@ def test_mode_slot_saves_and_restores_job_conditions(window) -> None:
     assert "시험 모드" in screen.slot_buttons[0].text()
     slots = [v for s, v in saved if s == "mode_slots"][-1]
     snap = slots["1"]
-    assert snap["cobot"]["작업 속도"] == 120
+    assert snap["cobot"]["작업 속도"] == 90
     assert snap["robot_task"]["task_version"] == "dusan_v5"
     assert snap["work_area"]["width_mm"] == 700.0 and snap["work_area"]["overlap_mm"] == 15.0
     assert "UT 주소" not in snap["ut"] and "통신 포트" not in snap["ut"], "장비 연결값은 넣지 않는다"
@@ -157,7 +157,7 @@ def test_mode_slot_saves_and_restores_job_conditions(window) -> None:
     cobot.set_task_version("dusan_v4"); window._task_version = "dusan_v4"
     window.main_screen.set_work_area(600.0, 400.0, 30.0, 0.0)
     screen._load_clicked()
-    assert cobot.field("작업 속도").value() == 120
+    assert cobot.field("작업 속도").value() == 90
     assert cobot.task_version() == "dusan_v5" and window._task_version == "dusan_v5"
     assert window.main_screen.rect_view.work_area()[0] == 700.0
     assert "불러왔습니다" in screen.status_label.text()

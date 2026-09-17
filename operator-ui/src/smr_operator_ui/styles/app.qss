@@ -63,7 +63,7 @@ QFrame#SpeedBar {
     background: #F2F5F8;
     border-left: 1px solid #D8DEE4;
     /* 예전엔 Python에서 setFixedWidth(112)로 고정해, 전체화면 등으로
-       글자 크기가 커져도 이 폭만 그대로라 "150 mm/s" 같은 글자가
+       글자 크기가 커져도 이 폭만 그대로라 "100 mm/s" 같은 글자가
        패널 밖으로 잘렸다. QSS 값이면 전체 배율 재적용 때 같이 커진다. */
     min-width: 112px;
     max-width: 112px;
