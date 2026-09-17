@@ -66,7 +66,7 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 | `read.tcp_zero_relative` | 280~285 | 원점 기준 상대 pose |
 | `read.scan_state` | 290~298 | 스캔 진행 상태. `state, row_idx, rows, alive, zero_ok, finished, pitch, ...` 순서 |
 | `read.task_state` | 500 | 태스크 상태(1 실행 중, 2 일시 중지, 3 중지됨). holding 이 아니라 **input register** 라 드라이버 폴백으로 읽힌다 |
-| `read.speed_scale` | 17 | 로봇 동작 속도 비율[%] 2~100. **읽기 전용으로 쓴다** — 설정은 29999 `speed -set N` 으로 보낸다 |
+| `read.speed_scale` | 17 | 로봇 동작 속도 비율[%] 2~100. **읽기 전용으로 쓴다** — 설정은 29999 `speed -v N` 으로 보낸다 |
 | `write.linear_speed` | 306 | 작업 속도 [mm/s]. 태스크의 `movel` 속도 |
 | `write.speed_ratio` | 307 | 로봇 자체 속도 비율 [%] 2~100 |
 | `write.pose_src` | 308 | 1이면 태스크가 310~321의 기준 위치를 쓴다 |

@@ -88,7 +88,21 @@ def nr_servo_arc(end_pose):
   sv_set = 0
   # 끝점에 닿은 뒤에도 lookahead 만큼 따라오는 중이다. 두 배를 기다린다.
   sv_nset = ceil(sv_look * 2.0 / sv_dt)
+  # 진행량은 **실제로 흐른 시간**으로 계산한다. servoj(t = sv_dt) 는 최소
+  # sv_dt 만큼 막히지만, 컨트롤러 주기가 더 길거나(예: 8 ms) 루프 안의
+  # 역기구학·센서·레지스터 일이 더해지면 한 바퀴가 sv_dt 보다 길어진다.
+  # 그런데도 sv_dt 만큼씩만 전진시키면 목표점이 그만큼 늦게 나가 실제
+  # 속도가 v_scan 보다 한참 느려진다. 컨트롤러 시각(controller_timestamp)
+  # 으로 한 바퀴 걸린 시간을 재서 쓴다. 값이 이상하면(0 이하·50 ms 초과)
+  # 예전처럼 sv_dt 를 쓴다.
+  sv_tp = controller_timestamp()
   while (sv_set < sv_nset):
+    sv_tn = controller_timestamp()
+    sv_h = sv_tn - sv_tp
+    sv_tp = sv_tn
+    if (sv_h <= 0 or sv_h > 0.05):
+      sv_h = sv_dt
+    end
     # 1) 진행 — 사다리꼴 속도(a_scan, v_scan). 남은 거리로 감속한다.
     if (sv_s < sv_tot):
       v_top = sqrt(2.0 * a_scan * (sv_tot - sv_s))
@@ -98,11 +112,11 @@ def nr_servo_arc(end_pose):
       if (v_top < 0.002):
         v_top = 0.002
       end
-      sv_v = sv_v + a_scan * sv_dt
+      sv_v = sv_v + a_scan * sv_h
       if (sv_v > v_top):
         sv_v = v_top
       end
-      sv_s = sv_s + sv_v * sv_dt
+      sv_s = sv_s + sv_v * sv_h
       if (sv_tot - sv_s < 0.0002):
         sv_s = sv_tot
       end

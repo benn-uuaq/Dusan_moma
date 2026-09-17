@@ -35,6 +35,18 @@ def pr_w6(a, p):
 end
 
 
+def pr_push():
+  # 센서가 적정 눌림을 잡은 자리에서 push_offset [mm] 만큼 **더 민다**(TCP +Z).
+  # 0 이면 아무것도 안 한다. 벽을 누르는 중이라 천천히(v_l / 10) 민다.
+  # 이 뒤에 잡는 접점 pose 가 곧 스캔 경로가 되므로, 스캔 전체가 이만큼
+  # 더 눌린 채로 돈다.
+  if (push_offset > 0):
+    movel(pose_trans(get_actual_tcp_pose(), [0, 0, push_offset * 0.001, 0, 0, 0]),
+       a = a_l, v = v_l / 10.0)
+  end
+end
+
+
 def pr_step(dmm):
   # TCP 기준 Z 로 dmm [mm] 만큼 움직인다. 음수가 전진(벽 쪽) — dmm 부호의
   # 의미는 예전(Y축) 그대로 두고, 축만 Y에서 Z로 바꾼다(그래서 부호가
@@ -86,6 +98,7 @@ def pr_press(target):
 
   if (get_standard_digital_in(di_touch)):
     n_hit = n_hit + 1
+    pr_push()
     return get_actual_tcp_pose()
   end
   # 계산값 대신 쓸 값이 없다 — 실패는 반드시 멈춰서 알려야 한다.

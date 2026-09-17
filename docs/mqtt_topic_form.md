@@ -780,7 +780,7 @@ Topic 하나를 추가할 때 아래 표에 먼저 한 줄로 등록하고, 필�
 | `timestamp` | `string` | `Y` | `ms` | UTC Unix Epoch 밀리초 | 명령 생성 시각 | `"1784727720000"` |
 | `speed` | `string` | `Y` | `%` | `2` ~ `100` | 로봇 전체 동작 속도 비율 | `"40"` |
 
-**동작:** Operator UI 가 받아 `robot/command/speed_ratio` 로 넘기면, 노드가 29999 `speed -set <N>` 으로 로봇에 실시간 전달한다. 로봇이 실제로 쓰고 있는 값은 Modbus **레지스터 17**(읽기)로 확인하며 `robot/status/speed_scale` 토픽으로 나온다. 펜던트에서 직접 바꿔도 이 토픽으로 들어온다.
+**동작:** Operator UI 가 받아 `robot/command/speed_ratio` 로 넘기면, 노드가 29999 `speed -v <N>` 으로 로봇에 실시간 전달한다. 로봇이 실제로 쓰고 있는 값은 Modbus **레지스터 17**(읽기)로 확인하며 `robot/status/speed_scale` 토픽으로 나온다. 펜던트에서 직접 바꿔도 이 토픽으로 들어온다.
 
 > **속도 상한:** TCP 직선 속도는 안전 기준상 **150 mm/s** 를 넘지 않는다. 로봇 태스크(`dus_init.script`)가 비율을 곱하기 전에 `v_move`/`v_scan`/`v_seek` 를 0.150 m/s 로 자르므로, 비율 100 % 가 곧 150 mm/s 다. 여기의 `speed` 는 그 위에 곱해지는 비율이라 상한을 넘길 수 없다.
 

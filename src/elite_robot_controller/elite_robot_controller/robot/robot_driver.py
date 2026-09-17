@@ -380,10 +380,14 @@ class Robot_29999():
     def robot_set_speed(self, percent):
         """로봇 전체 동작 속도 비율[%]을 실시간으로 바꾼다. 2~100.
 
-        레지스터 17에 직접 써도 같은 값이 되지만, 제어 경로를 29999 한
-        곳으로 모아 둔다. 읽기는 레지스터 17을 쓴다.
+        대시보드 명령표(robot_task/29999 대쉬보드 command.png)의 형식은
+        `speed -v 50` 이다("Set the robot speed to 50% (Range: 2%~100%)").
+        예전에는 표에 없는 `speed -set N` 을 보내서 컨트롤러가 비율을
+        제대로 받지 못했다. 레지스터 17에 직접 써도 같은 값이 되지만,
+        제어 경로를 29999 한 곳으로 모아 둔다. 읽기는 레지스터 17을 쓴다.
         """
-        return self.send_command_29999(f"speed -set {int(percent)}")
+        percent = max(2, min(100, int(percent)))
+        return self.send_command_29999(f"speed -v {percent}")
 
     def robot_play(self): return self.send_command_29999("play")
     def robot_pause(self): return self.send_command_29999("pause")

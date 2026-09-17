@@ -423,6 +423,7 @@ def test_connected_status_is_republished_every_cycle():
     node.pub_joint_position = FakePublisher()
     node.pub_scan_state = FakePublisher()
     node.pub_task_state = FakePublisher()
+    node.pub_home_flag = FakePublisher()
     node.pub_speed_scale = FakePublisher()
     node.pub_alarm = FakePublisher()
     node.alarm_mgr = type("M", (), {"process": lambda self, a: False})()

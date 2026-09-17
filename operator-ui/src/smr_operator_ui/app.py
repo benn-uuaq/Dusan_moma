@@ -1681,7 +1681,7 @@ class OperatorWindow(QMainWindow):
     def _apply_speed_ratio(self, raw: Any, source: str = "UI") -> None:
         """로봇 전체 동작 속도 비율[%]을 로봇에 보낸다. 2~100.
 
-        노드가 29999 `speed -set` 으로 실시간 반영한다. 돌고 있는 동작에도
+        노드가 29999 `speed -v` 로 실시간 반영한다. 돌고 있는 동작에도
         바로 먹으므로 스캔 중에 줄여도 된다.
         """
         try:

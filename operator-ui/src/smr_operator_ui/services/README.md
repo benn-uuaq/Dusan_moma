@@ -38,7 +38,7 @@
   - 셀을 하나씩 넘어가는 자동 진행은 MC가 아니라 이쪽(Operator UI/로봇)의 책임이라, 지금 몇 번째 셀인지는 `job_cmd`에 담기지 않습니다. 일시정지·재개는 `mc_cmd`, 정지는 `job_clear`를 그대로 재사용합니다. 상세 설계는 `docs/grid_sequencer_design.md`를 참고하세요.
 - 격자 순회 결과를 외부(MC)로 내보내는 발행 API가 있습니다.
   - `publish_job_state(cell_id, state)` → `doosan/robot/job_state`. `job_id`가 곧 격자 이름(`1A`, `12F`)이고 상태는 `waiting`/`executing`/`completed`입니다.
-  - `publish_speed(percent)` → `doosan/robot/req/speed`. 로봇 전체 동작 속도 비율(2~100 %)을 실시간으로 바꿉니다. 노드가 29999 `speed -set` 으로 전달하며, 작업 중에도 바로 먹습니다. 실제 적용된 값은 `robot/status/speed_scale`(Modbus 17)로 확인합니다.
+  - `publish_speed(percent)` → `doosan/robot/req/speed`. 로봇 전체 동작 속도 비율(2~100 %)을 실시간으로 바꿉니다. 노드가 29999 `speed -v` 로 전달하며, 작업 중에도 바로 먹습니다. 실제 적용된 값은 `robot/status/speed_scale`(Modbus 17)로 확인합니다.
   - `publish_tcp(values, cell_id)` → `doosan/robot/tcp`. **제로점 기준** 좌표(레지스터 280~285)에 격자 이름을 붙여 보냅니다. 이 값이 스캐너 관리 시스템으로 나가는 실제 데이터입니다. 베이스 프레임 좌표(384~389)는 모니터링용이라 내보내지 않습니다.
 - 수신 Command의 JSON 구조, 허용값, 유효시간과 중복 `timestamp`를 검사합니다.
 - 연결 상태와 수신 결과를 Qt 시그널로 화면에 전달합니다.

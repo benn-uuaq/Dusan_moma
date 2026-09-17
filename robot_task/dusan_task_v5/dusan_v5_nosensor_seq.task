@@ -118,7 +118,9 @@ def ini_veh_wait():
 end
 
 
-# 절대 TCP(260~265) 는 항상 발행한다. 원점기준 상대좌표(280~285)와 호
+# 절대 TCP 는 컨트롤러가 384~389 에 늘 채우므로 태스크가 따로 내보내지
+# 않는다(260~265 는 RCS 입력 칸이다 — 아래 pub_rel 의 주석 참고).
+# 원점기준 상대좌표(280~285)와 호
 # 위치(286/287)는 원점(zero_pose)이 잡혀 있으면(zero_ok/arc_ok) 항상
 # 내보낸다 — TPAC 의 "Plane" 이 실제 TCP 이동거리를 보여줘야 하므로 ㄹ자
 # 스캔 중(state=4)만이 아니라 3점측정 후 원점복귀·다음 줄 이동 중에도
@@ -139,20 +141,30 @@ def pub_rel():
   global alive
   global arc_s
   cur_pose = get_actual_tcp_pose()
-  ini_w6(260, cur_pose)
+  # ※ 260~265 에는 **쓰지 않는다.** 그 자리는 RCS 가 작업을 시작하기 전에
+  #   반지름(260)·두께(261)·프로브 커버(262/263)·EOAT 종류(264)를 써 넣는
+  #   입력 칸이다. 여기에 매 제어주기마다 TCP 를 덮어쓰면, 다음 셀에서
+  #   dus_init 이 그 자리를 다시 읽을 때 **TCP 좌표를 반지름·두께로 읽는다.**
+  #   (1A 는 멀쩡하고 1B 부터 호 각도가 커져 특이점까지 갔던 원인 —
+  #    RCS 는 작업 시작에 한 번만 256~264 를 쓴다.)
+  #   절대 TCP 는 컨트롤러가 항상 채우는 384~389 를 읽으면 된다.
   # 스캔 구간인지는 **상태 레지스터 290** 하나로만 판단한다(6 = 스캔 중).
   # 예전에는 scan_on 이라는 스크립트 변수를 썼는데, 값을 켜는 곳(다른 스크립트
   # 노드)과 읽는 곳(이 발행 스레드)이 달라 전달을 신뢰할 수 없었다.
   # 레지스터는 로봇 안에 하나뿐이라 그런 문제가 없고, RCS 도 같은 값을 본다.
+  # 스캔 좌표는 **EOAT(프로브) 중심** 기준이다. 툴 플랜지에서 eoat_ofs
+  # (툴 로컬, dus5_init 이 eoat5_offset / eoat8_offset 으로 계산)만큼 옮긴
+  # 점을 쓴다. 원점도 같은 방식으로 옮겨야 원점에서 0 이 나온다.
+  # 오프셋이 0 이면 pose_trans 는 그대로라 예전 값과 똑같다.
+  scan_pose = pose_trans(cur_pose, eoat_ofs)
   if (zero_ok == True and read_port_register(290, True) == 6):
-    rel_pose = [cur_pose[0] - zero_pose[0],
-          cur_pose[1] - zero_pose[1],
-          cur_pose[2] - zero_pose[2],
-          cur_pose[3] - zero_pose[3],
-          cur_pose[4] - zero_pose[4],
-          cur_pose[5] - zero_pose[5]]
-    # 좌표계 기준은 **가운데 프로브 중심**이다(십자형·직사각형 모두).
-    # TCP 자체가 그 중심이라 보정할 것이 없다.
+    zero_scan = pose_trans(zero_pose, eoat_ofs)
+    rel_pose = [scan_pose[0] - zero_scan[0],
+          scan_pose[1] - zero_scan[1],
+          scan_pose[2] - zero_scan[2],
+          scan_pose[3] - zero_scan[3],
+          scan_pose[4] - zero_scan[4],
+          scan_pose[5] - zero_scan[5]]
     #
     # 여기서 **Rz 180 도**로 뒤집어 내보낸다. 반시계 방향으로 훑도록
     # 바꾸면서 원점이 베이스 Y 가 큰 쪽 끝이 되었는데, 그대로 빼면
@@ -171,9 +183,11 @@ def pub_rel():
   #   286 = 이번 줄의 호 위 거리 [0.1mm]  (0 ~ 11100)
   #   287 = 완료된 줄까지 더한 누적 [mm]
   if (arc_ok == True):
-    adx = cur_pose[0] - arc_ox
-    ady = cur_pose[1] - arc_oy
-    aph = atan2(ady, adx) - arc_phi0
+    adx = scan_pose[0] - arc_ox
+    ady = scan_pose[1] - arc_oy
+    # 원점 방위각도 프로브 중심 기준으로 잰다(오프셋 0 이면 arc_phi0 와 같다).
+    zero_scan = pose_trans(zero_pose, eoat_ofs)
+    aph = atan2(ady, adx) - atan2(zero_scan[1] - arc_oy, zero_scan[0] - arc_ox)
     # atan2 는 ±pi 로 감기므로 한 바퀴 보정한다
     if (aph &gt; 3.14159265):
       aph = aph - 6.28318531
@@ -300,14 +314,30 @@ end
 #
 # 안전 규정: 스캔 외 동작은 150 mm/s 를 넘으면 안 된다. 관절 이동의
 # 각속도도 여기에 맞춰 조그와 같은 상한(0.50 rad/s)을 넘지 않게 자른다.
-# 306 = 작업 속도 [mm/s]. v_l 로 쓴다. 0 이면 변수값을 유지한다.
-# 307 = 로봇 자체 속도 비율 [%] 2~100. 모든 이송 속도에 곱한다.
+# 306 = 작업 속도 [mm/s]. v_l 로 쓴다. 0 이면 펜던트 기준값(v_l_set)을 쓴다.
+# 307 = 로봇 속도 비율 [%]. **태스크는 쓰지 않는다**(아래 ※).
+#
+# ※ 속도에 비율을 **스크립트에서 곱하지 않는다.** 예전에는
+#     v_l = v_l * 비율 / 100,  v_scan = v_scan * 비율 / 100
+#   처럼 자기 자신에 곱했는데, 이 스크립트는 셀마다 다시 돌고(RCS 가
+#   stop -&gt; play 로 한 셀씩 돌린다) 펜던트의 "Init Variables Value" 노드도
+#   비어 있어 값이 되돌아가지 않는다. 그래서 비율이 100 % 가 아니면 셀을
+#   지날수록 0.1 -&gt; 0.05 -&gt; 0.025 ... 로 계속 줄었다. 비율은 RCS 가 보낼 때만
+#   레지스터에 들어가므로 **태스크만 돌리면 멀쩡하고 RCS 로 돌리면 느려졌다.**
+#   게다가 비율은 컨트롤러가 이미 적용한다(RCS 가 29999 'speed -v N' 으로
+#   보내고, 펜던트 슬라이더와 같은 값이다) — 스크립트에서 또 곱하면 두 번
+#   걸린다(50 % 면 실제 25 %).
+#
+# 그래서 속도는 **매번 기준값(*_set)에서 새로 정한다.** 이미 줄어든 값이
+# 로봇에 남아 있어도 다음 시작에서 바로 돌아온다.
+v_l = v_l_set
 spd_in = read_port_register(306, True)
 if (spd_in &gt; 0):
   v_l = spd_in / 1000.0
 end
+v_j = v_j_set
+v_scan = v_scan_set
 
-# ---- 안전 상한 : 비율(307)을 곱하기 전에 자르므로 100 % 가 곧 이 값이다 --
 v_l_limit = 0.150
 if (v_l &gt; v_l_limit):
   v_l = v_l_limit
@@ -316,22 +346,15 @@ v_j_limit = 0.50
 if (v_j &gt; v_j_limit):
   v_j = v_j_limit
 end
-
-spd_ratio = read_port_register(307, True)
-if (spd_ratio &lt; 2):
-  spd_ratio = 100
+# 스캔은 고정 스펙(100 mm/s). 값이 비었으면 스펙으로 되돌린다.
+if (v_scan &lt;= 0):
+  v_scan = 0.1
 end
-if (spd_ratio &gt; 100):
-  spd_ratio = 100
-end
-v_l = v_l * spd_ratio / 100.0
-v_j = v_j * spd_ratio / 100.0
-v_scan = v_scan * spd_ratio / 100.0
 
 # ---- 기준 위치 : 308 이 1 이면 310~321 의 값을 쓴다 --------------------
 # 310~315 홈 관절값 [mRad], 316~321 그리퍼 기준점 pose(길이 0.1mm, 회전 mRad)
-# — 316~321 은 툴플랜지가 아니라 실제 장착된 그리퍼(EOAT) 기준점 목표다.
-# 아래에서 eoat_type 에 맞는 오프셋을 빼 플랜지 기준 start_pose 를 만든다.
+# — 316~321 은 작업면에 붙였을 때의 툴 플랜지 pose 다(티칭한 그대로).
+# EOAT 중심 오프셋은 여기에 쓰지 않는다 — 스캔 좌표에만 쓴다(아래 참고).
 if (read_port_register(308, True) == 1):
   Home_joint = [read_port_register(310, True) / 1000.0,
          read_port_register(311, True) / 1000.0,
@@ -348,34 +371,32 @@ if (read_port_register(308, True) == 1):
   Home_pose = get_forward_kin(Home_joint)
 end
 
-# ---- 그리퍼(EOAT) 기준점 -&gt; 툴플랜지 pose 역계산 ------------------------
-# 그리퍼가 플랜지 로컬 좌표로 (ox,oy,oz) 만큼 앞에 붙어 있다고 보면
-#   그리퍼 pose = pose_trans(플랜지 pose, [ox,oy,oz,0,0,0])
-# 이므로 반대로 플랜지 pose 를 구하려면 부호를 뒤집어 그리퍼 pose 에
-# 적용한다(회전은 그대로 — 그리퍼가 플랜지에 고정 장착되어 상대 회전이
-# 없다고 본다). eoat_type 이 0(그리퍼 없음)이면 오프셋 없이 그대로 쓴다.
-# 매 작업(dus5_init 실행)마다 다시 계산하므로, 그리퍼를 5축&lt;-&gt;8축으로
-# 바꿔 달아도 티칭을 다시 안 하고 eoat_type 만 바꾸면 된다.
+# ---- EOAT(프로브) 중심점 오프셋 --------------------------------------------
+# 툴 플랜지에서 프로브 중심까지의 거리. **펜던트 변수에서 입력한다**:
+#   eoat5_offset = [x, y, z]   5축 십자형  [mm]
+#   eoat8_offset = [x, y, z]   8축 직사각  [mm]
+# 좌표는 툴 플랜지 로컬 기준이다(+Z = 벽으로 다가가는 방향).
+# 264(eoat_type) 로 어느 쪽을 쓸지 고른다. 0 이면 오프셋 없음.
+#
+# ※ 이 값은 **스캔 좌표에만** 쓴다 — 발행하는 280~285(원점 기준 좌표)와
+#   286/287(호 위치)을 프로브 중심 기준으로 계산한다(dus5_init 의 pub_rel).
+#   로봇이 실제로 가는 자리(홈·시작 자세·프로브 접근·스캔 경로)는 전부
+#   툴 플랜지 기준 그대로다. 오프셋을 넣어도 로봇 동작은 달라지지 않는다.
+#   (예전에는 eoat5_offset_x/y/z [m] 를 시작 자세 계산에 썼는데, 그러면
+#    로봇이 가는 자리가 바뀐다. 값이 전부 0 이었으므로 동작은 그대로다.)
 if (eoat_type == 8):
-  eoat_ox = eoat8_offset_x
-  eoat_oy = eoat8_offset_y
-  eoat_oz = eoat8_offset_z
+  eoat_ofs = [eoat8_offset[0] * 0.001, eoat8_offset[1] * 0.001, eoat8_offset[2] * 0.001, 0, 0, 0]
+elif (eoat_type == 5):
+  eoat_ofs = [eoat5_offset[0] * 0.001, eoat5_offset[1] * 0.001, eoat5_offset[2] * 0.001, 0, 0, 0]
 else:
-  if (eoat_type == 5):
-    eoat_ox = eoat5_offset_x
-    eoat_oy = eoat5_offset_y
-    eoat_oz = eoat5_offset_z
-  else:
-    eoat_ox = 0
-    eoat_oy = 0
-    eoat_oz = 0
-  end
+  eoat_ofs = [0, 0, 0, 0, 0, 0]
 end
-gripper_touch_flange = pose_trans(gripper_target_pose, [-eoat_ox, -eoat_oy, -eoat_oz, 0, 0, 0])
+# 시작 자세는 티칭한 pose 그대로 쓴다(오프셋을 빼지 않는다 — 위 ※ 참고).
+gripper_touch_flange = gripper_target_pose
 
 # ---- 그리퍼를 작업면에 딱 붙인 티칭 지점에서 물러난 곳이 start_pose ------
 # gripper_target_pose 는 그리퍼를 작업면 중앙에 접촉시켜 놓고 티칭한
-# 값이다(위 gripper_touch_flange 는 그 순간의 플랜지 pose). 거기 그대로
+# 값이다(gripper_touch_flange 는 그 순간의 플랜지 pose). 거기 그대로
 # 두면 각 프로브 사이 이동 때마다 작업면에 닿아 있는 자세라 위험하니,
 # probe_l/r/goto_zero 의 대기 지점(l_stand/r_stand/z_stand)과 같은 방식
 # 으로 TCP 기준 -Z 로 probe_dist 만큼 물러난 지점을 실제 start_pose 로
@@ -1357,7 +1378,21 @@ def nr_servo_arc(end_pose):
   sv_set = 0
   # 끝점에 닿은 뒤에도 lookahead 만큼 따라오는 중이다. 두 배를 기다린다.
   sv_nset = ceil(sv_look * 2.0 / sv_dt)
+  # 진행량은 **실제로 흐른 시간**으로 계산한다. servoj(t = sv_dt) 는 최소
+  # sv_dt 만큼 막히지만, 컨트롤러 주기가 더 길거나(예: 8 ms) 루프 안의
+  # 역기구학·센서·레지스터 일이 더해지면 한 바퀴가 sv_dt 보다 길어진다.
+  # 그런데도 sv_dt 만큼씩만 전진시키면 목표점이 그만큼 늦게 나가 실제
+  # 속도가 v_scan 보다 한참 느려진다. 컨트롤러 시각(controller_timestamp)
+  # 으로 한 바퀴 걸린 시간을 재서 쓴다. 값이 이상하면(0 이하·50 ms 초과)
+  # 예전처럼 sv_dt 를 쓴다.
+  sv_tp = controller_timestamp()
   while (sv_set &lt; sv_nset):
+    sv_tn = controller_timestamp()
+    sv_h = sv_tn - sv_tp
+    sv_tp = sv_tn
+    if (sv_h &lt;= 0 or sv_h &gt; 0.05):
+      sv_h = sv_dt
+    end
     # 1) 진행 — 사다리꼴 속도(a_scan, v_scan). 남은 거리로 감속한다.
     if (sv_s &lt; sv_tot):
       v_top = sqrt(2.0 * a_scan * (sv_tot - sv_s))
@@ -1367,11 +1402,11 @@ def nr_servo_arc(end_pose):
       if (v_top &lt; 0.002):
         v_top = 0.002
       end
-      sv_v = sv_v + a_scan * sv_dt
+      sv_v = sv_v + a_scan * sv_h
       if (sv_v &gt; v_top):
         sv_v = v_top
       end
-      sv_s = sv_s + sv_v * sv_dt
+      sv_s = sv_s + sv_v * sv_h
       if (sv_tot - sv_s &lt; 0.0002):
         sv_s = sv_tot
       end
@@ -1553,7 +1588,21 @@ def nl_servo_arc(end_pose):
   sv_set = 0
   # 끝점에 닿은 뒤에도 lookahead 만큼 따라오는 중이다. 두 배를 기다린다.
   sv_nset = ceil(sv_look * 2.0 / sv_dt)
+  # 진행량은 **실제로 흐른 시간**으로 계산한다. servoj(t = sv_dt) 는 최소
+  # sv_dt 만큼 막히지만, 컨트롤러 주기가 더 길거나(예: 8 ms) 루프 안의
+  # 역기구학·센서·레지스터 일이 더해지면 한 바퀴가 sv_dt 보다 길어진다.
+  # 그런데도 sv_dt 만큼씩만 전진시키면 목표점이 그만큼 늦게 나가 실제
+  # 속도가 v_scan 보다 한참 느려진다. 컨트롤러 시각(controller_timestamp)
+  # 으로 한 바퀴 걸린 시간을 재서 쓴다. 값이 이상하면(0 이하·50 ms 초과)
+  # 예전처럼 sv_dt 를 쓴다.
+  sv_tp = controller_timestamp()
   while (sv_set &lt; sv_nset):
+    sv_tn = controller_timestamp()
+    sv_h = sv_tn - sv_tp
+    sv_tp = sv_tn
+    if (sv_h &lt;= 0 or sv_h &gt; 0.05):
+      sv_h = sv_dt
+    end
     # 1) 진행 — 사다리꼴 속도(a_scan, v_scan). 남은 거리로 감속한다.
     if (sv_s &lt; sv_tot):
       v_top = sqrt(2.0 * a_scan * (sv_tot - sv_s))
@@ -1563,11 +1612,11 @@ def nl_servo_arc(end_pose):
       if (v_top &lt; 0.002):
         v_top = 0.002
       end
-      sv_v = sv_v + a_scan * sv_dt
+      sv_v = sv_v + a_scan * sv_h
       if (sv_v &gt; v_top):
         sv_v = v_top
       end
-      sv_s = sv_s + sv_v * sv_dt
+      sv_s = sv_s + sv_v * sv_h
       if (sv_tot - sv_s &lt; 0.0002):
         sv_s = sv_tot
       end

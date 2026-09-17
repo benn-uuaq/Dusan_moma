@@ -337,6 +337,10 @@ class RobotControlNode(Node):
         if result is None:
             self.get_logger().warn(
                 f"[speed] 속도 비율 {self.speed_ratio} % 전송 실패")
+        elif any(word in str(result).lower() for word in self._DASH_REFUSALS):
+            # 답은 왔는데 거절한 경우(명령 형식이 틀렸거나 로컬 모드 등).
+            self.get_logger().warn(
+                f"[speed] 컨트롤러가 속도 비율 {self.speed_ratio} % 를 거절했습니다: {result}")
         self._write_topic('speed_ratio', Int32(data=self.speed_ratio))
 
     def _jog_scale(self):
