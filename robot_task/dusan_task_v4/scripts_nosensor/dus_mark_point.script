@@ -38,7 +38,12 @@ def mk_arc(mid, th):
     return mid
   end
   r = scan_radius * 0.001
-  o_t = [mid[0] + dx / n * r, mid[1] + dy / n * r, 0, 0, 0, 0]
+  # 곡률 중심은 **프로브 중심**(툴 플랜지 + EOAT 오프셋 eoat_ofs)에서 R 이다.
+  # 플랜지에서 잡으면 오프셋 z 만큼 중심이 어긋나, 벽 위로 훑는 호가 L*(R-z)/R 로
+  # 짧아지고 양 끝이 벽을 파고든다. 플랜지 pose 를 이 중심으로 돌리면 프로브
+  # 중심도 같이 돌아 벽(반지름 R) 위에 그대로 남는다.
+  tip = pose_trans(mid, eoat_ofs)
+  o_t = [tip[0] + dx / n * r, tip[1] + dy / n * r, 0, 0, 0, 0]
   return pose_trans(o_t, pose_trans([0, 0, 0, 0, 0, th],
                    pose_trans(pose_inv(o_t), mid)))
 end

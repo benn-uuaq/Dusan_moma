@@ -164,7 +164,11 @@ def sl_servo_arc(end_pose):
   end
   stopj(2.0)
   write_port_register(288, 0)
-  return sv_tot * 1000.0
+  # 로봇은 플랜지 기준으로 v_scan 으로 돌지만, 기록할 길이(297·287)는 **프로브 중심이
+  # 벽 위로 지난 호**다 — 같은 각도를 프로브 중심 반지름으로 곱한다.
+  tp = pose_trans(p0, eoat_ofs)
+  r_tip = sqrt((tp[0] - arc_ox) * (tp[0] - arc_ox) + (tp[1] - arc_oy) * (tp[1] - arc_oy))
+  return dphi * sgn * r_tip * 1000.0
 end
 
 
