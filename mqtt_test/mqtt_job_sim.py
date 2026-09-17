@@ -141,6 +141,18 @@ class MqttJobSimApp:
 
         # tcp 처럼 초당 여러 번 오는 것을 로그에 넣을지.
         self.show_stream_var = tk.BooleanVar(value=True)
+        # 자동 반복: 체크한 채로 "전체 작업 시작"을 누르면 켜진다.
+        #   원점 프로브 확인이 뜨면 스스로 '눌림 확인'을 보내고, 모든 격자가
+        #   completed 로 오면 잠깐 기다렸다가(로봇 홈 복귀) 다시 시작한다.
+        self.auto_repeat_var = tk.BooleanVar(value=False)
+        self.auto_delay_var = tk.StringVar(value="10")
+        self.auto_status_var = tk.StringVar(value="꺼짐")
+        self._auto_armed = False
+        self._auto_total = 0
+        self._auto_done: set[str] = set()
+        self._auto_rounds = 0
+        self._auto_restart_after: str | None = None
+        self._auto_probe_after: str | None = None
         self._last_stream_topic: str | None = None
 
         self._build_ui()
@@ -262,6 +274,16 @@ class MqttJobSimApp:
         ttk.Button(extra, text="EMS(비상정지)", command=lambda: self._publish_request(EMS)).pack(
             side=tk.LEFT
         )
+        # 자동 반복 — 오른쪽 끝에 둔다.
+        auto = ttk.Frame(extra)
+        auto.pack(side=tk.RIGHT)
+        ttk.Checkbutton(auto, text="자동 반복", variable=self.auto_repeat_var,
+                        command=self._on_auto_toggled).pack(side=tk.LEFT)
+        ttk.Label(auto, text="  끝나고 대기").pack(side=tk.LEFT)
+        ttk.Entry(auto, textvariable=self.auto_delay_var, width=4).pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Label(auto, text="s").pack(side=tk.LEFT)
+        ttk.Label(auto, textvariable=self.auto_status_var, foreground="#b26a00").pack(
+            side=tk.LEFT, padx=(10, 0))
 
     def _build_probe_frame(self, parent: ttk.Frame) -> None:
         """원점 프로브 확인 손짓 — 모니터 + 확인 반환 버튼.
@@ -306,6 +328,9 @@ class MqttJobSimApp:
             where = f" ({job_id})" if job_id else ""
             self.probe_state_var.set(f"원점 도착 — 프로브 확인 대기 중{where}")
             self.probe_state_label.configure(foreground="#b26a00")
+            if self._auto_active() and self._auto_probe_after is None:
+                # 버튼이 켜진 게 화면에 보이도록 잠깐 두고 누른다.
+                self._auto_probe_after = self.root.after(1000, self._auto_press_probe)
         else:
             self.probe_state_var.set("대기 아님 (스캔 중이거나 정지)")
             self.probe_state_label.configure(foreground="#666")
@@ -383,6 +408,14 @@ class MqttJobSimApp:
         self.cell_var.set(f"{cell}  ({self.CELL_STATES.get(state, state)})")
         self.cell_label.configure(
             foreground="#0a6" if state == "completed" else "#b26a00")
+        if state == "completed" and self._auto_active():
+            self._auto_done.add(cell)
+            self._show_auto_status()
+            if len(self._auto_done) >= self._auto_total and self._auto_restart_after is None:
+                self._auto_rounds += 1
+                delay_s = self._auto_delay_s()
+                self._log(f"[자동 반복] {self._auto_rounds}회 완료 — {delay_s:g}초 뒤 다시 시작합니다.")
+                self._auto_restart_after = self.root.after(int(delay_s * 1000), self._auto_restart)
 
     def _handle_motion_values(self, payload: Any) -> None:
         """evt/progress · query 응답에 실려 온 이동 값을 반영한다."""
@@ -649,6 +682,14 @@ class MqttJobSimApp:
         }
         self._publish(JOB_COMMAND, payload)
         self._reset_progress_view()
+        # 체크돼 있으면 자동 반복을 켠다(재시작할 때도 이 경로로 온다).
+        self._auto_armed = bool(self.auto_repeat_var.get())
+        try:
+            self._auto_total = max(1, int(values["column_count"]) * int(values["row_count"]))
+        except ValueError:
+            self._auto_total = 1
+        self._auto_done.clear()
+        self._show_auto_status()
 
     def _publish_pause(self) -> None:
         self._publish(
@@ -664,7 +705,59 @@ class MqttJobSimApp:
         self._publish(MC_COMMAND, {"timestamp": utc_epoch_ms(), "cobot": "home"})
 
     def _publish_stop(self) -> None:
+        # 정지는 자동 반복도 멈춘다 — 다시 돌리려면 "전체 작업 시작"을 누른다.
+        self._auto_disarm("정지")
         self._publish(JOB_CLEAR, {"timestamp": utc_epoch_ms(), "request": "true"})
+
+    # ------------------------------------------------------------- 자동 반복
+    def _auto_active(self) -> bool:
+        return self._auto_armed and bool(self.auto_repeat_var.get())
+
+    def _auto_delay_s(self) -> float:
+        try:
+            return max(0.0, float(self.auto_delay_var.get()))
+        except ValueError:
+            return 5.0
+
+    def _show_auto_status(self) -> None:
+        if not self._auto_active():
+            self.auto_status_var.set("꺼짐" if not self.auto_repeat_var.get() else "시작 누르면 켜짐")
+            return
+        self.auto_status_var.set(
+            f"{self._auto_rounds + 1}회차 · 격자 {len(self._auto_done)}/{self._auto_total}")
+
+    def _on_auto_toggled(self) -> None:
+        if not self.auto_repeat_var.get():
+            self._auto_disarm("체크 해제")
+        self._show_auto_status()
+
+    def _auto_disarm(self, why: str) -> None:
+        was = self._auto_armed
+        self._auto_armed = False
+        for attr in ("_auto_restart_after", "_auto_probe_after"):
+            after_id = getattr(self, attr)
+            if after_id is not None:
+                self.root.after_cancel(after_id)
+                setattr(self, attr, None)
+        if was:
+            self._log(f"[자동 반복] 멈춤 ({why}) — {self._auto_rounds}회 완료")
+        self._show_auto_status()
+
+    def _auto_press_probe(self) -> None:
+        self._auto_probe_after = None
+        if self._auto_active() and str(self.probe_ok_button.cget("state")) == tk.NORMAL:
+            self._log("[자동 반복] 프로브 눌림 확인을 보냅니다.")
+            self._publish_probe_ack(True)
+
+    def _auto_restart(self) -> None:
+        self._auto_restart_after = None
+        if not self._auto_active():
+            return
+        if self.client is None:
+            self._auto_disarm("브로커 연결 없음")
+            return
+        self._log(f"[자동 반복] {self._auto_rounds + 1}회차 전체 작업 시작")
+        self._publish_job_command()
 
     def _publish_request(self, topic: str) -> None:
         self._publish(topic, {"timestamp": utc_epoch_ms(), "request": "true"})
