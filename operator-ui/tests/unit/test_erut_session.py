@@ -101,20 +101,74 @@ def test_query_answers_with_current_state(session):
 
 
 def test_calibrate_accepts_then_completes(session, qtbot):
-    """calibrate 는 202 로 받고 결과는 evt/complete 로만 알린다."""
+    """calibrate 는 202 로 받고, 로봇 측정이 끝나야 evt/complete 가 나간다."""
     s, client, _ = session
     s._calibrated = False          # 아직 교정 전인 장치에서 시작한다
+    asked: list[tuple] = []
+    s.calibration_requested.connect(lambda d, h: asked.append((d, h)))
     s.handle_request(*_req("calibrate", diameter=2500, height=6000))
 
     assert client.res[0]["code"] == 202
-    qtbot.waitUntil(lambda: bool(client.events), timeout=5000)
+    # 모재 치수가 그대로 전달돼야 로봇이 그 반지름으로 벽을 찾는다.
+    assert asked == [(2500.0, 6000.0)]
+    # 측정이 끝나기 전에는 완료를 내지 않는다(예전엔 타이머로 흘려보냈다).
+    assert client.events == []
+    assert s.robot_state() == "calibrating"
+
+    s.finish_calibration(True, 0.42, "잰 벽 반지름 1250.4 mm")
+
     name, evt = client.events[0]
     assert name == "complete"
     assert evt["action"] == "calibrate"
-    assert "origin" in evt and "calibration_error_mm" in evt
+    assert evt["origin"] == {"x": 0, "y": 0}
+    assert evt["calibration_error_mm"] == 0.42
     # 캘리브레이션을 마치면 query 가 calibrated=true 로 답해야 한다.
     s.handle_request(*_req("query", req_id="q2"))
     assert client.res[-1]["calibrated"] is True
+
+
+def test_calibrate_needs_the_target_size(session):
+    """지름이 없으면 벽 반지름을 모른다 — 받지 않는다."""
+    s, client, _ = session
+    s.handle_request(*_req("calibrate", height=6000))
+
+    assert client.res[-1]["code"] == 400
+
+
+def test_failed_calibration_still_publishes_complete(session):
+    """실패해도 완료를 내야 한다 — 안 내면 ERUT 가 영영 기다린다(탭2)."""
+    s, client, _ = session
+    s.handle_request(*_req("calibrate", diameter=2500, height=6000))
+
+    s.finish_calibration(False, 0.0, "벽 접촉이 2번뿐입니다")
+
+    name, evt = client.events[-1]
+    assert name == "complete" and evt["action"] == "calibrate"
+    assert evt["code"] == 500
+    # 실패한 캘리브레이션은 좌표계를 세우지 않는다.
+    s.handle_request(*_req("query", req_id="q3"))
+    assert client.res[-1]["calibrated"] is False
+
+
+def test_calibrate_is_refused_while_the_robot_works(session):
+    """작업 중에 좌표계를 다시 잡으면 도는 구간이 어긋난다 — 409."""
+    s, client, _ = session
+    s.robot_busy = lambda: True
+
+    s.handle_request(*_req("calibrate", diameter=2500, height=6000))
+
+    assert client.res[-1]["code"] == 409
+
+
+def test_origin_arrival_during_calibration_is_not_a_ready(session):
+    """측정 중 원점 도착은 prepare 의 준비 완료가 아니다."""
+    s, client, _ = session
+    s._ready_req_id = "r-prep"
+    s.handle_request(*_req("calibrate", diameter=2500, height=6000))
+
+    s.notify_at_origin()
+
+    assert client.events == []
 
 
 def test_prepare_drives_the_robot_and_waits_for_the_origin(session):
@@ -663,7 +717,8 @@ def test_recalibration_reopens_the_gate(session):
     """다시 교정하면 prepare 가 통과한다."""
     s, client, _seq = session
     s.invalidate_calibration()
-    s._finish_calibrate("r-cal")
+    s._calibrate_req_id = "r-cal"
+    s.finish_calibration(True, 0.4)
 
     s.handle_request(*_req("prepare", job_id="jb1", area=AREA, plan=PLAN, scan=SCAN))
 

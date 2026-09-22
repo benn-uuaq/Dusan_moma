@@ -7,6 +7,7 @@ from dataclasses import replace
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from importlib.resources import files
 from math import ceil, isfinite, pi
@@ -54,6 +55,7 @@ from smr_operator_ui.services import (
     SettingsService,
     cell_label,
 )
+from smr_operator_ui.services import calibration
 from smr_operator_ui.services.data_recorder import DataRecorder
 from smr_operator_ui.services.motion_adapters import SwitchableMotion
 from smr_operator_ui.services.vehicle_adapters import (
@@ -532,6 +534,13 @@ class OperatorWindow(QMainWindow):
         self.ros_status.connected_changed.connect(self._on_robot_link_changed)
         self.ros_status.task_state_changed.connect(self._on_robot_task_state)
         self.ros_status.at_home_changed.connect(self._on_robot_at_home)
+        # I/O 화면: 로봇 디지털 입출력은 값 표시와 ON/OFF 조작을 함께 잇는다.
+        io_screen = self.screens["io"]
+        io_screen.output_requested.connect(self._request_io_output)
+        self.ros_status.digital_in_changed.connect(
+            lambda bits: io_screen.set_bits("robot", "IN", bits))
+        self.ros_status.digital_out_changed.connect(
+            lambda bits: io_screen.set_bits("robot", "OUT", bits))
         self._update_jog_enabled(False)
         self.ros_status.speed_scale_changed.connect(self._show_speed_scale)
         self.ros_status.error_occurred.connect(self._show_ros_error)
@@ -612,6 +621,10 @@ class OperatorWindow(QMainWindow):
         # 쉬고 있으면 여기로 온다.
         self.erut_session.robot_busy = self._robot_busy
         self.erut_session.home_requested.connect(self._send_home)
+        # 캘리브레이션: 모재 치수를 받아 작업 영역을 고치고 로봇 3점 측정을 돌린다.
+        self.erut_session.calibration_requested.connect(self._run_calibration)
+        self.ros_status.probe_result_changed.connect(self._on_probe_result)
+        self.ros_status.probe_poses_changed.connect(self._on_probe_poses)
         # 원점에서 멈춰 선 로봇을 ERUT 의 "작업 시작"으로 풀어 준다.
         self.erut_session.scan_go_requested.connect(self._release_scan_gate)
         # 마킹: 점마다 차량 -> 고정 -> 리프트 -> 로봇(마킹 태스크) -> 복귀.
@@ -759,6 +772,7 @@ class OperatorWindow(QMainWindow):
         self.ros_status.scan_state_changed.connect(self._handle_alive)
         self.ros_status.scan_state_changed.connect(self._handle_origin_wait)
         self.ros_status.scan_state_changed.connect(self._handle_vehicle_wait)
+        self.ros_status.scan_state_changed.connect(self._handle_calibration)
 
         # 화면과 외부 MQTT
         seq.state_changed.connect(self._show_sequencer_state)
@@ -1128,6 +1142,10 @@ class OperatorWindow(QMainWindow):
         play 명령의 응답값으로 성공을 판단하지 않는다. 실제 진행 여부는
         로봇이 레지스터에 쓰는 상태(`robot/status/scan_state`)로만 본다.
         """
+        # 지난 셀의 스캔 허가(267)가 남아 있으면 로봇이 원점에서 서지 않고
+        # 그냥 지나간다 — 프로브 확인을 건너뛴 채 훑게 된다. 태스크는 시작할
+        # 때 이 칸을 지우지 않으므로 여기서 지운다.
+        self.ros_status.send_value("scan_go", 0)
         # 원격 제어 모드가 아니면 컨트롤러가 play/stop 을 모두 거부한다
         # ("not supported in local control mode"). 펜던트를 만지면 로컬로
         # 돌아가므로 셀마다 켜 준다.
@@ -1379,9 +1397,12 @@ class OperatorWindow(QMainWindow):
             screen.apply_values(values)
         if scope == "system":
             self._apply_system_settings(scope, values)
-            if scope == "connection":
-                self._sync_cobot_endpoint()
-                self._apply_vehicle_mode()
+        # 예전에는 이 줄들이 위 if 안에 들어가 있어 한 번도 돌지 않았다 —
+        # 저장된 차량 제어 방식과 브로커 주소가 시작할 때 반영되지 않았다.
+        if scope == "connection":
+            self._sync_cobot_endpoint()
+            self._apply_vehicle_mode()
+            self._sync_broker_endpoints()
 
     def _connect_robot(self) -> None:
         """"연결 설정" 화면의 주소로 로봇에 붙는다.
@@ -1446,6 +1467,40 @@ class OperatorWindow(QMainWindow):
             self.cobot_manual_screen.set_endpoint(ip)
         self.screens["tpac_bridge"].set_robot_endpoint(ip, port)
 
+    def _sync_broker_endpoints(self) -> None:
+        """연결 설정의 MQTT·ERUT 주소를 실제 접속에 반영한다.
+
+        현장에서는 RCS 가 내부망이 아니라 허브 건너편 브로커에 붙는다 —
+        주소를 코드나 환경변수가 아니라 화면에서 정할 수 있어야 한다.
+        접속 중이면 끊고 새 주소로 다시 붙는다(값이 그대로면 그냥 둔다).
+        저장된 값이 있으면 그 값이 환경변수보다 우선한다.
+        """
+        conn = self.screens["connection"]
+        mqtt = conn.mqtt_endpoint()
+        if mqtt["host"]:
+            config = replace(
+                self.mqtt_server.config,
+                host=mqtt["host"], port=mqtt["port"],
+                keep_alive=mqtt["keep_alive"], tls=mqtt["tls"],
+                # 비워 두면 지금 쓰던 Client ID 를 그대로 둔다.
+                client_id=mqtt["client_id"] or self.mqtt_server.config.client_id,
+            )
+            if self.mqtt_server.apply_config(config):
+                self.main_screen.show_activity(
+                    f"MQTT 브로커를 {mqtt['host']}:{mqtt['port']} 로 바꿨습니다.")
+        erut = conn.erut_endpoint()
+        if erut["host"]:
+            # client_id 는 접속마다 새로 만들지 않고 그대로 둔다 — 새로
+            # 만들면 값이 같아도 매번 다시 붙는다.
+            config = replace(
+                self.erut.config,
+                host=erut["host"], port=erut["port"], device_id=erut["device_id"],
+            )
+            if self.erut.apply_config(config):
+                self.main_screen.show_activity(
+                    f"ERUT 브로커를 {erut['host']}:{erut['port']} "
+                    f"(장치 {erut['device_id']}) 로 바꿨습니다.")
+
     def _mark_settings_saved(self, scope: str) -> None:
         """저장 완료 후 해당 화면의 상태를 갱신한다."""
         screen = self._settings_screens.get(scope)
@@ -1454,6 +1509,7 @@ class OperatorWindow(QMainWindow):
             if scope == "connection":
                 self._sync_cobot_endpoint()
                 self._apply_vehicle_mode()
+                self._sync_broker_endpoints()
         elif scope == "inspection_target":
             self.main_screen.show_activity("검사 대상 크기를 저장했습니다.")
 
@@ -1795,6 +1851,29 @@ class OperatorWindow(QMainWindow):
             return
         self.ros_status.send_value("speed_ratio", percent)
         self.main_screen.show_activity(f"{source} 속도 비율 {percent} % 를 로봇에 보냈습니다.")
+
+    def _request_io_output(self, address: str, turn_on: bool) -> None:
+        """I/O 화면의 ON/OFF 요청을 실제 장비 경로로 내보낸다.
+
+        로봇 디지털 출력은 제어 노드가 해당 비트만 바꿔 쓴다. 차량용
+        PLC 경로는 아직 실물이 없어 알림만 남긴다.
+        """
+        screen = self.screens["io"]
+        bus = screen.bus_of(address)
+        if bus == "robot":
+            bit = screen.bit_of(address)
+            if bit is None:
+                screen.activity_label.setText(f"{address}: 출력 번호가 없습니다.")
+                return
+            if self.ros_status.send_digital_out(bit, turn_on):
+                self.main_screen.show_activity(
+                    f"[로봇] {address} 출력을 {'ON' if turn_on else 'OFF'} 했습니다.")
+            else:
+                screen.activity_label.setText(
+                    f"{address}: 로봇에 보내지 못했습니다 — 연결을 확인하세요.")
+            return
+        screen.activity_label.setText(
+            f"{address}: 차량 PLC 출력 경로가 아직 없습니다(실물 연결 후).")
 
     def _show_speed_scale(self, percent: int) -> None:
         """로봇이 실제로 쓰고 있는 속도 비율을 화면에 표시한다.
@@ -2142,6 +2221,100 @@ class OperatorWindow(QMainWindow):
         if waiting:
             self.main_screen.show_activity(
                 "로봇이 차량 고정 확인을 기다립니다 — 아웃트리거 고정·차량 정지를 확인하세요.")
+
+    #: 3점 측정(캘리브레이션)을 기다리는 한도 [ms]. 넘으면 실패로 답한다.
+    CALIBRATION_TIMEOUT_MS = 300_000
+    #: 스캔 상태(290)에서 오류를 뜻하는 값.
+    _STATE_ERROR = 9
+    #: scan_state 에서 zero_ok(294)·probe_error(299) 자리.
+    _ZERO_OK_INDEX = 4
+    _PROBE_ERROR_INDEX = 9
+
+    def _on_probe_result(self, values: list) -> None:
+        """3점 측정 결과(300~305)를 들고 있는다. 캘리브레이션이 쓴다."""
+        self._probe_result = [int(v) for v in values]
+
+    def _on_probe_poses(self, values: list) -> None:
+        """접촉 자세(330~355)를 들고 있는다."""
+        self._probe_poses = [int(v) for v in values]
+
+    def _run_calibration(self, diameter_mm: float, height_mm: float) -> None:
+        """ERUT 캘리브레이션: 모재 치수를 반영하고 로봇에 3점 측정을 시킨다.
+
+        모재 지름이 곧 벽 반지름이다. 작업 영역(반지름)을 고쳐 로봇에
+        내려보낸 뒤, 스캔 태스크를 돌려 프로브 3점 측정 -> 원점 복귀까지만
+        한다(스캔 허가는 안 보낸다). 로봇이 원점에 서면 접촉점을 읽어
+        결과를 낸다.
+        """
+        radius_mm = float(diameter_mm) / 2.0
+        extra = dict(self._work_area_extra)
+        extra["radius_mm"] = radius_mm
+        # 저장은 비동기라 여기서 바로 반영해 둔다 — 측정이 끝나는 순간
+        # 이 값으로 오차를 계산한다.
+        self._work_area_extra = extra
+        width_mm, height_mm, scan_h_mm, overlap_mm = \
+            self.main_screen.rect_view.work_area()
+        self._send_work_area(width_mm, height_mm, scan_h_mm, overlap_mm, **extra)
+        if height_mm > 0:
+            self.main_screen.orbit_view.set_target_dimensions(
+                float(diameter_mm) / 1000.0, float(height_mm) / 1000.0)
+        self._calibration_deadline = time.monotonic() + self.CALIBRATION_TIMEOUT_MS / 1000.0
+        self.main_screen.show_activity(
+            f"캘리브레이션: 벽 반지름 {radius_mm:g} mm 로 로봇 3점 측정을 시작합니다.")
+        # 로봇이 벽을 누르는 동안 차량이 굳어 있어야 한다(안전 순서 1단계).
+        # 고정이 안 돼 있으면 먼저 고정하고, 끝나면 그때 로봇을 돌린다 —
+        # 안 그러면 로봇이 차량 고정 확인(309)을 기다리다 멈춘다.
+        if self._vehicle_secured():
+            self._start_robot_scan()
+            return
+        self.main_screen.show_activity("캘리브레이션 전에 아웃트리거를 고정합니다.")
+        self.outrigger.arrived.connect(self._start_calibration_scan)
+        self.outrigger.move_to(1, " 고정")
+
+    def _start_calibration_scan(self) -> None:
+        """아웃트리거 고정이 끝났다 — 이제 3점 측정을 돌린다."""
+        try:
+            self.outrigger.arrived.disconnect(self._start_calibration_scan)
+        except TypeError:                      # 이미 끊겨 있으면 그만이다
+            pass
+        if self.erut_session.calibrating:
+            self._start_robot_scan()
+
+    def _handle_calibration(self, values: list) -> None:
+        """캘리브레이션 중이면 로봇 상태를 보고 끝을 판정한다."""
+        if not self.erut_session.calibrating or not values:
+            return
+        state = int(values[self._SCAN_STATE_INDEX])
+        probe_error = (int(values[self._PROBE_ERROR_INDEX])
+                       if len(values) > self._PROBE_ERROR_INDEX else 0)
+        if state == self._STATE_ERROR or probe_error:
+            self._finish_calibration(
+                False, f"로봇이 측정 중 멈췄습니다(상태 {state}, 오류 {probe_error})")
+            return
+        if time.monotonic() > getattr(self, "_calibration_deadline", 0.0):
+            self._finish_calibration(False, "측정이 제한 시간 안에 끝나지 않았습니다")
+            return
+        zero_ok = (int(values[self._ZERO_OK_INDEX])
+                   if len(values) > self._ZERO_OK_INDEX else 0)
+        if state != self._STATE_AT_ORIGIN or not zero_ok:
+            return
+        result = calibration.evaluate(
+            getattr(self, "_probe_poses", []),
+            self._expected_wall_radius_mm(),
+            getattr(self, "_probe_result", []),
+        )
+        self._finish_calibration(result.ok, result.describe(), result.error_mm)
+
+    def _expected_wall_radius_mm(self) -> float:
+        """로봇이 호를 그릴 때 쓰는 반지름 = 입력 반지름 + 두께."""
+        extra = self._work_area_extra
+        return float(extra.get("radius_mm") or 0.0) + float(extra.get("thickness_mm") or 0.0)
+
+    def _finish_calibration(self, ok: bool, detail: str, error_mm: float = 0.0) -> None:
+        """결과를 ERUT 에 내고 로봇을 세운다. 원점에 계속 세워 두지 않는다."""
+        self.main_screen.show_activity(f"캘리브레이션 결과 — {detail}")
+        self.erut_session.finish_calibration(ok, error_mm, detail)
+        self._stop_robot_scan()
 
     def _handle_origin_wait(self, values: list) -> None:
         """로봇이 원점에 도착해 멈춰 서면 ERUT 에 알린다.

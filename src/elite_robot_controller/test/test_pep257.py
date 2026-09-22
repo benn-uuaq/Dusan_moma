@@ -19,5 +19,8 @@ import pytest
 @pytest.mark.linter
 @pytest.mark.pep257
 def test_pep257():
-    rc = main(argv=['.', 'test'])
+    # D213(요약을 둘째 줄부터)은 끈다. 이 저장소는 운영 UI까지 통틀어
+    # 요약을 **첫 줄에** 쓰는 방식(D212)으로 통일되어 있는데, ament 기본
+    # 규약이 그 반대를 강제해서 둘을 같이 지킬 수 없다.
+    rc = main(argv=['.', 'test', '--add-ignore', 'D213'])
     assert rc == 0, 'Found code style errors / warnings'

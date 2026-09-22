@@ -55,6 +55,12 @@ class RosTopics:
     # 로봇이 홈에 있는지(레지스터 276). 홈을 벗어나면 0 이 된다.
     AT_HOME = "robot/status/at_home"
     SPEED_SCALE = "robot/status/speed_scale"
+    # 디지털 입출력 비트묶음(레지스터 0 = 표준 DI, 2 = 표준 DO).
+    DIGITAL_IN = "robot/status/digital_in"
+    DIGITAL_OUT = "robot/status/digital_out"
+    # 3점 측정 결과(300~305)와 접촉 자세(330~355).
+    PROBE_RESULT = "robot/status/probe_result"
+    PROBE_POSES = "robot/status/probe_poses"
 
     DASHBOARD = "robot/dashboard"
 
@@ -72,6 +78,8 @@ class RosTopics:
     # RCS 가 확인해 1 을 쓴다. 로봇은 1 이어야 움직인다.
     VEHICLE_READY = "robot/command/vehicle_ready"
     JOG_TCP = "robot/command/jog_tcp"
+    # 디지털 출력 하나 켜고 끄기: [번호, 값].
+    DIGITAL_OUT_CMD = "robot/command/digital_out"
 
     MOVE_HOME = "robot/command/move_home"
 
@@ -123,6 +131,13 @@ class RosStatusClient(QObject):
     at_home_changed = pyqtSignal(bool)
     # 로봇이 실제로 쓰고 있는 속도 비율[%]. 펜던트에서 바꿔도 여기로 온다.
     speed_scale_changed = pyqtSignal(int)
+    # 디지털 입출력 비트묶음. (묶음값) 그대로 주고 화면이 비트를 푼다.
+    # 10 Hz 로 오므로 바뀔 때만 나간다.
+    digital_in_changed = pyqtSignal(int)
+    digital_out_changed = pyqtSignal(int)
+    # 3점 측정 값. 정수 그대로 준다(위치 0.1mm, 회전 mrad).
+    probe_result_changed = pyqtSignal(list)
+    probe_poses_changed = pyqtSignal(list)
 
     POSE_LENGTH = 6
     # 290~298 중 격자 순회에 필요한 항목의 위치.
@@ -183,6 +198,11 @@ class RosStatusClient(QObject):
         # 홈 위치 플래그(276)와 차량 고정 확인(309)도 바뀔 때만 오간다.
         self._at_home_last: bool | None = None
         self._vehicle_ready_last: bool | None = None
+        # 디지털 입출력도 10 Hz 로 오므로 바뀔 때만 내보낸다.
+        self._digital_in_last: int | None = None
+        self._digital_out_last: int | None = None
+        self._probe_result_last: list[int] | None = None
+        self._probe_poses_last: list[int] | None = None
         # 같은 노드에 붙는 확장(차량 클라이언트 등). 노드가 생기면 부른다.
         self._extensions: list = []
         if REGISTER_MAP_AVAILABLE:
@@ -266,6 +286,18 @@ class RosStatusClient(QObject):
             self._node.create_subscription(
                 Int32, RosTopics.AT_HOME, self._on_at_home, 10
             )
+            self._node.create_subscription(
+                Int32, RosTopics.DIGITAL_IN, self._on_digital_in, 10
+            )
+            self._node.create_subscription(
+                Int32, RosTopics.DIGITAL_OUT, self._on_digital_out, 10
+            )
+            self._node.create_subscription(
+                Int32MultiArray, RosTopics.PROBE_RESULT, self._on_probe_result, 10
+            )
+            self._node.create_subscription(
+                Int32MultiArray, RosTopics.PROBE_POSES, self._on_probe_poses, 10
+            )
             self._publishers = {
                 "linear_speed": self._node.create_publisher(Int32, RosTopics.LINEAR_SPEED, 10),
                 "speed_ratio": self._node.create_publisher(Int32, RosTopics.SPEED_RATIO, 10),
@@ -274,6 +306,8 @@ class RosStatusClient(QObject):
                 "scan_go": self._node.create_publisher(Int32, RosTopics.SCAN_GO, 10),
                 "vehicle_ready": self._node.create_publisher(
                     Int32, RosTopics.VEHICLE_READY, 10),
+                "digital_out": self._node.create_publisher(
+                    Int32MultiArray, RosTopics.DIGITAL_OUT_CMD, 10),
             }
             self._pose_publishers = {
                 "home_joint": self._node.create_publisher(
@@ -375,6 +409,22 @@ class RosStatusClient(QObject):
             return True
         self._vehicle_ready_last = ready
         publisher.publish(Int32(data=1 if ready else 0))
+        return True
+
+    def send_digital_out(self, index: int, on: bool) -> bool:
+        """디지털 출력 한 개를 켜고 끈다. 노드가 그 비트만 바꿔 쓴다."""
+        publisher = self._publishers.get("digital_out")
+        if publisher is None:
+            self.command_result.emit(
+                "digital_out", False, "ROS 2에 연결되어 있지 않습니다.")
+            return False
+        if not self.writable("digital_out"):
+            self.command_result.emit(
+                "digital_out", False, "Modbus 주소가 설정되지 않았습니다.")
+            return False
+        publisher.publish(Int32MultiArray(data=[int(index), 1 if on else 0]))
+        self.command_result.emit(
+            "digital_out", True, f"DO{int(index)} {'ON' if on else 'OFF'} 전송")
         return True
 
     def send_pose(self, name: str, values: list) -> bool:
@@ -563,6 +613,38 @@ class RosStatusClient(QObject):
 
     def _on_task_state(self, msg) -> None:
         self.task_state_changed.emit(int(msg.data))
+
+    def _on_digital_in(self, msg) -> None:
+        """표준 디지털 입력 비트묶음. 바뀔 때만 내보낸다."""
+        bits = int(msg.data) & 0xFFFF
+        if bits == self._digital_in_last:
+            return
+        self._digital_in_last = bits
+        self.digital_in_changed.emit(bits)
+
+    def _on_digital_out(self, msg) -> None:
+        """표준 디지털 출력 비트묶음. 바뀔 때만 내보낸다."""
+        bits = int(msg.data) & 0xFFFF
+        if bits == self._digital_out_last:
+            return
+        self._digital_out_last = bits
+        self.digital_out_changed.emit(bits)
+
+    def _on_probe_result(self, msg) -> None:
+        """3점 측정 결과(300~305). 바뀔 때만 내보낸다."""
+        values = [int(v) for v in msg.data]
+        if values == self._probe_result_last:
+            return
+        self._probe_result_last = values
+        self.probe_result_changed.emit(values)
+
+    def _on_probe_poses(self, msg) -> None:
+        """접촉 자세(330~355). 바뀔 때만 내보낸다."""
+        values = [int(v) for v in msg.data]
+        if values == self._probe_poses_last:
+            return
+        self._probe_poses_last = values
+        self.probe_poses_changed.emit(values)
 
     def _on_at_home(self, msg) -> None:
         """홈 위치 플래그(276). 10 Hz 로 오므로 바뀔 때만 내보낸다."""

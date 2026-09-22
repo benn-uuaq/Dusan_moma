@@ -12,7 +12,7 @@ MESSAGE_TYPE_ROBOT_MESSAGE = 20
 
 FMT_HEADER = 'IB'
 FMT_ROBOT_MODE = 'IBQ???????BBdddB??I'
-FMT_JOINT_HEADER = 'IB'     
+FMT_JOINT_HEADER = 'IB'
 FMT_JOINT_DATA = 'dddiiiffffBI'
 FMT_CARTESIAN = 'IBdddddddddddd'
 FMT_CONFIG = 'IB'+'dd'*6+'dd'*6+'ddddd'+'d'*6+'d'*6+'d'*6+'d'*6+'IIIBBBB'
@@ -21,6 +21,7 @@ FMT_ADDITIONAL = 'IB????B'
 FMT_TOOL = 'IBBBddfBffB'
 FMT_SAFETY = 'IBIbBdddd'
 FMT_TOOL_COMM = 'IB?III?Bff'
+
 
 class RobotDataConfig():
     def __init__(self):
@@ -34,7 +35,7 @@ class RobotDataConfig():
             'joint_sub_len', 'joint_sub_type'
         ]
         self.names_joint = [
-            'actual_joint', 'target_joint', 'actual_velocity', 
+            'actual_joint', 'target_joint', 'actual_velocity',
             'joint_reserved_1', 'joint_reserved_2', 'joint_reserved_3',
             'current', 'voltage', 'temperature', 'torques', 'mode', 'joint_reserved_4'
         ]
@@ -49,31 +50,46 @@ class RobotDataConfig():
             'max_velocity_joint_0', 'max_acc_joint_0', 'max_velocity_joint_1', 'max_acc_joint_1',
             'max_velocity_joint_2', 'max_acc_joint_2', 'max_velocity_joint_3', 'max_acc_joint_3',
             'max_velocity_joint_4', 'max_acc_joint_4', 'max_velocity_joint_5', 'max_acc_joint_5',
-            'default_velocity_joint', 'default_acc_joint', 'default_tool_velocity', 'default_tool_acc', 'internal_use',
-            'dh_a_joint_0', 'dh_a_joint_1', 'dh_a_joint_2', 'dh_a_joint_3', 'dh_a_joint_4', 'dh_a_joint_5',
-            'dh_d_joint_0', 'dh_d_joint_1', 'dh_d_joint_2', 'dh_d_joint_3', 'dh_d_joint_4', 'dh_d_joint_5',
-            'dh_alpha_joint_0', 'dh_alpha_joint_1', 'dh_alpha_joint_2', 'dh_alpha_joint_3', 'dh_alpha_joint_4', 'dh_alpha_joint_5',
-            'dh_theta_joint_0', 'dh_theta_joint_1', 'dh_theta_joint_2', 'dh_theta_joint_3', 'dh_theta_joint_4', 'dh_theta_joint_5',
-            'masterboard_version', 'control_box_type', 'robot_type', 'robot_structure', 'tool_io_type', 'reserved_cfg2', 'reserved_cfg3',
+            'default_velocity_joint', 'default_acc_joint', 'default_tool_velocity',
+            'default_tool_acc', 'internal_use',
+            'dh_a_joint_0', 'dh_a_joint_1', 'dh_a_joint_2',
+            'dh_a_joint_3', 'dh_a_joint_4', 'dh_a_joint_5',
+            'dh_d_joint_0', 'dh_d_joint_1', 'dh_d_joint_2',
+            'dh_d_joint_3', 'dh_d_joint_4', 'dh_d_joint_5',
+            'dh_alpha_joint_0', 'dh_alpha_joint_1', 'dh_alpha_joint_2',
+            'dh_alpha_joint_3', 'dh_alpha_joint_4', 'dh_alpha_joint_5',
+            'dh_theta_joint_0', 'dh_theta_joint_1', 'dh_theta_joint_2',
+            'dh_theta_joint_3', 'dh_theta_joint_4', 'dh_theta_joint_5',
+            'masterboard_version', 'control_box_type', 'robot_type', 'robot_structure',
+            'tool_io_type', 'reserved_cfg2', 'reserved_cfg3',
             'masterboard_sub_len', 'masterboard_sub_type',
             'digital_input_bits', 'digital_output_bits',
-            'standard_analog_input_domain0', 'standard_analog_input_domain1', 'tool_analog_input_domain',
-            'standard_analog_input_value0', 'standard_analog_input_value1', 'tool_analog_input_value',
-            'standard_analog_output_domain0', 'standard_analog_output_domain1', 'tool_analog_output_domain',
-            'standard_analog_output_value0', 'standard_analog_output_value1', 'tool_analog_output_value',
+            'standard_analog_input_domain0', 'standard_analog_input_domain1',
+            'tool_analog_input_domain',
+            'standard_analog_input_value0', 'standard_analog_input_value1',
+            'tool_analog_input_value',
+            'standard_analog_output_domain0', 'standard_analog_output_domain1',
+            'tool_analog_output_domain',
+            'standard_analog_output_value0', 'standard_analog_output_value1',
+            'tool_analog_output_value',
             'masterrbord_temperature', 'robot_voltage', 'robot_current', 'io_current',
             'safety_mode', 'is_robot_in_reduced_mode', 'operational_mode_selector_input',
             'threeposition_enabling_device_input', 'internal_use_mb',
             'additional_sub_len', 'additional_sub_type',
-            'is_freedrive_button_pressed', 'reserved_add', 'is_freedrive_io_enabled', 'is_dynamic_collision_detect_enabled', 'reserved_add2',
+            'is_freedrive_button_pressed', 'reserved_add', 'is_freedrive_io_enabled',
+            'is_dynamic_collision_detect_enabled', 'reserved_add2',
             'tool_sub_len', 'tool_sub_type',
-            'tool_analog_output_domain', 'tool_analog_input_domain', 'tool_analog_output_value', 'tool_analog_input_value',
-            'tool_voltage', 'tool_output_voltage', 'tool_current', 'tool_temperature', 'tool_mode',
+            'tool_analog_output_domain', 'tool_analog_input_domain',
+            'tool_analog_output_value', 'tool_analog_input_value',
+            'tool_voltage', 'tool_output_voltage', 'tool_current', 'tool_temperature',
+            'tool_mode',
             'safe_sub_len', 'safe_sub_type',
             'safety_crc_num', 'safety_operational_mode', 'reserved_safe',
-            'current_elbow_position_x', 'current_elbow_position_y', 'current_elbow_position_z', 'elbow_radius',
+            'current_elbow_position_x', 'current_elbow_position_y',
+            'current_elbow_position_z', 'elbow_radius',
             'tool_comm_sub_len', 'tool_comm_sub_type',
-            'is_enable', 'baudrate', 'parity', 'stopbits', 'tci_modbus_status', 'tci_usage', 'reserved_tc1', 'reserved_tc2'
+            'is_enable', 'baudrate', 'parity', 'stopbits', 'tci_modbus_status',
+            'tci_usage', 'reserved_tc1', 'reserved_tc2'
         ]
         self.fmt = (
             '>' +
@@ -83,13 +99,16 @@ class RobotDataConfig():
             FMT_ADDITIONAL + FMT_TOOL + FMT_SAFETY + FMT_TOOL_COMM
         )
 
+
 class RobotHeader():
-    __slots__ = ['type', 'size',]
+    __slots__ = ['type', 'size']
+
     @staticmethod
     def unpack(buf):
         rmd = RobotHeader()
         (rmd.size, rmd.type) = struct.unpack_from('>iB', buf)
         return rmd
+
 
 class RobotData():
     @staticmethod
@@ -98,16 +117,20 @@ class RobotData():
         try:
             unpacked = struct.unpack(config.fmt, buf)
             it = iter(unpacked)
-            for name in config.names_pre: setattr(data, name, next(it))
-            for name in config.names_joint: setattr(data, name, [])
+            for name in config.names_pre:
+                setattr(data, name, next(it))
+            for name in config.names_joint:
+                setattr(data, name, [])
             for _ in range(6):
                 for name in config.names_joint:
                     getattr(data, name).append(next(it))
-            for name in config.names_post: setattr(data, name, next(it))
+            for name in config.names_post:
+                setattr(data, name, next(it))
             return data
         except (struct.error, StopIteration):
             return None
-    
+
+
 class AlarmData:
     def __init__(self, code=None, sub=None, level=None, msg=None):
         self.code = code
@@ -116,7 +139,8 @@ class AlarmData:
         self.msg = msg
         self.timestamp = time.time()
         self.active = True
-    
+
+
 class ReadAlarm():
     @staticmethod
     def unpack(buf):
@@ -132,7 +156,8 @@ class ReadAlarm():
             level = struct.unpack(">i", data[23:27])[0]
             return AlarmData(code=error_code, sub=sub_error_code, level=level)
         return None
-        
+
+
 class Robot_30001():
     def __init__(self, ip, port2) -> None:
         self.__data_config = RobotDataConfig()
@@ -147,15 +172,15 @@ class Robot_30001():
             self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.__sock.settimeout(0.5)
             self.__sock.connect((self.ip, self.port2))
-            self.__sock.settimeout(10.0) 
+            self.__sock.settimeout(10.0)
             print(f"[DEBUG][Robot Primary] Connected to {self.ip} on port {self.port2}")
             self.__buf = b""
             return self.__sock
         except Exception as e:
             print(f"[ERROR][Robot Primary] Connecting to {self.ip} on port {self.port2}: {e}")
-            self.__sock = None 
-            return None 
-        
+            self.__sock = None
+            return None
+
     def disconnect_30001(self):
         if self.__sock:
             self.__sock.close()
@@ -190,7 +215,7 @@ class Robot_30001():
         while len(self.__buf) >= 5:
             try:
                 head = RobotHeader.unpack(self.__buf)
-            except:
+            except Exception:       # 헤더가 깨졌다 — 버퍼를 버리고 다시 맞춘다
                 self.__buf = b""
                 break
             if len(self.__buf) < head.size:
@@ -200,28 +225,34 @@ class Robot_30001():
             if head.type == MESSAGE_TYPE_ROBOT_MESSAGE:
                 try:
                     alarm = ReadAlarm.unpack(payload)
-                    if alarm: self.alarm_queue.put(alarm)
-                except: pass
+                    if alarm:
+                        self.alarm_queue.put(alarm)
+                except Exception:   # 알람 한 건이 깨져도 수신은 계속한다
+                    pass
                 continue
             if head.type == MESSAGE_TYPE_ROBOT_STATE:
                 try:
                     last_valid_data = RobotData.unpack(payload, self.__data_config)
-                except: pass
+                except Exception:   # 상태 한 묶음이 깨져도 수신은 계속한다
+                    pass
         return last_valid_data
 
     def __read_socket_no_wait(self):
         while True:
             readable, _, _ = select.select([self.__sock], [], [], 0)
-            if not readable: break
+            if not readable:
+                break
             try:
                 more = self.__sock.recv(4096)
-                if not more: raise ConnectionError("Socket closed")
+                if not more:
+                    raise ConnectionError("Socket closed")
                 self.__buf += more
             except BlockingIOError:
                 break
             except Exception:
                 break
-            
+
+
 class AlarmManager:
     """같은 알람을 짧은 시간 안에 중복으로만 걸러내고, 다시 발생하면 다시 알린다.
 
@@ -456,8 +487,9 @@ class Robot_29999():
         except Exception as e:
             print(f"[ERROR][Robot Dashboard] variable -get {var_name}: {e}")
             return None
-    
-class Robot_modbus():       
+
+
+class Robot_modbus():
     def __init__(self, host, port):
         self.host = host
         self.port = port
@@ -466,17 +498,18 @@ class Robot_modbus():
 
     def connect(self):
         self.client = ModbusClient(host=self.host, port=self.port, unit_id=255, timeout=1.0)
-        
+
         if self.client.is_open:
             self.client.close()
-        
+
         is_open = self.client.open()
         if is_open:
             self.is_running = True
             print(f"[DEBUG][Robot Modbus] Connected to {self.host} on port {self.port}")
             return True
         else:
-            print(f"[ERROR][Robot Modbus] Connecting to {self.host} on port {self.port}: timed out")
+            print("[ERROR][Robot Modbus] Connecting to "
+                  f"{self.host} on port {self.port}: timed out")
             return False
 
     def disconnect(self):
@@ -495,8 +528,8 @@ class Robot_modbus():
         if not is_success:
             return False
         import time
-        time.sleep(0.05) 
-        
+        time.sleep(0.05)
+
         signed_read_val = self.get_register(address)
         if signed_read_val is not None and write_data == signed_read_val:
             return True
@@ -509,7 +542,7 @@ class Robot_modbus():
         if regs:
             return [val - 65536 if val > 32767 else val for val in regs]
         return []
-    
+
     def get_register(self, address) -> int:
         result = self.client.read_holding_registers(address, 1)
         if result is None:

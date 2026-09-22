@@ -365,3 +365,32 @@ def test_unexpected_link_loss_is_announced_but_manual_disconnect_is_not(qtbot):
     window.ros_status.connected_changed.emit(False)
     assert conn.save_status.text() == "연결을 끊었습니다.", "운영자가 끊은 건 끊김 경고가 아니다"
     window.close()
+
+
+def test_digital_bits_are_emitted_only_when_they_change(qtbot):
+    """디지털 IO 는 10 Hz 로 오므로 같은 값은 흘려보내지 않는다."""
+    client = RosStatusClient()
+    outs: list[int] = []
+    ins: list[int] = []
+    client.digital_out_changed.connect(outs.append)
+    client.digital_in_changed.connect(ins.append)
+
+    client._on_digital_out(FakeMessage(0b0101))
+    client._on_digital_out(FakeMessage(0b0101))
+    client._on_digital_out(FakeMessage(0b0111))
+    # 부호 있는 16비트로 와도 비트묶음으로 읽는다(최상위 비트가 켜진 경우).
+    client._on_digital_out(FakeMessage(-32768))
+    client._on_digital_in(FakeMessage(0b0010))
+
+    assert outs == [0b0101, 0b0111, 0x8000]
+    assert ins == [0b0010]
+
+
+def test_digital_out_needs_a_publisher(qtbot):
+    """ROS 가 없으면 보내지 않고 이유를 남긴다."""
+    client = RosStatusClient()
+    results: list[tuple] = []
+    client.command_result.connect(lambda *args: results.append(args))
+
+    assert client.send_digital_out(1, True) is False
+    assert results and results[0][0] == "digital_out"

@@ -146,27 +146,28 @@ mqtt_test\build_tpac_tcp_sim.ps1
 
 ## 자동 검증 스크립트
 
-`run_sim_test.py`는 장비 없이 **전체 파이프라인을 한 번에 검증**한다. 로봇 시뮬레이터와 ROS 노드를 스스로 띄우고, 운영 UI를 headless로 올린 뒤 `job_cmd`를 넣어 `1A`부터 마지막 셀까지 자동으로 도는지 확인한다. 끝나면 띄운 프로세스를 정리하고 통과/실패를 종료 코드로 알린다.
+`run_sim_test.py`는 장비 없이 **전체 경로를 한 번에 확인**한다. 로봇 시뮬레이터와 ROS 노드를 스스로 띄우고, 운영 UI를 headless로 올린 뒤 시나리오를 차례로 돌린다. 끝나면 띄운 프로세스를 정리하고 통과/실패를 종료 코드로 알린다.
 
 ```bash
 source /opt/ros/humble/setup.bash && source install/setup.bash
-python3 mqtt_test/run_sim_test.py
+python3 mqtt_test/run_sim_test.py               # 네 시나리오 전부 (2열 × 3행)
+python3 mqtt_test/run_sim_test.py 3 2           # 격자 크기를 바꿔서 (열, 행)
+python3 mqtt_test/run_sim_test.py --only mc io  # 고른 것만
 ```
 
-격자 크기를 바꿔 볼 수도 있다(열, 행 순서).
+| 시나리오 | 확인하는 것 |
+|---|---|
+| `mc` | 사내 MC 규격 `job_cmd` 하나로 `1A → 1B → … → 2A …` 를 빠짐없이 도는지. 셀마다 원점에서 프로브 확인(`probe_gate` → `probe_ack`)을 거치는지. `job_state` 가 셀마다 3건 나가는지. 작업 영역 레지스터(256~259)가 셀 치수로 실리는지 |
+| `erut` | ERUT 규격 한 바퀴 — `calibrate`(3점 측정 → 오차) → `prepare`(원점에서 `evt/ready`) → `start` → `evt/complete` |
+| `io` | I/O 화면의 로봇 디지털 출력이 레지스터 2 의 그 비트만 바꾸는지, 화면 표시가 로봇 값을 따라오는지 |
+| `tpac` | 스캔 구간 신호 DO[0..2] 가 전진·후진·동결 순서대로 나가는지, 스캔 중에 리셋이 서지 않는지 |
 
-```bash
-python3 mqtt_test/run_sim_test.py 3 2
-```
+로봇 시뮬레이터(`src/elite_robot_controller/tools/elite_robot_simulator.py`)는 지금 로봇 태스크와 **같은 상태 흐름**을 흉내 낸다 — 차량 고정 대기(309) → 3점 측정(300~305 · 330~355) → 원점 대기(267 허가) → 적심 → ㄹ자 스캔(구간 신호 277) → 완료. 홈 플래그(276)와 태스크 상태(500)도 같이 움직인다.
 
-확인하는 것:
+- `--wall-error 0.3` : 실제 벽이 입력 반지름보다 이만큼 어긋나 있다고 친다(캘리브레이션이 이 값을 잡아낸다).
+- `--max-rows 6` : ㄹ자 줄 수 상한. 순회를 보는 게 목적이라 줄을 다 그리지 않는다.
 
-- 셀을 `1A → 1B → … → 2A → …` 순서로 빠짐없이 도는지
-- 마지막에 `DONE` 상태가 되는지
-- `job_state`가 셀마다 3건(`waiting`/`executing`/`completed`) 나가는지
-- 작업 영역 레지스터(256~259)가 셀 치수로 **한 번만** 기록되는지
-
-로봇의 스캔 완료 신호는 시뮬레이터의 Modbus 레지스터(`290`, `295`)를 직접 써서 흉내 낸다. 실제 로봇 태스크가 도는 게 아니므로, 실장비에서는 이 부분만 로봇이 스스로 채운다.
+실제 로봇 기구학을 재현하는 것은 아니다 — 경로와 시간은 흉내만 내고, 실장비에서는 그 부분을 로봇이 스스로 채운다.
 
 ## 화면 구성
 

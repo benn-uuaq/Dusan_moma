@@ -1,19 +1,247 @@
 {
   "_comment": [
-    "PLC 입출력 목록. 신호가 늘어나면 이 파일만 고치면 되고 코드는 건드리지 않는다.",
-    "direction이 OUT인 신호에만 조작 버튼이 생긴다. IN은 PLC가 정하는 값이라 조회만 한다.",
-    "group은 조작 버튼을 묶는 이름이며, 비워 두면 '기타'로 묶인다."
+    "입출력 목록. 신호가 늘어나면 이 파일만 고치면 되고 코드는 건드리지 않는다.",
+    "direction이 OUT인 신호에만 조작 버튼이 생긴다. IN은 장비가 정하는 값이라 조회만 한다.",
+    "group은 조작 버튼을 묶는 이름이며, 비워 두면 '기타'로 묶인다.",
+    "bus는 어디에 붙은 신호인지다. robot = 협동로봇 컨트롤러 디지털 IO(모드버스",
+    "레지스터 0 = 표준 DI, 2 = 표준 DO, 비트 번호가 곧 DO/DI 번호), plc = 차량용 PLC.",
+    "로봇 IO는 bit 로 비트 번호를 적는다. PLC 경로는 아직 실물이 없어 조회만 된다.",
+    "물 분사 밸브와 마킹기도 로봇 DO 에 붙을 예정이다 — 번호가 정해지면 name 만 고친다."
   ],
   "signals": [
-    { "address": "X000", "name": "Emergency Stop", "direction": "IN", "value": "OFF", "status": "정상" },
-    { "address": "X001", "name": "Safety Scanner", "direction": "IN", "value": "ON", "status": "정상" },
-    { "address": "X010", "name": "Outrigger 1 Contact", "direction": "IN", "value": "ON", "status": "정상" },
-    { "address": "X011", "name": "Outrigger 2 Contact", "direction": "IN", "value": "ON", "status": "정상" },
-    { "address": "X012", "name": "Outrigger 3 Contact", "direction": "IN", "value": "ON", "status": "정상" },
-    { "address": "Y000", "name": "AMR Drive Enable", "direction": "OUT", "value": "OFF", "status": "정상", "group": "AMR" },
-    { "address": "Y010", "name": "Lift Brake", "direction": "OUT", "value": "ON", "status": "정상", "group": "리프트" },
-    { "address": "D100", "name": "Lift Height", "direction": "IN", "value": "1200 mm", "status": "정상" },
-    { "address": "D110", "name": "Roll", "direction": "IN", "value": "0.00°", "status": "정상" },
-    { "address": "D111", "name": "Pitch", "direction": "IN", "value": "0.00°", "status": "정상" }
+    {
+      "address": "DI0",
+      "name": "로봇 디지털 입력 0",
+      "direction": "IN",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 0
+    },
+    {
+      "address": "DI1",
+      "name": "로봇 디지털 입력 1",
+      "direction": "IN",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 1
+    },
+    {
+      "address": "DI2",
+      "name": "로봇 디지털 입력 2",
+      "direction": "IN",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 2
+    },
+    {
+      "address": "DI3",
+      "name": "로봇 디지털 입력 3",
+      "direction": "IN",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 3
+    },
+    {
+      "address": "DI4",
+      "name": "로봇 디지털 입력 4",
+      "direction": "IN",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 4
+    },
+    {
+      "address": "DI5",
+      "name": "로봇 디지털 입력 5",
+      "direction": "IN",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 5
+    },
+    {
+      "address": "DI6",
+      "name": "로봇 디지털 입력 6",
+      "direction": "IN",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 6
+    },
+    {
+      "address": "DI7",
+      "name": "로봇 디지털 입력 7",
+      "direction": "IN",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 7
+    },
+    {
+      "address": "DO0",
+      "name": "로봇 디지털 출력 0 · 예비 (물 분사 밸브 예정)",
+      "direction": "OUT",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 0,
+      "group": "협동로봇 출력(DO)"
+    },
+    {
+      "address": "DO1",
+      "name": "로봇 디지털 출력 1 · 예비 (마킹기 예정)",
+      "direction": "OUT",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 1,
+      "group": "협동로봇 출력(DO)"
+    },
+    {
+      "address": "DO2",
+      "name": "로봇 디지털 출력 2 · 예비",
+      "direction": "OUT",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 2,
+      "group": "협동로봇 출력(DO)"
+    },
+    {
+      "address": "DO3",
+      "name": "로봇 디지털 출력 3 · 예비",
+      "direction": "OUT",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 3,
+      "group": "협동로봇 출력(DO)"
+    },
+    {
+      "address": "DO4",
+      "name": "로봇 디지털 출력 4 · 예비",
+      "direction": "OUT",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 4,
+      "group": "협동로봇 출력(DO)"
+    },
+    {
+      "address": "DO5",
+      "name": "로봇 디지털 출력 5 · 예비",
+      "direction": "OUT",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 5,
+      "group": "협동로봇 출력(DO)"
+    },
+    {
+      "address": "DO6",
+      "name": "로봇 디지털 출력 6 · 예비",
+      "direction": "OUT",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 6,
+      "group": "협동로봇 출력(DO)"
+    },
+    {
+      "address": "DO7",
+      "name": "로봇 디지털 출력 7 · 예비",
+      "direction": "OUT",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "robot",
+      "bit": 7,
+      "group": "협동로봇 출력(DO)"
+    },
+    {
+      "address": "X000",
+      "name": "Emergency Stop",
+      "direction": "IN",
+      "value": "OFF",
+      "status": "정상",
+      "bus": "plc"
+    },
+    {
+      "address": "X001",
+      "name": "Safety Scanner",
+      "direction": "IN",
+      "value": "ON",
+      "status": "정상",
+      "bus": "plc"
+    },
+    {
+      "address": "X010",
+      "name": "Outrigger 1 Contact",
+      "direction": "IN",
+      "value": "ON",
+      "status": "정상",
+      "bus": "plc"
+    },
+    {
+      "address": "X011",
+      "name": "Outrigger 2 Contact",
+      "direction": "IN",
+      "value": "ON",
+      "status": "정상",
+      "bus": "plc"
+    },
+    {
+      "address": "X012",
+      "name": "Outrigger 3 Contact",
+      "direction": "IN",
+      "value": "ON",
+      "status": "정상",
+      "bus": "plc"
+    },
+    {
+      "address": "Y000",
+      "name": "AMR Drive Enable",
+      "direction": "OUT",
+      "value": "OFF",
+      "status": "정상",
+      "group": "차량 PLC · AMR",
+      "bus": "plc"
+    },
+    {
+      "address": "Y010",
+      "name": "Lift Brake",
+      "direction": "OUT",
+      "value": "ON",
+      "status": "정상",
+      "group": "차량 PLC · 리프트",
+      "bus": "plc"
+    },
+    {
+      "address": "D100",
+      "name": "Lift Height",
+      "direction": "IN",
+      "value": "1200 mm",
+      "status": "정상",
+      "bus": "plc"
+    },
+    {
+      "address": "D110",
+      "name": "Roll",
+      "direction": "IN",
+      "value": "0.00°",
+      "status": "정상",
+      "bus": "plc"
+    },
+    {
+      "address": "D111",
+      "name": "Pitch",
+      "direction": "IN",
+      "value": "0.00°",
+      "status": "정상",
+      "bus": "plc"
+    }
   ]
 }

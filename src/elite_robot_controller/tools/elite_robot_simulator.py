@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Elite CS612 없이 elite_robot_controller를 시험하기 위한 가짜 로봇.
+r"""Elite CS612 없이 elite_robot_controller를 시험하기 위한 가짜 로봇.
 
 29999(Dashboard), 30001(Primary), Modbus TCP 세 채널을 흉내 낸다.
 레지스터 주소는 `config/modbus_registers.json`을 그대로 읽으므로 노드와
@@ -32,11 +32,17 @@ ros2 run elite_robot_controller robot_control_node --ros-args \\
   목표값으로 옮긴다.
 - **쓰기 레지스터**: UI가 306(작업 속도), 307(속도 비율), 308(pose_src),
   310~321(기준 위치)에 쓴 값을 그대로 저장하고 돌려준다.
+- **태스크 진행**: `play` 를 받으면 지금 태스크와 같은 순서로 레지스터를
+  채운다 — 차량 고정 대기(309) → 3점 측정(300~305 · 330~355) → 원점 대기
+  (267 허가) → 적심 → ㄹ자 스캔(구간 신호 277) → 완료. 홈 플래그(276)와
+  태스크 상태(500)도 같이 움직인다.
+- **디지털 IO**: 레지스터 2(표준 출력)에 쓴 비트를 그대로 들고 있는다.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 import socket
@@ -172,30 +178,58 @@ class ModbusServer(threading.Thread):
 
 
 class ScanTaskSim(threading.Thread):
-    """`play` 를 받으면 로봇 태스크(dusan_v1)의 한 셀 스캔을 흉내 낸다.
+    """`play` 를 받으면 지금 로봇 태스크(dusan_v4/v5)의 한 셀을 흉내 낸다.
 
-    실제 태스크가 레지스터 290~298에 쓰는 진행 상태를 같은 순서로 채운다.
-    운영 UI의 격자 순회가 이 값으로 셀 완료를 판정하므로, 이게 없으면
-    첫 셀에서 영영 넘어가지 못한다.
+    실제 태스크가 레지스터에 쓰는 것을 같은 자리·같은 순서로 채운다. 이게
+    맞지 않으면 운영 UI 는 첫 셀에서 더 나아가지 못한다.
 
-    ㄹ자 경로를 실제로 그리지는 않고 단계와 줄 수만 흉내 낸다. 순회 로직을
-    검증하는 게 목적이지 로봇 기구학을 재현하는 게 아니다.
+      290 진행 상태 : 0 대기 · 14 차량 고정 대기 · 2 3점 측정 · 3 원점 복귀 ·
+                      7 원점 대기(스캔 허가 기다림) · 8 적심 · 6 스캔 · 5 완료
+      277 스캔 구간 : 0 없음 · 1 전진 · 2 줄 바꿈(상승) · 3 후진  (TPAC DO 신호)
+      276 홈 위치   : 홈에 있으면 1, 벗어나면 0
+      267 스캔 허가 : RCS 가 1 을 쓰면 원점 대기가 풀린다(통과하며 0 으로 지운다)
+      309 차량 고정 : 1 이어야 움직인다. 아니면 290 = 14 로 서서 기다린다
+      500 태스크    : 1 실행 중 · 3 중지됨
+      300~305 / 330~355 : 3점 측정 결과와 접촉 자세(캘리브레이션이 읽는다)
+
+    ㄹ자 경로를 실제로 그리지는 않고 단계·줄 수·구간 신호만 흉내 낸다.
+    접촉점은 입력한 반지름(260 + 261)에 `wall_error_mm` 만큼 어긋난 원 위에
+    올려 둔다 — 캘리브레이션이 그 차이를 잡아내는지 볼 수 있다.
     """
 
-    # 레지스터 290~298. 로봇 태스크의 dus_*.script 와 같은 뜻이다.
+    # 레지스터 290~299. 로봇 태스크의 dus_*.script 와 같은 뜻이다.
     STATE, ROW_IDX, ROWS, ALIVE = 290, 291, 292, 293
     ZERO_OK, FINISHED, PITCH, PROGRESS = 294, 295, 296, 298
-    # 작업 영역(256~259). 태스크가 읽어 ㄹ자 줄 수를 계산한다.
+    PROBE_ERROR = 299
+    # 작업 영역(256~264). 태스크가 읽어 ㄹ자 줄 수와 호를 계산한다.
     APP_WIDTH, APP_HEIGHT, SCAN_H, OVERLAP = 256, 257, 258, 259
+    RADIUS, THICKNESS, PARAM_SRC = 260, 261, 266
+    # 오가는 신호들.
+    SCAN_GO, SEGMENT, HOME_FLAG, VEHICLE_READY, TASK_STATE = 267, 277, 276, 309, 500
+    ARC_POS, ARC_TOTAL = 286, 287
+    # 3점 측정 결과.
+    PROBE_CX, PROBE_LX, PROBE_RX, PRESS_OFF, N_PROBE, N_HIT = 300, 301, 302, 303, 304, 305
+    POSE_CENTER, POSE_RIGHT, POSE_EOAT, POSE_ZERO = 330, 340, 347, 350
 
     STEP_SECONDS = 0.35
+    #: 차량 고정(309)을 기다리는 한도 [s]. 넘으면 태스크가 299 = 8 로 멈춘다.
+    VEHICLE_WAIT_S = 15.0
+    #: 실제 벽이 입력값보다 이만큼 어긋나 있다고 친다 [mm].
+    WALL_ERROR_MM = 0.3
+    #: ㄹ자 줄 수 상한. 순회를 확인하는 게 목적이라 줄을 다 그릴 필요는 없다.
+    MAX_ROWS = 6
 
-    def __init__(self, bank: RegisterBank):
+    def __init__(self, bank: RegisterBank, wall_error_mm: float = WALL_ERROR_MM,
+                 max_rows: int = MAX_ROWS):
         super().__init__(daemon=True)
         self.bank = bank
+        self.wall_error_mm = float(wall_error_mm)
+        self.max_rows = max(1, int(max_rows))
         self._start_requested = threading.Event()
         self._abort = threading.Event()
         self._alive_count = 0
+        self._set(self.HOME_FLAG, 1)
+        self._set(self.TASK_STATE, 3)
 
     def play(self) -> None:
         """제로점에서 프로그램을 다시 재생한다."""
@@ -207,9 +241,15 @@ class ScanTaskSim(threading.Thread):
         self._start_requested.clear()
         self._set(self.STATE, 0)
         self._set(self.FINISHED, 0)
+        self._set(self.SEGMENT, 0)
+        self._set(self.TASK_STATE, 3)
+        self._set(self.HOME_FLAG, 1)
 
     def _set(self, address: int, value: int) -> None:
         self.bank.write(address, int(value))
+
+    def _get(self, address: int) -> int:
+        return self.bank.read(address, 1)[0]
 
     def _tick(self, seconds: float) -> bool:
         """지정한 시간만큼 대기한다. 중단 요청이 오면 False."""
@@ -222,10 +262,23 @@ class ScanTaskSim(threading.Thread):
             time.sleep(0.05)
         return True
 
+    def _wait_for(self, address: int, value: int, limit_s: float) -> bool:
+        """레지스터가 원하는 값이 될 때까지 기다린다. 중단·시간 초과면 False."""
+        end = time.time() + limit_s
+        while time.time() < end:
+            if self._abort.is_set():
+                return False
+            if self._get(address) == value:
+                return True
+            self._alive_count = (self._alive_count + 1) % 30000
+            self._set(self.ALIVE, self._alive_count)
+            time.sleep(0.05)
+        return False
+
     def _planned_rows(self) -> int:
         """작업 영역으로 ㄹ자 줄 수를 센다. 로봇 태스크와 같은 규칙이다."""
         height = self.bank.read(self.APP_HEIGHT, 1)[0]
-        scan_h = self.bank.read(self.SCAN_H, 1)[0] or 150
+        scan_h = (self.bank.read(self.SCAN_H, 1)[0] or 1500) / 10.0
         overlap = self.bank.read(self.OVERLAP, 1)[0]
         pitch = max(scan_h - overlap, 1)
         rows = 1
@@ -233,7 +286,7 @@ class ScanTaskSim(threading.Thread):
             rows += 1
             if rows > 200:      # 값이 이상해도 무한 루프에 빠지지 않는다
                 break
-        return rows
+        return min(rows, self.max_rows)
 
     def run(self) -> None:
         while True:
@@ -242,36 +295,119 @@ class ScanTaskSim(threading.Thread):
             self._abort.clear()
             self._run_once()
 
+    # ---- 단계별 ----------------------------------------------------------
+    def _fail(self, code: int, why: str) -> None:
+        self._set(self.PROBE_ERROR, code)
+        self._set(self.STATE, 9)
+        self._set(self.SEGMENT, 0)
+        print(f"[Task] 멈춤 — {why} (299 = {code})")
+
+    def _wait_for_vehicle(self) -> bool:
+        """차량 고정 확인(309)을 기다린다. 실제 태스크와 같은 인터락이다."""
+        if self._get(self.PARAM_SRC) != 1 or self._get(self.VEHICLE_READY) == 1:
+            return True
+        self._set(self.STATE, 14)
+        if self._wait_for(self.VEHICLE_READY, 1, self.VEHICLE_WAIT_S):
+            return True
+        if self._abort.is_set():
+            return False
+        self._fail(8, "차량 고정 확인(309)이 오지 않았습니다")
+        return False
+
+    def _measure_wall(self) -> None:
+        """3점 측정 결과를 레지스터에 남긴다(300~305 · 330~355).
+
+        입력 반지름 + 두께 + wall_error_mm 인 원 위에 세 점을 올린다.
+        단위는 실제 태스크와 같은 0.1 mm 다.
+        """
+        radius_mm = (self._get(self.RADIUS) + self._get(self.THICKNESS)) / 10.0
+        radius_mm = (radius_mm or 845.0) + self.wall_error_mm
+        arc_mm = self._get(self.APP_WIDTH) or 700
+        half = min(arc_mm / (2 * radius_mm), 0.6) if radius_mm else 0.3
+        for base, angle in ((self.POSE_CENTER, 0.0), (self.POSE_RIGHT, half),
+                            (self.POSE_ZERO, -half)):
+            x = radius_mm * math.sin(angle)
+            y = radius_mm * math.cos(angle)
+            self.bank.write_many(base, [round(x * 10), round(y * 10), 0, 0, 0, 0])
+        # 프로브 중심 오프셋(347~349)은 0 — 시뮬레이터는 플랜지가 곧 프로브다.
+        self.bank.write_many(self.POSE_EOAT, [0, 0, 0])
+        self._set(self.PROBE_CX, round(0.0))
+        self._set(self.PROBE_LX, round(-radius_mm * math.sin(half) * 10))
+        self._set(self.PROBE_RX, round(radius_mm * math.sin(half) * 10))
+        self._set(self.PRESS_OFF, 50)       # 5 mm 더 밀어 벽을 찾았다
+        self._set(self.N_PROBE, 3)
+        self._set(self.N_HIT, 3)
+
+    def _scan_rows(self, rows: int) -> bool:
+        """ㄹ자 스캔. 줄마다 구간 신호(277)를 실제 순서대로 낸다."""
+        arc_mm = self._get(self.APP_WIDTH) or 700
+        self._set(self.STATE, 6)
+        for row in range(rows):
+            self._set(self.ROW_IDX, row)
+            forward = row % 2 == 0
+            self._set(self.SEGMENT, 1 if forward else 3)
+            if not self._tick(self.STEP_SECONDS):
+                return False
+            self._set(self.ARC_POS, round(arc_mm * 10))
+            self._set(self.ARC_TOTAL, round(arc_mm * (row + 1)))
+            self._set(self.SEGMENT, 0)          # 줄 끝 — 스캔 동결
+            self._set(self.PROGRESS, int((row + 1) / rows * 100))
+            if row + 1 < rows:
+                self._set(self.SEGMENT, 2)      # 줄 바꿈(상승)
+                if not self._tick(self.STEP_SECONDS / 2):
+                    return False
+        self._set(self.SEGMENT, 0)
+        return True
+
     def _run_once(self) -> None:
         rows = self._planned_rows()
         pitch = max(
-            self.bank.read(self.SCAN_H, 1)[0] - self.bank.read(self.OVERLAP, 1)[0], 1
+            self.bank.read(self.SCAN_H, 1)[0] // 10 - self.bank.read(self.OVERLAP, 1)[0], 1
         )
+        self._set(self.TASK_STATE, 1)
+        self._set(self.PROBE_ERROR, 0)
         self._set(self.FINISHED, 0)
         self._set(self.ROWS, rows)
         self._set(self.PITCH, pitch)
         self._set(self.PROGRESS, 0)
         self._set(self.ZERO_OK, 0)
+        self._set(self.SEGMENT, 0)
+        self._set(self.STATE, 0)
 
-        # 탐색 → probe → 원점 복귀 (state 1, 2, 3)
-        for state in (1, 2, 3):
-            self._set(self.STATE, state)
-            if not self._tick(self.STEP_SECONDS):
-                return
+        if not self._wait_for_vehicle():
+            self._set(self.TASK_STATE, 3)
+            return
+        self._set(self.HOME_FLAG, 0)            # 홈을 벗어난다
+
+        # 3점 측정 → 원점 복귀 (290 = 2, 3)
+        self._set(self.STATE, 2)
+        if not self._tick(self.STEP_SECONDS):
+            return
+        self._measure_wall()
+        self._set(self.STATE, 3)
+        if not self._tick(self.STEP_SECONDS):
+            return
         self._set(self.ZERO_OK, 1)
 
-        # ㄹ자 스캔 (state 4). 줄마다 row_idx 와 진행률을 올린다.
-        self._set(self.STATE, 4)
-        for row in range(rows):
-            self._set(self.ROW_IDX, row)
-            self._set(self.PROGRESS, int((row + 1) / rows * 100))
-            if not self._tick(self.STEP_SECONDS):
-                return
+        # 원점 대기 (290 = 7). RCS 가 허가(267)를 줄 때까지 선다.
+        self._set(self.STATE, 7)
+        if not self._wait_for(self.SCAN_GO, 1, 600.0):
+            return
+        self._set(self.SCAN_GO, 0)              # 통과하며 지운다
 
-        # 피니시 (state 5). 운영 UI 는 이 값으로 셀 완료를 판정한다.
+        # 적심 (290 = 8) → 스캔 (290 = 6)
+        self._set(self.STATE, 8)
+        if not self._tick(self.STEP_SECONDS):
+            return
+        if not self._scan_rows(rows):
+            return
+
+        # 피니시 (290 = 5). 운영 UI 는 이 값으로 셀 완료를 판정한다.
         self._set(self.STATE, 5)
         self._set(self.FINISHED, 1)
         self._set(self.PROGRESS, 100)
+        self._set(self.HOME_FLAG, 1)            # 홈으로 돌아갔다
+        self._set(self.TASK_STATE, 3)           # 태스크 종료
         print(f"[Task] 셀 스캔 완료 ({rows} 행)")
 
 
@@ -362,7 +498,7 @@ class MotionSim:
             self._tcp_velocity = [0.0] * 6
 
     def move_joint_to(self, joints_rad: list[float]) -> None:
-        """movej 목표로 즉시(짧은 지연 후) 옮긴다."""
+        """목표 관절값(movej)으로 즉시(짧은 지연 후) 옮긴다."""
         def apply():
             time.sleep(0.8)
             with self._lock:
@@ -445,12 +581,18 @@ def main() -> int:
     parser.add_argument("--dash-port", type=int, default=29999)
     parser.add_argument("--primary-port", type=int, default=30001)
     parser.add_argument("--modbus-port", type=int, default=5502)
+    parser.add_argument(
+        "--wall-error", type=float, default=ScanTaskSim.WALL_ERROR_MM,
+        help="실제 벽이 입력 반지름보다 이만큼 어긋나 있다고 친다 [mm]")
+    parser.add_argument(
+        "--max-rows", type=int, default=ScanTaskSim.MAX_ROWS,
+        help="ㄹ자 줄 수 상한 (시험을 빨리 끝내려고 둔다)")
     args = parser.parse_args()
 
     registers = register_map.load()
     bank = RegisterBank(registers)
     motion = MotionSim(bank)
-    task = ScanTaskSim(bank)
+    task = ScanTaskSim(bank, wall_error_mm=args.wall_error, max_rows=args.max_rows)
     task.start()
 
     ModbusServer(bank, args.host, args.modbus_port).start()

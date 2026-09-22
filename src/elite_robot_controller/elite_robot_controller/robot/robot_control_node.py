@@ -8,7 +8,10 @@ from std_srvs.srv import Trigger
 
 from elite_robot_controller import register_map
 # 방금 만든 robot.py 내부 모듈 정상 참조 조치
-from elite_robot_controller.robot.robot_driver import Robot_30001, Robot_29999, Robot_modbus, AlarmManager
+from elite_robot_controller.robot.robot_driver import (
+    AlarmManager, Robot_29999, Robot_30001, Robot_modbus,
+)
+
 
 class RobotControlNode(Node):
     # 레지스터 주소는 config/modbus_registers.json에서만 관리한다.
@@ -64,8 +67,10 @@ class RobotControlNode(Node):
         self.pub_control_method = self.create_publisher(Int32, 'robot/status/control_method', 10)
         self.pub_op_mode = self.create_publisher(Int32, 'robot/status/operation_mode', 10)
         self.pub_tcp_pose = self.create_publisher(Float32MultiArray, 'robot/status/tcp_pose', 10)
-        self.pub_tcp_pose_zero = self.create_publisher(Float32MultiArray, 'robot/status/tcp_pose_zero', 10)
-        self.pub_joint_position = self.create_publisher(Float32MultiArray, 'robot/status/joint_position', 10)
+        self.pub_tcp_pose_zero = self.create_publisher(
+            Float32MultiArray, 'robot/status/tcp_pose_zero', 10)
+        self.pub_joint_position = self.create_publisher(
+            Float32MultiArray, 'robot/status/joint_position', 10)
         self.pub_alarm = self.create_publisher(String, 'robot/status/alarms', 10)
         self.pub_connected = self.create_publisher(Bool, 'robot/status/connected', 10)
         # 로봇 태스크가 쓰는 스캔 진행 상태(290~298). 운영 UI의 격자 순회가
@@ -80,6 +85,16 @@ class RobotControlNode(Node):
         self.pub_home_flag = self.create_publisher(Int32, 'robot/status/at_home', 10)
         # 로봇이 실제로 쓰고 있는 속도 비율[%]. 펜던트에서 바꿔도 여기로 나온다.
         self.pub_speed_scale = self.create_publisher(Int32, 'robot/status/speed_scale', 10)
+        # 디지털 입출력 비트묶음(레지스터 0 = 표준 DI, 2 = 표준 DO).
+        # 한 레지스터가 16비트고 비트 0 부터 IO 번호에 대응한다.
+        self.pub_digital_in = self.create_publisher(Int32, 'robot/status/digital_in', 10)
+        self.pub_digital_out = self.create_publisher(Int32, 'robot/status/digital_out', 10)
+        # 3점 측정 결과(300~305)와 접촉 자세(330~355). ERUT 캘리브레이션이
+        # 이 값으로 실제 벽 반지름을 재 오차를 계산한다.
+        self.pub_probe_result = self.create_publisher(
+            Int32MultiArray, 'robot/status/probe_result', 10)
+        self.pub_probe_poses = self.create_publisher(
+            Int32MultiArray, 'robot/status/probe_poses', 10)
 
         # 연결과 해제도 서비스로 노출해 운영 UI에서 다룰 수 있게 한다.
         self.create_service(Trigger, 'robot/dashboard/connect', self.cb_connect)
@@ -114,13 +129,16 @@ class RobotControlNode(Node):
         self.create_subscription(Int32, 'robot/command/jog_tcp', self.cb_jog_tcp, 10)
 
         # 기준 위치는 6개 레지스터에 한 번에 쓴다.
-        self.create_subscription(Float32MultiArray, 'robot/command/home_joint', self.cb_home_joint, 10)
-        self.create_subscription(Float32MultiArray, 'robot/command/start_pose', self.cb_start_pose, 10)
+        self.create_subscription(
+            Float32MultiArray, 'robot/command/home_joint', self.cb_home_joint, 10)
+        self.create_subscription(
+            Float32MultiArray, 'robot/command/start_pose', self.cb_start_pose, 10)
 
         # 작업 영역: [너비, 높이, 스캐너높이, 겹침] mm. MQTT job_cmd의 grid
         # 블록이 UI를 거쳐 여기로 온다. 256~259에 쓰고 266(param_src)을
         # 1로 세워야 태스크가 이 값을 읽는다.
-        self.create_subscription(Float32MultiArray, 'robot/command/work_area', self.cb_work_area, 10)
+        self.create_subscription(
+            Float32MultiArray, 'robot/command/work_area', self.cb_work_area, 10)
         # 스캔 시작 허가(267). 로봇이 원점에서 멈춰 기다리는 것을 풀어 준다.
         self.create_subscription(Int32, 'robot/command/scan_go', self.cb_scan_go, 10)
         # 차량 고정 확인(309). 차량이 서고 아웃트리거가 고정되고 리프트가
@@ -131,6 +149,11 @@ class RobotControlNode(Node):
         # 마킹 자리 [u, v] mm (268~269). 마킹 태스크를 틀기 전에 쓴다.
         self.create_subscription(
             Float32MultiArray, 'robot/command/mark_target', self.cb_mark_target, 10)
+        # 디지털 출력 한 개 켜고 끄기: [번호, 값]. 번호는 표준 DO 0~15,
+        # 값은 0 또는 1 이다. 물 분사 밸브·마킹기처럼 로봇 출력에 붙는
+        # 장치를 화면에서 손으로 확인할 때 쓴다.
+        self.create_subscription(
+            Int32MultiArray, 'robot/command/digital_out', self.cb_digital_out, 10)
         # 태스크 바꿔 끼우기. 마킹은 스캔과 다른 태스크라 29999 로 불러온다.
         # 경로는 컨트롤러 안의 실제 위치라 현장에서 한 번 확인해야 한다.
         self.declare_parameter('mark_task_path', 'Dusan/dusan_v4/dusan_v4_mark.task')
@@ -297,6 +320,10 @@ class RobotControlNode(Node):
         self.publish_code('task_state', self.pub_task_state)
         self.publish_code('home_flag', self.pub_home_flag)
         self.publish_code('speed_scale', self.pub_speed_scale)
+        self.publish_code('digital_in', self.pub_digital_in)
+        self.publish_code('digital_out', self.pub_digital_out)
+        self.publish_raw('probe_result', self.pub_probe_result)
+        self.publish_raw('probe_poses', self.pub_probe_poses)
 
         # 30001 포트 비동기 백그라운드 실시간 알람 스트림 처리
         self.robot_primary.get_data()
@@ -304,7 +331,8 @@ class RobotControlNode(Node):
             alarm = self.robot_primary.alarm_queue.get()
             if self.alarm_mgr.process(alarm):
                 alarm_msg = String()
-                alarm_msg.data = f"[ALARM] {alarm.msg}" if alarm.msg else f"[ALARM CODE] E{alarm.code} S{alarm.sub}"
+                alarm_msg.data = (f"[ALARM] {alarm.msg}" if alarm.msg
+                                  else f"[ALARM CODE] E{alarm.code} S{alarm.sub}")
                 self.pub_alarm.publish(alarm_msg)
 
     def _link_lost(self):
@@ -505,6 +533,53 @@ class RobotControlNode(Node):
         여기서 지울 필요는 없다.
         """
         self._write_topic('scan_go', msg)
+
+    # ------------------------------------------------------------ 디지털 출력
+    #: 디지털 출력 레지스터 하나가 담는 비트 수(설명서 15.2 레지스터 매핑).
+    DIGITAL_OUT_BITS = 16
+
+    def cb_digital_out(self, msg):
+        """[번호, 값] 으로 디지털 출력 한 개를 켜고 끈다."""
+        data = list(msg.data)
+        if len(data) < 2:
+            self.get_logger().warn(f"[digital_out] [번호, 값] 두 개가 필요합니다: {data}")
+            return
+        ok, message = self.set_digital_out(int(data[0]), bool(data[1]))
+        if not ok:
+            self.get_logger().warn(message)
+
+    def set_digital_out(self, index, on):
+        """표준 디지털 출력 한 비트만 바꾼다. (성공여부, 안내문구).
+
+        출력은 레지스터 하나(기본 2번)에 16비트로 모여 있어 한 개만
+        건드릴 수 없다. 그래서 지금 값을 읽어 해당 비트만 바꾸고 다시
+        쓴다 — 읽지 못하면 나머지 출력을 0 으로 밀어 버릴 수 있으므로
+        쓰지 않는다.
+        """
+        if not 0 <= int(index) < self.DIGITAL_OUT_BITS:
+            return False, f"[digital_out] 출력 번호가 범위를 벗어났습니다: {index}"
+        if not self.connected:
+            return False, "[digital_out] 로봇에 연결되어 있지 않습니다."
+        entry = self.registers.read_entry('digital_out')
+        if not entry.available:
+            return False, "[digital_out] Modbus 주소가 설정되지 않았습니다."
+        try:
+            current = self.robot_modbus.get_register(entry.address)
+        except Exception as exc:
+            current = None
+            self.get_logger().debug(f"[digital_out] 읽기 실패: {exc}")
+        if current is None:
+            return False, "[digital_out] 지금 출력 값을 읽지 못해 쓰지 않았습니다."
+        mask = int(current) & 0xFFFF
+        bit = 1 << int(index)
+        mask = (mask | bit) if on else (mask & ~bit)
+        # 드라이버는 쓴 값을 부호 있는 16비트로 다시 읽어 확인한다.
+        value = mask - 0x10000 if mask > 0x7FFF else mask
+        ok, message = self.write_register('digital_out', value)
+        if ok:
+            self.pub_digital_out.publish(Int32(data=value))
+            message = f"[digital_out] DO{int(index)} <- {'ON' if on else 'OFF'}"
+        return ok, message
 
     # ---------------------------------------------------------------- 조그
     def _jog_vector(self, code, count=6):
@@ -726,20 +801,37 @@ class RobotControlNode(Node):
             self.get_logger().warn(f"[{name}] 컨트롤러가 거절: {res_str}")
         return response
 
-    def cb_dash_mode(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_mode, "robotMode", res)
-    def cb_dash_status(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_status, "status", res)
-    def cb_dash_power_on(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_power_on, "robotControl -on", res)
-    def cb_dash_power_off(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_power_off, "robotControl -off", res)
-    def cb_dash_brake(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_brakeRelease, "brakeRelease", res)
-    def cb_dash_play(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_play, "play", res)
+    def cb_dash_mode(self, req, res):
+        return self._execute_dash_cmd(self.robot_dash.robot_mode, "robotMode", res)
+
+    def cb_dash_status(self, req, res):
+        return self._execute_dash_cmd(self.robot_dash.robot_status, "status", res)
+
+    def cb_dash_power_on(self, req, res):
+        return self._execute_dash_cmd(self.robot_dash.robot_power_on, "robotControl -on", res)
+
+    def cb_dash_power_off(self, req, res):
+        return self._execute_dash_cmd(self.robot_dash.robot_power_off, "robotControl -off", res)
+
+    def cb_dash_brake(self, req, res):
+        return self._execute_dash_cmd(self.robot_dash.robot_brakeRelease, "brakeRelease", res)
+
+    def cb_dash_play(self, req, res):
+        return self._execute_dash_cmd(self.robot_dash.robot_play, "play", res)
 
     def cb_dash_remote_on(self, req, res):
         """원격 제어 모드를 켠다. 이걸 켜야 play/stop 이 먹는다."""
         return self._execute_dash_cmd(
             self.robot_dash.robot_remote_control_on, "remoteControl -on", res)
-    def cb_dash_pause(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_pause, "pause", res)
-    def cb_dash_stop(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_stop, "stop", res)
-    def cb_dash_task_status(self, req, res): return self._execute_dash_cmd(self.robot_dash.robot_task_status, "task -s", res)
+
+    def cb_dash_pause(self, req, res):
+        return self._execute_dash_cmd(self.robot_dash.robot_pause, "pause", res)
+
+    def cb_dash_stop(self, req, res):
+        return self._execute_dash_cmd(self.robot_dash.robot_stop, "stop", res)
+
+    def cb_dash_task_status(self, req, res):
+        return self._execute_dash_cmd(self.robot_dash.robot_task_status, "task -s", res)
 
     def destroy_node(self):
         self.robot_dash.disconnect_29999()
@@ -747,19 +839,22 @@ class RobotControlNode(Node):
         self.robot_modbus.disconnect()
         super().destroy_node()
 
+
 def main(args=None):
     rclpy.init(args=args)
-    
+
     try:
         node = RobotControlNode()
         rclpy.spin(node)
-    except SystemExit: 
+    except SystemExit:
         pass
-    except KeyboardInterrupt: pass
+    except KeyboardInterrupt:
+        pass
     finally:
         if 'node' in locals():
             node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

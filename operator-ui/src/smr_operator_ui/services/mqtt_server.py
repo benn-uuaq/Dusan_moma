@@ -203,6 +203,23 @@ class MqttServer(QObject):
             self._client = None
             self.error_occurred.emit(f"MQTT 연결 시작 실패: {exc}")
 
+    def apply_config(self, config: "MqttConfig") -> bool:
+        """접속 정보를 바꾼다. 이미 붙어 있으면 끊고 새 주소로 다시 붙는다.
+
+        현장에서는 허브 건너편 브로커에 붙어야 해서 주소가 바뀐다. 값이
+        그대로면 아무것도 하지 않는다 — 저장을 누를 때마다 접속이 끊기면
+        진행 중인 작업 알림이 끊긴다.
+        """
+        if config == self.config:
+            return False
+        running = self._client is not None
+        if running:
+            self.stop()
+        self.config = config
+        if running:
+            self.start()
+        return True
+
     def stop(self) -> None:
         """정상 연결 종료 후 Paho 네트워크 루프를 정리한다."""
         client, self._client = self._client, None

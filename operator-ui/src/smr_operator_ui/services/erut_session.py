@@ -1,9 +1,9 @@
 """ERUT 요청 9개를 처리하는 프로토콜 계층.
 
-**지금은 로봇만 진짜다.** 실제 장비가 붙어 있는 것은 협동로봇뿐이라,
-`start` 계열만 `JobSequencer` 를 통해 로봇을 실제로 움직이고 나머지
-(캘리브레이션·마킹·배터리)는 시험용으로 답만 돌려준다. 어디까지가 진짜인지는
-`REAL` / `TEST` 주석으로 표시해 두었다 — 실장비가 붙을 때 그 자리만 바꾸면 된다.
+**로봇이 하는 일은 진짜다.** `start` 계열과 `calibrate` 는 로봇을 실제로
+움직이고 접촉점을 읽어 답한다. 아직 시험용인 것은 배터리·충전(차량 자료에
+항목이 없다)과 마킹 동작 자체(마킹기 개발 중), 그리고 장애 수집이다.
+어디까지가 진짜인지는 `REAL` / `TEST` 주석으로 표시해 두었다.
 
 흐름은 `mqtt_test/ERUT-3S_MQTT_인터페이스_*.xlsx` 탭3(정상 시나리오)을 따른다.
 
@@ -29,8 +29,7 @@ from smr_operator_ui.services.job_sequencer import GridPlan, SequencerState
 # 시험용 값. 실장비가 붙으면 실제 측정값으로 바꾼다.
 TEST_BATTERY = 85
 TEST_CHARGING = False
-TEST_CALIBRATION_ERROR_MM = 0.4
-# 캘리브레이션·마킹은 실제 동작이 없어 이 시간 뒤 완료로 답한다.
+# 마킹은 실제 마킹기가 없어 이 시간 뒤 완료로 답하는 경로가 남아 있다.
 TEST_WORK_MS = 1500
 # evt/status 재발행 주기. 규격(탭5)이 30~60초라 그 안쪽으로 잡는다.
 STATUS_PERIOD_MS = 30_000
@@ -60,6 +59,14 @@ MSG_ARC_LIMIT_CLAMPED = ("M2001", "ARC_LIMIT_CLAMPED")
 MSG_AREA_APPLY_PENDING = ("M2002", "AREA_APPLY_PENDING")
 
 
+def _mm(value: Any) -> float:
+    """요청에 실려 온 치수를 mm 실수로 바꾼다. 못 읽으면 0."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class ErutSession(QObject):
     """ERUT 요청을 받아 로봇(진짜)과 시험용 응답으로 나눠 처리한다."""
 
@@ -81,6 +88,9 @@ class ErutSession(QObject):
     mark_requested = pyqtSignal(list)
     # 로봇을 홈으로 보내 달라는 요청. 로봇이 쉬고 있을 때만 나간다.
     home_requested = pyqtSignal()
+    # 모재 기준 좌표계를 다시 잡아 달라는 요청 (지름 mm, 높이 mm).
+    # app.py 가 작업 영역 반지름을 고치고 로봇의 3점 측정을 돌린다.
+    calibration_requested = pyqtSignal(float, float)
     # evt/error 를 냈다 (코드, 메시지, level). 해제는 코드가 -CLEAR 로 끝난다.
     error_published = pyqtSignal(str, str, str)
     # evt/message 를 냈다 (코드, 문장).
@@ -105,6 +115,8 @@ class ErutSession(QObject):
         self.robot_busy: Callable[[], bool] = lambda: False
         # 원점 도착 시 evt/ready 를 낼 prepare 요청의 req_id.
         self._ready_req_id = ""
+        # 캘리브레이션 중인 요청의 req_id.
+        self._calibrate_req_id = ""
         # 마킹 중인 요청의 req_id 와 진행 여부.
         self._mark_req_id = ""
         self._marking = False
@@ -157,6 +169,8 @@ class ErutSession(QObject):
         (start 대기)". 시퀀서는 이때 이미 스캔 단계라 그대로 두면 running
         으로 나간다.
         """
+        if self._calibrate_req_id:
+            return "calibrating"
         if self._at_origin:
             return "ready"
         if self._marking:
@@ -247,20 +261,74 @@ class ErutSession(QObject):
         # query 는 응답 하나로 끝난다. 재실행 금지 대상이 아니라 기록하지 않는다.
         self.client.publish_res(req_id, "query", 200, "OK", **extra)
 
-    # ---- calibrate : TEST ---------------------------------------------------
+    # ---- calibrate : REAL — 로봇이 벽을 세 번 눌러 좌표계를 잡는다 --------
     def _do_calibrate(self, req_id: str, content: dict) -> None:
-        self._reply(req_id, "calibrate", 202, "ACCEPTED")
-        self.activity.emit("ERUT 캘리브레이션 요청 (시험용 — 실제 원점 교정 없음)")
-        self._after(TEST_WORK_MS, lambda: self._finish_calibrate(req_id))
+        """모재 기준 좌표계 수립 (규격 탭1 · 탭3 ②).
 
-    def _finish_calibrate(self, req_id: str) -> None:
+        **무엇을 재는 캘리브레이션인가.** 규격은 "모재 기준 좌표계 수립,
+        모든 좌표(area·points)의 기준"이라고 적고 있고, 요청에는 모재
+        지름·높이만 실려 온다. 즉 격자 한 칸의 확인이 아니라 **장치 전체가
+        이 모재에 대해 갖는 좌표계**를 한 번 잡는 일이다. 검사 시작 전
+        1회, 그리고 충전·교정룸처럼 자리를 옮겼다 돌아왔을 때 다시 한다
+        (탭4 D-4 — 재캘리브레이션이 배치 오차를 흡수한다).
+
+        차량이 따로 캘리브레이션되는 것은 아니다. 차량·리프트는 지금 선
+        자리가 곧 격자 1A 의 자리이고, 로봇이 그 자리에서 벽을 세 번 눌러
+        원점과 호의 기준을 잡는다. 그래서 여기서 하는 일은
+        "차량이 선 자리에서 로봇이 3점 측정 → 원점 확정"이다.
+
+        재는 값은 실제 접촉점이다(레지스터 330~355). 세 점을 프로브 중심
+        으로 옮겨 원을 맞추면 잰 벽 반지름이 나오고, 입력한 반지름과의
+        차이가 `calibration_error_mm` 이다. 접촉점이 0.1 mm 단위라 이
+        반지름의 분해능은 1 mm 안팎이다.
+        """
+        if self.robot_busy() or self.sequencer.state not in (
+            SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED
+        ):
+            self._reply(req_id, "calibrate", 409, "BUSY")
+            return
+        diameter = _mm(content.get("diameter"))
+        height = _mm(content.get("height"))
+        if diameter <= 0:
+            self._reply(req_id, "calibrate", 400, "INVALID_TARGET")
+            return
+        self._calibrate_req_id = req_id
+        self._calibrated = False
+        self._reply(req_id, "calibrate", 202, "ACCEPTED")
+        self.activity.emit(
+            f"ERUT 캘리브레이션 — 모재 지름 {diameter:g} mm, 높이 {height:g} mm "
+            "로 좌표계를 다시 잡습니다(로봇 3점 측정).")
+        self.calibration_requested.emit(diameter, height)
+
+    @property
+    def calibrating(self) -> bool:
+        return bool(self._calibrate_req_id)
+
+    def finish_calibration(self, ok: bool, error_mm: float = 0.0,
+                           detail: str = "") -> None:
+        """3점 측정이 끝났다. 결과를 evt/complete 로 낸다 (규격 탭3 8번).
+
+        실패해도 반드시 발행한다 — 안 내면 ERUT 가 영영 기다린다(탭2).
+        """
+        req_id, self._calibrate_req_id = self._calibrate_req_id, ""
+        if not req_id:
+            return
+        if not ok:
+            self.client.publish_event(
+                "complete", req_id, "calibrate", code=500,
+                message="CALIBRATION_FAILED", detail=detail)
+            self.activity.emit(f"ERUT 캘리브레이션 실패를 알렸습니다 — {detail}")
+            return
         self._calibrated = True
         self.client.publish_event(
             "complete", req_id, "calibrate",
-            origin={"x": 0, "y": 0},                        # TEST
-            calibration_error_mm=TEST_CALIBRATION_ERROR_MM,  # TEST
+            # 좌표계의 원점이므로 그 자신은 (0, 0) 이다(탭5 x·y 정의).
+            origin={"x": 0, "y": 0},
+            calibration_error_mm=round(float(error_mm), 2),
         )
-        self.activity.emit("ERUT 캘리브레이션 완료를 발행했습니다 (시험용).")
+        note = f" ({detail})" if detail else ""
+        self.activity.emit(
+            f"ERUT 캘리브레이션 완료 — 오차 {error_mm:.2f} mm{note}")
 
     # ---- prepare : REAL — 물리 준비를 실제로 시킨다 --------------------------
     def _do_prepare(self, req_id: str, content: dict) -> None:
@@ -371,6 +439,10 @@ class ErutSession(QObject):
         # 에 알릴 요청이 없다. req_id 가 빈 evt/ready 를 흘리면 ERUT 가 자기가
         # 보낸 적 없는 준비 완료를 받는다 — 그래서 아무것도 안 한다. 그때
         # 원점 대기는 MC 쪽 probe_ack 으로 푼다.
+        # 캘리브레이션 중의 원점 도착은 준비 완료가 아니라 **측정 끝**이다.
+        # 결과는 app.py 가 접촉점을 읽어 finish_calibration 으로 낸다.
+        if self._calibrate_req_id:
+            return
         if not self._ready_req_id and not self._start_req_id:
             return
         self._at_origin = True

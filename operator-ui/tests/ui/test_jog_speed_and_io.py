@@ -365,3 +365,66 @@ def test_jog_sends_once_and_stops_only_on_release(qtbot) -> None:
     screen._on_jog_released("tcp", 0)
     assert released == [("tcp", 0)]
     window.close()
+
+
+def test_robot_output_button_reaches_the_robot(qtbot) -> None:
+    """로봇 DO 버튼은 제어 노드로 [번호, 값]이 나가야 한다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.screens["io"]
+    sent: list[tuple[int, bool]] = []
+    window.ros_status.send_digital_out = lambda index, on: sent.append((index, on)) or True
+
+    on_button, off_button = screen.output_buttons["DO1"]
+    qtbot.mouseClick(on_button, Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(off_button, Qt.MouseButton.LeftButton)
+
+    assert sent == [(1, True), (1, False)]
+    window.close()
+
+
+def test_plc_output_button_says_it_is_not_wired_yet(qtbot) -> None:
+    """차량 PLC 출력은 아직 경로가 없다 — 로봇으로 보내면 안 된다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.screens["io"]
+    sent: list[tuple[int, bool]] = []
+    window.ros_status.send_digital_out = lambda index, on: sent.append((index, on)) or True
+
+    qtbot.mouseClick(screen.output_buttons["Y000"][0], Qt.MouseButton.LeftButton)
+
+    assert sent == []
+    assert "PLC" in screen.activity_label.text()
+    window.close()
+
+
+def test_robot_io_values_follow_the_bit_word(qtbot) -> None:
+    """레지스터 한 개(16비트)가 DO/DI 표시를 한꺼번에 갱신한다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.screens["io"]
+
+    window.ros_status.digital_out_changed.emit(0b0000_0110)
+    window.ros_status.digital_in_changed.emit(0b0000_0001)
+
+    assert screen.value_items["DO0"].text() == "OFF"
+    assert screen.value_items["DO1"].text() == "ON"
+    assert screen.value_items["DO2"].text() == "ON"
+    assert "ON" in screen.output_state_labels["DO1"].text()
+    assert screen.value_items["DI0"].text() == "ON"
+    assert screen.value_items["DI1"].text() == "OFF"
+    # 로봇 값이 PLC 신호를 건드리면 안 된다.
+    assert screen.value_items["Y000"].text() == "OFF"
+    window.close()
+
+
+def test_robot_output_failure_is_reported_on_screen(qtbot) -> None:
+    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    qtbot.addWidget(window)
+    screen = window.screens["io"]
+    window.ros_status.send_digital_out = lambda index, on: False
+
+    qtbot.mouseClick(screen.output_buttons["DO0"][0], Qt.MouseButton.LeftButton)
+
+    assert "연결" in screen.activity_label.text()
+    window.close()

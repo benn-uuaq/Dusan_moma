@@ -718,7 +718,7 @@ class SettingsMenuScreen(BaseScreen):
         super().__init__("설정 / 진단", "장비 설정과 운전 기록을 관리합니다.")
         self.setObjectName("SettingsScreen")
         grid=QGridLayout(); grid.setSpacing(14); self.body.addLayout(grid,1)
-        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·MQTT IP"),("system","시스템 설정","장비·기록 위치·보존 기간"),("ut","UT 시스템 설정","검사 조건과 트리거"),("cobot","Cobot 설정","검사 작업 슬롯"),("tpac_bridge","TPAC 설정 / TCP 인코딩","로봇 값을 외부 Modbus로 중계"),("errors","오류 로그","활성 오류 해제·과거 기록"),("logs","로그 파일","기록 파일 보기·내보내기·삭제"),("modes","운전 모드 저장","작업 조건 묶음 저장·불러오기"))
+        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","로봇·PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·MQTT IP"),("system","시스템 설정","장비·기록 위치·보존 기간"),("ut","UT 시스템 설정","검사 조건과 트리거"),("cobot","Cobot 설정","검사 작업 슬롯"),("tpac_bridge","TPAC 설정 / TCP 인코딩","로봇 값을 외부 Modbus로 중계"),("errors","오류 로그","활성 오류 해제·과거 기록"),("logs","로그 파일","기록 파일 보기·내보내기·삭제"),("modes","운전 모드 저장","작업 조건 묶음 저장·불러오기"))
         for i,(key,title,desc) in enumerate(items):
             # key를 기본 인자로 고정한다. 그렇지 않으면 모든 lambda가
             # 반복문의 마지막 key만 참조하게 된다.
@@ -726,10 +726,11 @@ class SettingsMenuScreen(BaseScreen):
 
 
 class IOStatusScreen(BaseScreen):
-    """PLC 입출력을 조회하고 출력 신호를 조작하는 화면.
+    """입출력을 조회하고 출력 신호를 조작하는 화면.
 
     신호 목록은 `config/plc_io.json`에서 읽는다. 신호가 늘어나도 파일만
-    고치면 되고 화면 코드는 그대로 둔다.
+    고치면 되고 화면 코드는 그대로 둔다. 신호마다 `bus`가 있어 어디로
+    보낼지 구분한다 — robot 은 협동로봇 디지털 IO, plc 는 차량용 PLC다.
     """
 
     # 출력 신호를 바꿔 달라는 요청. (주소, 켜기여부)를 전달한다.
@@ -738,7 +739,9 @@ class IOStatusScreen(BaseScreen):
     COLUMNS = ("주소", "신호명", "방향", "값", "상태")
 
     def __init__(self, signals: list[dict] | None = None) -> None:
-        super().__init__("I/O 상태", "왼쪽 목록은 조회 전용이고, 오른쪽에서 출력 신호를 켜고 끕니다.")
+        super().__init__("I/O 상태",
+                         "왼쪽 목록은 조회 전용이고, 오른쪽에서 출력 신호를 켜고 끕니다. "
+                         "로봇 DO 는 바로 나가고, 차량 PLC 는 실물 연결 뒤에 붙습니다.")
         self.signals = signals if signals is not None else load_plc_signals()
 
         columns = QHBoxLayout(); columns.setSpacing(12); self.body.addLayout(columns, 1)
@@ -830,6 +833,35 @@ class IOStatusScreen(BaseScreen):
         )
         self.output_requested.emit(address, turn_on)
 
+    def bus_of(self, address: str) -> str:
+        """그 신호가 어느 장비에 붙어 있는지(robot / plc)."""
+        signal = self._signal(address)
+        return str(signal.get("bus", "plc"))
+
+    def bit_of(self, address: str) -> int | None:
+        """로봇 디지털 IO 의 비트 번호. 없으면 None."""
+        bit = self._signal(address).get("bit")
+        return None if bit is None else int(bit)
+
+    def set_bits(self, bus: str, direction: str, bits: int) -> None:
+        """비트묶음 하나로 그 장비의 신호 값을 한꺼번에 갱신한다.
+
+        로봇은 디지털 IO 16개를 레지스터 하나에 담아 보내 준다.
+        """
+        for signal in self.signals:
+            if signal.get("bus") != bus or signal.get("direction") != direction:
+                continue
+            bit = signal.get("bit")
+            if bit is None:
+                continue
+            self.set_value(str(signal.get("address", "")),
+                           "ON" if bits >> int(bit) & 1 else "OFF")
+
+    def _signal(self, address: str) -> dict:
+        return next(
+            (s for s in self.signals if str(s.get("address")) == address), {}
+        )
+
     def set_value(self, address: str, value: str) -> None:
         """PLC가 알려준 현재 값을 목록과 출력 제어에 함께 반영한다."""
         item = self.value_items.get(address)
@@ -837,9 +869,6 @@ class IOStatusScreen(BaseScreen):
             item.setText(value)
         state = self.output_state_labels.get(address)
         if state is not None:
-            signal = next(
-                (s for s in self.signals if str(s.get("address")) == address), {}
-            )
             state.setText(f"현재  {value}")
 
 
@@ -1153,7 +1182,14 @@ class ConnectionSettingsScreen(FormScreen):
         "MQTT Broker 주소": "주소", "MQTT 포트": "포트",
         "MQTT Client ID": "Client ID",
         "MQTT Keep Alive": "Keep Alive", "MQTT TLS 사용": "TLS 사용",
+        "ERUT Broker 주소": "주소", "ERUT 포트": "포트",
+        "ERUT 장치 ID": "장치 ID",
     }
+
+    #: 값이 바뀌면 바로 알려야 하는 MQTT 항목(브로커를 다시 잡는다).
+    MQTT_FIELDS = ("MQTT Broker 주소", "MQTT 포트", "MQTT Client ID",
+                   "MQTT Keep Alive", "MQTT TLS 사용")
+    ERUT_FIELDS = ("ERUT Broker 주소", "ERUT 포트", "ERUT 장치 ID")
 
     connect_requested = pyqtSignal()
     disconnect_requested = pyqtSignal()
@@ -1191,8 +1227,14 @@ class ConnectionSettingsScreen(FormScreen):
                 ("MQTT 옵션",None),
                 ("MQTT Keep Alive",spin(60,10,3600)),
                 ("MQTT TLS 사용",QCheckBox()),
+                # ERUT(UT 시스템)는 봉투가 달라 접속을 따로 둔다. 현장에서는
+                # 같은 브로커일 수도, 허브 건너편의 다른 브로커일 수도 있다.
+                ("ERUT (UT 시스템)",None),
+                ("ERUT Broker 주소",line("127.0.0.1")),
+                ("ERUT 포트",spin(1883,1,65535)),
+                ("ERUT 장치 ID",line("robot1")),
             ],
-            columns=4,
+            columns=5,
         )
         self._build_connection_controls()
 
@@ -1210,6 +1252,26 @@ class ConnectionSettingsScreen(FormScreen):
         for index,widget in enumerate((self.link_state, self.connect_btn, self.disconnect_btn)):
             self._action_row.insertWidget(index, widget)
         self._action_row.insertSpacing(1, 12)   # 상태 글자와 버튼이 붙지 않게
+
+    def mqtt_endpoint(self) -> dict:
+        """운영(MC) 브로커 접속 값."""
+        values = self.values()
+        return {
+            "host": str(values.get("MQTT Broker 주소", "")).strip(),
+            "port": int(values.get("MQTT 포트") or 1883),
+            "client_id": str(values.get("MQTT Client ID", "")).strip(),
+            "keep_alive": int(values.get("MQTT Keep Alive") or 60),
+            "tls": bool(values.get("MQTT TLS 사용")),
+        }
+
+    def erut_endpoint(self) -> dict:
+        """ERUT(UT 시스템) 브로커 접속 값."""
+        values = self.values()
+        return {
+            "host": str(values.get("ERUT Broker 주소", "")).strip(),
+            "port": int(values.get("ERUT 포트") or 1883),
+            "device_id": str(values.get("ERUT 장치 ID", "")).strip() or "robot1",
+        }
 
     def robot_ip(self) -> str:
         return str(self.values().get(self.ROBOT_IP_FIELD, "")).strip()

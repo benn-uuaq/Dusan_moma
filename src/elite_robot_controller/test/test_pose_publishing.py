@@ -376,7 +376,7 @@ def test_jog_speed_follows_speed_ratio():
 
 
 def test_jog_command_carries_hold_time():
-    """t 를 짧게 주어 명령이 끊기면 로봇이 스스로 서게 한다."""
+    """유지 시간(t)을 짧게 주어 명령이 끊기면 로봇이 스스로 서게 한다."""
     node = make_jog_node()
     node.cb_jog_joint(FakeMessageInt(1))
 
@@ -431,6 +431,10 @@ def test_connected_status_is_republished_every_cycle():
     node.pub_task_state = FakePublisher()
     node.pub_home_flag = FakePublisher()
     node.pub_speed_scale = FakePublisher()
+    node.pub_digital_in = FakePublisher()
+    node.pub_digital_out = FakePublisher()
+    node.pub_probe_result = FakePublisher()
+    node.pub_probe_poses = FakePublisher()
     node.pub_alarm = FakePublisher()
     node.alarm_mgr = type("M", (), {"process": lambda self, a: False})()
     node.robot_primary.get_data = lambda: None
@@ -476,7 +480,7 @@ def test_work_area_write_sets_param_src_flag():
 
 
 def test_work_area_write_skipped_without_param_src_address():
-    """flag 레지스터 주소가 없으면 값은 쓰되 플래그는 세우지 않는다."""
+    """주소 없는 플래그 레지스터는 값만 쓰고 플래그는 세우지 않는다."""
     node = make_node(map_data={
         "scale": {"position_per_count": 0.1, "rotation_per_count": 1.0},
         "read": {},
@@ -548,7 +552,9 @@ def _linked_node(fail_reads):
     assert node.connect_all_servers() is True
     for name in ("pub_robot_mode", "pub_control_method", "pub_op_mode", "pub_tcp_pose",
                  "pub_tcp_pose_zero", "pub_joint_position", "pub_scan_state", "pub_task_state",
-                 "pub_home_flag", "pub_speed_scale", "pub_alarm"):
+                 "pub_home_flag", "pub_speed_scale", "pub_digital_in",
+                 "pub_digital_out", "pub_probe_result", "pub_probe_poses",
+                 "pub_alarm"):
         setattr(node, name, FakePublisher())
     node.alarm_mgr = type("M", (), {"process": lambda self, a: False})()
     node.robot_primary.get_data = lambda: None

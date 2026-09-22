@@ -67,11 +67,11 @@
 - [x] 4단계: 리프트/AMR 더미 어댑터(`motion_adapters.py`) + `JobSequencer` 신설, 1A~12F 셀 순회 완성
 - [x] 5단계: 셀마다 제로점에서 29999 play로 로봇 재시작 (param_src 재기록 아님)
 - [x] 6단계: 제로점 기준 TCP 좌표(280~285)에 격자 번호를 붙여 `doosan/robot/tcp`(T-008)로 발행. 격자별 상태는 `doosan/robot/job_state`(T-009)로 발행 — job_id가 곧 격자 이름
-- [ ] 7단계: 실제 PLC/차량 확보 후 리프트·AMR 더미 어댑터 교체 (`motion_adapters.py`만 교체, JobSequencer는 무수정)
+- [x] 7단계: 실차 경로 구현 완료 — `vehicle_adapters.py`(AMR·리프트·아웃트리거) + `vehicle_sim`. 연결 설정의 '차량 제어'에서 더미/실차를 바꿔 끼운다. 남은 것은 실차로 맞춰 보는 일뿐
 - [x] 실장비(VM) 확인: 셀마다 제로점 재시작이 되는지 → **`remoteControl -on` → `stop` → (1.2초) → `play`** 순서로 확인 완료. 원격 제어 모드가 아니면 play/stop 전부 거부됨, 이미 RUNNING 이면 play 거부됨
 - [x] 태스크 상태 레지스터 500 추가 (1 실행중/2 일시중지/3 중지됨). **input register(0x04)** 로 읽힘. `robot/status/task_state` 로 발행
 - [x] `play` 응답 문자열이 아니라 상태 레지스터로 진행을 판단하도록 변경
-- [ ] 실장비에서 리프트 실제 상승 연동 (현재 더미)
+- [ ] **실차로 확인 필요**: 리프트·AMR·아웃트리거 실제 동작 (코드 경로는 `vehicle_adapters.py` 로 준비됨)
 - [x] ERUT 인터페이스 구현 — `erut_client.py`(전송) + `erut_session.py`(9개 동작). 봉투가 doosan 규격과 달라(content 래퍼, 숫자 timestamp) 접속을 따로 둠. `evt/status`(retained+LWT, 접속 시 + 30~60초 주기 재발행)로 생존 감시 — telemetry 는 규격에 없어 제거
 - [x] ERUT 시뮬레이터 `mqtt_test/erut_sim.py` — 규격 탭3 시나리오 자동 진행
 - [x] ERUT 시퀀스 ①~⑤ 검증 (로봇 시뮬레이터 기준). 진행률 1A(25%)→1B(50%)→2A(75%)→2B(100%)
@@ -80,7 +80,8 @@
 - [x] `evt/error` 봉투를 규격대로 수정 — `code`·`message` 는 최상위, `level`·`recovery`·`detail` 은 content 안
 - [x] 장애·알람 조작판 `mqtt_test/alarm_sim.py` — 버튼으로 RCS 를 찔러 RCS 가 evt/error 를 발행. stop/estop 이면 자동 일시정지, reset 으로 해제
 - [x] `mqtt_job_sim.py` 가 오가는 MQTT 를 전부 표시 (`doosan/#`·`erut/#`·`3s/test/#`). tcp 는 한 줄로 접음
-- [ ] ERUT 항목 중 아직 시험용인 것 실제화: 캘리브레이션, 마킹, 배터리·충전, 장애 수집(현재는 alarm_sim 주입)
+- [x] ERUT 캘리브레이션 실제화 (2026-09-22) — `req/calibrate` 가 모재 지름을 받아 작업 영역 반지름을 고치고, 차량을 고정한 뒤 로봇 3점 측정을 돌린다. 접촉점(330~355)을 프로브 중심(347~349)으로 옮겨 원을 맞춘 뒤 입력 반지름과의 차이를 `calibration_error_mm` 으로 낸다. **무엇에 대한 캘리브레이션인지**: 규격상 격자 한 칸이 아니라 모재 기준 좌표계 1회 수립이다(검사 시작 전 + 위치 이탈·재배치 후). 차량은 선 자리가 곧 1A 자리이고 따로 교정하지 않는다
+- [ ] ERUT 항목 중 아직 시험용인 것: 마킹 동작(마킹기 개발 중), 배터리·충전(차량 자료에 항목이 있는지 확인 필요), 장애 수집(현재는 alarm_sim 주입)
 - [ ] **겹침 계산 확정 대기** — 마지막 행/열 나머지 처리(설계안 C: 천장 맞춤), `pitch_scan` 부호, `surface_length` 의미. 스캔업체 회신 후 적용
 - [ ] start 가 prepare 와 값이 겹치는 건에 대한 협의 (규격 20260818 탭3 12행 3S 검토 요청)
 - [x] 안전 순서 5단계를 시퀀서에 대응 — 1 정지·고정(SECURING) / 2 수평 보정(LEVELING) / 3 Cobot 검사(SCANNING·MOVING_LIFT) / 4 안전 위치(RETRACTING) / 5 다음 구간 이동(MOVING_AMR). 5단계는 구간(열)마다 반복되며 열 안의 셀 이동은 3단계 안이다. 차량이 이미 1구역에 있으므로 1번부터 시작
@@ -88,23 +89,29 @@
 - [x] TCP 직선 속도 운영 상한 100 mm/s · 가속도 400 mm/s² 를 로봇 태스크(dus_init.script)·로봇 노드(홈·조그)·UI 에 적용 (2026-09-17, 이전 150 mm/s)
 - [x] 로봇 동작 속도 비율(2~100 %) 실시간 제어 — 29999 `speed -v N` 으로 전송, Modbus 레지스터 17 로 읽기, MQTT `doosan/robot/req/speed`(T-010) 및 Cobot 설정 화면에서 조절
 - [x] 속도가 바뀌었다 100 으로 되돌아가던 버그 수정 — `robot/status/connected` 가 10 Hz 로 계속 오는데 `_on_connected` 가 그대로 흘려보내, `_restore_robot_settings()` 가 초당 열 번 저장값(100 %)을 다시 밀어 넣고 있었다. 연결 상태가 **바뀔 때만** 알리도록 수정
-- [ ] **실장비 확인 필요: 속도 비율이 로봇에 반영되는지.** (2026-09-17) 원인 후보 — 대시보드 명령표의 형식은 `speed -v N` 인데 `speed -set N` 을 보내고 있었다. `speed -v` 로 고쳤으니 레지스터 17 이 바뀌는지 다시 볼 것. 예전 기록: 명령은 `setting speed to N` 으로 응답하는데 레지스터 17 이 100 에서 안 바뀜(원격 제어 모드·safety NORMAL·태스크 정지 상태에서도 동일). 초기 1회는 정상 반영됐었음. 태스크 실행/정지·원격 제어 모드·safety NORMAL 어느 조합에서도 동일하고, 로봇 태스크 스크립트에도 속도를 되돌리는 코드는 없음. 펜던트에서 속도 슬라이더가 잠겨 있는지, operationMode 가 NONE 인 것이 원인인지 확인 필요
+- [x] **실장비 확인 완료: 속도 비율이 레지스터 17 에 반영된다** (2026-09-22). 원인은 명령 형식이었다 — (2026-09-17) 원인 후보 — 대시보드 명령표의 형식은 `speed -v N` 인데 `speed -set N` 을 보내고 있었다. `speed -v` 로 고쳤으니 레지스터 17 이 바뀌는지 다시 볼 것. 예전 기록: 명령은 `setting speed to N` 으로 응답하는데 레지스터 17 이 100 에서 안 바뀜(원격 제어 모드·safety NORMAL·태스크 정지 상태에서도 동일). 초기 1회는 정상 반영됐었음. 태스크 실행/정지·원격 제어 모드·safety NORMAL 어느 조합에서도 동일하고, 로봇 태스크 스크립트에도 속도를 되돌리는 코드는 없음. 펜던트에서 속도 슬라이더가 잠겨 있는지, operationMode 가 NONE 인 것이 원인인지 확인 필요
 - [x] `dusan_ws/mqtt_test/`에 MC 대역 시뮬레이션 MQTT 도구 작성 (tkinter, Operator UI와 독립)
 - [ ] robot_task/scripts/dus_init.script 재적용 필요 (오늘 수정한 pub_rel 반영) — 로봇에 넣기만 하면 됨
 - [ ] 조그 값 인코딩 확인 (축 번호와 방향을 한 레지스터에 담는 방식)
-- [ ] I/O 출력 ON/OFF를 실제 PLC 경로에 연결 (현재는 `output_requested` 시그널까지만)
+- [x] I/O 화면의 로봇 디지털 출력 연결 (2026-09-22) — `robot/command/digital_out` [번호, 값] → 노드가 레지스터 2 의 그 비트만 바꿔 쓴다. 상태는 `robot/status/digital_in|out`. 물 분사 밸브·마킹기가 붙을 자리다
+- [ ] 차량용 PLC 출력(Y000 등)은 실물 PLC 경로가 생기면 잇는다 (지금은 화면에서 안내만)
 - [x] Cobot 수동 제어 화면의 대시보드 명령을 `robot/dashboard/*` 서비스에 연결 (연결·해제 포함)
 - [x] 로봇 미연결 시에도 노드가 살아 있도록 변경 (연결 버튼으로 재시도 가능)
 - [x] TCP 현재값 및 제로점 기준값의 Modbus 레지스터 주소 확인 (현재 384~389, 원점 기준 280~285)
 - [ ] 위치 환산 계수 실장비 검증 (`POSITION_SCALE = 0.1`이 맞는지, 레지스터가 0.1 mm 단위인지)
 - [x] 운영 UI를 `robot/status/tcp_pose`, `robot/status/tcp_pose_zero` 토픽에 연결
 - [x] 로봇 모드·제어 방식·운전 모드·알람 토픽 UI 연결
-- [ ] 이식 코드(`robot_driver.py`, `robot_control_node.py`)의 flake8/pep257 위반 일괄 정리
+- [x] 이식 코드(`robot_driver.py`, `robot_control_node.py`)의 flake8/pep257 위반 정리 (2026-09-22). `test_pep257` 은 D213 만 끈다 — 이 저장소는 요약을 첫 줄에 쓴다
 - [x] TCP 위치·회전 성분의 단위 확정 (위치 mm, 회전 mrad) 및 화면 표기
-- [ ] 연결 설정값을 MqttServer 및 장비 어댑터의 실제 접속 정보로 반영
+- [x] 연결 설정의 MQTT·ERUT 브로커 주소를 실제 접속에 반영 (2026-09-22). 허브 건너편 브로커에 붙어야 해서 환경변수만으로는 부족했다. 저장·불러오기 때 주소가 바뀌면 그 접속만 다시 잡는다
+- [ ] PLC 접속 정보(IP·포트·프로토콜·국번)는 실물 PLC 경로가 생기면 잇는다
 - [ ] 엘리트 로봇 실장비 연결 후 토픽/서비스 동작 검증
 - [ ] 운영 UI(MQTT) ↔ ROS 2 브리지 구현 — 규격은 `docs/mqtt_topic_form.md`
 - [ ] 운영 UI의 Linux 실행 환경 확인 (PyQt6, PostgreSQL, MQTT Broker)
+- [x] 장비 없이 도는 회귀 시험 확장 (2026-09-22) — `mqtt_test/run_sim_test.py` 가 네 가지를 돈다: `mc`(격자 순회 + 원점 프로브 확인), `erut`(calibrate→prepare→start→complete), `io`(로봇 DO), `tpac`(스캔 구간 DO 신호). 로봇 시뮬레이터도 지금 태스크와 같은 상태 흐름(차량 고정 대기·원점 허가·구간 신호)으로 고쳤다
+- [ ] 물 분사(펌프·밸브) 제어 — 펌프가 준비되면 `dus_goto_zero` 의 TODO 자리에 DO 를 넣는다
+- [ ] 마킹 동작 — 마킹기가 준비되면 `dus_mark_point` 의 TODO 자리에 DO 펄스를 넣는다
+- [ ] 수평 보정(2단계) 실제화 — IMU·아웃트리거 개별 제어. 센서 사양 회신 뒤
 - [ ] AMR 패키지 skeleton 생성 — 구성안은 `plan.md` 6절
 - [ ] 장비별 더미 드라이버 설계
 - [ ] AMR 수동/자동 모드 상태 관리 설계

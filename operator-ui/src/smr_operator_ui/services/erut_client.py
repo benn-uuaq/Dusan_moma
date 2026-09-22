@@ -132,6 +132,22 @@ class ErutClient(QObject):
             return
         self._client = client
 
+    def apply_config(self, config: ErutConfig) -> bool:
+        """ERUT 브로커 접속 정보를 바꾼다. 붙어 있으면 다시 붙는다.
+
+        같은 값이면 아무것도 하지 않는다 — 다시 붙을 때마다 evt/status 를
+        새로 내보내게 되고, ERUT 쪽에서는 RCS 가 껐다 켜진 것으로 보인다.
+        """
+        if config == self.config:
+            return False
+        running = self._client is not None
+        if running:
+            self.stop()
+        self.config = config
+        if running:
+            self.start()
+        return True
+
     def stop(self) -> None:
         client, self._client = self._client, None
         if client is None:
