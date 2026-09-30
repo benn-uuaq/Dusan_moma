@@ -18,9 +18,14 @@ ERUT 는 결함 자리를 검사면 좌표(x = 원주 전개, y = 높이 — are
 끝 높이), `u`·`v`(격자 안 좌표: 원점부터 호를 따라 u, 아래에서 위로 v). 이
 값이 있으면 위의 가운데 맞춤 대신 그대로 쓴다.
 
+**마커는 ERUT 것이다**(미니 PC 가 쏜다). 로봇은 마킹 자리에 붙으면 290 = 11
+로 알리고 **서서 기다린다** — 마커가 쏘는 동안 팔이 떠나면 엉뚱한 자리에
+찍힌다. 이 순간 `point_reached(id)` 를 내고(ERUT 에 evt/mark_ready), 마킹이
+끝났다는 `point_marked(id, marked)` 가 오면 대기 해제(278 = 1)를 보내 로봇을
+홈으로 돌린다. `hold=False` 로 돌리면(사내 MC 의 격자 지정 마킹처럼 바깥에
+확인할 마커가 없을 때) 붙자마자 바로 푼다.
+
 다 끝나면 스캔 태스크를 다시 불러 두고 `finished(marked, failed)` 를 낸다.
-마킹 동작 자체(스프레이/마커)는 아직 TODO 다 — 로봇은 그 자리에 붙었다가
-홈으로 돌아올 뿐이다.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ from collections.abc import Callable
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 #: 로봇 마킹 태스크의 상태값(레지스터 290). dus_mark_point / dus_home 이 쓴다.
+MARK_STATE_AT_POINT = 11    # 마킹 자리에 붙어 대기 해제(278)를 기다린다
 MARK_STATE_DONE = 12        # 홈 도착 = 이 점 끝
 MARK_STATE_FAILED = 9       # 벽 접촉 실패 등으로 멈춤
 
@@ -40,6 +46,8 @@ class MarkRunner(QObject):
     activity = pyqtSignal(str)
     #: 모든 점을 끝냈다. (마킹한 점 id 들, 실패한 점 id 들)
     finished = pyqtSignal(list, list)
+    #: 로봇이 마킹 자리에 붙어 기다린다 (점 id). ERUT 에 evt/mark_ready 로 알린다.
+    point_reached = pyqtSignal(str)
 
     #: 점 하나에 주는 시간 [ms]. 프로브 3점 + 이동 + 홈이라 넉넉히.
     POINT_TIMEOUT_MS = 300_000
@@ -48,6 +56,7 @@ class MarkRunner(QObject):
                  send_target: Callable[[float, float], object],
                  start_mark_task: Callable[[], object],
                  restore_scan_task: Callable[[], object],
+                 release_hold: Callable[[], object] | None = None,
                  parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._amr, self._lift = amr, lift
@@ -55,6 +64,11 @@ class MarkRunner(QObject):
         self._send_target = send_target
         self._start_mark_task = start_mark_task
         self._restore_scan_task = restore_scan_task
+        # 마킹 자리 대기를 푼다(레지스터 278 = 1). 로봇은 이게 올 때까지 선다.
+        self._release_hold = release_hold or (lambda: None)
+        self._hold = True
+        self._at_point = False
+        self._point_ok = True
         self._points: list[dict] = []
         self._index = -1
         self._cell_w = self._cell_h = 0.0
@@ -74,8 +88,37 @@ class MarkRunner(QObject):
     def running(self) -> bool:
         return 0 <= self._index < len(self._points)
 
-    def start(self, points: list[dict], cell_w_mm: float, cell_h_mm: float) -> None:
-        """점 목록을 받아 첫 점부터 돈다. 점은 {id, x, y} (mm)."""
+    @property
+    def waiting_point(self) -> str:
+        """마킹 자리에서 마킹 끝을 기다리는 점 id. 아니면 빈 문자열."""
+        if self.running and self._step == "marking":
+            return str(self._point().get("id", ""))
+        return ""
+
+    def progress(self) -> tuple[list[str], list[str]]:
+        """(마킹한 점, 못 한 점 + 아직 안 간 점). 도중에 멈출 때 완료에 싣는다."""
+        done = set(self._marked) | set(self._failed)
+        rest = [str(p.get("id")) for p in self._points if str(p.get("id")) not in done]
+        return list(self._marked), list(self._failed) + rest
+
+    def point_marked(self, point_id: str, marked: bool = True) -> bool:
+        """마킹이 끝났다(ERUT req/mark_next). 대기를 풀어 로봇을 돌려보낸다."""
+        if self.waiting_point != str(point_id):
+            return False
+        self._point_ok = bool(marked)
+        self._step = "robot"
+        self._release_hold()
+        self.activity.emit(
+            f"마킹 {point_id}: {'찍음' if marked else '못 찍음'} — 로봇이 물러납니다.")
+        return True
+
+    def start(self, points: list[dict], cell_w_mm: float, cell_h_mm: float,
+              hold: bool = True) -> None:
+        """점 목록을 받아 첫 점부터 돈다. 점은 {id, x, y} (mm).
+
+        `hold` 가 참이면 점마다 마킹 자리에서 `point_marked` 를 기다린다.
+        """
+        self._hold = bool(hold)
         self._points = list(points)
         self._cell_w, self._cell_h = float(cell_w_mm), float(cell_h_mm)
         self._marked, self._failed = [], []
@@ -137,6 +180,8 @@ class MarkRunner(QObject):
         elif arrived == "lift":
             self._step = "robot"
             self._saw_busy = False
+            self._at_point = False
+            self._point_ok = True
             # 점을 격자 가운데·원점 높이에 뒀으므로 로봇 목표는 (W/2, 0).
             # 격자 지정 마킹이면 격자 안 좌표(u, v)를 그대로 준다.
             self._send_target(float(pt.get("u", self._cell_w / 2.0)), float(pt.get("v", 0.0)))
@@ -146,18 +191,32 @@ class MarkRunner(QObject):
             self._next_point()
 
     def handle_scan_state(self, values: list[int]) -> None:
-        """로봇 상태(290)로 이 점이 끝났는지 본다."""
-        if not self.running or self._step != "robot" or not values:
+        """로봇 상태(290)로 이 점이 어디까지 왔는지 본다."""
+        if not self.running or self._step not in ("robot", "marking") or not values:
             return
         state = int(values[0])
         if state not in (MARK_STATE_DONE, MARK_STATE_FAILED):
             # 로봇이 이번 점을 실제로 시작했다 — 지난 점의 12 가 남아 있어도
             # 이제부터의 12 만 인정한다.
             self._saw_busy = True
+            if state == MARK_STATE_AT_POINT and not self._at_point:
+                self._reached_point()
             return
         if not self._saw_busy:
             return
-        self._finish_point(ok=(state == MARK_STATE_DONE))
+        self._finish_point(ok=(state == MARK_STATE_DONE and self._point_ok))
+
+    def _reached_point(self) -> None:
+        """로봇이 마킹 자리에 붙어 섰다(290 = 11)."""
+        self._at_point = True
+        pt_id = str(self._point().get("id", self._index + 1))
+        if not self._hold:
+            # 바깥에 확인할 마커가 없다 — 바로 풀어 준다.
+            self._release_hold()
+            return
+        self._step = "marking"
+        self.activity.emit(f"마킹 {pt_id}: 자리에 붙었습니다 — 마킹 끝을 기다립니다.")
+        self.point_reached.emit(pt_id)
 
     def _finish_point(self, ok: bool) -> None:
         pt_id = str(self._point().get("id", self._index + 1))
@@ -171,6 +230,9 @@ class MarkRunner(QObject):
             return
         pt_id = str(self._point().get("id", self._index + 1))
         self.activity.emit(f"마킹 {pt_id}: 시간 초과 — 실패로 넘깁니다.")
+        if self._step == "marking":
+            # 로봇이 자리에서 기다리고 있다 — 풀어 줘야 홈으로 돌아간다.
+            self._release_hold()
         self._failed.append(pt_id)
         self._step = "retract"
         self._retractor.move_to(1, " 복귀")

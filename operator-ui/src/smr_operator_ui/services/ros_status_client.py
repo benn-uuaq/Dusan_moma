@@ -51,6 +51,8 @@ class RosTopics:
     ALARMS = "robot/status/alarms"
     CONNECTED = "robot/status/connected"
     SCAN_STATE = "robot/status/scan_state"
+    # 스캔 중 호 위 위치(286/287) — ERUT 에 실제 검사 좌표를 실을 때 쓴다.
+    SCAN_ARC = "robot/status/scan_arc"
     TASK_STATE = "robot/status/task_state"
     # 로봇이 홈에 있는지(레지스터 276). 홈을 벗어나면 0 이 된다.
     AT_HOME = "robot/status/at_home"
@@ -74,6 +76,8 @@ class RosTopics:
     SCAN_GO = "robot/command/scan_go"
     # 마킹 자리 [u, v] mm (레지스터 268~269).
     MARK_TARGET = "robot/command/mark_target"
+    # 마킹 끝(레지스터 278). 로봇은 마킹 자리에서 이게 1 이 될 때까지 선다.
+    MARK_GO = "robot/command/mark_go"
     # 차량 고정 확인(레지스터 309). 차량 정지·아웃트리거 고정·리프트 정지를
     # RCS 가 확인해 1 을 쓴다. 로봇은 1 이어야 움직인다.
     VEHICLE_READY = "robot/command/vehicle_ready"
@@ -138,6 +142,8 @@ class RosStatusClient(QObject):
     # 3점 측정 값. 정수 그대로 준다(위치 0.1mm, 회전 mrad).
     probe_result_changed = pyqtSignal(list)
     probe_poses_changed = pyqtSignal(list)
+    # 호 위 위치 [이번 줄 0.1mm, 누적 mm]. 바뀔 때만 나간다.
+    scan_arc_changed = pyqtSignal(list)
 
     POSE_LENGTH = 6
     # 290~298 중 격자 순회에 필요한 항목의 위치.
@@ -203,6 +209,7 @@ class RosStatusClient(QObject):
         self._digital_out_last: int | None = None
         self._probe_result_last: list[int] | None = None
         self._probe_poses_last: list[int] | None = None
+        self._scan_arc_last: list[int] | None = None
         # 같은 노드에 붙는 확장(차량 클라이언트 등). 노드가 생기면 부른다.
         self._extensions: list = []
         if REGISTER_MAP_AVAILABLE:
@@ -278,6 +285,9 @@ class RosStatusClient(QObject):
                 Int32MultiArray, RosTopics.SCAN_STATE, self._on_scan_state, 10
             )
             self._node.create_subscription(
+                Int32MultiArray, RosTopics.SCAN_ARC, self._on_scan_arc, 10
+            )
+            self._node.create_subscription(
                 Int32, RosTopics.SPEED_SCALE, self._on_speed_scale, 10
             )
             self._node.create_subscription(
@@ -304,6 +314,7 @@ class RosStatusClient(QObject):
                 "jog_joint": self._node.create_publisher(Int32, RosTopics.JOG_JOINT, 10),
                 "jog_tcp": self._node.create_publisher(Int32, RosTopics.JOG_TCP, 10),
                 "scan_go": self._node.create_publisher(Int32, RosTopics.SCAN_GO, 10),
+                "mark_go": self._node.create_publisher(Int32, RosTopics.MARK_GO, 10),
                 "vehicle_ready": self._node.create_publisher(
                     Int32, RosTopics.VEHICLE_READY, 10),
                 "digital_out": self._node.create_publisher(
@@ -629,6 +640,14 @@ class RosStatusClient(QObject):
             return
         self._digital_out_last = bits
         self.digital_out_changed.emit(bits)
+
+    def _on_scan_arc(self, msg) -> None:
+        """호 위 위치(286/287). 바뀔 때만 내보낸다."""
+        values = [int(v) for v in msg.data]
+        if values == self._scan_arc_last:
+            return
+        self._scan_arc_last = values
+        self.scan_arc_changed.emit(values)
 
     def _on_probe_result(self, msg) -> None:
         """3점 측정 결과(300~305). 바뀔 때만 내보낸다."""

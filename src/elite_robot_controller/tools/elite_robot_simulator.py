@@ -231,6 +231,15 @@ class ScanTaskSim(threading.Thread):
         self._set(self.HOME_FLAG, 1)
         self._set(self.TASK_STATE, 3)
 
+    #: 마킹 태스크 상태(290): 10 이동 · 11 자리에 붙어 대기 · 13 홈으로 · 12 끝.
+    MARK_GO = 278
+    #: `task -p` 로 불러 둔 태스크 경로. 이름에 mark 가 들어가면 마킹 태스크다.
+    task_path = ""
+
+    def load(self, path: str) -> None:
+        """29999 `task -p` — 다음 play 가 어느 태스크를 돌지 정한다."""
+        self.task_path = path
+
     def play(self) -> None:
         """제로점에서 프로그램을 다시 재생한다."""
         self._abort.set()          # 돌고 있으면 먼저 접는다
@@ -293,7 +302,39 @@ class ScanTaskSim(threading.Thread):
             self._start_requested.wait()
             self._start_requested.clear()
             self._abort.clear()
-            self._run_once()
+            if "mark" in self.task_path:
+                self._run_mark()
+            else:
+                self._run_once()
+
+    def _run_mark(self) -> None:
+        """마킹 태스크 한 점: 3점 측정 → 자리로(10) → 붙어서 대기(11, 278) → 홈(13 → 12).
+
+        마커는 ERUT 것이라 로봇은 자리에서 **278 = 1 이 올 때까지 선다** —
+        실제 dus_mark_point 와 같다.
+        """
+        self._set(self.TASK_STATE, 1)
+        self._set(self.PROBE_ERROR, 0)
+        self._set(self.HOME_FLAG, 0)
+        self._set(self.STATE, 2)
+        if not self._tick(self.STEP_SECONDS):
+            return
+        self._measure_wall()
+        self._set(self.STATE, 10)
+        if not self._tick(self.STEP_SECONDS):
+            return
+        self._set(self.MARK_GO, 0)
+        self._set(self.STATE, 11)
+        if not self._wait_for(self.MARK_GO, 1, 600.0):
+            return
+        self._set(self.MARK_GO, 0)
+        self._set(self.STATE, 13)
+        if not self._tick(self.STEP_SECONDS):
+            return
+        self._set(self.STATE, 12)
+        self._set(self.HOME_FLAG, 1)
+        self._set(self.TASK_STATE, 3)
+        print("[Task] 마킹 한 점 끝")
 
     # ---- 단계별 ----------------------------------------------------------
     def _fail(self, code: int, why: str) -> None:
@@ -455,7 +496,10 @@ class DashboardServer(threading.Thread):
             "brakeRelease": "Brake releasing",
             "pause": "Pausing program",
         }
-        if command == "play":
+        if command.startswith("task -p "):
+            self.task.load(command[len("task -p "):].strip())
+            reply = f"ok: {command}"
+        elif command == "play":
             # 실제 로봇처럼 제로점에서 태스크를 처음부터 다시 돌린다.
             self.task.play()
             reply = "Starting program"
@@ -497,12 +541,20 @@ class MotionSim:
             self._joint_velocity = [0.0] * 6
             self._tcp_velocity = [0.0] * 6
 
-    def move_joint_to(self, joints_rad: list[float]) -> None:
-        """목표 관절값(movej)으로 즉시(짧은 지연 후) 옮긴다."""
+    def move_joint_to(self, joints_rad: list[float] | None,
+                      writes: list[tuple[int, int]] | None = None) -> None:
+        """목표 관절값(movej)으로 즉시(짧은 지연 후) 옮긴다.
+
+        `writes` 는 같은 스크립트에서 이동 **뒤에** 쓰는 레지스터들이다 —
+        노드의 홈 스크립트가 도착하면 276(홈 플래그)에 1 을 쓴다.
+        """
         def apply():
             time.sleep(0.8)
-            with self._lock:
-                self._joint_pos = [v * 1000.0 for v in joints_rad]  # rad -> mrad(raw)
+            if joints_rad is not None:
+                with self._lock:
+                    self._joint_pos = [v * 1000.0 for v in joints_rad]  # rad -> mrad(raw)
+            for address, value in writes or []:
+                self.bank.write(address, value)
             print(f"[Motion] 홈 관절값으로 이동 완료: {joints_rad}")
         threading.Thread(target=apply, daemon=True).start()
 
@@ -527,6 +579,7 @@ class MotionSim:
 _SPEEDJ_RE = re.compile(r"speedj\((\[[^\]]*\])")
 _SPEEDL_RE = re.compile(r"speedl\((\[[^\]]*\])")
 _MOVEJ_RE = re.compile(r"movej\((\[[^\]]*\])")
+_WRITE_RE = re.compile(r"write_port_register\((\d+),\s*(-?\d+)\)")
 
 
 class PrimaryServer(threading.Thread):
@@ -558,12 +611,14 @@ class PrimaryServer(threading.Thread):
                     buf += chunk.decode("utf-8", "ignore")
                     if len(buf) > 8192:
                         buf = buf[-4096:]
-                    self._scan(buf)
+                    if self._scan(buf):
+                        buf = ""
             except (ConnectionError, OSError):
                 self.motion.stop_all()
                 return
 
-    def _scan(self, buf: str) -> None:
+    def _scan(self, buf: str) -> bool:
+        """스크립트를 해석한다. 이동 명령을 처리했으면 True(버퍼를 비운다)."""
         m = _SPEEDJ_RE.search(buf)
         if m:
             self.motion.set_joint_velocity(eval(m.group(1)))  # noqa: S307 - 신뢰 가능한 내부 스크립트
@@ -572,7 +627,17 @@ class PrimaryServer(threading.Thread):
             self.motion.set_tcp_velocity(eval(m.group(1)))  # noqa: S307
         m = _MOVEJ_RE.search(buf)
         if m:
-            self.motion.move_joint_to(eval(m.group(1)))  # noqa: S307
+            writes = [(int(a), int(v)) for a, v in _WRITE_RE.findall(buf[m.end():])]
+            self.motion.move_joint_to(eval(m.group(1)), writes)  # noqa: S307
+            return True
+        # 노드의 홈 스크립트는 목표를 변수(tgt_j)로 넘긴다 — 값은 알 수 없으니
+        # 관절은 그대로 두고, 스크립트가 끝난 뒤 쓰는 레지스터(276)만 반영한다.
+        idx = buf.find("movej(")
+        if idx >= 0 and buf.rstrip().endswith("end"):
+            writes = [(int(a), int(v)) for a, v in _WRITE_RE.findall(buf[idx:])]
+            self.motion.move_joint_to(None, writes)
+            return True
+        return False
 
 
 def main() -> int:

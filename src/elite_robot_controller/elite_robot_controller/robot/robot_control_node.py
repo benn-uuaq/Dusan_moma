@@ -76,6 +76,9 @@ class RobotControlNode(Node):
         # 로봇 태스크가 쓰는 스캔 진행 상태(290~298). 운영 UI의 격자 순회가
         # 이 값으로 한 셀의 완료(state==5 && finished==1)를 판정한다.
         self.pub_scan_state = self.create_publisher(Int32MultiArray, 'robot/status/scan_state', 10)
+        # 스캔 중 호 위 위치(286/287). ERUT 에 실제 검사 좌표를 알리는 데 쓴다.
+        self.pub_scan_arc = self.create_publisher(
+            Int32MultiArray, 'robot/status/scan_arc', 10)
         # 로봇 컨트롤러가 주는 태스크 상태(1 실행 중, 2 일시 중지, 3 중지됨).
         # 29999로 물으면 매번 명령을 던져야 하므로 Modbus로 상시 읽는다.
         self.pub_task_state = self.create_publisher(Int32, 'robot/status/task_state', 10)
@@ -149,6 +152,8 @@ class RobotControlNode(Node):
         # 마킹 자리 [u, v] mm (268~269). 마킹 태스크를 틀기 전에 쓴다.
         self.create_subscription(
             Float32MultiArray, 'robot/command/mark_target', self.cb_mark_target, 10)
+        # 마킹 끝(278). 로봇은 마킹 자리(290 = 11)에서 이 값이 1 이 될 때까지 선다.
+        self.create_subscription(Int32, 'robot/command/mark_go', self.cb_mark_go, 10)
         # 디지털 출력 한 개 켜고 끄기: [번호, 값]. 번호는 표준 DO 0~15,
         # 값은 0 또는 1 이다. 물 분사 밸브·마킹기처럼 로봇 출력에 붙는
         # 장치를 화면에서 손으로 확인할 때 쓴다.
@@ -317,6 +322,7 @@ class RobotControlNode(Node):
         self.publish_pose('tcp_zero_relative', self.pub_tcp_pose_zero)
         self.publish_pose('joint_position', self.pub_joint_position)
         self.publish_raw('scan_state', self.pub_scan_state)
+        self.publish_raw('scan_arc', self.pub_scan_arc)
         self.publish_code('task_state', self.pub_task_state)
         self.publish_code('home_flag', self.pub_home_flag)
         self.publish_code('speed_scale', self.pub_speed_scale)
@@ -594,6 +600,10 @@ class RobotControlNode(Node):
     def _jog_stop(self):
         """29999 stop으로 즉시 멈춘다. 조그는 눌린 동안만 움직여야 한다."""
         self.robot_dash.robot_stop()
+
+    def cb_mark_go(self, msg):
+        """마킹 끝 신호(278)를 쓴다. 로봇이 통과하며 스스로 0 으로 지운다."""
+        self._write_topic('mark_go', msg)
 
     def cb_vehicle_ready(self, msg):
         """차량 고정 확인을 레지스터 309 에 그대로 전한다(1 고정 / 0 아님)."""

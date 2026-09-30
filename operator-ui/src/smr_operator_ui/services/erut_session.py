@@ -1,19 +1,25 @@
-"""ERUT 요청 9개를 처리하는 프로토콜 계층.
+"""ERUT 표준 인터페이스(if-0.4)의 검사로봇 쪽을 구현하는 프로토콜 계층.
 
-**로봇이 하는 일은 진짜다.** `start` 계열과 `calibrate` 는 로봇을 실제로
-움직이고 접촉점을 읽어 답한다. 아직 시험용인 것은 배터리·충전(차량 자료에
-항목이 없다)과 마킹 동작 자체(마킹기 개발 중), 그리고 장애 수집이다.
-어디까지가 진짜인지는 `REAL` / `TEST` 주석으로 표시해 두었다.
+규격은 `mqtt_test/ERUT_검사로봇_MQTT_표준인터페이스_if-0.4.xlsx` 다. 3S 가 구현할
+것은 탭1~5·8~10 이고, 탭6·7 은 ERUT 내부(클라이언트↔브릿지) 규격이라 무관하다.
+상대는 ERUT 의 Robot Service(로봇 브릿지)다.
 
-흐름은 `mqtt_test/ERUT-3S_MQTT_인터페이스_*.xlsx` 탭3(정상 시나리오)을 따른다.
+    query     → res 200 (activity·resumable·calibrated·errors[]·last_job …)
+    calibrate → res 202 → evt/complete (origin, calibration_error_mm[, total_length_mm])
+    prepare   → res 202 → evt/ready  (실패는 evt/complete action=prepare 5xx)
+    start     → res 202 → evt/progress … → evt/complete (scanned_distance_mm, pos …)
+    pause · abort · reset → res 2xx (「받았다」 — 섰는지는 evt/status 의 activity 로)
+    resume    → res 202 (완료는 처음 요청의 req_id 로)
+    mark      → res 202 → [evt/mark_ready → req/mark_next] × 점 → evt/complete
+    home      → res 202 → evt/complete (action=home)        ※ 표준에 아직 없음
+    그 밖     → res 501 NOT_IMPLEMENTED
 
-    query     → res 200 (상태 전체)
-    calibrate → res 202 → evt/complete 200 (origin, calibration_error_mm)
-    prepare   → res 202 → evt/ready 200
-    start     → res 202 → evt/progress … → evt/complete 200
-    pause/resume/abort → res 200 (즉시)
-    reset     → res 200 → state idle
-    mark      → res 202 → evt/complete 200 (marked[], failed[])
+상시 발행: evt/status(5초 + 바뀌면 바로) · evt/contact(2초 + 바뀌면 바로) ·
+evt/info(접속 시) · evt/progress(작업 중 2초).
+
+**아직 시험용·미구현**: 배터리·충전(차량 개발자에게 받기로 했다 — 그때까지는
+칸을 싣지 않는다. 규격이 0 으로 채우지 말라고 한다), 캘리브레이션의 총 둘레
+(`total_length_mm` — 차량을 한 바퀴 돌려 잰 거리라 역시 차량 쪽 값이다).
 """
 
 from __future__ import annotations
@@ -24,18 +30,33 @@ from typing import Any, Callable
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from smr_operator_ui.services.erut_client import ErutClient
-from smr_operator_ui.services.job_sequencer import GridPlan, SequencerState
+from smr_operator_ui.services.job_sequencer import GridPlan, SequencerState, cell_label
 
-# 시험용 값. 실장비가 붙으면 실제 측정값으로 바꾼다.
-TEST_BATTERY = 85
-TEST_CHARGING = False
-# 마킹은 실제 마킹기가 없어 이 시간 뒤 완료로 답하는 경로가 남아 있다.
-TEST_WORK_MS = 1500
-# evt/status 재발행 주기. 규격(탭5)이 30~60초라 그 안쪽으로 잡는다.
-STATUS_PERIOD_MS = 30_000
+# ---- 자기소개 (탭8 evt/info) ------------------------------------------------
+INTERFACE_VERSION = "0.4"
+VENDOR = "3S"
+MODEL = "SMR-UT-CS612"
+DEVICE_TYPE = "articulated_arm"
+#: 지원하는 기능. battery·charging 은 차량 자료가 오면 넣는다(TODO).
+#: 마킹은 마커가 ERUT 것이라 marking 이 아니라 mark_positioning 이다(탭2 초안).
+CAPABILITIES = (
+    "core_control", "core_events", "calibration", "prepare",
+    "probe_contact", "mark_positioning", "position_feedback",
+)
 
-# 시퀀서 상태 → ERUT state (탭5 값 정의의 7값)
-_STATE_MAP = {
+#: 합의한 검사면. 모르는 surface 는 400 으로 거절한다(탭4 E-1 11번) — 짐작으로
+#: 다른 면을 검사하면 보고서에는 요청한 면으로 적힌다.
+SURFACES = ("outer",)
+#: 낼 수 있는 최고 검사 속도 [mm/s]. 넘으면 거절한다(탭8 45행).
+SCAN_SPEED_MAX = 100
+
+STATUS_PERIOD_MS = 5_000       # evt/status 재발행 (탭2 11행 「5초 안팎」)
+CONTACT_PERIOD_MS = 2_000      # evt/contact 재발행 (탭2 12행 「2초마다」)
+PROGRESS_PERIOD_MS = 2_000     # evt/progress 주기 (자기소개 timings 로 알린다)
+HOME_TIMEOUT_MS = 120_000      # 홈 도착을 기다리는 한도
+
+# 시퀀서 상태 → activity (탭5 8값). 준비·원점 대기·장애는 세션이 따로 가린다.
+_ACTIVITY_MAP = {
     SequencerState.IDLE: "idle",
     SequencerState.SECURING: "running",
     SequencerState.LEVELING: "running",
@@ -47,16 +68,18 @@ _STATE_MAP = {
     SequencerState.DONE: "idle",
     SequencerState.STOPPED: "idle",
 }
-
+_SEQ_IDLE = (SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED)
 
 #: 로봇이 동작 중이라 홈 요청을 받을 수 없을 때 보여 주는 문장.
-#: RCS 로그와 ERUT 알림(evt/message M1001)이 같은 문장을 쓴다.
 HOME_BUSY_TEXT = "현재 로봇이 동작 중이므로 홈 이동이 불가합니다."
 
-#: evt/message 알림 목록 (규격 20260914 탭5). (code, message)
+#: evt/message 알림 (3S 확장 — 표준에 없는 토픽이라 브릿지는 무시할 수 있다).
 MSG_HOME_NOT_ALLOWED = ("M1001", "HOME_NOT_ALLOWED")
 MSG_ARC_LIMIT_CLAMPED = ("M2001", "ARC_LIMIT_CLAMPED")
 MSG_AREA_APPLY_PENDING = ("M2002", "AREA_APPLY_PENDING")
+
+#: 좌표계가 무효가 되는 순간 내는 장애 (탭2 10행).
+E_CALIBRATION_LOST = ("E1003", "CALIBRATION_LOST")
 
 
 def _mm(value: Any) -> float:
@@ -68,7 +91,7 @@ def _mm(value: Any) -> float:
 
 
 class ErutSession(QObject):
-    """ERUT 요청을 받아 로봇(진짜)과 시험용 응답으로 나눠 처리한다."""
+    """ERUT 요청을 받아 로봇·차량을 움직이고 표준대로 답한다."""
 
     activity = pyqtSignal(str)
     # 작업 계획이 확정되어 순회를 시작해 달라는 요청 (app.py 가 시퀀서에 넘긴다)
@@ -77,22 +100,27 @@ class ErutSession(QObject):
     resume_requested = pyqtSignal()
     abort_requested = pyqtSignal()
     speed_requested = pyqtSignal(int)
-    # 장애로 로봇을 세워 달라는 요청. 순회(시퀀서)와 별개로 나간다 —
-    # 작업 중이 아니어도(수동 조작 중이어도) 비상 장애는 로봇을 세워야 한다.
+    # 로봇을 세워 달라는 요청. 순회(시퀀서)와 별개로 나간다.
     robot_stop_requested = pyqtSignal()
+    # 준비해 둔(또는 돌던) 작업을 버리라는 요청 — 홈으로 보내지 않고 순회만 접는다.
+    # 준비 상태(ready)에서 새 요청이 오거나, 장애로 구간이 실패했을 때 나간다.
+    job_dropped = pyqtSignal()
     # 로봇이 원점에서 멈춰 기다리는 것을 풀어 달라는 요청 (레지스터 267).
-    # ERUT 가 도착 통보(evt/ready, stage=at_origin)를 받고 "작업 시작"을
-    # 다시 보내면 여기로 온다.
     scan_go_requested = pyqtSignal()
     # 마킹 점들을 돌아 달라는 요청. [{id, x, y}, ...] (검사면 좌표 mm)
     mark_requested = pyqtSignal(list)
+    # 마킹 자리에서 마킹이 끝났다 (점 id, 찍었는가). 로봇 대기를 푼다.
+    mark_next_requested = pyqtSignal(str, bool)
+    # 마킹을 도중에 접어 달라는 요청(일시정지·장애). 완료는 세션이 낸다.
+    mark_stop_requested = pyqtSignal()
     # 로봇을 홈으로 보내 달라는 요청. 로봇이 쉬고 있을 때만 나간다.
     home_requested = pyqtSignal()
     # 모재 기준 좌표계를 다시 잡아 달라는 요청 (지름 mm, 높이 mm).
-    # app.py 가 작업 영역 반지름을 고치고 로봇의 3점 측정을 돌린다.
     calibration_requested = pyqtSignal(float, float)
-    # evt/error 를 냈다 (코드, 메시지, level). 해제는 코드가 -CLEAR 로 끝난다.
+    # evt/error 를 냈다 (코드, 메시지, level).
     error_published = pyqtSignal(str, str, str)
+    # 장애가 풀렸다고 evt/error(cleared=true)를 냈다 (코드, 메시지).
+    error_cleared = pyqtSignal(str, str)
     # evt/message 를 냈다 (코드, 문장).
     message_published = pyqtSignal(str, str)
 
@@ -103,472 +131,685 @@ class ErutSession(QObject):
         self.sequencer = sequencer
         self._calibrated = False
         self._job_id = ""
+        self._plan: GridPlan | None = None
+        # 요청별로 살아 있는 req_id. 완료·준비 통보는 **처음 받은 요청**의
+        # 번호로 낸다(resume 의 번호가 아니라 — 탭2 7·8행).
+        self._prepare_req_id = ""
+        self._ready_sent = False
         self._start_req_id = ""
         self._started_at = 0.0
-        # 로봇이 원점에 도착해 시작 신호를 기다리는 중인가.
-        self._at_origin = False
-        # 가상 차량·리프트 값을 주는 함수. app.py 가 물려 준다.
-        # 규격 탭5 의 query.lift_height 와 progress.moved 자리를 채운다.
-        self.motion_state: Callable[[], dict] = dict
-        # 로봇이 동작 중인가를 알려 주는 함수. app.py 가 물려 준다.
-        # 동작 중이면 home 요청을 거절한다.
-        self.robot_busy: Callable[[], bool] = lambda: False
-        # 원점 도착 시 evt/ready 를 낼 prepare 요청의 req_id.
-        self._ready_req_id = ""
-        # 캘리브레이션 중인 요청의 req_id.
         self._calibrate_req_id = ""
-        # 마킹 중인 요청의 req_id 와 진행 여부.
+        self._calibrate_target = (0.0, 0.0)
         self._mark_req_id = ""
-        self._marking = False
-        # 같은 req_id 를 다시 받으면 재실행하지 않고 이전 응답을 되돌려준다(탭2 중요사항).
-        self._handled: dict[str, tuple[int, str]] = {}
-        self._pending: dict[str, QTimer] = {}
+        self._mark_ids: list[str] = []
+        self._home_req_id = ""
+        # 로봇이 원점에 도착해 시작 신호를 기다리는 중인가 (activity = ready).
+        self._at_origin = False
+        # 시퀀서가 아닌 일(캘리브레이션)을 일시정지해 둔 것.
+        self._paused_work = ""
+        # 걸려 있는 장애: code → {code, level, recovery, message}
+        self._errors: dict[str, dict] = {}
+        self._last_job: dict | None = None
+        self._progress = 0
+        self._contact: bool | None = None
+        self._status_sig: tuple | None = None
+
+        # app.py 가 물려 주는 값들. 기본값은 장비 없이도 돌게 비워 둔다.
+        # 차량·리프트 현재 값 {"lift_height", "moved"} (mm)
+        self.motion_state: Callable[[], dict] = dict
+        # 로봇 위치 {"arc_mm": 호 위 거리, "row_mm": 줄 높이, "progress": %}
+        self.position_state: Callable[[], dict] = dict
+        # 로봇이 동작 중인가 (RCS 작업·로봇 태스크 실행)
+        self.robot_busy: Callable[[], bool] = lambda: False
+        # 로봇이 홈에 있는가 (레지스터 276). 모르면 None.
+        self.at_home: Callable[[], bool | None] = lambda: None
+        # 캘리브레이션 때 차량으로 잰 총 둘레 [mm]. 차량 자료가 오기 전엔 None.
+        self.total_length_mm: Callable[[], float | None] = lambda: None
+
+        # 같은 req_id 를 다시 받으면 재실행하지 않고 이전 응답을 되돌려준다(탭2 22행).
+        self._handled: dict[str, tuple[int, str, dict]] = {}
+        self._pending: dict[int, QTimer] = {}
 
         client.request_received.connect(self.handle_request)
         client.erut_online_changed.connect(self._on_erut_online)
-        # 접속은 비동기라 start() 시점엔 아직 붙기 전이다. 그때 발행하면
-        # 그냥 버려지고, 브로커에는 지난번 LWT 의 offline 이 남아 있게 된다.
-        # 그래서 실제로 붙은 뒤에 online 을 올린다.
+        # 접속은 비동기라 start() 시점엔 아직 붙기 전이다. 붙은 뒤에 올린다.
         client.connected_changed.connect(self._on_broker_connected)
         client.test_error_injected.connect(self.raise_error)
+        if hasattr(sequencer, "state_changed"):
+            sequencer.state_changed.connect(lambda *_: self.refresh_status())
 
-        # 상시 상태 발행 — evt/status 를 주기적으로 다시 낸다(규격 30~60초).
-        # LWT 는 1회성이라 프로그램이 굳은 경우를 못 잡는데, 이 갱신이
-        # 끊기는 것으로 상대가 굳음을 판정한다.
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(STATUS_PERIOD_MS)
         self._status_timer.timeout.connect(self.publish_status)
+        self._contact_timer = QTimer(self)
+        self._contact_timer.setInterval(CONTACT_PERIOD_MS)
+        self._contact_timer.timeout.connect(self._publish_contact)
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(PROGRESS_PERIOD_MS)
+        self._progress_timer.timeout.connect(self._publish_progress)
+        self._home_timer = QTimer(self)
+        self._home_timer.setSingleShot(True)
+        self._home_timer.setInterval(HOME_TIMEOUT_MS)
+        self._home_timer.timeout.connect(lambda: self.finish_home(False, "HOME_TIMEOUT"))
 
     @property
     def job_id(self) -> str:
         """지금 구간의 job_id (prepare/start 가 준 값). 작업기록에 쓴다."""
         return self._job_id
 
-    # ------------------------------------------------------------ 상태
+    @property
+    def calibrating(self) -> bool:
+        return bool(self._calibrate_req_id) and self._paused_work != "calibrate"
+
+    # ------------------------------------------------------------ 상시 발행
     def start(self) -> None:
         """상시 발행을 시작한다. online 통보는 접속이 붙은 뒤에 나간다."""
         if self.client.is_connected:
-            self.publish_status()
+            self._on_broker_connected(True)
         self._status_timer.start()
-
-    def _on_broker_connected(self, connected: bool) -> None:
-        if connected:
-            self.publish_status()
+        self._contact_timer.start()
+        self._progress_timer.start()
 
     def stop(self) -> None:
-        self._status_timer.stop()
+        for timer in (self._status_timer, self._contact_timer, self._progress_timer):
+            timer.stop()
+
+    def _on_broker_connected(self, connected: bool) -> None:
+        if not connected:
+            return
+        self.publish_info()
+        self._status_sig = None
+        self.publish_status()
+        self._publish_contact()
+
+    def publish_info(self) -> None:
+        """장비 자기소개 (탭8). 안 보내면 브릿지는 core 기능만 있는 장비로 본다."""
+        self.client.publish_info({
+            "interface_version": INTERFACE_VERSION,
+            "vendor": VENDOR, "model": MODEL, "device_type": DEVICE_TYPE,
+            "capabilities": list(CAPABILITIES),
+            "timings": {
+                "progress_interval_ms": PROGRESS_PERIOD_MS,
+                "scan_speed_max_mm_s": SCAN_SPEED_MAX,
+            },
+        })
 
     def publish_status(self) -> None:
-        """접속 생존 상태를 다시 낸다. 규격상 접속 시 + 30~60초 주기."""
-        self.client.publish_status("online", TEST_BATTERY, TEST_CHARGING)
+        """장치 상태 (탭2 11행). 모든 칸이 맨 바깥이다.
 
-    def robot_state(self) -> str:
-        """지금 장치 상태를 ERUT 의 7값으로 돌려준다.
-
-        원점에서 start 를 기다리는 동안은 `ready` 다 — 탭5 "검사 준비 완료
-        (start 대기)". 시퀀서는 이때 이미 스캔 단계라 그대로 두면 running
-        으로 나간다.
+        battery·charging 은 싣지 않는다 — 차량 자료가 아직 없다(TODO). 규격은
+        배터리가 없는 장비는 칸을 빼라고 한다(0 으로 채우면 시작을 영영 못 한다).
+        `at_home` 은 3S 확장 칸이다(ERUT 가 홈 확인 신호를 규격에 넣기로 했다 —
+        자리가 정해지면 옮긴다). 모르는 칸은 받는 쪽이 무시한다.
         """
+        sig = self._signature()
+        self._status_sig = sig
+        activity, calibrated, job_id, at_home = sig
+        self.client.publish_status(
+            "online", activity=activity, calibrated=calibrated,
+            job_id=job_id or None, at_home=at_home)
+
+    def refresh_status(self) -> None:
+        """값이 바뀌었으면 주기를 기다리지 않고 바로 낸다(탭2 11행)."""
+        if self._signature() != self._status_sig:
+            self.publish_status()
+
+    def _signature(self) -> tuple:
+        return (self.activity_state(), self._calibrated,
+                self._job_id if self._job_active() else "", self.at_home())
+
+    def set_contact(self, attached: bool) -> None:
+        """탐촉자가 검사면에 붙었는가. 바뀌면 바로 알린다(탭2 12행).
+
+        ERUT 가 시킨 구간(prepare·start) 안에서만 attached 로 알린다 — ERUT 는 이
+        신호로 물을 켠다. 캘리브레이션의 3점 측정이나 사내 MC 작업 중에 벽에
+        닿는 것은 ERUT 의 검사가 아니다.
+        """
+        attached = bool(attached) and bool(self._prepare_req_id or self._start_req_id)
+        if attached == self._contact:
+            return
+        self._contact = attached
+        self._publish_contact()
+
+    def _publish_contact(self) -> None:
+        if self._contact is None:
+            return
+        self.client.publish_contact(
+            "attached" if self._contact else "detached", self._job_id)
+
+    # ------------------------------------------------------------ 활동 상태
+    def activity_state(self) -> str:
+        """지금 장치가 하는 일 (탭5 activity 8값)."""
+        levels = {e["level"] for e in self._errors.values()}
+        if "estop" in levels:
+            return "estop"
+        if "stop" in levels:
+            return "error"
+        if self._paused_work:
+            return "paused"
+        if self.sequencer.state is SequencerState.PAUSED:
+            return "paused"
         if self._calibrate_req_id:
             return "calibrating"
         if self._at_origin:
             return "ready"
-        if self._marking:
-            return "running"         # 마킹도 장치가 움직이는 작업이다
-        return _STATE_MAP.get(self.sequencer.state, "idle")
+        if self._prepare_req_id and not self._ready_sent:
+            return "preparing"
+        if self._mark_req_id or self._home_req_id:
+            return "running"
+        return _ACTIVITY_MAP.get(self.sequencer.state, "idle")
+
+    #: 옛 이름. 화면·기록이 부른다.
+    robot_state = activity_state
+
+    def _job_active(self) -> bool:
+        return bool(self._prepare_req_id or self._start_req_id
+                    or self.sequencer.state is SequencerState.PAUSED)
+
+    def _resumable(self) -> bool:
+        """멈춘 자리를 지키고 있어 이어 갈 수 있는가."""
+        return (self._paused_work == "calibrate"
+                or self.sequencer.state is SequencerState.PAUSED)
 
     # ------------------------------------------------------------ 요청 처리
     def handle_request(self, action: str, content: dict) -> None:
         req_id = str(content.get("req_id", "")).strip()
         if not req_id:
             self.activity.emit(f"ERUT {action}: req_id 가 없어 거절했습니다.")
-            self.client.publish_res("", action, 400, "MISSING_REQ_ID")
+            self.client.publish_res("", action, 400, "BAD_REQUEST")
             return
 
         # 같은 요청을 다시 받으면 재실행하지 않고 이전 응답만 되풀이한다.
-        if req_id in self._handled:
-            code, message = self._handled[req_id]
-            self.client.publish_res(req_id, action, code, message)
+        # mark_next 는 마킹 요청의 req_id 를 그대로 싣고 점마다 오므로 점까지 본다.
+        key = req_id
+        if action == "mark_next":
+            key = f"{req_id}#{content.get('point_id', '')}"
+        if key in self._handled:
+            code, message, extra = self._handled[key]
+            self.client.publish_res(req_id, action, code, message, **extra)
             self.activity.emit(f"ERUT {action}: 이미 처리한 req_id — 이전 응답 재발행")
             return
 
         handler = getattr(self, f"_do_{action}", None)
         if handler is None:
-            self._reply(req_id, action, 400, "UNKNOWN_ACTION")
+            # 모르는 동작은 못 본 척하지 말고 거절한다 — 무시하면 브릿지가 세 번
+            # 다시 보낸 뒤 통신 오류로 본다. 501 은 다시 보내지 않는다(탭5).
+            self._reply(key, req_id, action, 501, "NOT_IMPLEMENTED")
             return
         handler(req_id, content)
+        self.refresh_status()
 
-    def _reply(self, req_id: str, action: str, code: int, message: str,
+    def _reply(self, key: str, req_id: str, action: str, code: int, message: str,
                **extra) -> None:
-        self._handled[req_id] = (code, message)
+        self._handled[key] = (code, message, extra)
         self.client.publish_res(req_id, action, code, message, **extra)
 
-    def _needs_calibration(self, req_id: str, action: str) -> bool:
-        """캘리브레이션이 무효면 요청을 거절하고 True 를 돌려준다.
+    def _answer(self, req_id: str, action: str, code: int, message: str,
+                **extra) -> None:
+        self._reply(req_id, req_id, action, code, message, **extra)
 
-        규격 탭4 D-4: 위치 이탈·재배치로 좌표계가 무효해지면
-        `calibrated=false` 이고, 그 상태에서는 **prepare/start 를 보내도
-        로봇이 거절해야 한다**. 좌표계 없이 훑으면 스캔 좌표가 어디를
-        가리키는지 알 수 없어서, 받아 놓고 엉뚱한 데를 검사하는 것보다
-        거절하는 편이 낫다.
+    def _refuse_by_state(self, req_id: str, action: str) -> bool:
+        """지금 상태로 받을 수 없는 일이면 거절하고 True (탭9).
 
-        428 은 탭5 코드 표의 4xx 대역이다 — 즉시 실패이고 ERUT 는 같은
-        요청을 재시도하지 않는다. 대신 재캘리브레이션을 안내한다.
+        받는 때는 idle · ready 뿐이다. 장애가 걸려 있으면 423, 다른 일을 하는
+        중이면 409 — 하던 일을 스스로 그만두지 않는다.
         """
+        activity = self.activity_state()
+        if activity in ("error", "estop"):
+            self._answer(req_id, action, 423, "FAULT_ACTIVE")
+            return True
+        if activity not in ("idle", "ready"):
+            self._answer(req_id, action, 409, "BUSY")
+            return True
+        if activity == "idle" and self.robot_busy():
+            # 펜던트에서 직접 튼 태스크 등 — RCS 가 모르는 동작 중이다.
+            self._answer(req_id, action, 409, "BUSY")
+            return True
+        return False
+
+    def _needs_calibration(self, req_id: str, action: str) -> bool:
+        """좌표계가 무효면 428 로 거절하고 True (탭4 D-4)."""
         if self._calibrated:
             return False
-        self._reply(req_id, action, 428, "CALIBRATION_REQUIRED")
+        self._answer(req_id, action, 428, "CALIBRATION_REQUIRED")
         self.activity.emit(
             f"ERUT {action} 거절 — 캘리브레이션이 무효합니다(428). 재캘리브레이션이 필요합니다.")
         return True
 
-    def invalidate_calibration(self, reason: str = "") -> None:
-        """좌표계를 무효로 돌린다 (규격 탭4 D-4).
+    def _drop_prepared(self) -> None:
+        """준비해 둔 구간을 버린다(ready 에서 새 요청이 왔을 때 — 탭9)."""
+        if not (self._at_origin or self._prepare_req_id):
+            return
+        self._at_origin = False
+        self._prepare_req_id = ""
+        self._ready_sent = False
+        self.activity.emit("준비해 둔 구간을 버리고 새 요청을 받습니다.")
+        self.job_dropped.emit()
 
-        충전·교정룸 복귀나 재도킹처럼 로봇이 자리를 옮기면 원점이 더는
-        맞지 않는다. 그 신호가 아직 없어서 자동으로 부르는 곳은 없고,
-        도킹·복귀 경로가 생기면 거기서 부르면 된다.
+    def invalidate_calibration(self, reason: str = "") -> None:
+        """좌표계를 무효로 돌린다 (탭2 중요사항 23행).
+
+        자리를 벗어나거나 옮겨져 좌표계를 더는 믿을 수 없으면 calibrated=false
+        로 바꾸고, **그 순간** E1003 CALIBRATION_LOST 를 낸다 — query 로 물어봐야만
+        알면 그 사이 다음 구역까지 엉뚱한 좌표로 검사하고 정상 완료로 끝난다.
         """
         if not self._calibrated:
             return
         self._calibrated = False
         note = f" — {reason}" if reason else ""
         self.activity.emit(f"캘리브레이션을 무효로 표시했습니다{note}.")
+        code, message = E_CALIBRATION_LOST
+        self.raise_error({"code": code, "message": message, "level": "stop",
+                          "recovery": "reset_required", "detail": reason or None})
 
-    # ---- query : REAL (상태) + TEST (배터리) --------------------------------
+    # ---- query --------------------------------------------------------------
     def _do_query(self, req_id: str, content: dict) -> None:
-        seq = self.sequencer
         extra: dict[str, Any] = {
-            "state": "error" if self.error_codes() else self.robot_state(),
-            "resumable": seq.state is SequencerState.PAUSED,
+            "activity": self.activity_state(),
+            "resumable": self._resumable(),
             "calibrated": self._calibrated,
-            "battery": TEST_BATTERY,          # TEST
-            "charging": TEST_CHARGING,        # TEST
         }
-        if self._job_id:
+        if self._job_active() and self._job_id:
             extra["job_id"] = self._job_id
-        if self.error_codes():
-            extra["errors"] = self.error_codes()
-        # 규격 탭5: lift_height 는 "리프트 있는 장치만, 화면 표시용" 선택 필드다.
-        lift = self.motion_state().get("lift_height")
-        if lift is not None:
-            extra["lift_height"] = lift
-        plan = seq.plan
-        if plan is not None and seq.state not in (
-            SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED
-        ):
-            extra["progress"] = int(seq.cell_ordinal() / (plan.total_cells or 1) * 100)
-        # query 는 응답 하나로 끝난다. 재실행 금지 대상이 아니라 기록하지 않는다.
+            extra["progress"] = self._progress
+        if self._errors:
+            extra["errors"] = [dict(e) for e in self._errors.values()]
+        if self._last_job:
+            extra["last_job"] = dict(self._last_job)
+        # battery·charging: 차량 자료가 오면 넣는다(TODO — docs/todo.md).
+        # query 는 재실행 금지 대상이 아니라 기록하지 않는다(늘 지금 상태로 답한다).
         self.client.publish_res(req_id, "query", 200, "OK", **extra)
 
-    # ---- calibrate : REAL — 로봇이 벽을 세 번 눌러 좌표계를 잡는다 --------
+    # ---- calibrate ----------------------------------------------------------
     def _do_calibrate(self, req_id: str, content: dict) -> None:
-        """모재 기준 좌표계 수립 (규격 탭1 · 탭3 ②).
+        """모재 기준 좌표계 수립 (탭1 · 탭3 ②).
 
-        **무엇을 재는 캘리브레이션인가.** 규격은 "모재 기준 좌표계 수립,
-        모든 좌표(area·points)의 기준"이라고 적고 있고, 요청에는 모재
-        지름·높이만 실려 온다. 즉 격자 한 칸의 확인이 아니라 **장치 전체가
-        이 모재에 대해 갖는 좌표계**를 한 번 잡는 일이다. 검사 시작 전
-        1회, 그리고 충전·교정룸처럼 자리를 옮겼다 돌아왔을 때 다시 한다
-        (탭4 D-4 — 재캘리브레이션이 배치 오차를 흡수한다).
-
-        차량이 따로 캘리브레이션되는 것은 아니다. 차량·리프트는 지금 선
-        자리가 곧 격자 1A 의 자리이고, 로봇이 그 자리에서 벽을 세 번 눌러
-        원점과 호의 기준을 잡는다. 그래서 여기서 하는 일은
-        "차량이 선 자리에서 로봇이 3점 측정 → 원점 확정"이다.
-
-        재는 값은 실제 접촉점이다(레지스터 330~355). 세 점을 프로브 중심
-        으로 옮겨 원을 맞추면 잰 벽 반지름이 나오고, 입력한 반지름과의
-        차이가 `calibration_error_mm` 이다. 접촉점이 0.1 mm 단위라 이
-        반지름의 분해능은 1 mm 안팎이다.
+        격자 한 칸 확인이 아니라 **장치 전체가 이 모재에 대해 갖는 좌표계**를
+        한 번 잡는 일이다. 검사 시작 전 1회, 자리를 옮겼다 돌아왔을 때 다시 한다.
+        로봇이 벽을 세 번 눌러 원점을 잡고, 잰 벽 반지름과 입력값의 차이를
+        `calibration_error_mm` 으로 낸다(calibration.py).
         """
-        if self.robot_busy() or self.sequencer.state not in (
-            SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED
-        ):
-            self._reply(req_id, "calibrate", 409, "BUSY")
-            return
         diameter = _mm(content.get("diameter"))
         height = _mm(content.get("height"))
         if diameter <= 0:
-            self._reply(req_id, "calibrate", 400, "INVALID_TARGET")
+            self._answer(req_id, "calibrate", 400, "BAD_REQUEST")
             return
+        if self._refuse_by_state(req_id, "calibrate"):
+            return
+        self._drop_prepared()
         self._calibrate_req_id = req_id
+        self._calibrate_target = (diameter, height)
         self._calibrated = False
-        self._reply(req_id, "calibrate", 202, "ACCEPTED")
+        self._answer(req_id, "calibrate", 202, "ACCEPTED")
         self.activity.emit(
             f"ERUT 캘리브레이션 — 모재 지름 {diameter:g} mm, 높이 {height:g} mm "
             "로 좌표계를 다시 잡습니다(로봇 3점 측정).")
         self.calibration_requested.emit(diameter, height)
 
-    @property
-    def calibrating(self) -> bool:
-        return bool(self._calibrate_req_id)
-
     def finish_calibration(self, ok: bool, error_mm: float = 0.0,
                            detail: str = "") -> None:
-        """3점 측정이 끝났다. 결과를 evt/complete 로 낸다 (규격 탭3 8번).
+        """3점 측정이 끝났다. 결과를 evt/complete 로 낸다 (탭3 8번).
 
-        실패해도 반드시 발행한다 — 안 내면 ERUT 가 영영 기다린다(탭2).
+        실패해도 반드시 발행한다 — 안 내면 브릿지가 영영 기다린다(탭2 8행).
         """
         req_id, self._calibrate_req_id = self._calibrate_req_id, ""
+        self._paused_work = ""
         if not req_id:
             return
         if not ok:
             self.client.publish_event(
                 "complete", req_id, "calibrate", code=500,
                 message="CALIBRATION_FAILED", detail=detail)
+            self._record_last(req_id, "calibrate", 500)
             self.activity.emit(f"ERUT 캘리브레이션 실패를 알렸습니다 — {detail}")
+            self.refresh_status()
             return
         self._calibrated = True
-        self.client.publish_event(
-            "complete", req_id, "calibrate",
+        extra: dict[str, Any] = {
             # 좌표계의 원점이므로 그 자신은 (0, 0) 이다(탭5 x·y 정의).
-            origin={"x": 0, "y": 0},
-            calibration_error_mm=round(float(error_mm), 2),
-        )
+            "origin": {"x": 0, "y": 0},
+            "calibration_error_mm": round(float(error_mm), 2),
+        }
+        total = self.total_length_mm()
+        if total:
+            extra["total_length_mm"] = int(round(total))
+        self.client.publish_event("complete", req_id, "calibrate", **extra)
+        self._record_last(req_id, "calibrate", 200)
         note = f" ({detail})" if detail else ""
         self.activity.emit(
             f"ERUT 캘리브레이션 완료 — 오차 {error_mm:.2f} mm{note}")
+        self.refresh_status()
 
-    # ---- prepare : REAL — 물리 준비를 실제로 시킨다 --------------------------
+    # ---- prepare ------------------------------------------------------------
     def _do_prepare(self, req_id: str, content: dict) -> None:
-        """구간 검사 준비. 규격 탭1: "시간 걸리는 물리 준비(접근·자세·프로브)".
+        """구간 검사 준비 (탭1 7행): 3점 프로브 측정 + 원점 복귀.
 
-        우리 로봇에게 그 준비란 3점 프로브 측정 + 원점 복귀다. 그게 끝나
-        원점에 서면(레지스터 290 = 7) `evt/ready` 를 낸다 — 규격 탭5 에서
-        prepare 의 완료 통보가 evt/ready 로 못박혀 있고, 탭1 은 그것을
-        "start 를 보내도 되는 시점을 알려주는 **게이트**"라고 부른다.
-
-        예전에는 여기서 타이머로 2초 뒤에 ready 를 흘려보냈다(시험용). 그러면
-        로봇이 아직 벽을 찾는 중인데도 ERUT 가 start 를 보내 버린다.
-
-        **구간마다 온다고 본다.** 규격 탭1 은 prepare 를 "최초 1회"로 적어
-        뒀지만, 구간마다 원점에서 프로브 확인을 받아야 하므로 협력사에
-        구간마다 보내 달라고 요청했다. 그 전까지도 멈추지 않도록, start 만
-        오는 경우의 대비책을 _do_start 에 남겨 둔다.
+        원점에 서면(레지스터 290 = 7) `evt/ready` 를 낸다. 준비 중엔 activity
+        가 preparing 이다 — 이게 없으면 준비가 늦어질 때 브릿지가 사람을 부른다.
         """
+        plan = self._validated_plan(req_id, "prepare", content)
+        if plan is None:
+            return
+        if self._refuse_by_state(req_id, "prepare"):
+            return
         if self._needs_calibration(req_id, "prepare"):
             return
-        # 앞 구간이 아직 도는 중이면 받지 않는다(탭5 409 BUSY). 받으면
-        # 도는 중인 구간을 버리고 새 구간으로 갈아타 버린다.
-        if self.sequencer.state not in (
-            SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED
-        ):
-            self._reply(req_id, "prepare", 409, "BUSY")
-            return
-        plan = self._read_plan(content)
-        if plan is None:
-            self._reply(req_id, "prepare", 400, "INVALID_PLAN")
-            return
-        self._job_id = str(content.get("job_id", "")).strip()
-        self._plan = plan
-        self._apply_speed(content)
-        self._reply(req_id, "prepare", 202, "ACCEPTED")
-        # 원점에 도착하면 이 req_id 로 ready 를 낸다.
-        self._ready_req_id = req_id
-        self._at_origin = False
+        self._drop_prepared()
+        self._begin_job(content, plan)
+        self._prepare_req_id = req_id
+        self._ready_sent = False
+        self._answer(req_id, "prepare", 202, "ACCEPTED")
         self.activity.emit(
             f"ERUT 검사 준비 ({self._job_id}) — 프로브 측정 후 원점까지 갑니다.")
         self.job_requested.emit(plan)
 
-    # ---- start : REAL — 로봇이 실제로 움직인다 -------------------------------
+    # ---- start --------------------------------------------------------------
     def _do_start(self, req_id: str, content: dict) -> None:
-        # 로봇이 원점에서 프로브 확인을 기다리는 중이면, 이 start 는 새
-        # 작업이 아니라 **그 대기를 푸는 신호**다. 계획을 다시 볼 것도,
-        # 순회 상태를 볼 것도 없다 — 이미 돌고 있는 작업의 한가운데다.
-        # (계획 검사보다 먼저 본다. 해제 신호에는 plan 이 안 실려 온다.)
-        if self._at_origin:
+        """구간 검사 실행 (탭1 8행). 매번 그 구간의 좌표·스캔 값 전체가 온다.
+
+        준비해 둔 **같은 구간**이면 원점 대기를 풀어 바로 스캔한다. 다른 구간이면
+        (앞 구역 완료를 못 받은 채 다음 구역이 온 경우 등) 준비를 버리고 새로
+        돈다 — 엉뚱한 자리에서 다른 구역 이름으로 검사하지 않게.
+        """
+        job_id = str(content.get("job_id", "")).strip()
+        if self._at_origin and (not job_id or job_id == self._job_id):
             self._at_origin = False
-            # 규격 탭3 13번: start 의 응답은 **202 ACCEPTED** ("작업을
-            # 시작했다, 결과는 complete 로"). 예전에는 200 으로 답했다.
-            self._reply(req_id, "start", 202, "ACCEPTED")
-            # 이 start 가 이 구간의 완료·진행률을 받을 요청이다. 여기서
-            # 기억해 두지 않으면 progress 도 **complete 도 안 나가서** ERUT
-            # 가 영영 기다린다(예전 동작).
+            self._answer(req_id, "start", 202, "ACCEPTED")
             self._start_req_id = req_id
             self._started_at = time.time()
-            self._job_id = str(content.get("job_id", "")).strip() or self._job_id
+            self._progress = 0
             self.activity.emit("ERUT 작업 시작 — 적심 후 스캔으로 넘어갑니다.")
             self.scan_go_requested.emit()
             return
 
-        # 캘리브레이션 검사는 **게이트 해제 다음**이다. 이미 원점에서 기다리는
-        # 로봇은 그 구간의 좌표계로 여기까지 온 것이라, 여기서 막으면 벽에
-        # 붙은 채로 영영 서 있게 된다. 새로 시작하는 요청만 거른다.
+        plan = self._validated_plan(req_id, "start", content)
+        if plan is None:
+            return
+        if self._refuse_by_state(req_id, "start"):
+            return
         if self._needs_calibration(req_id, "start"):
             return
-
-        # 여기부터는 **대비책**이다. 구간마다 prepare 가 오는 것이 정해진
-        # 흐름이고(그러면 위 게이트 해제로 끝난다), 이 아래는 prepare 없이
-        # start 만 왔을 때 작업이 멈추지 않게 하려고 남겨 둔 길이다.
-        plan = self._read_plan(content) or getattr(self, "_plan", None)
-        if plan is None:
-            self._reply(req_id, "start", 400, "NO_PLAN")
-            return
-        if self.sequencer.state not in (
-            SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED
-        ):
-            self._reply(req_id, "start", 409, "BUSY")
-            return
-
-        self._job_id = str(content.get("job_id", "")).strip() or self._job_id
+        self._drop_prepared()
+        # prepare 없이 온 start — 표준상 「prepare 가 없으면 query 다음에 바로
+        # start」다. start 자체가 시작 허가이므로 원점에 서면 바로 푼다.
+        self._begin_job(content, plan)
         self._start_req_id = req_id
         self._started_at = time.time()
-        self._apply_speed(content)
-        self._reply(req_id, "start", 202, "ACCEPTED")
+        self._answer(req_id, "start", 202, "ACCEPTED")
         self.activity.emit(f"ERUT 구간 검사 시작 ({self._job_id}) — 로봇 실제 동작")
         self.job_requested.emit(plan)
 
-    # ---- 원점 도착 <-> 스캔 시작 손짓 ---------------------------------------
+    def _begin_job(self, content: dict, plan: GridPlan) -> None:
+        self._job_id = str(content.get("job_id", "")).strip()
+        self._plan = plan
+        self._progress = 0
+        self._contact = None           # 새 구역 — 접촉 상태는 모름에서 시작
+        self._apply_speed(content)
+
+    def _validated_plan(self, req_id: str, action: str, content: dict) -> GridPlan | None:
+        """area·surface·speed 를 확인한다. 안 맞으면 400 으로 답하고 None."""
+        plan = self._read_plan(content)
+        if plan is None:
+            self._answer(req_id, action, 400, "BAD_REQUEST", reason="area")
+            return None
+        surface = str(content.get("surface", "")).strip()
+        if surface and surface not in SURFACES:
+            self._answer(req_id, action, 400, "BAD_REQUEST", reason="surface")
+            return None
+        speed = (content.get("scan") or {}).get("speed")
+        if speed is not None and _mm(speed) > SCAN_SPEED_MAX:
+            self._answer(req_id, action, 400, "BAD_REQUEST", reason="speed",
+                         max_speed=SCAN_SPEED_MAX)
+            return None
+        return plan
+
+    # ---- 원점 도착 ------------------------------------------------------------
     def notify_at_origin(self) -> None:
-        """로봇이 원점에 도착해 멈춰 섰다고 알린다 (REAL).
+        """로봇이 원점에 도착해 멈춰 섰다(레지스터 290 = 7).
 
-        규격 탭5 대로 **prepare 의 완료 통보(evt/ready)** 다. 프로브가 벽에
-        제대로 붙었는지는 ERUT 쪽이 판단하므로, 로봇은 원점에서 멈춰 서고
-        (레지스터 290 = 7) 우리는 그 사실만 알린다. ERUT 가 프로브 눌림을
-        확인하고 `req/start` 를 보내면 그때 적심(비비기) -> 스캔으로 간다.
-
-        구간마다 prepare 가 오면 action 은 늘 "prepare" 다. prepare 없이
-        start 만 온 구간에서는(대비책 경로) 그때 살아 있는 start 요청에
-        맞춰 낸다 — 어느 쪽이든 원점 확인은 건너뛰지 않는다.
-
-        프로브 눌림 수치는 주고받지 않는다. ERUT 가 자기 UT 회로로 눌림을
-        보고 판단한 뒤 보내는 `req/start` 자체가 확인이다.
+          캘리브레이션 중  → 측정 끝. 결과는 app.py 가 finish_calibration 으로 낸다.
+          start 를 받은 뒤 → start 가 곧 허가다(prepare 없이 온 start · 일시정지 뒤
+                            재개). 바로 풀어 준다 — 브릿지는 start 를 다시 안 보낸다.
+          prepare 만 받음  → activity = ready. evt/ready 는 처음 prepare 의 req_id 로
+                            한 번만 낸다(준비 중 멈췄다 이어 간 경우도 같은 번호).
+          ERUT 작업이 아님 → 아무것도 안 한다(사내 MC 는 probe_ack 로 푼다).
         """
-        # ERUT 가 시킨 작업이 아니면(RCS '검사 시작'·사내 MC job_cmd) ERUT
-        # 에 알릴 요청이 없다. req_id 가 빈 evt/ready 를 흘리면 ERUT 가 자기가
-        # 보낸 적 없는 준비 완료를 받는다 — 그래서 아무것도 안 한다. 그때
-        # 원점 대기는 MC 쪽 probe_ack 으로 푼다.
-        # 캘리브레이션 중의 원점 도착은 준비 완료가 아니라 **측정 끝**이다.
-        # 결과는 app.py 가 접촉점을 읽어 finish_calibration 으로 낸다.
         if self._calibrate_req_id:
             return
-        if not self._ready_req_id and not self._start_req_id:
+        if self._start_req_id:
+            self.scan_go_requested.emit()
+            return
+        if not self._prepare_req_id:
             return
         self._at_origin = True
-        if self._ready_req_id:
-            req_id, action = self._ready_req_id, "prepare"
-        else:
-            req_id, action = self._start_req_id, "start"
-        # 규격 탭3 11번 그대로 낸다: code 200, message "OK",
-        # content = {req_id, action, job_id}. 예전에는 message 를
-        # "AT_ORIGIN_WAITING_PROBE_CHECK" 로 덮어쓰고 stage·cell 을 붙였는데,
-        # ERUT 가 message == "OK" 로 판정하면 준비 완료로 안 볼 수 있다.
-        self.client.publish_event("ready", req_id, action, job_id=self._job_id)
-        self._ready_req_id = ""
-        self.activity.emit("ERUT 에 원점 도착(evt/ready)을 알렸습니다 — start 대기.")
+        if not self._ready_sent:
+            self.client.publish_event("ready", self._prepare_req_id, "prepare",
+                                      job_id=self._job_id)
+            self._ready_sent = True
+            self.activity.emit("ERUT 에 준비 완료(evt/ready)를 알렸습니다 — start 대기.")
+        self.refresh_status()
 
     def clear_at_origin(self) -> None:
         """로봇이 대기에서 풀렸다. 다음 도착까지 초기화한다."""
         self._at_origin = False
 
-    def on_cell_changed(self, *_args) -> None:
-        """셀이 넘어갈 때마다 진행률을 알린다 (REAL)."""
-        if not self._start_req_id:
-            return
-        seq = self.sequencer
-        plan = seq.plan
+    # ---- 진행률 · 완료 -------------------------------------------------------
+    def _position(self, robot: dict | None = None) -> tuple[dict, dict]:
+        """(pos, location). pos 는 표준 칸(검사면 좌표 정수 mm), location 은 3S 확장.
+
+        좌표 하나로는 모자라다 — 브릿지가 앞 구역 완료를 못 받은 채 다음 구역을
+        보냈을 때, 어느 구역·어느 자리의 값인지 가를 수 있게 격자 이름·차량
+        위치·리프트 높이·격자 안 로봇 위치를 같이 싣는다(모르는 칸은 무시된다).
+        """
+        motion = self.motion_state() or {}
+        if robot is None:
+            robot = self.position_state() or {}
+        arc = float(robot.get("arc_mm") or 0.0)
+        row = float(robot.get("row_mm") or 0.0)
+        plan = self._plan
+        ox, oy = (plan.origin_x, plan.origin_y) if plan else (0.0, 0.0)
+        pos = {"x": int(round(ox + arc)), "y": int(round(oy + row))}
+        location = {
+            "cell": self._cell_label(),
+            "vehicle_mm": int(round(float(motion.get("moved") or 0.0))),
+            "lift_mm": int(round(float(motion.get("lift_height") or 0.0))),
+            "robot": {"x": int(round(arc)), "y": int(round(row))},
+        }
+        return pos, location
+
+    def _cell_label(self) -> str:
+        """이 구역이 전체 격자에서 몇 열·몇 행인가 (1A, 2B …).
+
+        ERUT 는 구역 하나씩 보내므로 시퀀서 안에서는 늘 1A 다. area 원점과
+        격자 간격(구역 크기 - 겹침)으로 전체 격자에서의 자리를 센다.
+        """
+        plan = self._plan
         if plan is None:
+            return self.sequencer.current_cell() if self.sequencer.plan else ""
+        step_x = plan.cell_width - plan.pitch_x
+        step_y = plan.cell_height - plan.pitch_y
+        col = int(round(plan.origin_x / step_x)) if step_x > 0 else 0
+        row = int(round(plan.origin_y / step_y)) if step_y > 0 else 0
+        return cell_label(max(col, 0), max(row, 0))
+
+    def _publish_progress(self) -> None:
+        """구간 검사 중 진행률 (탭2 9행, QoS 0). 0~100 정수, 뒤로 가지 않는다."""
+        if not self._start_req_id or self.activity_state() != "running":
             return
-        motion = self.motion_state()
+        robot = self.position_state() or {}
+        value = robot.get("progress")
+        if value is not None:
+            self._progress = max(self._progress, min(100, int(value)))
+        pos, location = self._position(robot)
         self.client.publish_progress(
-            self._start_req_id, "start",
-            job_id=self._job_id,
-            progress=int(seq.cell_ordinal() / (plan.total_cells or 1) * 100),
-            state=self.robot_state(),
-            # 규격 탭2: moved 는 "mm — 선택, 표시용". 가상 차량 이동 거리다.
-            # 규격에 없는 필드(cell, lift_height)는 넣지 않는다 — 리프트
-            # 높이는 규격상 query 응답 자리다.
-            moved=motion.get("moved", 0.0),
-        )
+            self._start_req_id, "start", job_id=self._job_id,
+            progress=self._progress, activity="running",
+            moved_mm=location["vehicle_mm"], pos=pos, location=location)
+
+    def on_cell_changed(self, *_args) -> None:
+        """셀이 넘어갈 때 진행률을 한 번 더 알린다(주기 발행과 같은 내용)."""
+        self._publish_progress()
 
     def on_job_complete(self) -> None:
-        """전체 격자를 다 돌면 완료를 알린다 (REAL)."""
+        """구간을 다 돌았다 (탭3 16번). 완료는 처음 start 의 req_id 로 낸다."""
         if not self._start_req_id:
             return
         req_id, self._start_req_id = self._start_req_id, ""
-        plan = self.sequencer.plan
-        cells = plan.total_cells if plan else 0
+        self._progress = 100
+        robot = self.position_state() or {}
+        pos, location = self._position(robot)
+        scanned = robot.get("scanned_mm")
+        if scanned is None:
+            plan = self._plan
+            scanned = plan.cell_width if plan else 0
         self.client.publish_event(
             "complete", req_id, "start",
             job_id=self._job_id,
-            scanned_distance=int(cells * (plan.cell_width if plan else 0)),
+            scanned_distance_mm=int(round(float(scanned))),
             duration_ms=int((time.time() - self._started_at) * 1000),
-            battery=TEST_BATTERY,     # TEST
+            pos=pos, location=location,
         )
+        self._record_last(req_id, "start", 200, job_id=self._job_id)
+        self._prepare_req_id = ""
+        self._ready_sent = False
         self.activity.emit("ERUT 구간 검사 완료를 발행했습니다.")
+        self.refresh_status()
 
-    # ---- pause / resume / abort : REAL --------------------------------------
+    def _record_last(self, req_id: str, action: str, code: int,
+                     job_id: str = "") -> None:
+        """query 의 last_job (탭5 초안 A안: action 을 함께 싣는다)."""
+        self._last_job = {"job_id": job_id or req_id, "action": action,
+                          "code": code, "progress": self._progress
+                          if action == "start" else (100 if code < 300 else 0)}
+
+    # ---- pause / resume / abort ---------------------------------------------
     def _do_pause(self, req_id: str, content: dict) -> None:
-        self._reply(req_id, "pause", 200, "OK")
-        self.pause_requested.emit()
+        """일시정지. 준비·캘리브레이션 중에도 받는다 — 그때도 로봇은 움직인다.
+
+        200 은 「받았다」다. 섰다는 것은 evt/status 의 activity=paused 로 알린다.
+        """
+        self._answer(req_id, "pause", 200, "OK")
+        if self._calibrate_req_id and not self._paused_work:
+            self._paused_work = "calibrate"
+            self.robot_stop_requested.emit()
+            self.activity.emit("ERUT 일시정지 — 캘리브레이션을 멈췄습니다.")
+        elif self._mark_req_id:
+            # 마킹은 점 하나를 반쯤 찍다 멈출 수 없다 — 여기서 접고 완료를 낸다.
+            self.mark_stop_requested.emit()
+        elif self._home_req_id:
+            self.robot_stop_requested.emit()
+            self.finish_home(False, "INTERRUPTED")
+        elif self.sequencer.state not in _SEQ_IDLE:
+            self.pause_requested.emit()
+        self._at_origin = False
 
     def _do_resume(self, req_id: str, content: dict) -> None:
-        if self.sequencer.state is not SequencerState.PAUSED:
-            self._reply(req_id, "resume", 412, "NOT_RESUMABLE")
+        """멈춘 자리에서 이어 간다. 완료는 처음 요청의 req_id 로 낸다."""
+        if self._paused_work == "calibrate":
+            self._paused_work = ""
+            self._answer(req_id, "resume", 202, "ACCEPTED")
+            self.calibration_requested.emit(*self._calibrate_target)
             return
-        self._reply(req_id, "resume", 200, "OK")
-        self.resume_requested.emit()
+        if self.sequencer.state is SequencerState.PAUSED:
+            self._answer(req_id, "resume", 202, "ACCEPTED")
+            self.resume_requested.emit()
+            return
+        activity = self.activity_state()
+        if activity in ("error", "estop"):
+            self._answer(req_id, "resume", 423, "FAULT_ACTIVE")
+        else:
+            # 멈춰 둔 작업이 없다 (탭9 — idle·ready·busy 는 409).
+            self._answer(req_id, "resume", 409, "BUSY")
 
     def _do_abort(self, req_id: str, content: dict) -> None:
-        """작업자 검사 종료 (탭4 D-3). 200 으로 바로 답하고 끝낸다.
+        """작업자 종료 (탭4 D-3). job_id 없이 와도 지금 하는 일을 멈춘다.
 
-        abort 된 job 은 완료(evt/complete)를 내지 않는다 — 규격 그대로.
-        원점 대기·마킹 표시도 여기서 내린다. 안 내리면 query 가 계속 ready
-        로 답하거나, 다음 mark 가 409 BUSY 로 막힌다.
+        abort 된 작업은 완료를 내지 않는다. 캘리브레이션·마킹·홈 중이어도 같다.
         """
-        self._reply(req_id, "abort", 200, "OK")
-        self._start_req_id = ""
-        self._ready_req_id = ""
-        self._at_origin = False
-        self._mark_req_id = ""
-        self._marking = False
+        self._answer(req_id, "abort", 200, "OK")
+        self._forget_work()
+        self.robot_stop_requested.emit()
         self.abort_requested.emit()
 
-    # ---- home : 규격 20260914 추가 --------------------------------------------
-    def _do_home(self, req_id: str, content: dict) -> None:
-        """로봇 홈 이동. 규격 20260914 판에 추가한 동작 (탭4 E-1, 탭5).
+    def _forget_work(self) -> None:
+        self._prepare_req_id = self._start_req_id = ""
+        self._calibrate_req_id = self._mark_req_id = self._home_req_id = ""
+        self._ready_sent = False
+        self._at_origin = False
+        self._paused_work = ""
+        self._home_timer.stop()
 
-        로봇이 동작 중이면(스캔·프로브·마킹 등) 409 BUSY 로 거절하고, 사유는
-        장애가 아니므로 evt/error 가 아닌 **evt/message(M1001)** 로 알린다 —
-        ERUT 는 통신 로그에 남기기만 한다(팝업 없음).
-        쉬고 있으면 200 으로 바로 답하고 홈 이동을 시작한다(완료 이벤트 없음,
-        abort 와 같은 즉시형).
+    # ---- home (3S 확장 — ERUT 가 다음 판에 넣기로 했다) ------------------------
+    def _do_home(self, req_id: str, content: dict) -> None:
+        """로봇을 홈으로 보낸다. 202 → 홈에 닿으면 evt/complete(action=home).
+
+        ERUT 가 홈 명령과 **홈 도착 확인 신호**를 규격에 넣기로 했다(아직 판에
+        없다). 그때까지는 표준의 작업 요청 모양(202 → complete)을 따르고, 홈에
+        있는지는 evt/status 의 at_home 에도 싣는다. 이름·자리가 정해지면 맞춘다.
         """
-        if self.robot_busy():
-            self._reply(req_id, "home", 409, "BUSY")
+        if self.activity_state() not in ("idle",) or self.robot_busy():
+            self._answer(req_id, "home", 409, "BUSY")
             self.notify(*MSG_HOME_NOT_ALLOWED, HOME_BUSY_TEXT,
                         req_id=req_id, action="home")
             return
-        self._reply(req_id, "home", 200, "OK")
+        self._answer(req_id, "home", 202, "ACCEPTED")
+        self._home_req_id = req_id
+        self._home_timer.start()
         self.activity.emit("ERUT 요청으로 로봇을 홈으로 보냅니다.")
         self.home_requested.emit()
 
-    # ---- reset : TEST (장애 수집이 아직 없다) --------------------------------
-    def _do_reset(self, req_id: str, content: dict) -> None:
-        """장애 해제. 걸려 있던 코드를 지우고 idle 을 알린다."""
-        cleared = self.clear_errors()
-        self._reply(req_id, "reset", 200, "OK")
-        self.client.publish_status("online", TEST_BATTERY, TEST_CHARGING)
-        if cleared:
-            self.activity.emit(f"ERUT 리셋 — 장애 해제: {', '.join(cleared)}")
+    def home_arrived(self) -> None:
+        """로봇이 홈에 닿았다(레지스터 276 = 1)."""
+        if self._home_req_id:
+            self.finish_home(True)
         else:
+            self.refresh_status()
+
+    def finish_home(self, ok: bool, reason: str = "") -> None:
+        req_id, self._home_req_id = self._home_req_id, ""
+        self._home_timer.stop()
+        if not req_id:
+            return
+        if ok:
+            self.client.publish_event("complete", req_id, "home", at_home=True)
+            self._record_last(req_id, "home", 200)
+            self.activity.emit("ERUT 에 홈 도착을 알렸습니다.")
+        else:
+            self.client.publish_event("complete", req_id, "home", code=500,
+                                      message="INTERNAL_ERROR", detail=reason)
+            self._record_last(req_id, "home", 500)
+            self.activity.emit(f"ERUT 홈 이동 실패를 알렸습니다 — {reason}")
+        self.refresh_status()
+
+    # ---- reset --------------------------------------------------------------
+    def _do_reset(self, req_id: str, content: dict) -> None:
+        """장애 해제 (탭4 D-2). 여러 번 와도 결과가 같다(멱등).
+
+        걸린 장애가 없으면 200 으로 답하고 아무것도 안 한다 — 409 로 거절하면
+        받는 쪽이 「현장 조치 필요」로 오판한다. 풀리면 장애마다 cleared=true 를
+        한 번씩 내고 activity 가 idle 이 된다(비상정지 때 하던 구간은 이미
+        끝난 것으로 처리했다 — if-0.4).
+        """
+        if not self._errors:
+            self._answer(req_id, "reset", 200, "OK")
             self.activity.emit("ERUT 리셋 요청 (해제할 장애 없음)")
+            return
+        self._answer(req_id, "reset", 202, "ACCEPTED")
+        cleared = self.clear_errors()
+        self.activity.emit(f"ERUT 리셋 — 장애 해제: {', '.join(cleared)}")
 
-    # ---- mark : TEST --------------------------------------------------------
+    # ---- mark (mark_positioning — 마커는 ERUT 것) -----------------------------
     def _do_mark(self, req_id: str, content: dict) -> None:
-        """결함 자리 마킹 (규격 탭3 ⑤). 점마다 차량·리프트·로봇이 실제로 간다.
+        """결함 자리 마킹 (탭3 ⑤ + 탭2 초안 「마킹 주체」 ②).
 
-        점은 {id, x, y} — area 와 같은 검사면 좌표다. 받으면 202 로 답하고
-        RCS(MarkRunner)가 점을 차례로 돈다. 다 끝나면 finish_mark() 가
-        evt/complete {marked[], failed[]} 를 낸다(탭5 action 표).
-
-        마킹 동작 자체(스프레이/마커)는 아직 TODO 다 — 로봇은 그 자리에
-        붙었다가 홈으로 돌아온다.
+        마커는 ERUT 미니 PC 의 것이다. 장비는 점까지 옮겨 가 멈추기만 한다:
+          점에 붙음 → evt/mark_ready{req_id, point_id}
+          ERUT 가 찍음 → req/mark_next{req_id, point_id, marked} → 다음 점
+          다 끝 → evt/complete{marked[], failed[]}
         """
         points = content.get("points")
         if not isinstance(points, list) or not points:
-            self._reply(req_id, "mark", 400, "INVALID_POINTS")
+            self._answer(req_id, "mark", 400, "BAD_REQUEST", reason="points")
             return
         clean = []
         for pt in points:
@@ -576,233 +817,241 @@ class ErutSession(QObject):
                 clean.append({"id": str(pt["id"]), "x": float(pt["x"]),
                               "y": float(pt["y"])})
             except (KeyError, TypeError, ValueError):
-                self._reply(req_id, "mark", 400, "INVALID_POINTS")
+                self._answer(req_id, "mark", 400, "BAD_REQUEST", reason="points")
                 return
+        marker = str(content.get("marker", "erut")).strip().lower()
+        if marker not in ("", "erut"):
+            # 장비가 가진 마커로 찍는 방식(marking)은 지원하지 않는다.
+            self._answer(req_id, "mark", 501, "NOT_IMPLEMENTED")
+            return
+        if self._refuse_by_state(req_id, "mark"):
+            return
         if self._needs_calibration(req_id, "mark"):
             return
-        # 스캔 구간이 도는 중이면 받지 않는다 — 차량·로봇을 둘이 같이 쓸 수 없다.
-        if self.sequencer.state not in (
-            SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED
-        ) or self._marking:
-            self._reply(req_id, "mark", 409, "BUSY")
-            return
-        self._reply(req_id, "mark", 202, "ACCEPTED")
+        self._drop_prepared()
+        self._answer(req_id, "mark", 202, "ACCEPTED")
         self._mark_req_id = req_id
-        self._marking = True
+        self._mark_ids = [p["id"] for p in clean]
         self.activity.emit(f"ERUT 마킹 요청 {len(clean)}점 — 차례로 이동합니다.")
         self.mark_requested.emit(clean)
 
-    def interrupt_active_job(self) -> None:
-        """ERUT 가 시킨 작업을 **우리 쪽에서** 끊었다(작업자 정지·홈 이동).
+    def mark_point_ready(self, point_id: str) -> None:
+        """로봇이 마킹 자리에 붙어 섰다. ERUT 에 쏘라고 알린다."""
+        if not self._mark_req_id:
+            return
+        _pos, location = self._position()
+        self.client.publish_event("mark_ready", self._mark_req_id, "mark",
+                                  point_id=str(point_id), location=location)
 
-        규격 탭2: "장애로 job 실패 시에도 5xx 로 반드시 발행 (안 오면 ERUT 가
-        계속 대기)". abort 는 ERUT 가 끊은 것이라 완료를 안 내지만, 여기는
-        ERUT 가 모르는 사이에 끊겼으므로 반드시 알린다.
-          start 가 살아 있으면 -> evt/complete 500
-          prepare 만 받은 상태면 -> evt/ready 500 (prepare 의 완료 통보 자리)
-          마킹 중이면           -> evt/complete 500 {marked, failed}
-        """
-        if self._start_req_id:
-            self.client.publish_event(
-                "complete", self._start_req_id, "start", code=500,
-                message="INTERNAL_ERROR", job_id=self._job_id)
-        elif self._ready_req_id:
-            self.client.publish_event(
-                "ready", self._ready_req_id, "prepare", code=500,
-                message="INTERNAL_ERROR", job_id=self._job_id)
-        if self._mark_req_id:
-            self.client.publish_event(
-                "complete", self._mark_req_id, "mark", code=500,
-                message="INTERNAL_ERROR", marked=[], failed=[])
-        had_job = bool(self._start_req_id or self._ready_req_id or self._mark_req_id)
-        self._start_req_id = self._ready_req_id = self._mark_req_id = ""
-        self._at_origin = False
-        self._marking = False
-        if had_job:
-            self.activity.emit("ERUT 작업을 이쪽에서 중단했다고 알렸습니다(500).")
+    def _do_mark_next(self, req_id: str, content: dict) -> None:
+        """ERUT 가 점 하나를 찍었다(또는 못 찍었다) — 다음 점으로."""
+        point_id = str(content.get("point_id", "")).strip()
+        key = f"{req_id}#{point_id}"
+        if not self._mark_req_id or req_id != self._mark_req_id or not point_id:
+            self._reply(key, req_id, "mark_next", 409, "NOT_AT_POINT")
+            return
+        marked = content.get("marked", True)
+        if isinstance(marked, str):
+            marked = marked.strip().lower() in ("true", "1", "yes", "ok")
+        self._reply(key, req_id, "mark_next", 200, "OK")
+        self.mark_next_requested.emit(point_id, bool(marked))
 
-    def finish_mark(self, marked: list, failed: list) -> None:
-        """마킹을 다 돌았다. 규격대로 evt/complete 를 낸다."""
+    def finish_mark(self, marked: list, failed: list, code: int | None = None) -> None:
+        """마킹을 다 돌았다 (탭3 19번). 일부 실패도 200 — 전부 실패면 5xx."""
         req_id, self._mark_req_id = self._mark_req_id, ""
-        self._marking = False
         if not req_id:
             return
-        code, message = (200, "OK") if not failed else (500, "INTERNAL_ERROR")
+        if code is None:
+            code = 500 if failed and not marked else 200
+        message = "OK" if code < 300 else "INTERNAL_ERROR"
         self.client.publish_event("complete", req_id, "mark", code=code,
                                   message=message, marked=list(marked),
                                   failed=list(failed))
+        self._record_last(req_id, "mark", code)
         self.activity.emit(
             f"ERUT 마킹 완료를 발행했습니다 (성공 {len(marked)}, 실패 {len(failed)}).")
+        self.refresh_status()
+
+    # ---- 우리 쪽에서 끊었을 때 ------------------------------------------------
+    def interrupt_active_job(self, code: int = 500, reason: str = "") -> None:
+        """ERUT 가 시킨 일을 **우리 쪽에서** 끊었다(작업자 정지·장애·홈 이동).
+
+        ERUT 가 모르는 사이에 끊겼으므로 반드시 알린다 — 안 오면 브릿지가 계속
+        기다린다(탭2 8행). 202 로 받은 일은 res 가 아니라 evt/complete 에 싣는다:
+          start      → evt/complete(action=start)   5xx
+          prepare    → evt/complete(action=prepare) 5xx  (evt/ready 는 성공 전용)
+          calibrate  → evt/complete(action=calibrate) 5xx
+          mark       → evt/complete(action=mark)    5xx {marked, failed}
+          home       → evt/complete(action=home)    5xx
+        """
+        extra = {"detail": reason} if reason else {}
+        if self._start_req_id:
+            self.client.publish_event(
+                "complete", self._start_req_id, "start", code=code,
+                message="INTERNAL_ERROR", job_id=self._job_id, **extra)
+            self._record_last(self._start_req_id, "start", code, job_id=self._job_id)
+        elif self._prepare_req_id and not self._ready_sent:
+            self.client.publish_event(
+                "complete", self._prepare_req_id, "prepare", code=code,
+                message="INTERNAL_ERROR", job_id=self._job_id, **extra)
+            self._record_last(self._prepare_req_id, "prepare", code, job_id=self._job_id)
+        if self._calibrate_req_id:
+            self.client.publish_event(
+                "complete", self._calibrate_req_id, "calibrate", code=code,
+                message="INTERNAL_ERROR", **extra)
+            self._record_last(self._calibrate_req_id, "calibrate", code)
+        if self._mark_req_id:
+            self.client.publish_event(
+                "complete", self._mark_req_id, "mark", code=code,
+                message="INTERNAL_ERROR", marked=[], failed=list(self._mark_ids),
+                **extra)
+            self._record_last(self._mark_req_id, "mark", code)
+        if self._home_req_id:
+            self.client.publish_event(
+                "complete", self._home_req_id, "home", code=code,
+                message="INTERNAL_ERROR", **extra)
+        had_job = bool(self._start_req_id or self._prepare_req_id
+                       or self._calibrate_req_id or self._mark_req_id or self._home_req_id)
+        self._forget_work()
+        if had_job:
+            self.activity.emit(f"ERUT 작업을 이쪽에서 중단했다고 알렸습니다({code}).")
+        self.refresh_status()
 
     # ------------------------------------------------------------ 알림
     def notify(self, code: str, message: str, text: str, **extra) -> None:
-        """장애가 아닌 안내를 evt/message 로 알린다 (규격 20260914).
-
-        장애(evt/error)와 나눈다 — 로봇 쪽에서도 에러와 메시지가 나뉘듯이.
-        알림은 걸려 있는 장애 목록(query 의 errors[])에 들어가지 않고,
-        작업을 멈추지도 않는다.
-        """
+        """장애가 아닌 안내를 evt/message 로 알린다 (3S 확장 — 표준에 없다)."""
         self.client.publish_message(code, message, text, **extra)
         self.message_published.emit(code, text)
         self.activity.emit(f"ERUT 알림: {code} {text}")
 
     # ------------------------------------------------------------ 장애
     def raise_error(self, fields: dict) -> None:
-        """장애를 규격대로 `evt/error` 로 알린다.
+        """장애를 `evt/error` 로 알린다 (탭2 10행). 해제면 cleared=true.
 
-        지금은 시험 도구(`mqtt_test/alarm_sim.py`)가 넣어 준 것만 처리한다.
-        실제 장애 수집(PLC·로봇 알람)이 붙으면 그쪽에서 같은 함수를 부르면
-        되고, 나가는 메시지 형식은 바뀌지 않는다.
+        해제는 발생 때와 **같은 code** 에 `cleared: true` 로 낸다(level·recovery 는
+        발생 때 값 그대로). 옛 시험 도구가 보내는 `-CLEAR` 접미사도 해제로 읽는다.
 
-        `level` 이 `stop`/`estop` 이면 진행 중 작업을 멈춘다 — 화면만 띄우고
-        계속 돌면 장애 상황에서 헛검사를 하게 된다.
+        level 이 stop·estop 이면 로봇을 세우고, **하던 일을 실패로 끝낸다** —
+        evt/error 와 따로 evt/complete 에 5xx 를 낸다(탭4 B-2). 비상정지 때 하던
+        구간은 끝난 것으로 보고 이어 가지 않는다(if-0.4). 풀린 뒤에는 브릿지가
+        처음 순서(query → calibrate → prepare → start)로 새로 보낸다.
         """
         code = str(fields.get("code", "E9999")).strip()
         message = str(fields.get("message", "UNKNOWN")).strip()
+        cleared = bool(fields.get("cleared", False))
+        if code.endswith("-CLEAR"):
+            code, cleared = code[: -len("-CLEAR")], True
+        if cleared:
+            self._clear(code, message)
+            return
+
         level = str(fields.get("level", "warning")).strip()
         recovery = str(fields.get("recovery", "manual")).strip()
-
         extra: dict[str, Any] = {}
         detail = fields.get("detail")
         if detail:
             extra["detail"] = str(detail)
-        if self._job_id and level != "warning":
+        if self._job_id and self._job_active() and level != "warning":
             extra["job_id"] = self._job_id
-
-        self._errors = [c for c in getattr(self, "_errors", []) if c != code]
-        if code.endswith("-CLEAR"):
-            # 해제 통보. 걸려 있던 코드를 목록에서 뺀다.
-            base = code[: -len("-CLEAR")]
-            self._errors = [c for c in self._errors if c != base]
-        else:
-            self._errors.append(code)
-
-        self.client.publish_error(code, message, level, recovery, **extra)
+        self._errors[code] = {"code": code, "level": level,
+                              "recovery": recovery, "message": message}
+        self.client.publish_error(code, message, level, recovery, cleared=False, **extra)
         self.error_published.emit(code, message, level)
         self.activity.emit(f"장애 통보: {code} {message} ({level})")
 
         if level in ("stop", "estop"):
-            # 로봇은 순회 상태와 무관하게 세운다. 장애는 로봇 자신이 아니라
-            # 차량·리프트·배터리 쪽에서도 나며, 그때 로봇 팔이 계속 벽을
-            # 훑고 있으면 안 된다. 순회가 돌고 있지 않아도(수동 조작 중이어도)
-            # 마찬가지다.
+            # 장애는 로봇 자신이 아니라 차량·리프트 쪽에서도 난다 — 그때 팔이
+            # 계속 벽을 훑으면 안 되므로 순회 상태와 무관하게 세운다.
             self.robot_stop_requested.emit()
-            if self.sequencer.state not in (
-                SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED
-            ):
-                self.pause_requested.emit()
+            if self._mark_req_id:
+                self.mark_stop_requested.emit()
+            self.interrupt_active_job(500, f"{code} {message}")
+            if self.sequencer.state not in _SEQ_IDLE:
+                self.job_dropped.emit()
+        self.refresh_status()
 
-    def clear_error(self, code: str) -> bool:
-        """걸려 있던 장애 코드 하나만 지운다(오류 로그 화면의 '선택 해제')."""
-        errors = getattr(self, "_errors", [])
-        if code not in errors:
+    def _clear(self, code: str, message: str = "") -> bool:
+        entry = self._errors.pop(code, None)
+        if entry is None:
             return False
-        self._errors = [c for c in errors if c != code]
+        extra = {"job_id": self._job_id} if self._job_id and self._job_active() else {}
+        self.client.publish_error(code, message or entry["message"], entry["level"],
+                                  entry["recovery"], cleared=True, **extra)
+        self.error_cleared.emit(code, message or entry["message"])
+        self.activity.emit(f"장애 해제 통보: {code}")
+        self.refresh_status()
         return True
 
-    def clear_errors(self) -> list[str]:
-        """걸려 있던 장애 코드를 모두 지우고, 지운 코드를 돌려준다.
+    def clear_error(self, code: str) -> bool:
+        """걸려 있던 장애 하나를 풀고 ERUT 에 알린다(오류 로그 화면의 '선택 해제')."""
+        return self._clear(code)
 
-        ERUT 가 `req/reset` 을 보내면 `_do_reset` 이 하는 일과 같다. 운영자가
-        화면에서 직접 지울 수 있어야 해서(현장에서 스테이션 조작을 기다릴 수
-        없다) 같은 동작을 밖에서도 부를 수 있게 뺐다.
+    def clear_errors(self) -> list[str]:
+        """걸려 있던 장애를 모두 풀고, 푼 코드를 돌려준다.
+
+        ERUT 의 `req/reset` 과 운영자의 화면 리셋이 같은 길을 쓴다 — 조치가
+        끝나면 장치가 「풀렸다」를 보내야 한다(탭5 recovery=manual).
         """
-        cleared = self.error_codes()
-        self._errors = []
-        return cleared
+        codes = list(self._errors)
+        for code in codes:
+            self._clear(code)
+        return codes
 
     def error_codes(self) -> list[str]:
         """지금 걸려 있는 장애 코드 목록."""
-        return list(getattr(self, "_errors", []))
+        return list(self._errors)
 
     # ------------------------------------------------------------ 도우미
     def _read_plan(self, content: dict) -> GridPlan | None:
-        """요청에서 격자 계획을 만든다 (ERUT 규격 20260818).
+        """요청의 `area` 로 구간 하나를 만든다 (탭1 7·8행).
 
-            area : { start:{x,y}, end:{x,y} }  → 셀 하나의 사각형
-            plan : { columns, rows, diameter, height, surface_length }
-            scan : { pitch_scan, pitch_x, pitch_y, speed }
+            area : { start:{x,y}, end:{x,y} }   검사면 좌표 정수 mm
+            scan : { pitch, speed }
 
-        셀 크기는 **`area` 의 start·end 차이**로 정한다. `plan` 에
-        `cell_width`/`cell_height` 가 오면 그쪽을 우선한다(옛 규격 호환).
+        **구간 하나 = job 하나.** 크기와 위치는 area 가 정한다. 반지름·두께·
+        검사장비 종류는 규격에 없는 우리 장비 값이라 RCS 설정에서 채운다
+        (app.py `_fill_from_local_setup`). 예전 판의 `plan` 블록은 보지 않는다.
 
-        겹침 세 개는 쓰임이 달라 따로 담는다 — `pitch_scan` 은 로봇이
-        area 안에서 쓰고, `pitch_x`/`pitch_y` 는 우리가 AMR·리프트를
-        얼마나 움직일지 정하는 데 쓴다.
+        `scan.pitch` 는 **구역끼리의 겹침**이다(3S 회신 2026-09-23). 구역 안의 ㄹ자
+        줄 간격은 로봇이 프로브 커버(5축/8축)에 맞춰 스스로 정하고, 이 값은
+        차량 이동(가로)·리프트 상승(세로) 간격에 들어간다.
         """
-        # **구간 하나 = job 하나** (규격 탭3 ④). 요청 하나로 격자 한 칸만
-        # 스캔한다. 다음 구간은 ERUT 가 새 prepare/start 로 다시 준다.
-        #
-        # `plan.columns/rows` 는 **전체 격자** 정보라 여기서 순회 칸 수로
-        # 쓰면 안 된다 — 예전에는 그렇게 써서 20260818 판 예시(12 x 6)면
-        # 요청 한 번에 72 칸을 다 돌고 나서야 complete 를 냈다. ERUT 는
-        # 구간마다 complete 를 기다린다.
-        #
-        # `plan` 블록 자체도 **필수가 아니다.** 규격의 start 와 20260812 판
-        # prepare 에는 없다. 칸의 크기와 위치는 `area` 가 정한다.
-        plan = content.get("plan")
-        if not isinstance(plan, dict):
-            plan = {}
         try:
-            columns = rows = 1
             area = content.get("area") or {}
             start, end = area.get("start", {}), area.get("end", {})
             x0, y0 = float(start["x"]), float(start["y"])
             x1, y1 = float(end["x"]), float(end["y"])
-            width = plan.get("cell_width", abs(x1 - x0))
-            height = plan.get("cell_height", abs(y1 - y0))
-            width, height = float(width), float(height)
-            # 이 구간의 원점 — 검사면 좌표(탭5: 외주면 x=원주 전개, y=높이).
-            # 차량은 x 로, 리프트는 y 로 정렬한다.
-            origin_x, origin_y = min(x0, x1), min(y0, y1)
-
             scan = content.get("scan") or {}
-            # `scan.pitch` 는 **격자끼리의 겹침(오버랩)** 이다. 격자 안에서는
-            # 겹침이 의미가 없다 — 줄 간격은 로봇이 5축/8축 프로브 커버에
-            # 맞춰 스스로 ㄹ자를 짠다(dus_init.script). 그래서 이 값은 가로·
-            # 세로 격자간 겹침에 넣고 격자 안 줄 겹침(scan_overlap)은 비운다.
-            # (ERUT 화면의 "오버랩 간격" 한 칸과 같은 값이다.)
-            #
-            # 20260818 판처럼 pitch_x/pitch_y 가 따로 오면 그 값을 쓴다.
-            single = float(scan.get("pitch", scan.get("pitch_scan", 0)) or 0)
-            pitch_x = float(scan.get("pitch_x", single) or 0)
-            pitch_y = float(scan.get("pitch_y", single) or 0)
-            scan_overlap = 0.0
-
-            # 로봇이 호를 계산하는 데 필요한 값. plan 블록에 온다.
-            # radius 는 **훑는 면**의 반지름이다 — 안쪽/바깥쪽 중 실제로
-            # 스캔하는 면 기준으로 보내야 한다(두께를 더하고 빼는 판단은
-            # 보내는 쪽 몫이다). 없으면 0 -> 평면으로 보고 직선 스캔.
-            radius = float(plan.get("radius", 0) or 0)
-            thickness = float(plan.get("thickness", 0) or 0)
-            # 검사장비(EOAT) 종류 — 프로브 축 수 5(X형) 또는 8(직사각).
-            eoat_probes = int(float(plan.get("eoat", 0) or 0))
-
-            if columns <= 0 or rows <= 0 or width <= 0 or height <= 0:
-                return None
-        except (KeyError, TypeError, ValueError):
+            overlap = float(scan.get("pitch", 0) or 0)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return None
+        width, height = abs(x1 - x0), abs(y1 - y0)
+        if width <= 0 or height <= 0 or overlap < 0:
             return None
         return GridPlan(
-            column_count=columns, row_count=rows,
+            column_count=1, row_count=1,
             cell_width=width, cell_height=height,
-            scan_overlap=scan_overlap, pitch_x=pitch_x, pitch_y=pitch_y,
-            radius=radius, thickness=thickness, eoat_probes=eoat_probes,
-            origin_x=origin_x, origin_y=origin_y,
+            scan_overlap=0.0, pitch_x=overlap, pitch_y=overlap,
+            origin_x=min(x0, x1), origin_y=min(y0, y1),
         )
 
     def _apply_speed(self, content: dict) -> None:
+        """scan.speed [mm/s] 를 로봇 속도 비율로 바꿔 건다.
+
+        로봇의 스캔 속도는 100 mm/s 고정이고(dus_init), 컨트롤러 비율(%)로만
+        줄일 수 있다. 그래서 40 mm/s 는 40 % 다. 100 을 넘는 값은 앞에서 400 으로
+        거절했다. `speed_ratio`(%)가 따로 오면 그 값을 쓴다(3S 확장).
+        """
         scan = content.get("scan")
         if not isinstance(scan, dict):
             return
-        ratio = scan.get("speed_ratio")
-        if ratio is None:
+        if scan.get("speed_ratio") is not None:
+            percent = int(_mm(scan.get("speed_ratio")))
+        elif scan.get("speed") is not None:
+            percent = int(round(_mm(scan.get("speed")) / SCAN_SPEED_MAX * 100))
+        else:
             return
-        try:
-            percent = int(ratio)
-        except (TypeError, ValueError):
-            return
-        if 2 <= percent <= 100:
-            self.speed_requested.emit(percent)
+        self.speed_requested.emit(max(2, min(100, percent)))
 
     def _after(self, delay_ms: int, callback) -> None:
         """지연 후 한 번 실행. 타이머를 붙잡아 두어 중간에 사라지지 않게 한다."""
@@ -815,12 +1064,18 @@ class ErutSession(QObject):
         timer.start()
 
     def _on_erut_online(self, online: bool) -> None:
-        """ERUT 가 사라지면 헛검사를 막기 위해 진행 중 작업을 멈춘다."""
+        """브릿지가 사라지면 하던 일을 스스로 일시정지한다(탭2 18행).
+
+        명령하고 지켜볼 쪽이 없고 물도 못 켠다 — 기록되지 않는 헛검사를 막는다.
+        다시 붙으면 브릿지가 query 로 상태를 맞춘다.
+        """
         if online:
-            self.activity.emit("ERUT 가 온라인입니다.")
+            self.activity.emit("ERUT 브릿지가 온라인입니다.")
             return
-        self.activity.emit("ERUT 가 오프라인입니다. 진행 중 작업을 일시정지합니다.")
-        if self.sequencer.state not in (
-            SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED
-        ):
+        self.activity.emit("ERUT 브릿지가 오프라인입니다. 하던 일을 일시정지합니다.")
+        if self._calibrate_req_id and not self._paused_work:
+            self._paused_work = "calibrate"
+            self.robot_stop_requested.emit()
+        elif self.sequencer.state not in _SEQ_IDLE:
             self.pause_requested.emit()
+        self.refresh_status()

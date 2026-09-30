@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""ERUT(스테이션) 역할을 대신하는 시뮬레이터.
+"""ERUT Robot Service(로봇 브릿지) 역할을 대신하는 시뮬레이터.
 
 실제 ERUT 가 아직 없으므로 이 도구가 그 자리에서 요청을 보내고 응답을 받는다.
-규격은 `ERUT-3S_MQTT_인터페이스_*.xlsx` 탭3(정상 시나리오)을 그대로 따른다.
+규격은 `ERUT_검사로봇_MQTT_표준인터페이스_if-0.4.xlsx` 탭3(정상 시나리오)이다.
 
-    ① 접속 확인   erut/status 발행 → req/query → res 확인
+    ① 접속 확인   erut/status 발행(5초마다) → req/query → res 확인
     ② 캘리브레이션 req/calibrate → res 202 → evt/complete
     ③ 검사 준비   req/prepare  → res 202 → evt/ready
-    ④ 구간 검사   req/start    → res 202 → evt/progress … → evt/complete
-    ⑤ 마킹        req/mark     → res 202 → evt/complete
+    ④ 구간 검사   req/start    → res 202 → evt/contact · evt/progress … → evt/complete
+    ⑤ 마킹        req/mark     → res 202 → [evt/mark_ready → req/mark_next] × 점
+                                         → evt/complete
     중간 개입     req/pause · req/resume · req/abort · req/reset
-    홈 이동       req/home — 동작 중이면 409 BUSY + evt/message 로 사유 (20260914 추가)
+    홈 이동       req/home → res 202 → evt/complete(action=home)   ※ 3S 확장
+
+브릿지처럼 erut/status 를 **5초마다** 다시 낸다 — RCS 는 20초 넘게 조용하면
+브릿지가 없는 것으로 보고 하던 일을 일시정지한다. 마커도 ERUT 것이므로, 로봇이
+마킹 자리에 붙었다는 evt/mark_ready 가 오면 「마커 자동 발사」가 켜져 있을 때
+1초 뒤 mark_next 를 보낸다(끄면 로봇은 그 자리에서 계속 기다린다).
 
 「시나리오 자동 진행」을 누르면 ①~④를 순서대로 밟으며, 각 단계의 응답을
 기다렸다가 다음으로 넘어간다. 기다리는 대상이 오지 않으면 그 자리에서 멈추고
@@ -49,7 +55,7 @@ def utc_ms() -> int:
 class ErutSimApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        root.title("ERUT 시뮬레이터 (스테이션 대역)")
+        root.title("ERUT 시뮬레이터 (Robot Service 대역 · if-0.4)")
         root.geometry("1000x760")
         root.minsize(900, 680)
 
@@ -76,6 +82,8 @@ class ErutSimApp:
         self.cell_h_var = tk.StringVar(value="800")
         self.overlap_var = tk.StringVar(value="20")
         self.speed_var = tk.StringVar(value="100")
+        # 마커는 ERUT 것이다 — 켜 두면 mark_ready 를 받자마자 쏜 셈 치고 mark_next.
+        self.auto_mark_var = tk.BooleanVar(value=True)
 
         self._build_ui()
         root.after(100, self._pump)
@@ -113,7 +121,7 @@ class ErutSimApp:
             ("지름 diameter", self.diameter_var), ("높이 height", self.height_var),
             ("열 columns", self.columns_var), ("행 rows", self.rows_var),
             ("셀 가로 cell_width", self.cell_w_var), ("셀 세로 cell_height", self.cell_h_var),
-            ("겹침 overlap", self.overlap_var), ("속도 speed_ratio", self.speed_var),
+            ("겹침 overlap", self.overlap_var), ("속도 speed mm/s", self.speed_var),
         )
         for i, (label, var) in enumerate(fields):
             r, c = divmod(i, 3)
@@ -139,11 +147,15 @@ class ErutSimApp:
             # 규격 20260914 추가 (탭4 E-1). 로봇이 동작 중이면
             # res 409 BUSY 뒤에 evt/message(M1001)로 사유 문장이 온다.
             ("⌂ home", lambda: self._send("home")),
+            ("? teleport (501)", lambda: self._send("teleport")),
         )
         for i, (label, fn) in enumerate(buttons):
             r, c = divmod(i, 5)
             ttk.Button(cmd, text=label, command=fn).grid(
                 row=r, column=c, padx=3, pady=3, sticky=tk.EW)
+        ttk.Checkbutton(cmd, text="마커 자동 발사 (mark_ready → mark_next)",
+                        variable=self.auto_mark_var).grid(
+            row=r + 1, column=0, columnspan=5, sticky=tk.W, pady=(4, 0))
 
         log = ttk.LabelFrame(outer, text="송수신 로그", padding=8)
         log.grid(row=3, column=0, sticky=tk.NSEW)
@@ -246,7 +258,8 @@ class ErutSimApp:
                 surface=self.surface_var.get().strip(),
                 area={"start": {"x": x0, "y": y0},
                       "end": {"x": x0 + w, "y": y0 + h}},
-                scan={"pitch": float(self.overlap_var.get()), "speed": 40},
+                scan={"pitch": float(self.overlap_var.get()),
+                      "speed": float(self.speed_var.get())},
             )
         elif action == "mark":
             c.update(method="paint",
@@ -254,6 +267,8 @@ class ErutSimApp:
                              {"id": "p2", "x": 780, "y": 1350}])
         elif action in ("pause", "resume", "abort"):
             c.update(job_id=self.job_id_var.get().strip())
+            if action == "pause":
+                c.update(reason="operator")
         return c
 
     # ------------------------------------------------------------ 구간
@@ -362,8 +377,7 @@ class ErutSimApp:
                     self.connected = True
                     self.conn_var.set(f"연결됨 ({self.host_var.get()}:{self.port_var.get()})")
                     self._log("[연결됨] erut/{장치ID}/# 구독 시작")
-                    self._publish(ERUT_STATUS,
-                                  {"timestamp": utc_ms(), "state": "online"}, retain=True)
+                    self._heartbeat()
                 elif kind == "disconnected":
                     self.connected = False
                     self.conn_var.set("연결 끊김")
@@ -379,22 +393,55 @@ class ErutSimApp:
     def _on_payload(self, topic: str, payload: Any) -> None:
         dev = self.device_var.get().strip()
         tail = topic[len(f"erut/{dev}/"):] if topic.startswith(f"erut/{dev}/") else topic
-        # 상시 상태는 evt/status 다(규격 20260818 — telemetry 는 없다).
-        # 30~60초 주기라 잦지 않지만 한 줄로 줄여 로그를 덮지 않게 한다.
+        # 상시 상태(5초)와 접촉(2초)은 자주 오므로 **바뀔 때만** 한 줄로 남긴다.
         if tail == "evt/status":
             c = payload if isinstance(payload, dict) else {}
-            self._log(f"[상태] {c.get('state')} "
-                      f"battery={c.get('battery')} charging={c.get('charging')}")
+            line = (f"[상태] {c.get('state')} · {c.get('activity')} · "
+                    f"calibrated={c.get('calibrated')} · job={c.get('job_id', '-')} · "
+                    f"홈={c.get('at_home')}")
+            if line != getattr(self, "_last_status_line", ""):
+                self._last_status_line = line
+                self._log(line)
+            return
+        if tail == "evt/contact":
+            c = (payload or {}).get("content", {}) if isinstance(payload, dict) else {}
+            line = f"[접촉] {c.get('state')} · job={c.get('job_id')}"
+            if line != getattr(self, "_last_contact_line", ""):
+                self._last_contact_line = line
+                self._log(line + ("  → 물 켜기" if c.get("state") == "attached" else "  → 물 끄기"))
+            return
+        if tail == "evt/progress":
+            c = (payload or {}).get("content", {}) if isinstance(payload, dict) else {}
+            loc = c.get("location") or {}
+            self._log(f"[진행] {c.get('job_id')} {c.get('progress')}% · pos={c.get('pos')} "
+                      f"· {loc.get('cell', '')}")
             return
         self._log(f"[수신 {tail}] {json.dumps(payload, ensure_ascii=False)}")
         if isinstance(payload, dict):
             content = payload.get("content") or {}
             action = content.get("action", "")
             self._received.add((tail, action))
+            if tail == "evt/mark_ready" and self.auto_mark_var.get():
+                req_id, point_id = content.get("req_id", ""), content.get("point_id", "")
+                self._log(f"  마커 발사 — 점 {point_id} (1초 뒤 mark_next)")
+                self.root.after(1000, lambda: self._fire_marker(req_id, point_id))
             # 거절 사유 문장이 오면(예: 동작 중 홈 요청) ERUT 화면처럼 띄운다.
             if content.get("detail"):
                 messagebox.showwarning(f"RCS 응답 — {action}", str(content["detail"]),
                                        parent=self.root)
+
+    def _heartbeat(self) -> None:
+        """브릿지 생존 신호 — 5초마다(탭1 14행). 끊기면 RCS 가 20초 뒤 멈춘다."""
+        if self.client is None or not self.connected:
+            return
+        self.client.publish(ERUT_STATUS, json.dumps(
+            {"timestamp": utc_ms(), "state": "online"}), qos=1, retain=True)
+        self.root.after(5000, self._heartbeat)
+
+    def _fire_marker(self, req_id: str, point_id: str) -> None:
+        """ERUT 마커로 찍은 셈 치고 다음 점으로 보낸다."""
+        self._publish(f"{REQ}mark_next", {"timestamp": utc_ms(), "content": {
+            "req_id": req_id, "point_id": point_id, "marked": True}})
 
     def _log(self, text: str) -> None:
         self.log.configure(state=tk.NORMAL)

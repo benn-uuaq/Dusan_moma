@@ -57,8 +57,13 @@
 
 ### `erut_session.py`
 
-- ERUT 요청 9개(`calibrate`/`prepare`/`start`/`pause`/`resume`/`abort`/`reset`/`mark`/`query`)를 처리하는 **프로토콜 계층**입니다.
-- **로봇이 하는 일은 진짜입니다.** `start` 계열과 `calibrate` 는 로봇을 실제로 움직입니다. 아직 시험용인 것은 배터리·충전(차량 자료에 항목이 있는지 확인 필요), 마킹 동작 자체(마킹기 개발 중), 장애 수집입니다. 어디까지가 진짜인지는 코드에 `REAL`/`TEST` 주석으로 표시해 두었습니다.
+- ERUT 표준 인터페이스 **if-0.4** 의 검사로봇 쪽 **프로토콜 계층**입니다. 표준 동작 9개(`calibrate`/`prepare`/`start`/`pause`/`resume`/`abort`/`reset`/`mark`/`query`)에 3S 확장 `home`·`mark_next` 를 더했고, 모르는 동작은 501 로 답합니다.
+- 상시 발행: `evt/status`(state 는 online/offline 만, 활동은 `activity` 8값 — 5초 + 바뀌면 바로), `evt/contact`(탐촉자 접촉 — ERUT 가 물을 켠다, 2초), `evt/info`(자기소개, 접속 시), `evt/progress`(2초, 정수·뒤로 안 감).
+- 받는 상태는 탭9(초안)대로: idle·ready 에서만 새 일을 받고, 다른 일 중이면 409, 장애 중이면 423. pause·abort·reset·query 는 늘 받는다.
+- 장애 해제는 발생 때와 같은 code 에 `cleared=true` 입니다. stop·estop 장애는 하던 일을 5xx 완료로 끝냅니다(비상정지 뒤에는 이어 가지 않는다 — if-0.4).
+- 진행률·완료에는 표준 `pos{x,y}` 와 3S 확장 `location{cell, vehicle_mm, lift_mm, robot}` 을 싣습니다 — 앞 구역 완료를 못 받은 채 다음 구역이 와도 어느 구역 값인지 가를 수 있게.
+- 아직 비어 있는 것: 배터리·충전과 캘리브레이션 `total_length_mm`(둘 다 차량 개발자에게 받기로 했다 — `docs/vehicle_request_calibration_lap_battery.md`). 받기 전에는 칸을 싣지 않습니다(규격: 없으면 빼라, 0 으로 채우지 말라).
+- 마킹은 마커가 ERUT 것이라 `mark_positioning` 입니다 — 점에 붙으면 `evt/mark_ready`, ERUT 가 `req/mark_next` 를 보내면 다음 점.
 - `calibrate` 는 **모재 기준 좌표계를 한 번 세우는 일**입니다(격자 한 칸 확인이 아니고, 차량을 따로 교정하는 것도 아닙니다). 모재 지름을 받아 작업 영역 반지름을 고치고, 차량을 고정한 뒤 로봇 3점 측정을 돌립니다. 결과 오차는 `calibration.py` 가 계산합니다.
 - `plan.cell_width`/`cell_height`가 없으면 `area`의 start·end 차이로 셀 크기를 잡습니다. 두 값은 같은 뜻이라 어느 쪽이 와도 되게 했습니다.
 - **같은 `req_id`를 다시 받으면 재실행하지 않고 이전 응답만 되돌립니다**(규격 탭2 중요사항). 없으면 재전송 한 번에 로봇이 두 번 움직입니다.

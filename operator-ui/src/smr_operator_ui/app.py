@@ -601,10 +601,10 @@ class OperatorWindow(QMainWindow):
         self.main_screen.set_global_scale(scale)
 
     def _connect_erut(self, start: bool) -> None:
-        """ERUT 요청을 로봇 순회와 잇는다.
+        """ERUT 표준 인터페이스(if-0.4)를 로봇·차량과 잇는다.
 
-        지금은 로봇만 진짜다 — start 계열만 실제로 로봇을 움직이고,
-        캘리브레이션·마킹·배터리는 `ErutSession` 이 시험용으로 답한다.
+        배터리·충전과 캘리브레이션의 총 둘레는 차량 자료가 아직 없어 싣지
+        않는다(docs/todo.md). 나머지는 실제 장비가 움직인다.
         """
         self.erut_session = ErutSession(self.erut, self.sequencer, parent=self)
         self.erut_session.activity.connect(self.main_screen.show_activity)
@@ -620,7 +620,14 @@ class OperatorWindow(QMainWindow):
         # ERUT 의 홈 요청: 동작 중이면 세션이 409 + 사유로 거절하고,
         # 쉬고 있으면 여기로 온다.
         self.erut_session.robot_busy = self._robot_busy
-        self.erut_session.home_requested.connect(self._send_home)
+        # 로봇 위치(호 위 거리·줄 높이·진행률)와 홈 플래그도 응답에 싣는다.
+        self.erut_session.position_state = self._erut_position
+        self.erut_session.at_home = lambda: getattr(self, "_robot_at_home", None)
+        self.erut_session.home_requested.connect(self._send_home_for_erut)
+        self.erut_session.job_dropped.connect(self._drop_erut_job)
+        self.ros_status.scan_arc_changed.connect(self._on_scan_arc)
+        self.ros_status.scan_state_changed.connect(self._track_erut_contact)
+        self.ros_status.command_result.connect(self._on_home_command_result)
         # 캘리브레이션: 모재 치수를 받아 작업 영역을 고치고 로봇 3점 측정을 돌린다.
         self.erut_session.calibration_requested.connect(self._run_calibration)
         self.ros_status.probe_result_changed.connect(self._on_probe_result)
@@ -633,10 +640,16 @@ class OperatorWindow(QMainWindow):
             send_target=lambda u, v: self.ros_status.send_pose("mark_target", [u, v]),
             start_mark_task=self._start_mark_task,
             restore_scan_task=lambda: self.ros_status.call_command("load_scan_task"),
+            # 로봇은 마킹 자리(290 = 11)에서 이게 올 때까지 선다(레지스터 278).
+            release_hold=lambda: self.ros_status.send_value("mark_go", 1),
             parent=self,
         )
         self.mark_runner.activity.connect(self.main_screen.show_activity)
         self.mark_runner.finished.connect(self.erut_session.finish_mark)
+        # 마커는 ERUT 것이다: 자리에 붙으면 evt/mark_ready, mark_next 가 오면 다음 점.
+        self.mark_runner.point_reached.connect(self.erut_session.mark_point_ready)
+        self.erut_session.mark_next_requested.connect(self.mark_runner.point_marked)
+        self.erut_session.mark_stop_requested.connect(self._stop_erut_marking)
         self.mark_runner.finished.connect(self._finish_mqtt_mark)
         self.erut_session.mark_requested.connect(self._start_marking)
         self.ros_status.scan_state_changed.connect(self.mark_runner.handle_scan_state)
@@ -1115,6 +1128,11 @@ class OperatorWindow(QMainWindow):
         if self._robot_at_home:
             # 이 값을 쓰는 태스크가 올라가 있다는 뜻 — 이제부터 믿는다.
             self._home_flag_seen = True
+            if getattr(self, "_erut_home_armed", False):
+                self._erut_home_armed = False
+                self.erut_session.home_arrived()
+        # ERUT evt/status 의 at_home 도 바로 바꿔 낸다.
+        self.erut_session.refresh_status()
         self._run_pending_motions()
         self._sync_manual_interlock()
 
@@ -1172,9 +1190,80 @@ class OperatorWindow(QMainWindow):
             timer.stop()
 
     def _start_marking(self, points: list) -> None:
-        """ERUT 마킹 점들을 돈다. 격자 크기는 지금 작업 영역을 쓴다."""
+        """ERUT 마킹 점들을 돈다. 격자 크기는 지금 작업 영역을 쓴다.
+
+        마커가 ERUT 것이라 점마다 자리에서 서서 mark_next 를 기다린다(hold).
+        """
         width, height, _scan_h, _overlap = self.main_screen.rect_view.work_area()
-        self.mark_runner.start(points, width, height)
+        self.mark_runner.start(points, width, height, hold=True)
+
+    def _stop_erut_marking(self) -> None:
+        """ERUT 마킹을 도중에 접는다(일시정지·장애). 찍은 점까지는 완료에 싣는다."""
+        marked, failed = self.mark_runner.progress()
+        self.mark_runner.cancel()
+        self._stop_robot_scan()
+        self.erut_session.finish_mark(marked, failed, code=500)
+
+    # ---- ERUT 에 싣는 로봇 위치 · 접촉 · 홈 ------------------------------------
+    #: 탐촉자가 벽에 붙어 있는 로봇 상태(290): 원점 대기 · 적심 · 스캔.
+    _CONTACT_STATES = frozenset({7, 8, 6})
+
+    def _on_scan_arc(self, values: list) -> None:
+        self._scan_arc = [int(v) for v in values]
+
+    def _erut_position(self) -> dict:
+        """격자 안 로봇 위치와 진행률 (ERUT pos·progress 용).
+
+        가로 = 이번 줄에서 원점부터 호를 따라 간 거리(286, 0.1mm), 세로 = 줄 번호
+        (291) x 줄 간격(296). 진행률은 로봇이 내는 298, 스캔한 거리는 287(누적 mm).
+        """
+        arc = getattr(self, "_scan_arc", None) or []
+        state = getattr(self, "_last_scan_state", None) or []
+        row = int(state[1]) if len(state) > 1 else 0
+        pitch = int(state[6]) if len(state) > 6 else 0
+        return {
+            "arc_mm": (arc[0] / 10.0) if arc else 0.0,
+            "row_mm": float(row * pitch),
+            "progress": int(state[7]) if len(state) > 7 else None,
+            "scanned_mm": float(arc[1]) if len(arc) > 1 and arc[1] > 0 else None,
+        }
+
+    def _track_erut_contact(self, values: list) -> None:
+        """탐촉자 접촉을 ERUT 에 알린다 — ERUT 가 이것으로 물을 켜고 끈다."""
+        if not values:
+            return
+        self._last_scan_state = list(values)
+        self.erut_session.set_contact(int(values[0]) in self._CONTACT_STATES)
+
+    def _drop_erut_job(self) -> None:
+        """준비해 둔(또는 장애로 실패한) ERUT 구간을 접는다. 홈으로는 안 보낸다."""
+        self._origin_waiting = False
+        self.sequencer.stop()
+
+    def _send_home_for_erut(self) -> None:
+        """ERUT 홈 요청 — 보내고, 로봇이 실제로 홈에 닿으면 완료를 낸다."""
+        self._erut_home_armed = False
+        self._send_home()
+
+    def _on_home_command_result(self, name: str, ok: bool, message: str) -> None:
+        """노드가 홈 스크립트를 받았다. 그 뒤로 홈 플래그가 서면 도착이다.
+
+        노드는 홈 이동을 보내기 **전에** 276 을 0 으로 내리므로, 이 응답 뒤에
+        보는 1 은 새로 도착한 것이다(이미 홈에 있어도 한 번 내렸다 올린다).
+        """
+        if name != "home" or not getattr(self.erut_session, "_home_req_id", ""):
+            return
+        if not ok:
+            self.erut_session.finish_home(False, message)
+            return
+        self._erut_home_armed = True
+        if getattr(self, "_robot_at_home", False) and not self._robot_task_running():
+            QTimer.singleShot(1500, self._check_erut_home)
+
+    def _check_erut_home(self) -> None:
+        if getattr(self, "_erut_home_armed", False) and getattr(self, "_robot_at_home", False):
+            self._erut_home_armed = False
+            self.erut_session.home_arrived()
 
     def _start_mark_task(self) -> None:
         """마킹 태스크로 바꿔 끼우고 튼다.
@@ -1750,9 +1839,10 @@ class OperatorWindow(QMainWindow):
             f"MQTT 마킹 {mark_id}: {cell} 격자 ({x:g}, {y:g}) mm — 차량 {amr_mm:.0f} mm, "
             f"리프트 {lift_mm:.0f} mm")
         self.mqtt_server.publish_mark_state(mark_id, "executing", cell)
+        # 사내 MC 마킹에는 마커 쪽 확인 절차가 없다 — 자리에 붙으면 바로 푼다.
         self.mark_runner.start(
             [{"id": mark_id or cell, "amr_mm": amr_mm, "lift_mm": lift_mm, "u": x, "v": y}],
-            grid.cell_width, grid.cell_height)
+            grid.cell_width, grid.cell_height, hold=False)
 
     def _finish_mqtt_mark(self, marked: list, failed: list) -> None:
         """MC 마킹 명령이 끝났으면 결과를 알린다(ERUT 마킹이면 아무것도 안 한다)."""
@@ -2150,16 +2240,20 @@ class OperatorWindow(QMainWindow):
     # 벽 접촉을 못 찾고 halt() 하기 직전에 남긴다(config/modbus_registers.json
     # 참고). 0=정상, 그 외는 실패 코드.
     _PROBE_ERROR_INDEX = 9
+    #: 299 값 → (ERUT 장애 code, message, 화면 문구). code 는 표준 형식 Exxxx 의
+    #: **제조사 전용 대역 E9xxx** 다(if-0.4 탭5 장애 코드 체계 — 공통 대역
+    #: E1~E5 는 ERUT 가 매긴다). message 는 영문 상수, 문구는 detail 로 싣는다.
     _PROBE_ERROR_MESSAGES = {
-        1: ("E-PROBE-C", "센터 프로브 벽 접촉 실패"),
-        2: ("E-PROBE-L", "좌측(원점) 프로브 벽 접촉 실패"),
-        3: ("E-PROBE-R", "우측 프로브 벽 접촉 실패"),
-        4: ("E-ARC-ZERO", "호 길이/반지름이 0 — 작업 영역 값을 확인하세요"),
+        1: ("E9101", "PROBE_C_CONTACT_FAILED", "센터 프로브 벽 접촉 실패"),
+        2: ("E9102", "PROBE_L_CONTACT_FAILED", "좌측(원점) 프로브 벽 접촉 실패"),
+        3: ("E9103", "PROBE_R_CONTACT_FAILED", "우측 프로브 벽 접촉 실패"),
+        4: ("E9104", "ARC_ZERO", "호 길이/반지름이 0 — 작업 영역 값을 확인하세요"),
+        5: ("E9105", "MARK_CONTACT_FAILED", "마킹 자리에서 벽 접촉을 찾지 못했습니다"),
         # v5 (servoj 스캔) — 호를 도는 동안 눌림을 계속 확인한다.
-        6: ("E-SCAN-PRESS", "스캔 중 접촉(눌림)을 유지하지 못해 멈췄습니다 — 보정 한계(press_max) 초과"),
-        7: ("E-SCAN-IK", "스캔 호 경로에 역기구학 해가 없어 멈췄습니다 — 로봇 위치·자세를 확인하세요"),
+        6: ("E9106", "SCAN_PRESS_LOST", "스캔 중 접촉(눌림)을 유지하지 못해 멈췄습니다 — 보정 한계(press_max) 초과"),
+        7: ("E9107", "SCAN_IK_FAILED", "스캔 호 경로에 역기구학 해가 없어 멈췄습니다 — 로봇 위치·자세를 확인하세요"),
         # v5 인터락 — 차량 고정 확인(레지스터 309)을 기다리다 시간이 넘었다.
-        8: ("E-VEHICLE-HOLD", "차량 고정 확인을 못 받아 로봇이 멈췄습니다 — 아웃트리거 고정·차량 정지를 확인하세요"),
+        8: ("E9108", "VEHICLE_HOLD_TIMEOUT", "차량 고정 확인을 못 받아 로봇이 멈췄습니다 — 아웃트리거 고정·차량 정지를 확인하세요"),
     }
 
     def _handle_probe_error(self, values: list) -> None:
@@ -2182,21 +2276,20 @@ class OperatorWindow(QMainWindow):
 
         if code == 0:
             if prev_code in self._PROBE_ERROR_MESSAGES:
-                err_code, _ = self._PROBE_ERROR_MESSAGES[prev_code]
+                err_code, err_name, _text = self._PROBE_ERROR_MESSAGES[prev_code]
+                # 발생 때와 같은 code 에 cleared=true (if-0.3 부터).
                 self.erut_session.raise_error({
-                    "code": f"{err_code}-CLEAR", "message": "작업면 감지 실패 해제",
-                    "level": "warning", "recovery": "auto",
+                    "code": err_code, "message": err_name, "cleared": True,
                 })
             return
 
-        err_code, message = self._PROBE_ERROR_MESSAGES.get(
-            code, (f"E-PROBE-{code}", "작업면 감지 실패"))
-        self.main_screen.show_activity(f"{message} (레지스터 299={code})")
-        self.cobot_manual_screen.add_alarm(message)
+        err_code, err_name, text = self._PROBE_ERROR_MESSAGES.get(
+            code, (f"E91{code:02d}", "ROBOT_TASK_STOPPED", "로봇 태스크가 멈췄습니다"))
+        self.main_screen.show_activity(f"{text} (레지스터 299={code})")
+        self.cobot_manual_screen.add_alarm(text)
         self.erut_session.raise_error({
-            "code": err_code, "message": message,
-            "level": "stop", "recovery": "manual",
-            "detail": "로봇이 계산된 위치에서 벽 접촉을 찾지 못해 정지했습니다.",
+            "code": err_code, "message": err_name,
+            "level": "stop", "recovery": "manual", "detail": text,
         })
 
     # 스캔 진행 상태(290)에서 "원점 도착, 시작 신호 대기"를 뜻하는 값.
@@ -2396,7 +2489,7 @@ class OperatorWindow(QMainWindow):
         여기서는 MQTT 전달만 담당한다.
         """
         self.erut_session.raise_error({
-            "code": "E-ROBOT-ALARM", "message": text,
+            "code": "E9201", "message": "ROBOT_ALARM", "detail": text,
             "level": "warning", "recovery": "manual",
         })
 
@@ -2473,6 +2566,8 @@ class OperatorWindow(QMainWindow):
         self.main_screen.activity_shown.connect(lambda text: rec.log_event("정보", text))
         self.cobot_manual_screen.alarm_added.connect(lambda text: rec.log_event("알람", text))
         self.erut_session.error_published.connect(self._record_erut_error)
+        self.erut_session.error_cleared.connect(
+            lambda code, message: self.data_recorder.log_event("해제", message, code=code))
         self.erut_session.message_published.connect(
             lambda code, text: rec.log_event("알림", text, code=code))
         # 통신 (MQTT 수신 스레드에서도 불린다 — 기록기가 잠금으로 막는다)
@@ -2675,8 +2770,8 @@ class OperatorWindow(QMainWindow):
     def _on_vehicle_problem(self, message: str) -> None:
         """차량이 도착을 못 냈다 — 장애로 올린다(작업을 멈추고 로봇도 세운다)."""
         self.erut_session.raise_error({
-            "code": "E-VEHICLE", "message": "차량 동작 실패", "level": "stop",
-            "recovery": "manual", "detail": message,
+            "code": "E9301", "message": "VEHICLE_ERROR", "level": "stop",
+            "recovery": "manual", "detail": f"차량 동작 실패 — {message}",
         })
         self.cobot_manual_screen.add_alarm(f"차량: {message}")
 
@@ -2728,10 +2823,7 @@ class OperatorWindow(QMainWindow):
             self.data_recorder.job_stopped("중단")
 
     def _record_erut_error(self, code: str, message: str, level: str) -> None:
-        if code.endswith("-CLEAR"):
-            self.data_recorder.log_event("해제", message, code=code[:-len("-CLEAR")], level=level)
-        else:
-            self.data_recorder.log_event("장애", message, code=code, level=level)
+        self.data_recorder.log_event("장애", message, code=code, level=level)
 
     # ------------------------------------------------------------ 기록 화면
     def _setup_record_screens(self) -> None:
@@ -2740,6 +2832,7 @@ class OperatorWindow(QMainWindow):
         errors.clear_requested.connect(self._clear_errors)
         self.data_recorder.event_logged.connect(errors.on_event_logged)
         self.erut_session.error_published.connect(errors.refresh_active)
+        self.erut_session.error_cleared.connect(errors.refresh_active)
         logs.bind(self.data_recorder)
         logs.system_settings_requested.connect(lambda: self.navigate("system"))
         modes.load_requested.connect(self._load_mode_slot)

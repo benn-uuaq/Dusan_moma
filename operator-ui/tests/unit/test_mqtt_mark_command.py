@@ -34,7 +34,8 @@ def window(qtbot, monkeypatch):
     states, starts, areas = [], [], []
     w.mqtt_server.publish_mark_state = lambda mark_id, state, cell="", detail="": states.append(
         (mark_id, state, cell, detail)) or True
-    monkeypatch.setattr(w.mark_runner, "start", lambda points, cw, ch: starts.append((points, cw, ch)))
+    monkeypatch.setattr(w.mark_runner, "start",
+                        lambda points, cw, ch, hold=True: starts.append((points, cw, ch)))
     monkeypatch.setattr(w, "_send_work_area", lambda *a, **k: areas.append(a))
     w.test_log = (states, starts, areas)
     yield w
@@ -118,3 +119,13 @@ def test_the_simulator_payload_is_accepted_by_rcs(window, qtbot) -> None:
     (points, _, _), = starts
     assert points[0]["amr_mm"] == 2 * 701.0 and points[0]["lift_mm"] == 3 * 120.0
     assert (points[0]["u"], points[0]["v"]) == (700.0, 140.0)
+
+
+def test_mc_marking_does_not_wait_for_an_erut_marker(window, monkeypatch):
+    """사내 MC 마킹에는 마커 쪽 확인이 없다 — 로봇을 자리에 세워 두면 안 된다."""
+    holds: list[bool] = []
+    monkeypatch.setattr(window.mark_runner, "start",
+                        lambda points, cw, ch, hold=True: holds.append(hold))
+    window._handle_mqtt_command(MqttTopics.MARK_COMMAND, _payload())
+
+    assert holds == [False]

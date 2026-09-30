@@ -191,6 +191,11 @@ class AlarmSimApp:
             return
         payload = {"timestamp": utc_ms(), "code": code, "message": message,
                    "level": level, "recovery": recovery}
+        # 해제는 발생 때와 **같은 code** 에 cleared=true 다(ERUT if-0.3 부터).
+        # 버튼은 알아보기 쉽게 "-CLEAR" 로 적어 두고 보낼 때 바꾼다.
+        if code.endswith("-CLEAR"):
+            payload["code"] = code[: -len("-CLEAR")]
+            payload["cleared"] = True
         if detail:
             payload["detail"] = detail
         self.client.publish(INJECT_TOPIC,

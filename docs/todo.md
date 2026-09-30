@@ -81,7 +81,16 @@
 - [x] 장애·알람 조작판 `mqtt_test/alarm_sim.py` — 버튼으로 RCS 를 찔러 RCS 가 evt/error 를 발행. stop/estop 이면 자동 일시정지, reset 으로 해제
 - [x] `mqtt_job_sim.py` 가 오가는 MQTT 를 전부 표시 (`doosan/#`·`erut/#`·`3s/test/#`). tcp 는 한 줄로 접음
 - [x] ERUT 캘리브레이션 실제화 (2026-09-22) — `req/calibrate` 가 모재 지름을 받아 작업 영역 반지름을 고치고, 차량을 고정한 뒤 로봇 3점 측정을 돌린다. 접촉점(330~355)을 프로브 중심(347~349)으로 옮겨 원을 맞춘 뒤 입력 반지름과의 차이를 `calibration_error_mm` 으로 낸다. **무엇에 대한 캘리브레이션인지**: 규격상 격자 한 칸이 아니라 모재 기준 좌표계 1회 수립이다(검사 시작 전 + 위치 이탈·재배치 후). 차량은 선 자리가 곧 1A 자리이고 따로 교정하지 않는다
-- [ ] ERUT 항목 중 아직 시험용인 것: 마킹 동작(마킹기 개발 중), 배터리·충전(차량 자료에 항목이 있는지 확인 필요), 장애 수집(현재는 alarm_sim 주입)
+- [x] **ERUT 표준 인터페이스 if-0.4 반영** (2026-09-30) — `evt/status` 에 activity(8값)·calibrated·job_id(5초 + 바뀌면 바로), query 의 activity·errors[{code,level,recovery,message}]·last_job, 장애 해제는 같은 code + `cleared=true`, 준비 실패는 `evt/complete(action=prepare)` 5xx, 모르는 동작 501·모르는 surface 400·속도 초과 400, 바쁠 때 409·장애 중 423(탭9 초안), pause 는 준비·캘리브레이션 중에도, reset 멱등(장애 없으면 200), 비상정지 때 하던 구간은 끝난 것으로(재개 없음), 좌표계 무효 시 E1003, `evt/contact`(탐촉자 접촉 — ERUT 가 물을 켠다)·`evt/info`(자기소개), `erut/status` 20초 무소식이면 브릿지 없음으로 보고 일시정지, 진행률·좌표 정수, keepalive 15초·client_id 고정
+- [x] ERUT 응답에 위치를 같이 싣는다 — `pos{x,y}`(검사면 좌표) + 3S 확장 `location{cell, vehicle_mm, lift_mm, robot{x,y}}`. 앞 구역 완료를 못 받은 채 다음 구역이 와도 어느 구역·어느 자리 값인지 가를 수 있게. 준비해 둔 구역과 다른 job_id 의 start 가 오면 준비를 버리고 새로 돈다
+- [x] 마킹 = ERUT 마커(`mark_positioning`) — 로봇이 마킹 자리(290 = 11)에서 **278 = 1 이 올 때까지 선다**(v4·v5 마킹 태스크). RCS 는 `evt/mark_ready` 를 내고 ERUT 의 `req/mark_next` 를 받으면 278 을 세운다. 사내 MC 마킹은 바로 푼다. ※ 규격상 아직 초안(탭2 「마킹 주체」)
+- [x] 홈 명령 — `req/home` → 202 → 홈 플래그(276)가 서면 `evt/complete(action=home)`, `evt/status.at_home`. ※ ERUT 가 홈 명령·홈 확인 신호를 다음 판에 넣기로 함 — 이름·자리가 정해지면 맞춘다
+- [x] RCS 장애 코드를 표준 형식의 제조사 대역으로 — E9101~E9108(로봇 태스크 299), E9201(로봇 알람), E9301(차량 동작 실패). message 는 영문 상수, 한글 문구는 detail
+- [ ] **배터리·충전** — 차량 개발자에게 받기로 함(`docs/vehicle_request_calibration_lap_battery.md`). 그때까지 ERUT 에 칸을 싣지 않는다(규격: 없으면 빼라)
+- [ ] **캘리브레이션 `total_length_mm`** — 차량으로 한 바퀴 돈 거리. 같은 요청서로 차량 개발자에게 요청. 받으면 `ErutSession.total_length_mm` 에 잇는다
+- [ ] 차량·리프트 위치 정확도 — 차량 개발 완료 후 확정(로봇은 1/100 mm 수준)
+- [ ] ERUT 에 회신: 3S 확장 칸(`location`·`at_home`·`req/home`·`evt/message`)과 E9xxx 코드표, `scan.pitch` = 구역 간 겹침(구역 안 줄 간격은 로봇이 정함), 위치 정확도
+- [ ] 장애 수집 실제화 — 지금은 로봇 태스크(299)·로봇 알람·차량 실패만 올라간다. 비상정지 버튼 등 안전 신호 경로는 실물 연결 후
 - [ ] **겹침 계산 확정 대기** — 마지막 행/열 나머지 처리(설계안 C: 천장 맞춤), `pitch_scan` 부호, `surface_length` 의미. 스캔업체 회신 후 적용
 - [ ] start 가 prepare 와 값이 겹치는 건에 대한 협의 (규격 20260818 탭3 12행 3S 검토 요청)
 - [x] 안전 순서 5단계를 시퀀서에 대응 — 1 정지·고정(SECURING) / 2 수평 보정(LEVELING) / 3 Cobot 검사(SCANNING·MOVING_LIFT) / 4 안전 위치(RETRACTING) / 5 다음 구간 이동(MOVING_AMR). 5단계는 구간(열)마다 반복되며 열 안의 셀 이동은 3단계 안이다. 차량이 이미 1구역에 있으므로 1번부터 시작

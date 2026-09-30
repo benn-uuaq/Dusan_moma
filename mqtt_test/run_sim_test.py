@@ -6,7 +6,8 @@
 
   mc     사내 MC 규격: job_cmd 로 1A 부터 마지막 셀까지 순회한다.
          원점마다 프로브 확인(probe_ack)을 보내 스캔을 풀어 준다.
-  erut   ERUT 규격: calibrate → prepare → start → complete 한 바퀴.
+  erut   ERUT 표준(if-0.4): 자기소개 → calibrate → prepare → start → mark
+         (mark_ready ↔ mark_next) → home → 비상정지 → reset.
   io     로봇 디지털 출력(레지스터 2)을 화면 경로로 켜고 끈다.
   tpac   TPAC 브리지가 스캔 구간 신호(DO[0..2])를 내보내는지 본다.
 
@@ -208,56 +209,155 @@ def scenario_mc(h: Harness, columns: int, rows: int) -> list[str]:
     return problems
 
 
+class ErutTap:
+    """ERUT 로 나가는 것을 모두 가로채 기록한다(브로커 없이)."""
+
+    def __init__(self, window) -> None:
+        self.events: list[tuple[str, dict]] = []
+        self.responses: list[dict] = []
+        self.status: list[dict] = []
+        self.contact: list[dict] = []
+        self.progress: list[dict] = []
+        self.errors: list[dict] = []
+        self.info: list[dict] = []
+        erut = window.erut
+        erut.publish_event = lambda name, req, action, code=200, message="OK", **kw: (
+            self.events.append((name, {"req_id": req, "action": action, "code": code,
+                                       "message": message, **kw})) or True)
+        erut.publish_res = lambda req, action, code, message, **kw: (
+            self.responses.append({"req_id": req, "action": action, "code": code,
+                                   "message": message, **kw}) or True)
+        erut.publish_progress = lambda req, action, **kw: (
+            self.progress.append({"req_id": req, "action": action, **kw}) or True)
+        erut.publish_status = lambda state="online", **kw: (
+            self.status.append({"state": state, **kw}) or True)
+        erut.publish_contact = lambda state, job_id: (
+            self.contact.append({"state": state, "job_id": job_id}) or True)
+        erut.publish_info = lambda content: self.info.append(content) or True
+        erut.publish_error = lambda code, message, level, recovery, cleared=False, **kw: (
+            self.errors.append({"code": code, "level": level, "cleared": cleared}) or True)
+        erut.publish_message = lambda *a, **kw: True
+
+    def event(self, name: str, action: str) -> dict | None:
+        found = [e for n, e in self.events if n == name and e["action"] == action]
+        return found[-1] if found else None
+
+    def activities(self) -> list[str]:
+        seen: list[str] = []
+        for st in self.status:
+            if not seen or seen[-1] != st.get("activity"):
+                seen.append(st.get("activity"))
+        return seen
+
+
 def scenario_erut(h: Harness) -> list[str]:
-    """ERUT 규격 한 바퀴: calibrate → prepare → start → complete."""
+    """ERUT 표준 인터페이스(if-0.4) 한 바퀴.
+
+    자기소개 → calibrate → prepare(ready) → start(접촉·진행률·완료) →
+    mark(점마다 mark_ready ↔ mark_next) → home → 비상정지 → reset.
+    """
     window = h.window
     session = window.erut_session
-    events: list[tuple[str, dict]] = []
-    responses: list[dict] = []
-    window.erut.publish_event = lambda name, req, action, **kw: (
-        events.append((name, {"req_id": req, "action": action, **kw})) or True)
-    window.erut.publish_res = lambda req, action, code, message, **kw: (
-        responses.append({"req_id": req, "action": action, "code": code}) or True)
-    window.erut.publish_progress = lambda *a, **kw: True
-    window.erut.publish_status = lambda *a, **kw: True
+    tap = ErutTap(window)
+    problems: list[str] = []
 
-    log("\n[erut] calibrate — 로봇이 벽을 세 번 눌러 좌표계를 잡는다")
-    session.handle_request("calibrate", {
-        "req_id": "cal-1", "diameter": 1690, "height": 6000})
-    ok = h.wait_until(
-        lambda: any(name == "complete" and e["action"] == "calibrate"
-                    for name, e in events), timeout=60)
-    problems = []
-    if not ok:
-        return ["[erut] 캘리브레이션 완료(evt/complete)가 오지 않았습니다"]
-    result = next(e for name, e in events if e["action"] == "calibrate")
+    session.publish_info()
+    info = tap.info[-1]
+    log(f"\n[erut] 자기소개: 판 {info['interface_version']} · {', '.join(info['capabilities'])}")
+    if info["interface_version"] != "0.4" or "probe_contact" not in info["capabilities"]:
+        problems.append(f"[erut] 자기소개가 이상합니다: {info}")
+
+    log("[erut] calibrate — 로봇이 벽을 세 번 눌러 좌표계를 잡는다")
+    session.handle_request("calibrate", {"req_id": "cal-1", "diameter": 1690, "height": 6000})
+    if not h.wait_until(lambda: tap.event("complete", "calibrate"), timeout=60):
+        return problems + ["[erut] 캘리브레이션 완료(evt/complete)가 오지 않았습니다"]
+    result = tap.event("complete", "calibrate")
     error_mm = result.get("calibration_error_mm")
-    log(f"  캘리브레이션 오차: {error_mm} mm "
-        f"(시뮬레이터가 벽을 {WALL_ERROR_MM} mm 어긋나게 둠) {result.get('detail', '')}")
+    log(f"  캘리브레이션 오차: {error_mm} mm (시뮬레이터가 벽을 {WALL_ERROR_MM} mm 어긋나게 둠)")
     if error_mm is None or error_mm > 2.0:
-        problems.append(f"[erut] 캘리브레이션 오차가 이상합니다: {error_mm}")
+        problems.append(f"[erut] 캘리브레이션 오차가 이상합니다: {result}")
 
-    log("[erut] prepare — 3점 측정 뒤 원점에서 ready")
-    events.clear()
+    log("[erut] prepare — 준비 중(preparing) → 원점에서 ready")
+    h.pump(1.0)
+    tap.status.clear()
+    area = {"start": {"x": 580, "y": 0}, "end": {"x": 1180, "y": 800}}
     session.handle_request("prepare", {
         "req_id": "prep-1", "job_id": "jb-erut", "surface": "outer",
-        "area": {"start": {"x": 0, "y": 0}, "end": {"x": 600, "y": 800}},
-        "scan": {"pitch": 5, "speed": 40},
+        "area": area, "scan": {"pitch": 20, "speed": 100},
     })
-    if not h.wait_until(lambda: any(n == "ready" for n, _ in events), timeout=90):
-        return problems + ["[erut] 원점 도착(evt/ready)이 오지 않았습니다"]
-    log("  evt/ready 받음 — start 로 스캔을 푼다")
+    if not h.wait_until(lambda: tap.event("ready", "prepare"), timeout=90):
+        return problems + ["[erut] 준비 완료(evt/ready)가 오지 않았습니다"]
+    log(f"  evt/ready 받음 · activity {' → '.join(map(str, tap.activities()))}")
 
-    session.handle_request("start", {"req_id": "start-1", "job_id": "jb-erut"})
-    if not h.wait_until(
-            lambda: any(n == "complete" and e["action"] == "start" for n, e in events),
-            timeout=180):
+    log("[erut] start — 원점 대기를 풀고 스캔")
+    session.handle_request("start", {"req_id": "start-1", "job_id": "jb-erut",
+                                     "surface": "outer", "area": area,
+                                     "scan": {"pitch": 20, "speed": 100}})
+    if not h.wait_until(lambda: tap.event("complete", "start"), timeout=180):
         return problems + ["[erut] 구간 완료(evt/complete)가 오지 않았습니다"]
-    done = next(e for n, e in events if n == "complete" and e["action"] == "start")
-    log(f"  구간 완료: {done.get('job_id')} · 스캔 거리 {done.get('scanned_distance')}")
-    codes = [r["code"] for r in responses]
-    if not all(code in (200, 202) for code in codes):
-        problems.append(f"[erut] 거절된 요청이 있습니다: {responses}")
+    done = tap.event("complete", "start")
+    log(f"  구간 완료: {done.get('job_id')} · 스캔 거리 {done.get('scanned_distance_mm')} mm"
+        f" · 위치 {done.get('location')}")
+    acts = tap.activities()
+    log(f"  activity: {' → '.join(map(str, acts))}")
+    for needed in ("preparing", "ready", "running"):
+        if needed not in acts:
+            problems.append(f"[erut] activity 에 {needed} 가 없었습니다: {acts}")
+    attached = [c for c in tap.contact if c["state"] == "attached"]
+    log(f"  접촉 신호: attached {len(attached)}회 · 마지막 {tap.contact[-1] if tap.contact else None}")
+    if not attached or any(c["job_id"] != "jb-erut" for c in attached) \
+            or any(c["state"] == "attached" and not c["job_id"] for c in tap.contact):
+        problems.append(f"[erut] 접촉(attached) 신호가 없거나 job_id 가 다릅니다: {tap.contact}")
+    if tap.contact and tap.contact[-1]["state"] != "detached":
+        problems.append("[erut] 스캔이 끝났는데 접촉이 attached 로 남았습니다")
+    progress = [p["progress"] for p in tap.progress]
+    if progress and (progress != sorted(progress)
+                     or not all(isinstance(v, int) for v in progress)):
+        problems.append(f"[erut] 진행률이 정수가 아니거나 뒤로 갔습니다: {progress}")
+    if (done.get("location") or {}).get("cell") != "2A":
+        problems.append(f"[erut] 완료의 구역 이름이 2A 가 아닙니다: {done.get('location')}")
+
+    log("[erut] mark — 점에 붙으면 mark_ready, ERUT 가 찍고 mark_next")
+    h.pump(1.0)
+    session.handle_request("mark", {"req_id": "mark-1", "method": "paint",
+                                    "points": [{"id": "d1", "x": 900, "y": 300}]})
+    if not h.wait_until(lambda: tap.event("mark_ready", "mark"), timeout=90):
+        return problems + ["[erut] 마킹 자리 도착(evt/mark_ready)이 오지 않았습니다"]
+    ready = tap.event("mark_ready", "mark")
+    log(f"  mark_ready: 점 {ready.get('point_id')} — 로봇이 자리에서 기다린다")
+    h.pump(1.0)
+    if h.register(STATE_REG)[0] != 11:
+        problems.append(f"[erut] 마킹 자리에서 로봇이 서 있지 않습니다(290={h.register(STATE_REG)[0]})")
+    session.handle_request("mark_next", {"req_id": "mark-1", "point_id": "d1", "marked": True})
+    if not h.wait_until(lambda: tap.event("complete", "mark"), timeout=90):
+        return problems + ["[erut] 마킹 완료(evt/complete)가 오지 않았습니다"]
+    marked = tap.event("complete", "mark")
+    log(f"  마킹 완료: marked {marked.get('marked')} failed {marked.get('failed')}")
+    if marked.get("marked") != ["d1"]:
+        problems.append(f"[erut] 마킹 결과가 다릅니다: {marked}")
+
+    log("[erut] home — 홈에 닿으면 evt/complete(action=home)")
+    h.pump(2.0)
+    session.handle_request("home", {"req_id": "home-1"})
+    if not h.wait_until(lambda: tap.event("complete", "home"), timeout=60):
+        problems.append("[erut] 홈 도착(evt/complete action=home)이 오지 않았습니다")
+    else:
+        log(f"  홈 도착: code {tap.event('complete', 'home')['code']}")
+
+    log("[erut] 비상정지 → reset")
+    session.raise_error({"code": "E1002", "message": "E_STOP", "level": "estop",
+                         "recovery": "reset_required"})
+    h.pump(0.5)
+    session.handle_request("reset", {"req_id": "reset-1"})
+    h.pump(0.5)
+    cleared = [e for e in tap.errors if e["code"] == "E1002" and e["cleared"]]
+    log(f"  해제 통보 {len(cleared)}회 · activity {session.activity_state()}")
+    if not cleared or session.activity_state() != "idle":
+        problems.append("[erut] 비상정지 해제(cleared=true)·idle 복귀가 안 됐습니다")
+
+    refused = [r for r in tap.responses if r["code"] >= 300]
+    if refused:
+        problems.append(f"[erut] 거절된 요청이 있습니다: {refused}")
     return problems
 
 

@@ -11,7 +11,8 @@
 #    269 = v  원점 높이에서 위로 [mm]
 #  상태 290:
 #    10 = 마킹 자리로 이동 중
-#    11 = 마킹 자리에 붙음 (여기서 마킹 — 아직 TODO)
+#    11 = 마킹 자리에 붙음 — 마킹이 끝날 때까지 선다
+#  대기 해제 278 = 1 (RCS 가 쓴다. 마커는 ERUT 것이라 ERUT 의 mark_next 를 받아서)
 #  실패하면 299 = 5, 290 = 9 로 멈춘다.
 #
 #  바로 그 자리로 가지 않는다 — 프로브 때처럼 **TCP -Z 로 probe_dist 만큼
@@ -126,10 +127,20 @@ mk_tgt[2] = zero_pose[2] + mk_v * 0.001
 mk_stand = pose_trans(mk_tgt, [0, 0, -probe_dist * 0.001, 0, 0, 0])
 movel(mk_stand, a = a_l, v = v_l)
 mk_press()
-write_port_register(290, 11)
 
-# TODO: 마킹. 스프레이/마커가 ERUT 쪽인지 로봇 쪽인지 정해지면 여기서
-#       켜고 끈다(로봇 쪽이면 set_standard_digital_out 으로).
+# ---- 마킹 자리에 붙음 : 마킹이 끝날 때까지 선다 --------------------------------
+# 마커는 ERUT 쪽(미니 PC)이다. 로봇은 자리에 붙어 290 = 11 로 알리고, 마킹이
+# 끝났다고 RCS 가 278 에 1 을 써 줄 때까지 움직이지 않는다 — 마커가 쏘는
+# 동안 팔이 떠나면 엉뚱한 자리에 찍힌다. RCS 는 290 = 11 을 보고 ERUT 에
+# evt/mark_ready 를 내고, ERUT 가 req/mark_next 를 보내면 278 을 세운다.
+# 267(스캔 허가)처럼 기다리기 **전에** 지운다 — 지난 점의 허가가 남아 있으면
+# 마킹도 안 하고 지나간다.
+write_port_register(278, 0)
+write_port_register(290, 11)
+while (read_port_register(278, True) != 1):
+  sync()
+end
+write_port_register(278, 0)
 
 # 벽에서 물러난다 — 다음 노드(dus5_home)가 올라가며 곡면을 긁지 않게.
 movel(pose_trans(get_actual_tcp_pose(), [0, 0, -probe_dist * 0.001, 0, 0, 0]),

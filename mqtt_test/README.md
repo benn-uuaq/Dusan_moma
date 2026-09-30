@@ -48,7 +48,7 @@ python3 mqtt_test/alarm_sim.py
 
 ## ERUT 시뮬레이터 (`erut_sim.py`)
 
-협력사 ERUT(스테이션) 역할을 대신해 RCS와 통신을 시험한다. 규격은 이 폴더의 `ERUT-3S_MQTT_인터페이스_*.xlsx`.
+협력사 ERUT 의 Robot Service(로봇 브릿지) 역할을 대신해 RCS와 통신을 시험한다. 규격은 이 폴더의 `ERUT_검사로봇_MQTT_표준인터페이스_if-0.4.xlsx`(탭6·7 은 ERUT 내부라 3S 무관).
 
 ```bash
 python3 mqtt_test/erut_sim.py
@@ -58,7 +58,11 @@ python3 mqtt_test/erut_sim.py
 
 **▶ 시나리오 자동 진행**이 규격 탭3의 ①~④를 순서대로 밟는다. 각 단계의 응답을 기다렸다가 넘어가고, 못 받으면 멈추고 무엇을 못 받았는지 알린다.
 
-**지금은 로봇만 진짜다** — `start`만 실제로 로봇이 움직이고, 캘리브레이션·마킹·배터리는 RCS가 시험용으로 답한다.
+- 브릿지처럼 `erut/status` 를 **5초마다** 다시 낸다. 끄면(연결 해제) RCS 는 20초 뒤 브릿지가 없는 것으로 보고 하던 일을 일시정지한다.
+- 마커는 ERUT 것이다. **마커 자동 발사**가 켜져 있으면 `evt/mark_ready` 를 받고 1초 뒤 `req/mark_next` 를 보낸다. 끄면 로봇은 마킹 자리에서 계속 기다린다.
+- 상태(`evt/status`)·접촉(`evt/contact`)은 바뀔 때만 한 줄로, 진행률은 `pos`·구역 이름과 함께 보인다.
+- `? teleport` 버튼은 모르는 동작을 보내 RCS 가 501 로 답하는지 본다.
+- 배터리·충전과 캘리브레이션 총 둘레(`total_length_mm`)는 차량 자료가 오기 전이라 RCS 가 싣지 않는다.
 
 ## TPAC 엔코더 보드 모의기 (`tpac_encoder_sim.py`)
 
@@ -158,11 +162,11 @@ python3 mqtt_test/run_sim_test.py --only mc io  # 고른 것만
 | 시나리오 | 확인하는 것 |
 |---|---|
 | `mc` | 사내 MC 규격 `job_cmd` 하나로 `1A → 1B → … → 2A …` 를 빠짐없이 도는지. 셀마다 원점에서 프로브 확인(`probe_gate` → `probe_ack`)을 거치는지. `job_state` 가 셀마다 3건 나가는지. 작업 영역 레지스터(256~259)가 셀 치수로 실리는지 |
-| `erut` | ERUT 규격 한 바퀴 — `calibrate`(3점 측정 → 오차) → `prepare`(원점에서 `evt/ready`) → `start` → `evt/complete` |
+| `erut` | ERUT 표준 if-0.4 한 바퀴 — 자기소개(`evt/info`) → `calibrate`(3점 측정 → 오차) → `prepare`(activity preparing → 원점에서 `evt/ready`) → `start`(탐촉자 접촉 `evt/contact`·정수 진행률·`pos`/`location` 이 실린 `evt/complete`) → `mark`(점에서 로봇이 서서 `evt/mark_ready` ↔ `req/mark_next`) → `home`(`evt/complete action=home`) → 비상정지 → `reset`(`cleared=true`, idle 복귀) |
 | `io` | I/O 화면의 로봇 디지털 출력이 레지스터 2 의 그 비트만 바꾸는지, 화면 표시가 로봇 값을 따라오는지 |
 | `tpac` | 스캔 구간 신호 DO[0..2] 가 전진·후진·동결 순서대로 나가는지, 스캔 중에 리셋이 서지 않는지 |
 
-로봇 시뮬레이터(`src/elite_robot_controller/tools/elite_robot_simulator.py`)는 지금 로봇 태스크와 **같은 상태 흐름**을 흉내 낸다 — 차량 고정 대기(309) → 3점 측정(300~305 · 330~355) → 원점 대기(267 허가) → 적심 → ㄹ자 스캔(구간 신호 277) → 완료. 홈 플래그(276)와 태스크 상태(500)도 같이 움직인다.
+로봇 시뮬레이터(`src/elite_robot_controller/tools/elite_robot_simulator.py`)는 지금 로봇 태스크와 **같은 상태 흐름**을 흉내 낸다. `task -p` 로 마킹 태스크를 불러 두면 마킹 흐름(자리에서 278 대기)을 돌고, 홈 스크립트가 오면 끝에 홈 플래그(276)를 세운다 — 차량 고정 대기(309) → 3점 측정(300~305 · 330~355) → 원점 대기(267 허가) → 적심 → ㄹ자 스캔(구간 신호 277) → 완료. 홈 플래그(276)와 태스크 상태(500)도 같이 움직인다.
 
 - `--wall-error 0.3` : 실제 벽이 입력 반지름보다 이만큼 어긋나 있다고 친다(캘리브레이션이 이 값을 잡아낸다).
 - `--max-rows 6` : ㄹ자 줄 수 상한. 순회를 보는 게 목적이라 줄을 다 그리지 않는다.

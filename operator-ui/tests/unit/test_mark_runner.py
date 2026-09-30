@@ -132,3 +132,96 @@ def test_grid_mark_point_uses_given_vehicle_lift_and_cell_coordinates(qtbot):
     assert lift.targets == [120.0]
     lift.arrived.emit()
     assert calls["target"] == [(250.0, 35.0)] and calls["play"] == 1
+
+
+# ---- 마킹 자리 대기 (마커는 ERUT 것) ---------------------------------------------
+def _hold_runner(qtbot):
+    log = []
+    amr, lift = FakeAxis("차량", log), FakeAxis("리프트", log)
+    outrigger, retractor = FakeAxis("고정", log), FakeAxis("복귀", log)
+    releases = []
+    r = MarkRunner(amr, lift, outrigger, retractor, lambda u, v: None,
+                   lambda: None, lambda: None,
+                   release_hold=lambda: releases.append(1))
+    return r, (amr, lift, outrigger, retractor), releases
+
+
+def _to_robot(axes):
+    amr, lift, outrigger, _retractor = axes
+    amr.arrived.emit()
+    outrigger.arrived.emit()
+    lift.arrived.emit()
+
+
+def test_robot_waits_at_the_point_until_erut_has_marked(qtbot):
+    """자리에 붙으면(290 = 11) 알리고, mark_next 가 올 때까지 풀지 않는다."""
+    r, axes, releases = _hold_runner(qtbot)
+    reached, done = [], []
+    r.point_reached.connect(reached.append)
+    r.finished.connect(lambda m, f: done.append((m, f)))
+    r.start([{"id": "p1", "x": 1000.0, "y": 1200.0}], 721.0, 500.0, hold=True)
+    _to_robot(axes)
+
+    r.handle_scan_state(_state(10))
+    r.handle_scan_state(_state(11))
+    r.handle_scan_state(_state(11))       # 10 Hz 로 같은 값이 와도 한 번만
+    assert reached == ["p1"]
+    assert releases == []
+    assert r.waiting_point == "p1"
+
+    assert r.point_marked("p1", True) is True
+    assert releases == [1]
+    r.handle_scan_state(_state(13))
+    r.handle_scan_state(_state(12))
+    axes[3].arrived.emit()
+    assert done == [(["p1"], [])]
+
+
+def test_a_point_erut_could_not_mark_is_reported_as_failed(qtbot):
+    r, axes, _releases = _hold_runner(qtbot)
+    done = []
+    r.finished.connect(lambda m, f: done.append((m, f)))
+    r.start([{"id": "p1", "x": 1.0, "y": 1.0}], 721.0, 500.0, hold=True)
+    _to_robot(axes)
+    r.handle_scan_state(_state(11))
+    r.point_marked("p1", False)
+    r.handle_scan_state(_state(12))
+    axes[3].arrived.emit()
+
+    assert done == [([], ["p1"])]
+
+
+def test_mark_next_for_a_point_we_are_not_at_is_ignored(qtbot):
+    r, axes, releases = _hold_runner(qtbot)
+    r.start([{"id": "p1", "x": 1.0, "y": 1.0}], 721.0, 500.0, hold=True)
+    _to_robot(axes)
+
+    assert r.point_marked("p1") is False       # 아직 자리에 안 붙었다
+    r.handle_scan_state(_state(11))
+    assert r.point_marked("p9") is False
+    assert releases == []
+
+
+def test_without_hold_the_robot_is_released_at_once(qtbot):
+    """사내 MC 마킹처럼 확인할 마커가 없으면 붙자마자 푼다."""
+    r, axes, releases = _hold_runner(qtbot)
+    reached = []
+    r.point_reached.connect(reached.append)
+    r.start([{"id": "p1", "x": 1.0, "y": 1.0}], 721.0, 500.0, hold=False)
+    _to_robot(axes)
+    r.handle_scan_state(_state(11))
+
+    assert releases == [1]
+    assert reached == []
+
+
+def test_progress_lists_the_points_not_reached(qtbot):
+    r, axes, _releases = _hold_runner(qtbot)
+    r.start([{"id": "p1", "x": 1.0, "y": 1.0}, {"id": "p2", "x": 2.0, "y": 2.0}],
+            721.0, 500.0, hold=True)
+    _to_robot(axes)
+    r.handle_scan_state(_state(11))
+    r.point_marked("p1", True)
+    r.handle_scan_state(_state(12))
+
+    assert r.progress() == (["p1"], ["p2"])

@@ -97,3 +97,21 @@ def test_topic_carries_index_and_value():
     node.cb_digital_out(Short())
     assert node.robot_modbus.writes == [(2, 0b0000_0100)]
     assert node.get_logger().warnings
+
+
+def test_mark_go_is_written_to_its_register():
+    """마킹 끝 신호(278) — 로봇은 마킹 자리에서 이 값이 1 이 될 때까지 선다."""
+    node = make_node({}, {
+        'scale': {'position_per_count': 0.1, 'rotation_per_count': 1.0},
+        'read': {},
+        'write': {'mark_go': {'address': 278, 'count': 1}},
+    })
+
+    class Msg:
+        data = 1
+
+    node.cb_mark_go(Msg())
+
+    assert node.robot_modbus.writes == [(278, 1)]
+    assert register_map.load().write_entry('mark_go').address == 278
+    assert register_map.load().read_entry('scan_arc').address == 286

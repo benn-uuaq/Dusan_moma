@@ -39,7 +39,8 @@ def test_probe_error_reaches_alarm_and_mqtt(qtbot) -> None:
 
     10번째 값)를 알람 목록 + MQTT evt/error(erut_session.raise_error)로
     내보내야 한다. 같은 코드가 반복되면 다시 안 나가고, 0으로 돌아오면
-    -CLEAR 를 한 번 내보낸다.
+    같은 code 에 cleared=true 로 해제를 한 번 내보낸다(if-0.3 부터).
+    code 는 표준 형식의 제조사 전용 대역(E9xxx)이다.
     """
     window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
@@ -50,7 +51,8 @@ def test_probe_error_reaches_alarm_and_mqtt(qtbot) -> None:
     window.ros_status.scan_state_changed.emit(base + [2])  # probe_l 접촉 실패
 
     assert len(raised) == 1
-    assert raised[0]["code"] == "E-PROBE-L"
+    assert raised[0]["code"] == "E9102"
+    assert raised[0]["message"] == "PROBE_L_CONTACT_FAILED"
     assert raised[0]["level"] == "stop"
     alarms = [window.cobot_manual_screen.alarm_list.item(i).text()
               for i in range(window.cobot_manual_screen.alarm_list.count())]
@@ -63,7 +65,8 @@ def test_probe_error_reaches_alarm_and_mqtt(qtbot) -> None:
     # 0으로 되돌아오면(dus_init 재실행) 해제 통보를 한 번 내보낸다.
     window.ros_status.scan_state_changed.emit(base + [0])
     assert len(raised) == 2
-    assert raised[-1]["code"] == "E-PROBE-L-CLEAR"
+    assert raised[-1]["code"] == "E9102"
+    assert raised[-1]["cleared"] is True
     window.close()
 
 
@@ -82,8 +85,9 @@ def test_robot_alarm_reaches_alarm_list_and_mqtt(qtbot) -> None:
     window.ros_status.alarm_received.emit("[ALARM MSG] PROBE_R: NO IK SOLUTION")
 
     assert len(raised) == 1
-    assert raised[0]["code"] == "E-ROBOT-ALARM"
-    assert raised[0]["message"] == "[ALARM MSG] PROBE_R: NO IK SOLUTION"
+    assert raised[0]["code"] == "E9201"
+    assert raised[0]["message"] == "ROBOT_ALARM"
+    assert raised[0]["detail"] == "[ALARM MSG] PROBE_R: NO IK SOLUTION"
     alarms = [window.cobot_manual_screen.alarm_list.item(i).text()
               for i in range(window.cobot_manual_screen.alarm_list.count())]
     assert any("PROBE_R" in text for text in alarms)
@@ -848,16 +852,16 @@ def test_alarm_reset_button_clears_notice_and_errors(qtbot) -> None:
     qtbot.addWidget(window)
 
     window.erut_session.raise_error({
-        "code": "E-ROBOT-ALARM", "message": "thread over max size",
-        "level": "warning",
+        "code": "E9201", "message": "ROBOT_ALARM",
+        "level": "warning", "detail": "thread over max size",
     })
     window.cobot_manual_screen.add_alarm("[ALARM] thread_is_over_max_size:20")
-    assert window.erut_session.error_codes() == ["E-ROBOT-ALARM"]
+    assert window.erut_session.error_codes() == ["E9201"]
 
     qtbot.mouseClick(window.main_screen.notice_clear_button, Qt.MouseButton.LeftButton)
 
     assert window.erut_session.error_codes() == []
-    assert "E-ROBOT-ALARM" in window.main_screen.activity_label.text()  # 해제 안내
+    assert "E9201" in window.main_screen.activity_label.text()  # 해제 안내
     alarms = [window.cobot_manual_screen.alarm_list.item(i).text()
               for i in range(window.cobot_manual_screen.alarm_list.count())]
     assert alarms == ["활성 알람 없음"]
@@ -1037,7 +1041,7 @@ def test_zero_arc_probe_error_is_reported(qtbot) -> None:
     base = [4, 1, 3, 0, 1, 0, 257, 0, 0]
     window.ros_status.scan_state_changed.emit(base + [4])
 
-    assert raised[-1]["code"] == "E-ARC-ZERO"
+    assert raised[-1]["code"] == "E9104"
     alarms = [window.cobot_manual_screen.alarm_list.item(i).text()
               for i in range(window.cobot_manual_screen.alarm_list.count())]
     assert any("반지름" in text for text in alarms)
