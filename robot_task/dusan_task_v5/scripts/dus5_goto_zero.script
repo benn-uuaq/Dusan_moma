@@ -137,37 +137,3 @@ end
 # 상승(dus5_up)까지 포함한다. 이 구간에서만 제로점 기준 좌표(280~285)가
 # 살아 있고(dus5_init 의 pub_rel), RCS 도 state=6 으로 스캔 중을 안다.
 write_port_register(290, 6)
-
-
-# ---- 이어 하기 (279) --------------------------------------------------------
-# 일시정지했다 재개하면 RCS 가 **끝낸 줄 수**를 279 에 쓰고 태스크를 처음부터
-# play 한다. 3점 측정·원점·적심은 다시 하고(물도 다시 묻혀야 한다), 여기서
-# 그 줄 높이로 올라가 거기서부터 훑는다 — 처음 줄부터 다시 훑지 않는다.
-#   * 원점(왼쪽 끝)에서 올라가므로 이어 하는 첫 줄은 늘 오른쪽으로 간다
-#     (dir_sign = 1). 원래 왼쪽으로 갈 줄이었어도 같은 줄을 반대로 훑을
-#     뿐 덮는 면은 같다. TPAC 에는 277 이 실제 방향(1 전진 / 3 후진)으로 간다.
-#   * 다 끝낸 수(rows)가 오면 올라가지 않고 곧장 마무리(dus5_finish)로 간다.
-#   * 한 번 읽으면 지운다 — 펜던트에서 따로 틀었을 때 지난 값으로 건너뛰지
-#     않게. RCS 는 play 할 때마다 다시 쓴다(새 구간이면 0).
-# 새 전역 변수를 만들지 않는다(설치 변수 목록을 다시 올려야 한다) —
-# row_idx · dir_sign · tgt_pose 를 그대로 쓴다.
-row_idx = read_port_register(279, True)
-write_port_register(279, 0)
-if (row_idx < 0):
-  row_idx = 0
-end
-if (row_idx > rows):
-  row_idx = rows
-end
-if (row_idx > 0):
-  dir_sign = 1
-  write_port_register(291, row_idx)
-  write_port_register(298, floor(row_idx * 100.0 / rows + 0.5))
-  if (row_idx < rows):
-    # 줄 바꿈 상승과 같다 — 스캔 동결(277 = 2) 상태로 올라간다(dus5_up).
-    write_port_register(277, 2)
-    tgt_pose = get_actual_tcp_pose()
-    tgt_pose[2] = z_base + row_idx * pitch * 0.001
-    movel(tgt_pose, a = a_scan, v = v_scan)
-  end
-end

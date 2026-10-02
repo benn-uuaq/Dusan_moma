@@ -211,12 +211,6 @@ class JobSequencer(QObject):
         self._saw_robot_busy = False
         # 첫 셀에서 로봇을 바로 돌리지 않고 READY 로 서서 기다리는가.
         self._hold_before_scan = False
-        # 이어 하기: 이번 셀에서 로봇이 끝낸 줄 수(291)와, 재개할 때 로봇에
-        # 줄 값(279). 일시정지했다 재개해도 처음 줄부터 다시 훑지 않는다.
-        self._rows_done = 0
-        self._play_started = False
-        self._resume_row_on_resume = 0
-        self.resume_row = 0
 
     def _set_state(self, state: SequencerState) -> None:
         """상태를 바꾸고 알린다. 상태 변경은 반드시 여기를 거친다."""
@@ -299,12 +293,8 @@ class JobSequencer(QObject):
                            SequencerState.DONE, SequencerState.STOPPED):
             return
         self._resume_state = self._state
-        # 스캔 중이었으면 끝낸 줄 수를 기억해 둔다 — 재개하면 그 줄부터.
-        self._resume_row_on_resume = (
-            self._rows_done if self._state is SequencerState.SCANNING else 0)
         self._set_state(SequencerState.PAUSED)
-        # 로봇도 같이 세운다. 재개하면 resume() 이 태스크를 다시 play 하고,
-        # 로봇은 3점 측정·원점·적심 뒤 끝낸 줄 다음부터 이어 훑는다(279).
+        # 로봇도 같이 세운다. 재개하면 resume() 이 제로점부터 다시 play 한다.
         self.robot_stop_requested.emit()
         self.activity.emit(f"{self.current_cell()} 에서 일시정지했습니다.")
 
@@ -314,9 +304,9 @@ class JobSequencer(QObject):
             return
         self._set_state(self._resume_state)
         self.activity.emit(f"{self.current_cell()} 에서 재개했습니다.")
-        # 스캔 도중 멈췄으면 태스크를 다시 틀되, 끝낸 줄은 건너뛴다.
+        # 스캔 도중 멈췄으면 로봇은 제로점에서 다시 시작해야 한다.
         if self._state is SequencerState.SCANNING:
-            self._start_scan(resume_row=self._resume_row_on_resume)
+            self._start_scan()
 
     def stop(self) -> None:
         """순회를 완전히 중단한다."""
@@ -375,14 +365,6 @@ class JobSequencer(QObject):
             # 레지스터를 다 못 읽었다. 잘린 값으로 판정하지 않는다.
             return
 
-        # 끝낸 줄 수. play 직후에는 지난 셀(또는 멈춘 셀)의 291 이 남아 있어
-        # 태스크가 이번에 돌기 시작한 걸 본 뒤, 스캔 중(6)일 때의 값만 센다.
-        state = int(values[_STATE_INDEX])
-        if state in _PLAY_STARTED_STATES:
-            self._play_started = True
-        if self._play_started and state == _STATE_SCANNING:
-            self._rows_done = max(self._rows_done, int(values[_ROW_INDEX]))
-
         done = (
             values[_STATE_INDEX] == _STATE_DONE
             and values[_FINISHED_INDEX] == 1
@@ -435,16 +417,8 @@ class JobSequencer(QObject):
         self._start_scan()
         return True
 
-    def _start_scan(self, resume_row: int = 0) -> None:
-        """로봇을 제로점에서 play해 이번 셀을 스캔시킨다.
-
-        `resume_row` 는 이미 끝낸 줄 수다(일시정지 뒤 재개). 앱이 play 전에
-        279 로 보내고, 로봇은 적심 뒤 그 줄 높이로 올라가 거기서부터 훑는다.
-        새 셀이면 0 — 처음 줄부터.
-        """
-        self.resume_row = max(0, int(resume_row))
-        self._rows_done = self.resume_row
-        self._play_started = False
+    def _start_scan(self) -> None:
+        """로봇을 제로점에서 play해 이번 셀을 스캔시킨다."""
         if self._hold_before_scan:
             # 구간 자리에 섰다 — 로봇은 아직 안 움직인다(ERUT prepare 끝).
             self._hold_before_scan = False
@@ -485,10 +459,5 @@ class JobSequencer(QObject):
 # 레지스터 290~298 중 순회에 쓰는 항목의 위치와 완료 상태 값.
 # 로봇 태스크(dus_finish.script)가 state=5, finished=1을 쓴다.
 _STATE_INDEX = 0
-_ROW_INDEX = 1            # 291 끝낸 줄 수
 _FINISHED_INDEX = 5
 _STATE_DONE = 5
-_STATE_SCANNING = 6
-#: 이번 play 에서 태스크가 실제로 돌기 시작했다는 표시 — 3점 측정(2)·원점
-#: 복귀(3)·원점 대기(7)·적심(8)·차량 고정 대기(14). 이걸 본 뒤의 291 만 믿는다.
-_PLAY_STARTED_STATES = frozenset({2, 3, 7, 8, 14})
