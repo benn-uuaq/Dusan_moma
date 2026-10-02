@@ -6,8 +6,9 @@
 
   mc     사내 MC 규격: job_cmd 로 1A 부터 마지막 셀까지 순회한다.
          원점마다 프로브 확인(probe_ack)을 보내 스캔을 풀어 준다.
-  erut   ERUT 표준(if-0.5): 자기소개 → calibrate(→ 홈으로 거둠) → prepare → start → mark
-         (mark_ready ↔ mark_next) → home → 비상정지 → reset.
+  erut   ERUT 표준(if-0.5): 자기소개 → calibrate(차량 한 바퀴) → prepare(차량만)
+         → start(3점 → contact → 스캔) → mark(mark_ready ↔ mark_next) → home
+         → 비상정지 → reset.
   io     로봇 디지털 출력(레지스터 2)을 화면 경로로 켜고 끈다.
   tpac   TPAC 브리지가 스캔 구간 신호(DO[0..2])를 내보내는지 본다.
 
@@ -25,9 +26,9 @@ from __future__ import annotations
 import argparse
 import os
 import signal
-import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -37,6 +38,17 @@ MODBUS_PORT = 5502
 
 sys.path.insert(0, str(WS / "operator-ui/src"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+# 운영 설정·기록과 섞이지 않게 한다. 그대로 두면 시험이 운영자의 설정 파일
+# (~/.config/smr-operator-ui/settings.json)을 덮어쓰고, 실제 데이터 폴더
+# (D:/SMR/Data)에 가짜 작업기록·알람·스캔좌표를 쌓는다.
+_SCRATCH = Path(tempfile.mkdtemp(prefix="smr_sim_test_"))
+os.environ["SMR_SETTINGS_FILE"] = str(_SCRATCH / "settings.json")
+os.environ["SMR_DATA_DIR"] = str(_SCRATCH / "data")
+os.environ.pop("SMR_DATABASE_URL", None)
+# ROS 도 따로 쓴다. 운영 RCS·노드(보통 도메인 0)와 같은 도메인이면 시험 UI 의
+# 명령을 실제 로봇 노드가 받는다. 노드도 이 환경을 물려받는다.
+os.environ["ROS_DOMAIN_ID"] = os.environ.get("SIM_TEST_ROS_DOMAIN", "77")
 
 # 로봇 태스크가 쓰는 레지스터 (dus_*.script 참고).
 STATE_REG, SEGMENT_REG, DIGITAL_OUT_REG = 290, 277, 2
@@ -206,6 +218,8 @@ def scenario_mc(h: Harness, columns: int, rows: int) -> list[str]:
         problems.append(f"[mc] 작업 영역 레지스터가 다릅니다: {work_area}")
     if gates.count(True) != total:
         problems.append(f"[mc] 원점 대기가 셀마다 뜨지 않았습니다: {gates.count(True)}/{total}")
+    # ERUT 시나리오에는 MC 가 없다 — 대신 눌러 주던 것을 거둔다.
+    h.listeners.remove(on_gate)
     return problems
 
 
@@ -269,27 +283,30 @@ def scenario_erut(h: Harness) -> list[str]:
     if info["interface_version"] != "0.5" or "home" not in info["capabilities"]:
         problems.append(f"[erut] 자기소개가 이상합니다: {info}")
 
-    log("[erut] calibrate — 로봇이 벽을 세 번 눌러 좌표계를 잡는다")
+    log("[erut] calibrate — 차량(AGV)이 모재를 따라 한 바퀴 돌며 좌표계를 잡는다")
+    state_before = h.register(STATE_REG)[0]
     session.handle_request("calibrate", {"req_id": "cal-1", "diameter": 1690, "height": 6000})
     if not h.wait_until(lambda: tap.event("complete", "calibrate"), timeout=60):
         return problems + ["[erut] 캘리브레이션 완료(evt/complete)가 오지 않았습니다"]
     result = tap.event("complete", "calibrate")
-    error_mm = result.get("calibration_error_mm")
-    log(f"  캘리브레이션 오차: {error_mm} mm (시뮬레이터가 벽을 {WALL_ERROR_MM} mm 어긋나게 둠)")
-    if error_mm is None or error_mm > 2.0:
-        problems.append(f"[erut] 캘리브레이션 오차가 이상합니다: {result}")
+    log(f"  한 바퀴 {result.get('total_length_mm')} mm · 오차 {result.get('calibration_error_mm')} mm")
+    if abs((result.get("total_length_mm") or 0) - 5309) > 2:
+        problems.append(f"[erut] 캘리브레이션 총 둘레가 이상합니다: {result}")
+    if h.register(STATE_REG)[0] != state_before:
+        problems.append("[erut] 캘리브레이션 중에 로봇이 움직였습니다(3점 측정은 start 에서)")
 
-    # if-0.5: ERUT 는 이동 명령(prepare) 전에 query 로 home 인지 묻고, 아니면
-    # 10초까지 기다린다. 캘리브레이션 뒤 로봇이 스스로 홈으로 거둬야 한다.
-    if not h.wait_until(lambda: tap.home and tap.home[-1] == "home", timeout=30):
-        problems.append(f"[erut] 캘리브레이션 뒤 홈 자세(evt/home)로 돌아오지 않았습니다: {tap.home}")
+    # if-0.5: ERUT 는 이동 명령(prepare) 전에 query 로 home 인지 묻는다.
+    # 차량 캘리브레이션은 로봇을 홈에 둔 채 돈다 — evt/home 은 바뀔 때만
+    # 나가므로 아무것도 안 나갔거나, 나갔다면 마지막이 home 이어야 한다.
+    if tap.home and tap.home[-1] != "home":
+        problems.append(f"[erut] 캘리브레이션 뒤 로봇이 홈이 아닙니다: {tap.home}")
     session.handle_request("query", {"req_id": "q-home-1"})
     home_answer = tap.responses[-1].get("home")
     log(f"  캘리브레이션 뒤 evt/home: {tap.home[-1] if tap.home else None} · query home={home_answer}")
     if home_answer != "home":
         problems.append(f"[erut] prepare 전 query 의 home 이 {home_answer} 입니다")
 
-    log("[erut] prepare — 준비 중(preparing) → 원점에서 ready")
+    log("[erut] prepare — 차량·리프트만 구간 자리로(preparing) → ready. 로봇은 홈")
     h.pump(1.0)
     tap.status.clear()
     area = {"start": {"x": 580, "y": 0}, "end": {"x": 1180, "y": 800}}
@@ -300,8 +317,10 @@ def scenario_erut(h: Harness) -> list[str]:
     if not h.wait_until(lambda: tap.event("ready", "prepare"), timeout=90):
         return problems + ["[erut] 준비 완료(evt/ready)가 오지 않았습니다"]
     log(f"  evt/ready 받음 · activity {' → '.join(map(str, tap.activities()))}")
+    if tap.home and tap.home[-1] != "home":
+        problems.append(f"[erut] 준비 단계에서 로봇이 홈을 벗어났습니다: {tap.home}")
 
-    log("[erut] start — 원점 대기를 풀고 스캔")
+    log("[erut] start — 로봇 3점 측정 → 시작점에 붙음(contact) → 적심 → 스캔")
     session.handle_request("start", {"req_id": "start-1", "job_id": "jb-erut",
                                      "surface": "outer", "area": area,
                                      "scan": {"pitch": 20, "speed": 100}})
@@ -399,9 +418,7 @@ def scenario_io(h: Harness) -> list[str]:
 
 def scenario_tpac(h: Harness) -> list[str]:
     """TPAC 브리지가 스캔 구간 신호(DO[0..2])를 실제로 내보내는지."""
-    from smr_operator_ui.services.tpac_bridge.scan_signals import (
-        SEG_BACKWARD, SEG_FORWARD, ScanSignalOutput,
-    )
+    from smr_operator_ui.services.tpac_bridge.scan_signals import ScanSignalOutput
 
     log("\n[tpac] 스캔 구간 신호 추적")
     seen: list[list[int]] = []
@@ -447,7 +464,12 @@ def main() -> int:
     from pyModbusTCP.client import ModbusClient
 
     from smr_operator_ui.app import OperatorWindow
-    from smr_operator_ui.services import MqttServer
+    from smr_operator_ui.services import MqttServer, RobotNodeSupervisor
+
+    # 노드는 위에서 시뮬레이터 주소로 띄웠다. UI 가 기본값(실제 로봇 주소일 수
+    # 있다)으로 노드를 하나 더 띄우지 못하게 막는다 — 노드 탐색이 늦으면
+    # "아직 없다"로 보고 띄워 버린다.
+    RobotNodeSupervisor.start = lambda self, already_running=False: False
 
     procs = Processes()
     procs.start()
@@ -462,6 +484,9 @@ def main() -> int:
     published: list[tuple[str, dict]] = []
 
     harness = Harness(window, app, modbus, published)
+    if os.environ.get("SIM_TEST_VERBOSE"):
+        # RCS 진행 알림을 그대로 찍는다 — 시나리오가 어디서 멈췄는지 볼 때.
+        window.main_screen.activity_shown.connect(lambda text: log(f"    · {text}"))
 
     def capture(topic, payload, **kwargs):
         published.append((topic, payload))

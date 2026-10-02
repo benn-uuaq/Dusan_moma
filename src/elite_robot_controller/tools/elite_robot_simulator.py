@@ -220,9 +220,10 @@ class ScanTaskSim(threading.Thread):
     MAX_ROWS = 6
 
     def __init__(self, bank: RegisterBank, wall_error_mm: float = WALL_ERROR_MM,
-                 max_rows: int = MAX_ROWS):
+                 max_rows: int = MAX_ROWS, motion: "MotionSim | None" = None):
         super().__init__(daemon=True)
         self.bank = bank
+        self.motion = motion
         self.wall_error_mm = float(wall_error_mm)
         self.max_rows = max(1, int(max_rows))
         self._start_requested = threading.Event()
@@ -256,6 +257,9 @@ class ScanTaskSim(threading.Thread):
 
     def _set(self, address: int, value: int) -> None:
         self.bank.write(address, int(value))
+        if address == self.HOME_FLAG and getattr(self, "motion", None) is not None:
+            # 홈 플래그와 관절값을 같이 움직인다(노드가 관절값으로도 판정한다).
+            self.motion.set_pose(bool(value))
 
     def _get(self, address: int) -> int:
         return self.bank.read(address, 1)[0]
@@ -496,7 +500,10 @@ class DashboardServer(threading.Thread):
             "brakeRelease": "Brake releasing",
             "pause": "Pausing program",
         }
-        if command.startswith("task -p "):
+        if command == "variable -get Home_joint":
+            home = [round(v / 1000.0, 6) for v in self.motion.home_joints_mrad()]
+            reply = f"Home_joint = {home}"
+        elif command.startswith("task -p "):
             self.task.load(command[len("task -p "):].strip())
             reply = f"ok: {command}"
         elif command == "play":
@@ -526,7 +533,31 @@ class MotionSim:
         self._joint_entry = bank.registers.read_entry("joint_position")
         self._tcp_entry = bank.registers.read_entry("tcp_absolute")
         self._joint_pos = [float(v) for v in bank.read(self._joint_entry.address, 6)]
+        self._home_seed = list(self._joint_pos)
         self._tcp_pos = [float(v) for v in bank.read(self._tcp_entry.address, 6)]
+
+    #: 펴진(작업) 자세로 볼 때 홈에서 벌려 두는 양 [mrad] — 2번 축.
+    DEPLOYED_OFFSET_MRAD = 400.0
+
+    def home_joints_mrad(self) -> list[float]:
+        """시뮬레이터의 홈 관절값 [mrad]. 308 이 1 이면 310~315, 아니면 처음 값."""
+        if self.bank.read(308, 1)[0] == 1:
+            regs = self.bank.read(310, 6)
+            if any(regs):
+                return [float(v) for v in regs]
+        return list(self._home_seed)
+
+    def set_pose(self, at_home: bool) -> None:
+        """관절값을 홈 / 펴진 자세로 옮긴다.
+
+        노드가 관절값으로 홈을 판정하므로 홈 플래그(276)와 관절값이 어긋나지
+        않게 같이 바꾼다.
+        """
+        joints = self.home_joints_mrad()
+        if not at_home:
+            joints[1] += self.DEPLOYED_OFFSET_MRAD
+        with self._lock:
+            self._joint_pos = joints
 
     def set_joint_velocity(self, qd: list[float]) -> None:
         with self._lock:
@@ -553,6 +584,9 @@ class MotionSim:
             if joints_rad is not None:
                 with self._lock:
                     self._joint_pos = [v * 1000.0 for v in joints_rad]  # rad -> mrad(raw)
+            else:
+                # 목표가 변수(tgt_j)라 값을 모른다 — 노드의 홈 스크립트이므로 홈 자세로 둔다.
+                self.set_pose(True)
             for address, value in writes or []:
                 self.bank.write(address, value)
             print(f"[Motion] 홈 관절값으로 이동 완료: {joints_rad}")
@@ -657,7 +691,8 @@ def main() -> int:
     registers = register_map.load()
     bank = RegisterBank(registers)
     motion = MotionSim(bank)
-    task = ScanTaskSim(bank, wall_error_mm=args.wall_error, max_rows=args.max_rows)
+    task = ScanTaskSim(bank, wall_error_mm=args.wall_error, max_rows=args.max_rows,
+                       motion=motion)
     task.start()
 
     ModbusServer(bank, args.host, args.modbus_port).start()

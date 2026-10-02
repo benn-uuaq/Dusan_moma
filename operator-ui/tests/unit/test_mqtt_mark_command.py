@@ -27,7 +27,7 @@ def _payload(column="2", row="C", x="250", y="35", mark_id="m001", **plan):
 
 @pytest.fixture
 def window(qtbot, monkeypatch):
-    w = OperatorWindow(start_mqtt=False, start_ros=False)
+    w = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(w)
     w.ros_status.call_command = lambda name: True
     w.ros_status.set_task_paths = lambda scan, mark: True

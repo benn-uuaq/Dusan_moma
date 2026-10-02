@@ -10,7 +10,7 @@ from smr_operator_ui.services import ErutConfig, MqttConfig
 
 
 def _window(qtbot):
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     return window
 

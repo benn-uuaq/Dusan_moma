@@ -30,7 +30,10 @@ class SequencerState(str, Enum):
     SECURING = "정지·고정"          # 1. AMR 정차 후 아웃트리거 고정
     LEVELING = "수평 보정"          # 2. 열의 첫 리프트 위치잡기
     MOVING_LIFT = "리프트 이동 중"   # 3-중간. 셀과 셀 사이 리프트 상승
-    SCANNING = "스캔 중"            # 3. ㄹ자 스캔
+    # 3-앞. 차량·리프트를 구간 자리에 세우고 로봇은 아직 안 움직인다.
+    # ERUT prepare 의 끝(evt/ready) — start 가 오면 로봇이 3점 측정부터 한다.
+    READY = "준비 완료"
+    SCANNING = "스캔 중"            # 3. 3점 측정 → 원점 → 적심 → ㄹ자 스캔
     RETRACTING = "안전 위치"        # 4. 열을 다 끝내고 물러남
     MOVING_AMR = "다음 구간 이동"    # 5. 다음 열로 AMR 이동
     PAUSED = "일시정지"
@@ -184,6 +187,8 @@ class JobSequencer(QObject):
     work_area_requested = pyqtSignal(float, float, float, float, float, float,
                                      float, float, float)
     job_complete = pyqtSignal()
+    # 구간 자리에 섰고 로봇 시작을 기다린다(hold_before_scan 으로 시작했을 때).
+    ready_reached = pyqtSignal()
     activity = pyqtSignal(str)
     # 시퀀서 상태가 바뀔 때마다 이름을 보낸다. 화면의 진행 단계 표시가
     # 자체 타이머가 아니라 실제 진행을 따라가도록 하기 위한 것이다.
@@ -204,6 +209,8 @@ class JobSequencer(QObject):
         # 인정한다. 시간이 아니라 상태 변화로 판정하므로 로봇이 느리게
         # 출발해도 안전하다.
         self._saw_robot_busy = False
+        # 첫 셀에서 로봇을 바로 돌리지 않고 READY 로 서서 기다리는가.
+        self._hold_before_scan = False
 
     def _set_state(self, state: SequencerState) -> None:
         """상태를 바꾸고 알린다. 상태 변경은 반드시 여기를 거친다."""
@@ -235,13 +242,18 @@ class JobSequencer(QObject):
 
     # ------------------------------------------------------------- 입력
     def start(self, plan: GridPlan, scan_h_mm: float, base_lift_mm: float = 0.0,
-              move_first: bool = False) -> None:
+              move_first: bool = False, hold_before_scan: bool = False) -> None:
         """작업 계획을 받아 첫 셀(1A)부터 순회를 시작한다.
 
         `move_first` 면 **차량 정렬부터** 한다. ERUT 는 구간마다 따로
         요청하므로(구간 하나 = job 하나) 매번 그 구간 자리로 차량을
         옮겨야 한다. 사내 MC 처럼 차량이 이미 1구역에 서 있는 경우는 끈다.
+
+        `hold_before_scan` 이면 차량·리프트를 세운 뒤 로봇을 돌리기 전에
+        READY 로 서서 `proceed()` 를 기다린다 — ERUT prepare(준비) 와
+        start(실행) 를 나누기 위한 것이다.
         """
+        self._hold_before_scan = bool(hold_before_scan)
         self._plan = plan
         self._scan_h_mm = scan_h_mm
         self._base_lift_mm = base_lift_mm
@@ -398,8 +410,22 @@ class JobSequencer(QObject):
         )
         self.lift_target_requested.emit(height)
 
+    def proceed(self) -> bool:
+        """READY 에서 기다리던 로봇 시작을 진행한다. 진행했으면 True."""
+        if self._state is not SequencerState.READY:
+            return False
+        self._start_scan()
+        return True
+
     def _start_scan(self) -> None:
         """로봇을 제로점에서 play해 이번 셀을 스캔시킨다."""
+        if self._hold_before_scan:
+            # 구간 자리에 섰다 — 로봇은 아직 안 움직인다(ERUT prepare 끝).
+            self._hold_before_scan = False
+            self._set_state(SequencerState.READY)
+            self.activity.emit(f"{self.current_cell()}: 준비 완료 — 시작 신호를 기다립니다.")
+            self.ready_reached.emit()
+            return
         label = self.current_cell()
         self._set_state(SequencerState.SCANNING)
         # 로봇이 아직 직전 셀의 완료 상태를 들고 있을 수 있다. 움직이는 걸

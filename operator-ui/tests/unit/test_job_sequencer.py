@@ -388,3 +388,44 @@ def test_mc_job_keeps_the_vehicle_where_it_is(qtbot) -> None:
 
     assert h.amr_targets == []
     assert h.secures == 1
+
+
+# ---- ERUT prepare: 차량·리프트만 세우고 로봇은 기다린다 ------------------------------
+def test_hold_before_scan_stops_at_ready_without_starting_the_robot(qtbot) -> None:
+    """prepare 는 구간 자리에 서는 데까지만 — 로봇 3점 측정은 start 에서 한다."""
+    h = Harness(_plan(1, 1))
+    readies: list[int] = []
+    h.seq.ready_reached.connect(lambda: readies.append(1))
+    h.seq.start(h.plan, scan_h_mm=150.0, move_first=True, hold_before_scan=True)
+    h.settle()
+
+    assert h.seq.state is SequencerState.READY
+    assert readies == [1]
+    assert h.plays == 0, "준비만 — 로봇은 아직 돌지 않는다"
+
+    assert h.seq.proceed() is True
+    assert h.seq.state is SequencerState.SCANNING
+    assert h.plays == 1
+    h.finish_cell()
+    assert h.done
+
+
+def test_proceed_does_nothing_unless_ready(qtbot) -> None:
+    h = Harness(_plan(1, 1))
+    h.start()
+    h.settle()
+
+    assert h.seq.state is SequencerState.SCANNING
+    assert h.seq.proceed() is False
+    assert h.plays == 1
+
+
+def test_pause_at_ready_resumes_to_ready(qtbot) -> None:
+    h = Harness(_plan(1, 1))
+    h.seq.start(h.plan, scan_h_mm=150.0, move_first=True, hold_before_scan=True)
+    h.settle()
+    h.seq.pause()
+    h.seq.resume()
+
+    assert h.seq.state is SequencerState.READY
+    assert h.plays == 0

@@ -10,7 +10,7 @@ from smr_operator_ui.state import CyclePhase
 
 
 def test_start_and_pause_cycle(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
     qtbot.mouseClick(window.main_screen.start_button, Qt.MouseButton.LeftButton)
@@ -24,7 +24,7 @@ def test_start_and_pause_cycle(qtbot) -> None:
 
 def test_manual_navigation(qtbot) -> None:
     """'수동 제어'는 주요 제어에서 뺐다 — 설정/로그 메뉴를 통해서만 간다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
     window.navigate("manual")
@@ -42,7 +42,7 @@ def test_probe_error_reaches_alarm_and_mqtt(qtbot) -> None:
     같은 code 에 cleared=true 로 해제를 한 번 내보낸다(if-0.3 부터).
     code 는 표준 형식의 제조사 전용 대역(E9xxx)이다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     raised: list[dict] = []
     window.erut_session.raise_error = lambda fields: raised.append(fields)
@@ -77,7 +77,7 @@ def test_robot_alarm_reaches_alarm_list_and_mqtt(qtbot) -> None:
     억제/CLEAR 는 ROS 쪽(AlarmManager)이 이미 처리하고 넘어오므로,
     여기서는 받은 그대로 매번 내보내면 된다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     raised: list[dict] = []
     window.erut_session.raise_error = lambda fields: raised.append(fields)
@@ -101,7 +101,7 @@ def test_robot_alarm_reaches_alarm_list_and_mqtt(qtbot) -> None:
 
 def test_stop_button_stops_simulator_and_sequencer(qtbot) -> None:
     """'정지' 버튼이 화면 시뮬레이터와 순회(→ 로봇)를 모두 멈춘다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
     qtbot.mouseClick(window.main_screen.start_button, Qt.MouseButton.LeftButton)
@@ -113,7 +113,7 @@ def test_stop_button_stops_simulator_and_sequencer(qtbot) -> None:
 
 
 def test_back_returns_to_previous_screen(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
     window.navigate("settings")
@@ -127,7 +127,7 @@ def test_back_returns_to_previous_screen(qtbot) -> None:
 
 
 def test_direct_main_navigation_clears_history(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
     window.navigate("settings")
@@ -142,7 +142,7 @@ def test_direct_main_navigation_clears_history(qtbot) -> None:
 
 def test_mqtt_job_command_updates_target_dimensions(qtbot, monkeypatch) -> None:
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     saved: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -211,7 +211,7 @@ def test_mqtt_arc_geometry_reaches_the_robot(qtbot, monkeypatch) -> None:
     반지름·두께만 0.1mm 단위로 나간다(834.6 -> 8346).
     """
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
     sent_poses: list[tuple] = []
@@ -240,7 +240,7 @@ def test_mqtt_eoat_choice_reaches_the_robot(qtbot, monkeypatch) -> None:
     로봇이 이 값으로 이동 거리를 줄인다. 8축은 세로로 길게 달아 186x316.
     """
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
     sent_poses: list[tuple] = []
@@ -270,7 +270,7 @@ def test_eoat_height_becomes_the_scanner_band(qtbot, monkeypatch) -> None:
     (dus_init 의 `if eoat_h > 0: scan_h = eoat_h`).
     """
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
     sent_poses: list[tuple] = []
@@ -299,7 +299,7 @@ def test_mqtt_job_command_uses_cell_height_not_cylinder_height(qtbot, monkeypatc
     셀 하나만 스캔하고, 나머지 높이는 리프트가 행(A~F)을 올리며 덮는다.
     """
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
     sent_poses: list[tuple[str, list]] = []
@@ -321,7 +321,7 @@ def test_mqtt_job_command_uses_cell_height_not_cylinder_height(qtbot, monkeypatc
 def test_mqtt_job_command_keeps_local_scan_height(qtbot) -> None:
     """스캐너 유효높이는 장비 고유값이라 MQTT가 아니라 로컬 설정을 쓴다."""
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.main_screen.set_work_area(500.0, 700.0, 175.0, 15.0)
 
@@ -341,7 +341,7 @@ def test_mqtt_job_command_starts_job_and_applies_plan(qtbot, monkeypatch) -> Non
     담기지 않는다 — 그 뒤로는 UI/로봇 쪽이 자동으로 순회한다.
     """
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
     saved: list[tuple[str, dict]] = []
@@ -364,22 +364,23 @@ def test_mqtt_job_command_starts_job_and_applies_plan(qtbot, monkeypatch) -> Non
     # 첫 셀은 1A, 전체 셀 수는 12열 × 6행 = 72.
     assert "1A" in window.main_screen.rect_view._cell_label
     assert "72" in window.main_screen.rect_view._cell_label
-    # 반지름·두께는 이 payload 에 없으므로 0 = 평면(직선 스캔)으로 간다.
+    # 반지름은 이 payload 에 없고 작업 영역에도 없으므로 검사 대상 지름
+    # (2500 mm)의 절반을 쓴다. 0 으로 보내면 로봇이 "ARC IS ZERO" 로 멈춘다.
     assert ("work_area", {"width_mm": 600.0, "height_mm": 800.0,
                           "scan_h_mm": 30.0, "overlap_mm": 20.0,
-                          "radius_mm": 0.0, "thickness_mm": 0.0,
+                          "radius_mm": 1250.0, "thickness_mm": 0.0,
                           "eoat_w_mm": 0.0, "eoat_h_mm": 0.0,
                           "eoat_type": 0.0}) in saved
     # 레지스터 256~261. 반지름·두께만 0.1mm 단위라 10 을 곱해 보낸다.
     assert sent_poses == [
-        ("work_area", [600.0, 800.0, 300, 20.0, 0, 0, 0, 0, 0.0])]
+        ("work_area", [600.0, 800.0, 300, 20.0, 12500, 0, 0, 0, 0.0])]
     window.close()
 
 
 def test_mqtt_job_command_without_plan_keeps_previous_cell(qtbot) -> None:
     """옛 payload(plan 없음)를 받아도 검사대상 처리는 계속 되고 죽지 않는다."""
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
 
     mqtt_server.command_received.emit(
@@ -400,7 +401,7 @@ def test_mqtt_job_command_without_plan_keeps_previous_cell(qtbot) -> None:
 
 def test_mqtt_amr_run_starts_inspection(qtbot) -> None:
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
 
     mqtt_server.command_received.emit(
@@ -423,7 +424,7 @@ def test_mqtt_amr_stop_or_ems_pauses_inspection(
     amr_command,
 ) -> None:
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.simulator.start_cycle()
 
@@ -455,7 +456,7 @@ def test_robot_restart_stops_before_play(qtbot, monkeypatch) -> None:
     """
     from smr_operator_ui.app import ROBOT_RESTART_DELAY_MS
 
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     calls: list[str] = []
     monkeypatch.setattr(
@@ -483,7 +484,7 @@ def test_sequencer_drives_cycle_display_not_a_timer(qtbot) -> None:
     from smr_operator_ui.state import CyclePhase
 
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
 
     mqtt_server.command_received.emit(MqttTopics.JOB_COMMAND, _job_command_payload())
@@ -511,7 +512,7 @@ def test_step_display_advances_in_order(qtbot) -> None:
     from smr_operator_ui.services import SequencerState
 
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     order = window.main_screen._phase_order
 
@@ -543,7 +544,7 @@ def test_step_display_advances_in_order(qtbot) -> None:
 def test_mqtt_speed_command_is_sent_to_robot(qtbot, monkeypatch) -> None:
     """외부에서 속도 비율을 바꾸면 로봇으로 전달되어야 한다."""
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple[str, int]] = []
     monkeypatch.setattr(
@@ -562,7 +563,7 @@ def test_mqtt_speed_command_is_sent_to_robot(qtbot, monkeypatch) -> None:
 def test_mqtt_speed_command_rejects_out_of_range(qtbot, monkeypatch) -> None:
     """범위를 벗어난 값은 로봇으로 보내지 않는다."""
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple[str, int]] = []
     monkeypatch.setattr(
@@ -583,7 +584,7 @@ def test_linear_speed_is_capped_at_safety_limit(qtbot, monkeypatch) -> None:
     from smr_operator_ui.app import MAX_LINEAR_SPEED_MM_S
     from smr_operator_ui.screens import CobotSettingsScreen
 
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple[str, int]] = []
     monkeypatch.setattr(
@@ -607,7 +608,7 @@ def test_robot_speed_scale_is_shown(qtbot) -> None:
 
     펜던트에서 직접 바꿔도 Modbus 레지스터 17을 통해 여기로 들어온다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
 
     window.ros_status.speed_scale_changed.emit(35)
@@ -619,7 +620,7 @@ def test_robot_speed_scale_is_shown(qtbot) -> None:
 
 def test_speed_bar_sends_ratio_to_robot(qtbot, monkeypatch) -> None:
     """세로 속도 바를 놓으면 로봇으로 속도 비율이 나가야 한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple[str, int]] = []
     monkeypatch.setattr(
@@ -638,7 +639,7 @@ def test_speed_bar_sends_ratio_to_robot(qtbot, monkeypatch) -> None:
 
 def test_speed_bar_follows_robot_without_feedback_loop(qtbot, monkeypatch) -> None:
     """로봇이 알려 온 값으로 바를 맞출 때 다시 명령이 나가면 안 된다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple[str, int]] = []
     monkeypatch.setattr(
@@ -660,7 +661,7 @@ def test_grid_cell_updates_total_cells_and_row_floor(qtbot) -> None:
     행(층)인지도 별도로 보여야 한다("총 구간별 행의 표시가 전혀 없어서
     지금 몇층인지 알 수가 없음").
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     plan = GridPlan(
         column_count=8, row_count=6, cell_width=1110.0, cell_height=500.0,
@@ -686,7 +687,7 @@ def test_orbit_view_diameter_excludes_thickness_shown_separately(qtbot) -> None:
 
     ("검사 대상의 지름에 두께 포함하지 말고. 두께를 따로 표기").
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window._send_work_area(1110.0, 500.0, 257.0, 20.0, radius_mm=834.6, thickness_mm=10.0)
     assert window.main_screen.orbit_view._target_thickness_mm == 10.0
@@ -699,7 +700,7 @@ def test_rect_view_gets_eoat_width_for_tcp_path_inset(qtbot) -> None:
     경로 자체는 좌우 끝까지 그리지만(끝도 프로브 중심 기준), 그림이
     값을 들고 있어야 나중에 표시에 쓸 수 있다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window._send_work_area(
         721.0, 500.0, 30.0, 20.0, radius_mm=834.6, thickness_mm=10.0,
@@ -728,7 +729,7 @@ def test_window_scales_whole_ui_and_topbar_with_window_size(qtbot) -> None:
     너무 커진다**("전체화면하면 글씨나 이런게 너무 많이 커져"). 창 배수보다
     완만하게 커지고, 기준 크기로 돌아오면 1.0으로 복귀해야 한다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
     assert window._current_ui_scale == 1.0
@@ -756,7 +757,7 @@ def test_position_marker_parks_at_origin_instead_of_disappearing(qtbot) -> None:
     영점에 가만히 있는 편이 읽기 쉽고, 같은 값을 받는 TPAC 과도 어긋나지
     않는다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     rect = window.main_screen.rect_view
 
@@ -778,7 +779,7 @@ def test_position_marker_parks_at_origin_instead_of_disappearing(qtbot) -> None:
 
 def test_position_marker_never_blinks(qtbot) -> None:
     """상태·좌표 토픽이 번갈아 들어와도 표시가 꺼지면 안 된다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     rect = window.main_screen.rect_view
 
@@ -801,7 +802,7 @@ def test_oversized_work_length_is_clamped_and_alarmed(qtbot) -> None:
     **로봇이 따라올 수 없는 경로를 화면에만 그리게 된다**(현재 위치 점이
     경로 왼쪽 끝에 못 닿는다).
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
     raised: list[dict] = []
@@ -827,7 +828,7 @@ def test_oversized_work_length_is_clamped_and_alarmed(qtbot) -> None:
 
 def test_safe_work_length_passes_through_without_alarm(qtbot) -> None:
     """한계 안의 값은 그대로 쓰고 알람도 내지 않는다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
     raised: list[dict] = []
@@ -848,7 +849,7 @@ def test_alarm_reset_button_clears_notice_and_errors(qtbot) -> None:
     예전에는 알림 문구를 지울 방법이 없어 통보가 계속 남아 있었고,
     해제하려면 ERUT 가 `req/reset` 을 보내 주기를 기다려야 했다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
 
     window.erut_session.raise_error({
@@ -876,7 +877,7 @@ def test_position_returns_to_standby_when_the_robot_stops_sending(qtbot) -> None
     자리로 되돌린다 — 그러지 않으면 마지막 자리에 점이 계속 떠 있어 지금도
     거기 있는 것처럼 보인다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     rect = window.main_screen.rect_view
 
@@ -906,7 +907,7 @@ def test_stored_work_area_is_pushed_to_the_robot_on_load(qtbot) -> None:
     예전에는 불러올 때 화면만 맞춰서, 겹침을 바꿔도 로봇은 예전 레지스터
     값(옛 행 수)으로 계속 돌았다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
     sent: list[tuple] = []
@@ -934,7 +935,7 @@ def test_work_area_is_held_back_while_the_robot_task_runs(qtbot) -> None:
     바뀐다. 못 보낼 때는 사유(와 로봇이 보고한 상태값)를 알리고, 조건이
     풀리면 자동으로 다시 보낸다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[list] = []
     raised: list[dict] = []
@@ -985,7 +986,7 @@ def test_ui_launches_the_robot_node_unless_one_is_running(qtbot) -> None:
     다만 이미 떠 있으면 다시 띄우지 않는다 — 같은 로봇에 두 노드가 붙으면
     Modbus 소켓을 서로 뺏는다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     supervisor = window.robot_node
 
@@ -1001,7 +1002,7 @@ def test_work_area_edited_on_screen_reaches_the_robot(qtbot) -> None:
     게다가 다이얼로그가 묻는 네 항목만 저장해 반지름·두께·EOAT 가 통째로
     지워졌고, 다음에 불러올 때 반지름 0(=평면)이 로봇에 내려갔다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
     sent: list[list] = []
@@ -1033,7 +1034,7 @@ def test_zero_arc_probe_error_is_reported(qtbot) -> None:
     그 상태로 진행하면 movec 이 "Target pose ... coincident with auxiliary
     pose" 로 죽는데, 그 문구만으로는 원인을 알 수 없다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     raised: list[dict] = []
     window.erut_session.raise_error = lambda fields: raised.append(fields)
@@ -1054,7 +1055,7 @@ def test_tpac_pose_source_defaults_to_scan_value(qtbot) -> None:
     그러니 400 자리에 실을 값의 기본은 베이스 좌표가 아니라 제로점 기준
     스캔 값이어야 한다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     combo = window.screens["tpac_bridge"].srv_pose_source
     assert combo.currentData() == "scan"
@@ -1068,7 +1069,7 @@ def test_tpac_screen_serves_scan_sync_signals(qtbot) -> None:
 
     from smr_operator_ui.services.tpac_bridge.robot_map import RobotData
 
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["tpac_bridge"]
     assert screen.srv_signals.isChecked() and screen.srv_latch_ms.value() == 50
@@ -1117,7 +1118,7 @@ def test_robot_waiting_at_origin_is_announced_once(qtbot) -> None:
     상태는 10Hz 로 계속 들어오므로, 값이 **바뀔 때만** 알려야 도착 통보가
     초당 열 번씩 쌓이지 않는다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _scanning(window)
     told: list[int] = []
@@ -1132,7 +1133,7 @@ def test_robot_waiting_at_origin_is_announced_once(qtbot) -> None:
 
 def test_leaving_the_origin_arms_the_next_arrival(qtbot) -> None:
     """대기가 풀리면 다음 도착 때 다시 알려야 한다(루프판)."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _scanning(window)
     told: list[int] = []
@@ -1154,7 +1155,7 @@ def test_erut_start_while_waiting_releases_the_robot(qtbot) -> None:
     순회는 이미 돌고 있으므로 BUSY 로 되돌리면 로봇이 영영 못 움직인다.
     해제는 레지스터 267 에 1 을 쓰는 것으로 나간다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple] = []
     window.ros_status.send_value = lambda name, value: sent.append(
@@ -1169,7 +1170,7 @@ def test_erut_start_while_waiting_releases_the_robot(qtbot) -> None:
 
 def test_failed_release_is_alarmed(qtbot) -> None:
     """허가를 못 보냈으면 조용히 넘어가지 말고 알린다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.ros_status.send_value = lambda name, value: False
 
@@ -1187,7 +1188,7 @@ def test_probe_gate_is_announced_to_mc(qtbot) -> None:
     규격에는 대응하는 동작이 없어 probe_gate 통로를 따로 둔다.
     """
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _scanning(window)
     gates: list[tuple] = []
@@ -1203,7 +1204,7 @@ def test_probe_gate_is_announced_to_mc(qtbot) -> None:
 
 def test_probe_ack_releases_only_when_pressed(qtbot) -> None:
     """확인이 참일 때만 로봇을 푼다 — 프로브가 안 붙었으면 계속 세워 둔다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _scanning(window)
     sent: list[tuple] = []
@@ -1221,7 +1222,7 @@ def test_probe_ack_releases_only_when_pressed(qtbot) -> None:
 
 def test_probe_ack_outside_the_wait_is_ignored(qtbot) -> None:
     """대기 중이 아닐 때 온 확인은 무시한다 — 스캔을 앞당기면 안 된다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple] = []
     window.ros_status.send_value = lambda name, value: sent.append(
@@ -1241,7 +1242,7 @@ def test_mqtt_overlap_moves_the_vehicle_and_lift(qtbot, monkeypatch) -> None:
     로봇이 프로브 커버로 스스로 정하므로 여기서 채우지 않는다.
     """
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
 
@@ -1262,7 +1263,7 @@ def test_mqtt_overlap_moves_the_vehicle_and_lift(qtbot, monkeypatch) -> None:
 def test_overlap_larger_than_the_cell_is_refused(qtbot) -> None:
     """겹침이 격자보다 크면 차량·리프트가 뒤로 가거나 제자리를 맴돈다."""
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
 
@@ -1282,7 +1283,7 @@ def test_zero_travel_distance_is_named_in_the_message(qtbot) -> None:
     라고만 해서, 지름·높이가 멀쩡한데도 무엇이 문제인지 알 수 없었다.
     """
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
 
@@ -1299,7 +1300,7 @@ def test_zero_travel_distance_is_named_in_the_message(qtbot) -> None:
 def test_a_bad_dimension_is_named_in_the_message(qtbot) -> None:
     """어느 값이 문제인지 짚어 준다 — 뭉뚱그리면 고칠 데를 못 찾는다."""
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
 
@@ -1319,7 +1320,7 @@ def test_multi_cell_job_moves_the_vehicle_and_lift(qtbot) -> None:
     이동량은 겹침만큼 줄어든다 (격자끼리 겹치게).
     """
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _robot_ready(window)
 
@@ -1345,7 +1346,7 @@ def test_cell_status_carries_the_grid_name(qtbot) -> None:
     바깥은 이걸로 어느 영역이 끝났는지 추적한다.
     """
     mqtt_server = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False)
+    window = OperatorWindow(mqtt_server=mqtt_server, start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple] = []
     mqtt_server.publish_job_state = lambda cell, state: sent.append(
@@ -1393,7 +1394,7 @@ def test_hero_values_never_shrink_below_the_floor(qtbot) -> None:
 
 def test_hero_values_follow_the_window_scale(qtbot) -> None:
     """전체화면에서는 기준 크기도 같이 커져야 나머지 글자와 어울린다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     label = window.main_screen.phase_label
 
@@ -1411,7 +1412,7 @@ def test_robot_start_failure_is_shown_on_the_main_screen(qtbot) -> None:
     "로봇 스캔을 시작합니다" 만 뜨고 로봇은 가만히 있는데 이유를 알 수
     없었다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
 
     window._show_command_result("play", False, "로봇 제어 노드가 응답하지 않습니다.")
@@ -1426,7 +1427,7 @@ def test_robot_start_failure_is_shown_on_the_main_screen(qtbot) -> None:
 
 def test_successful_robot_command_does_not_shout(qtbot) -> None:
     """성공한 명령까지 메인 화면에 쏟아내면 정작 볼 것이 묻힌다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.main_screen.show_activity("1A: 로봇 스캔을 시작합니다.")
 
@@ -1444,7 +1445,7 @@ def test_erut_job_keeps_the_local_arc_and_probe_setup(qtbot) -> None:
     """
     from smr_operator_ui.services import GridPlan
 
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window._work_area_extra = {"radius_mm": 834.6, "thickness_mm": 10.0,
                                "eoat_w_mm": 30.0, "eoat_h_mm": 30.0,
@@ -1462,7 +1463,7 @@ def test_values_sent_by_erut_win_over_the_local_setup(qtbot) -> None:
     """ERUT 가 값을 주면 그 값을 쓴다 — 로컬 설정은 빈자리만 채운다."""
     from smr_operator_ui.services import GridPlan
 
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window._work_area_extra = {"radius_mm": 834.6, "thickness_mm": 10.0,
                                "eoat_type": 5.0}
@@ -1481,7 +1482,7 @@ def test_abort_backs_off_and_goes_home(qtbot) -> None:
 
     홈 이동은 노드에서 TCP -Z 로 먼저 물러난 뒤 올라가므로 곡면을 긁지 않는다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     calls: list[str] = []
     window.ros_status.call_command = lambda name: calls.append(name) or True
@@ -1500,7 +1501,7 @@ def test_origin_wait_is_ignored_when_no_section_is_running(qtbot) -> None:
 
     로봇은 멈춰도 7 을 들고 있어서, 안 거르면 abort 뒤 evt/ready 가 또 나간다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     told: list[int] = []
     window.erut_session.notify_at_origin = lambda: told.append(1)
@@ -1523,7 +1524,7 @@ def _task_spy(window):
 
 def test_sensor_tasks_are_the_default(qtbot) -> None:
     """기본은 센서판이다 — 체크 해제 상태로 뜬다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
 
     assert window.screens["cobot"].nosensor_check.isChecked() is False
@@ -1534,7 +1535,7 @@ def test_sensor_tasks_are_the_default(qtbot) -> None:
 
 def test_checking_nosensor_switches_and_loads_the_scan_task(qtbot) -> None:
     """체크하면 논센서 경로를 노드에 넘기고, 한가하면 바로 불러온다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     pushed, calls = _task_spy(window)
     saved: list[tuple] = []
@@ -1552,7 +1553,7 @@ def test_checking_nosensor_switches_and_loads_the_scan_task(qtbot) -> None:
 
 def test_switching_mid_job_waits_for_the_next_job(qtbot) -> None:
     """작업 중에 바꾸면 지금 구간을 흔들지 않는다 — 불러오지 않는다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     pushed, calls = _task_spy(window)
     _scanning(window)
@@ -1566,7 +1567,7 @@ def test_switching_mid_job_waits_for_the_next_job(qtbot) -> None:
 
 def test_stored_nosensor_choice_is_restored(qtbot) -> None:
     """저장해 둔 판이 다시 켤 때 그대로 돌아온다(신호 없이)."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     pushed, calls = _task_spy(window)
 
@@ -1582,7 +1583,7 @@ def test_erut_job_loads_the_chosen_scan_task_first(qtbot) -> None:
     """ERUT 구간 작업은 체크한 판의 스캔 태스크를 먼저 불러 두고 시작한다."""
     from smr_operator_ui.services import GridPlan
 
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     pushed, calls = _task_spy(window)
     window._nosensor = True
@@ -1601,7 +1602,7 @@ def test_rcs_start_runs_the_same_job_as_mqtt(qtbot) -> None:
     예전에는 데모 사이클에만 이어져 안전 순서 표시만 돌고 차량·리프트·
     로봇은 움직이지 않았다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     pushed, calls = _task_spy(window)
     window.main_screen.rect_view.set_work_area(721.0, 500.0, 30.0, 20.0)
@@ -1620,7 +1621,7 @@ def test_rcs_start_runs_the_same_job_as_mqtt(qtbot) -> None:
 
 def test_rcs_start_is_refused_while_a_job_runs(qtbot) -> None:
     """돌고 있는 작업을 버튼 한 번에 갈아엎지 않는다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _task_spy(window)
     _scanning(window)
@@ -1637,7 +1638,7 @@ def test_rcs_pause_pauses_and_resumes_the_real_job(qtbot) -> None:
     """RCS '일시정지'는 실제 순회를 멈추고, 다시 누르면 이어간다."""
     from smr_operator_ui.services import SequencerState
 
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _task_spy(window)
     window._start_inspection()
@@ -1652,7 +1653,7 @@ def test_rcs_pause_pauses_and_resumes_the_real_job(qtbot) -> None:
 
 def test_home_button_sends_home_when_idle(qtbot) -> None:
     """메인 화면 '로봇 홈' — 작업이 없으면 바로 홈 명령을 보낸다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _pushed, calls = _task_spy(window)
 
@@ -1664,7 +1665,7 @@ def test_home_button_sends_home_when_idle(qtbot) -> None:
 
 def test_home_is_refused_while_a_job_runs(qtbot) -> None:
     """작업 중(스캔·프로브·마킹 등)에는 홈 명령을 보내지 않고 로그에만 남긴다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _pushed, calls = _task_spy(window)
     window._start_inspection()
@@ -1682,7 +1683,7 @@ def test_home_is_refused_while_a_job_runs(qtbot) -> None:
 
 def test_home_is_refused_while_the_robot_task_runs(qtbot) -> None:
     """RCS 작업이 없어도 로봇 태스크가 돌면(펜던트에서 튼 경우) 거절한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _pushed, calls = _task_spy(window)
 
@@ -1698,7 +1699,7 @@ def test_home_is_refused_while_the_robot_task_runs(qtbot) -> None:
 
 def test_manual_screen_home_follows_the_same_rule(qtbot) -> None:
     """Cobot 수동 제어의 '홈 이동'도 로봇이 동작 중이면 거절하고 사유를 남긴다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _pushed, calls = _task_spy(window)
     window._on_robot_task_state(1)
@@ -1717,7 +1718,7 @@ def test_home_parks_the_position_at_the_origin(qtbot) -> None:
     좌표가 굳어 남는다. 그 값이 계속 들어와도 다시 그리지 않고, 로봇이
     다시 좌표를 내기 시작하면(생존 카운터가 움직이면) 그때부터 그린다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _task_spy(window)
     rect = window.main_screen.rect_view
@@ -1746,7 +1747,7 @@ def test_home_parks_the_position_at_the_origin(qtbot) -> None:
 
 def test_mqtt_cobot_home_follows_the_home_rule(qtbot) -> None:
     """MC 의 mc_cmd cobot=home — 쉬고 있으면 홈, 동작 중이면 거절."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _pushed, calls = _task_spy(window)
 
@@ -1766,7 +1767,7 @@ def test_mqtt_job_clear_stops_the_robot_too(qtbot) -> None:
 
     예전에는 순회만 멈춰 로봇이 계속 돌았고, 이어 누른 홈이 거절됐다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _pushed, calls = _task_spy(window)
     window._start_inspection()
@@ -1781,7 +1782,7 @@ def test_mqtt_job_clear_stops_the_robot_too(qtbot) -> None:
 
 def test_hero_totals_show_counts_only(qtbot) -> None:
     """현재 구간/행 칸에는 전체 수만 — mm 값은 칸이 좁아 안 붙인다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.main_screen.set_motion_values(960.0, 1234.0)
     assert "mm" not in window.main_screen.segment_total.text()
@@ -1795,7 +1796,7 @@ def test_operation_records_follow_a_real_cell(qtbot, tmp_path, monkeypatch) -> N
     from openpyxl import load_workbook
     from smr_operator_ui.services import data_recorder as dr
     monkeypatch.setenv("SMR_DATA_DIR", str(tmp_path))
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     _task_spy(window)
     assert window.data_recorder.root == tmp_path
@@ -1823,7 +1824,7 @@ def test_operation_records_follow_a_real_cell(qtbot, tmp_path, monkeypatch) -> N
 
 
 def test_saving_system_settings_moves_the_record_folder(qtbot, tmp_path, monkeypatch) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)   # 시험용 임시 폴더로 뜬다
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)   # 시험용 임시 폴더로 뜬다
     qtbot.addWidget(window)
     # 환경변수 고정을 풀어야 설정값이 먹는다 — 창을 만든 뒤에 풀어서
     # 기본값(D:/SMR/Data)으로는 한 번도 쓰지 않게 한다.
@@ -1840,7 +1841,7 @@ def test_saving_system_settings_moves_the_record_folder(qtbot, tmp_path, monkeyp
 # ---- 태스크 선택 (dusan_v5 기준 / dusan_v4) ----------------------------------------
 def test_task_selector_lists_versions_with_v5_default(qtbot) -> None:
     """v5 가 기준이다 — servoj 로 스캔 호를 그리며 센서 눌림 위치를 유지한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     cobot = window.screens["cobot"]
     combo = cobot.task_version_combo
@@ -1854,7 +1855,7 @@ def test_task_selector_lists_versions_with_v5_default(qtbot) -> None:
 
 
 def test_choosing_v4_switches_paths_saves_and_loads(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     pushed, calls = _task_spy(window)
     saved: list[tuple] = []
@@ -1877,7 +1878,7 @@ def test_choosing_v4_switches_paths_saves_and_loads(qtbot) -> None:
 
 
 def test_stored_task_version_is_restored_without_loading(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     pushed, calls = _task_spy(window)
 

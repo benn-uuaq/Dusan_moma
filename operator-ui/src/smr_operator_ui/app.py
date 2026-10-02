@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import math
 import os
 import re
 import sys
-import time
 from datetime import datetime
 from importlib.resources import files
 from math import ceil, isfinite, pi
@@ -115,6 +115,7 @@ _SEQUENCER_PHASES = {
     # 셀과 셀 사이 리프트 이동은 아직 3단계(검사) 안이다. 2단계로 되돌리면
     # 화면이 3 → 2 → 3 으로 뒤로 간다.
     SequencerState.MOVING_LIFT: CyclePhase.INSPECTING,   # 3
+    SequencerState.READY: CyclePhase.INSPECTING,         # 3 (로봇 시작 대기)
     SequencerState.SCANNING: CyclePhase.INSPECTING,      # 3
     SequencerState.RETRACTING: CyclePhase.RETRACTING,    # 4
     SequencerState.MOVING_AMR: CyclePhase.MOVING,        # 5
@@ -630,6 +631,10 @@ class OperatorWindow(QMainWindow):
         self.ros_status.command_result.connect(self._on_home_command_result)
         # 캘리브레이션: 모재 치수를 받아 작업 영역을 고치고 로봇 3점 측정을 돌린다.
         self.erut_session.calibration_requested.connect(self._run_calibration)
+        self.erut_session.calibration_stop_requested.connect(self._pause_calibration_lap)
+        self.erut_session.calibration_resume_requested.connect(self._resume_calibration_lap)
+        self.erut_session.proceed_requested.connect(self.sequencer.proceed)
+        self.sequencer.ready_reached.connect(self.erut_session.notify_prepared)
         self.ros_status.probe_result_changed.connect(self._on_probe_result)
         self.ros_status.probe_poses_changed.connect(self._on_probe_poses)
         # 원점에서 멈춰 선 로봇을 ERUT 의 "작업 시작"으로 풀어 준다.
@@ -698,14 +703,26 @@ class OperatorWindow(QMainWindow):
         changes = {}
         if plan.radius <= 0 and float(extra.get("radius_mm", 0) or 0) > 0:
             changes["radius"] = float(extra["radius_mm"])
+        elif plan.radius <= 0:
+            # 반지름을 따로 넣지 않았으면 검사 대상 지름의 절반을 쓴다
+            # (ERUT calibrate 와 같은 규칙). 0 으로 보내면 로봇 태스크가
+            # "ARC IS ZERO" 로 멈춘다 — 평면 스캔은 없다.
+            diameter_m, _height_m = self.main_screen.orbit_view.target_dimensions()
+            if diameter_m > 0:
+                changes["radius"] = diameter_m * 500.0
         if plan.thickness <= 0 and float(extra.get("thickness_mm", 0) or 0) > 0:
             changes["thickness"] = float(extra["thickness_mm"])
         if plan.eoat_probes <= 0 and float(extra.get("eoat_type", 0) or 0) > 0:
             changes["eoat_probes"] = int(float(extra["eoat_type"]))
         return replace(plan, **changes) if changes else plan
 
-    def _start_erut_job(self, plan) -> None:
-        """ERUT 가 준 계획으로 격자 순회를 시작한다. 로봇이 실제로 움직인다."""
+    def _start_erut_job(self, plan, prepare_only: bool = False) -> None:
+        """ERUT 가 준 계획으로 구간을 시작한다.
+
+        prepare 면(`prepare_only`) 차량·리프트를 구간 자리에 세우고 로봇은 홈에
+        둔 채 기다린다(시퀀서 READY → evt/ready). start 가 오면 그때 로봇이 3점
+        측정부터 한다. prepare 없이 온 start 면 처음부터 끝까지 한 번에 간다.
+        """
         plan = self._fill_from_local_setup(plan)
         scan_h_mm = self._scan_band_mm(plan)
         self.simulator.begin_external(plan.column_count)
@@ -717,7 +734,7 @@ class OperatorWindow(QMainWindow):
         self._load_scan_task()
         self._record_job("ERUT", self.erut_session.job_id, plan)
         self.sequencer.start(plan, scan_h_mm, base_lift_mm=plan.origin_y,
-                             move_first=True)
+                             move_first=True, hold_before_scan=prepare_only)
 
     def _abort_job(self) -> None:
         """ERUT 중단 요청(작업자 검사 종료). 멈추고 벽에서 물러나 홈으로 간다.
@@ -786,7 +803,7 @@ class OperatorWindow(QMainWindow):
         self.ros_status.scan_state_changed.connect(self._handle_alive)
         self.ros_status.scan_state_changed.connect(self._handle_origin_wait)
         self.ros_status.scan_state_changed.connect(self._handle_vehicle_wait)
-        self.ros_status.scan_state_changed.connect(self._handle_calibration)
+        self.ros_status.scan_state_changed.connect(self._report_probe_fit)
 
         # 화면과 외부 MQTT
         seq.state_changed.connect(self._show_sequencer_state)
@@ -948,6 +965,8 @@ class OperatorWindow(QMainWindow):
                   round(radius_mm * 10), round(thickness_mm * 10),
                   round(eoat_w_mm * 10), round(eoat_h_mm * 10), eoat_type]
         self._pending_work_area = values
+        # 로봇이 다음 play 에서 읽을 값. 스캔 시작 전에 0 이 없는지 본다.
+        self._robot_work_area = values
 
         reason = self._work_area_block_reason()
         if reason:
@@ -1191,6 +1210,8 @@ class OperatorWindow(QMainWindow):
         play 명령의 응답값으로 성공을 판단하지 않는다. 실제 진행 여부는
         로봇이 레지스터에 쓰는 상태(`robot/status/scan_state`)로만 본다.
         """
+        if not self._work_area_ready_for_scan():
+            return
         # 지난 셀의 스캔 허가(267)가 남아 있으면 로봇이 원점에서 서지 않고
         # 그냥 지나간다 — 프로브 확인을 건너뛴 채 훑게 된다. 태스크는 시작할
         # 때 이 칸을 지우지 않으므로 여기서 지운다.
@@ -1201,6 +1222,33 @@ class OperatorWindow(QMainWindow):
         self.ros_status.call_command("remote_control_on")
         self.ros_status.call_command("stop")
         self._schedule_play()
+
+    def _work_area_ready_for_scan(self) -> bool:
+        """호 길이(256)·반지름(260)이 0 이면 스캔 태스크를 틀지 않는다.
+
+        태스크는 둘 중 하나라도 0 이면 펜던트에 "ARC IS ZERO" 팝업을 띄우고
+        멈춘다(dus5_init → dus5_probe_l). 반지름은 캘리브레이션(모재 지름)이나
+        작업 지시가 와야 정해지고, 프로그램을 막 켰을 때는 0 이다. 로봇까지
+        가서 멈추게 두지 말고 여기서 사유를 알리고 작업을 접는다.
+        """
+        values = getattr(self, "_robot_work_area", None)
+        if values is None:
+            return True
+        missing = [name for name, value in (("호 길이(가로)", values[0]),
+                                            ("반지름", values[4]))
+                   if float(value) <= 0]
+        if not missing:
+            return True
+        text = (f"작업 영역의 {'·'.join(missing)}이(가) 0 이라 스캔을 시작하지 않습니다"
+                " — 캘리브레이션(모재 지름)과 구간 설정을 먼저 받아야 합니다.")
+        self.main_screen.show_activity(text)
+        self.cobot_manual_screen.add_alarm(text)
+        self.erut_session.raise_error({
+            "code": "E9304", "message": "WORK_AREA_NOT_SET", "level": "stop",
+            "recovery": "manual", "detail": text,
+        })
+        self.sequencer.stop()
+        return False
 
     def _schedule_play(self) -> None:
         """잠시 뒤 play 를 보낸다. abort 가 오면 취소된다(_cancel_play).
@@ -1892,6 +1940,7 @@ class OperatorWindow(QMainWindow):
         체크한 판(센서/논센서)의 스캔 태스크를 먼저 불러 두고, 화면 진행
         표시는 시퀀서가 주도하게 한다(데모 타이머로 혼자 앞서 나가지 않게).
         """
+        grid = self._fill_from_local_setup(grid)
         self.simulator.begin_external(grid.column_count)
         self._push_task_paths()
         self._load_scan_task()
@@ -2348,8 +2397,6 @@ class OperatorWindow(QMainWindow):
             self.main_screen.show_activity(
                 "로봇이 차량 고정 확인을 기다립니다 — 아웃트리거 고정·차량 정지를 확인하세요.")
 
-    #: 3점 측정(캘리브레이션)을 기다리는 한도 [ms]. 넘으면 실패로 답한다.
-    CALIBRATION_TIMEOUT_MS = 300_000
     #: 스캔 상태(290)에서 오류를 뜻하는 값.
     _STATE_ERROR = 9
     #: scan_state 에서 zero_ok(294)·probe_error(299) 자리.
@@ -2357,110 +2404,138 @@ class OperatorWindow(QMainWindow):
     _PROBE_ERROR_INDEX = 9
 
     def _on_probe_result(self, values: list) -> None:
-        """3점 측정 결과(300~305)를 들고 있는다. 캘리브레이션이 쓴다."""
+        """3점 측정 결과(300~305)를 들고 있는다."""
         self._probe_result = [int(v) for v in values]
 
     def _on_probe_poses(self, values: list) -> None:
         """접촉 자세(330~355)를 들고 있는다."""
         self._probe_poses = [int(v) for v in values]
 
+    # ---- ERUT 캘리브레이션 = 차량(AGV) 한 바퀴 -------------------------------------
     def _run_calibration(self, diameter_mm: float, height_mm: float) -> None:
-        """ERUT 캘리브레이션: 모재 치수를 반영하고 로봇에 3점 측정을 시킨다.
+        """ERUT 캘리브레이션: 차량이 모재 외벽을 따라 한 바퀴 돌며 좌표계를 잡는다.
 
-        모재 지름이 곧 벽 반지름이다. 작업 영역(반지름)을 고쳐 로봇에
-        내려보낸 뒤, 스캔 태스크를 돌려 프로브 3점 측정 -> 원점 복귀까지만
-        한다(스캔 허가는 안 보낸다). 로봇이 원점에 서면 접촉점을 읽어
-        결과를 낸다.
+        로봇의 3점 측정은 여기서 하지 않는다 — 구간 검사(start) 안에서 한다.
+        순서: 모재 지름으로 작업 영역 반지름을 고친다 → 아웃트리거를 푼다(차량이
+        달려야 한다) → 로봇이 홈인지 확인(아니면 먼저 홈으로) → 차량 한 바퀴 →
+        다 돌아 원점에 서면 잰 거리로 결과를 낸다.
+
+        실제 차량의 한 바퀴 명령·측정값은 아직 차량 쪽 인터페이스에 없다
+        (docs/vehicle_request_calibration_lap_battery.md). 지금은 차량 어댑터에
+        모재 둘레만큼 이동을 시키고, 그 이동량을 잰 거리로 쓴다.
         """
         radius_mm = float(diameter_mm) / 2.0
         extra = dict(self._work_area_extra)
         extra["radius_mm"] = radius_mm
-        # 저장은 비동기라 여기서 바로 반영해 둔다. 오차를 낼 기준 반지름은
-        # 따로 붙잡아 둔다 — 측정 도중 설정 불러오기가 늦게 도착해
-        # _work_area_extra 를 덮어써도 기준이 바뀌지 않게.
+        # 저장은 비동기라 여기서 바로 반영해 둔다 — 로봇이 start 에서 이 반지름으로
+        # 3점 측정·호를 계산한다.
         self._work_area_extra = extra
-        self._calibration_radius_mm = radius_mm + float(extra.get("thickness_mm") or 0.0)
-        width_mm, height_mm, scan_h_mm, overlap_mm = \
-            self.main_screen.rect_view.work_area()
-        self._send_work_area(width_mm, height_mm, scan_h_mm, overlap_mm, **extra)
+        width_mm, cell_h_mm, scan_h_mm, overlap_mm = self.main_screen.rect_view.work_area()
+        self._send_work_area(width_mm, cell_h_mm, scan_h_mm, overlap_mm, **extra)
         if height_mm > 0:
             self.main_screen.orbit_view.set_target_dimensions(
                 float(diameter_mm) / 1000.0, float(height_mm) / 1000.0)
-        self._calibration_deadline = time.monotonic() + self.CALIBRATION_TIMEOUT_MS / 1000.0
+        planned = math.pi * float(diameter_mm)
+        self._calibration_lap = {"planned": planned, "start": self.amr.position,
+                                 "target": self.amr.position + planned}
         self.main_screen.show_activity(
-            f"캘리브레이션: 벽 반지름 {radius_mm:g} mm 로 로봇 3점 측정을 시작합니다.")
-        # 3점 측정은 **스캔 태스크**의 앞부분이다. 직전에 마킹 태스크가 올라가
-        # 있으면 그게 돌아 엉뚱한 자리로 간다 — ERUT 구간 시작과 같이 체크한
-        # 판의 스캔 태스크를 먼저 불러 둔다.
-        self._push_task_paths()
-        self._load_scan_task()
-        # 로봇이 벽을 누르는 동안 차량이 굳어 있어야 한다(안전 순서 1단계).
-        # 고정이 안 돼 있으면 먼저 고정하고, 끝나면 그때 로봇을 돌린다 —
-        # 안 그러면 로봇이 차량 고정 확인(309)을 기다리다 멈춘다.
-        if self._vehicle_secured():
-            self._start_robot_scan()
-            return
-        self.main_screen.show_activity("캘리브레이션 전에 아웃트리거를 고정합니다.")
-        self.outrigger.arrived.connect(self._start_calibration_scan)
-        self.outrigger.move_to(1, " 고정")
+            f"캘리브레이션: 차량이 모재(지름 {diameter_mm:g} mm)를 따라 한 바퀴 "
+            f"({planned:.0f} mm) 돌며 좌표계를 잡습니다.")
+        self._drive_calibration_lap()
 
-    def _start_calibration_scan(self) -> None:
-        """아웃트리거 고정이 끝났다 — 이제 3점 측정을 돌린다."""
-        try:
-            self.outrigger.arrived.disconnect(self._start_calibration_scan)
-        except TypeError:                      # 이미 끊겨 있으면 그만이다
-            pass
-        if self.erut_session.calibrating:
-            self._start_robot_scan()
+    def _drive_calibration_lap(self) -> None:
+        """아웃트리거를 풀고(고정돼 있으면), 로봇이 홈에 서면 한 바퀴 주행."""
+        if not self.erut_session.calibrating:
+            return
+        if self.outrigger.position >= 1 and not self.outrigger.moving:
+            self.main_screen.show_activity("캘리브레이션 주행 전에 아웃트리거를 풉니다.")
+            self._once(self.outrigger.arrived, self._drive_calibration_lap)
+            self.outrigger.move_to(0, " 해제")
+            return
+        self._defer_until_robot_idle("캘리브레이션 주행", self._start_calibration_lap)
 
-    def _handle_calibration(self, values: list) -> None:
-        """캘리브레이션 중이면 로봇 상태를 보고 끝을 판정한다."""
-        if not self.erut_session.calibrating or not values:
+    def _start_calibration_lap(self) -> None:
+        lap = getattr(self, "_calibration_lap", None)
+        if lap is None or not self.erut_session.calibrating:
             return
-        state = int(values[self._SCAN_STATE_INDEX])
-        probe_error = (int(values[self._PROBE_ERROR_INDEX])
-                       if len(values) > self._PROBE_ERROR_INDEX else 0)
-        if state == self._STATE_ERROR or probe_error:
-            self._finish_calibration(
-                False, f"로봇이 측정 중 멈췄습니다(상태 {state}, 오류 {probe_error})")
+        self._once(self.amr.arrived, self._finish_calibration_lap)
+        self.amr.move_to(lap["target"], " mm", label=f"캘리브레이션 한 바퀴 ({lap['planned']:.0f} mm)")
+
+    def _finish_calibration_lap(self) -> None:
+        """한 바퀴 돌아 원점에 섰다. 잰 거리로 결과를 낸다(evt/complete).
+
+        calibration_error_mm 은 계획 둘레(π × 지름)와 잰 거리의 차이다 — 실제
+        차량이 원점 마커로 돌아왔을 때의 오차를 주면 그 값으로 바꾼다.
+        차량은 원점으로 돌아왔으므로 차량 위치를 0 으로 맞춘다.
+        """
+        lap = getattr(self, "_calibration_lap", None)
+        if lap is None or not self.erut_session.calibrating:
             return
-        if time.monotonic() > getattr(self, "_calibration_deadline", 0.0):
-            self._finish_calibration(False, "측정이 제한 시간 안에 끝나지 않았습니다")
+        measured = self.amr.position - lap["start"]
+        error = abs(measured - lap["planned"])
+        self._calibration_lap = None
+        self.amr.reset(0.0)
+        self._finish_calibration(
+            True, f"차량 한 바퀴 {measured:.0f} mm (계획 {lap['planned']:.0f} mm)",
+            error, total_length_mm=measured)
+
+    def _pause_calibration_lap(self) -> None:
+        """캘리브레이션 주행 일시정지 — 차량을 세운다. 재개하면 남은 거리를 간다."""
+        self.amr.cancel()
+        self.main_screen.show_activity("캘리브레이션 주행을 멈췄습니다.")
+
+    def _resume_calibration_lap(self) -> None:
+        self.main_screen.show_activity("캘리브레이션 주행을 이어 갑니다.")
+        self._drive_calibration_lap()
+
+    @staticmethod
+    def _once(signal, slot) -> None:
+        """시그널이 한 번 오면 slot 을 부르고 연결을 끊는다."""
+        def fire(*_args):
+            try:
+                signal.disconnect(fire)
+            except TypeError:
+                pass
+            slot()
+        signal.connect(fire)
+
+    def _finish_calibration(self, ok: bool, detail: str, error_mm: float = 0.0,
+                            total_length_mm: float | None = None) -> None:
+        """결과를 ERUT 에 낸다. 로봇은 주행 내내 홈에 있었으므로 그대로 둔다."""
+        self.main_screen.show_activity(f"캘리브레이션 결과 — {detail}")
+        self.erut_session.finish_calibration(ok, error_mm, detail,
+                                             total_length_mm=total_length_mm)
+
+    # ---- 구간 검사(start) 안의 로봇 3점 측정 ------------------------------------
+    def _report_probe_fit(self, values: list) -> None:
+        """로봇이 3점 측정을 마치고 시작점에 섰을 때 잰 벽을 기록에 남긴다.
+
+        ERUT 에 따로 보내는 값은 아니다(규격에 자리가 없다). 입력 반지름과
+        잰 벽이 크게 다르면 작업자가 알 수 있게 진행 알림에 남긴다.
+        """
+        if not values or not self.erut_session._start_req_id:
             return
-        zero_ok = (int(values[self._ZERO_OK_INDEX])
-                   if len(values) > self._ZERO_OK_INDEX else 0)
-        if state != self._STATE_AT_ORIGIN or not zero_ok:
+        at_origin = (int(values[self._SCAN_STATE_INDEX]) == self._STATE_AT_ORIGIN
+                     and len(values) > self._ZERO_OK_INDEX
+                     and int(values[self._ZERO_OK_INDEX]))
+        if at_origin == getattr(self, "_probe_fit_reported", False):
+            return
+        self._probe_fit_reported = at_origin
+        if not at_origin:
             return
         result = calibration.evaluate(
             getattr(self, "_probe_poses", []),
             self._expected_wall_radius_mm(),
             # 논센서 판은 눌림 센서가 없어 접촉 수(305)가 늘 0 이다 — 계산한 접점을
-            # 그대로 쓰므로 접촉 수는 보지 않는다(세 점이 다 기록됐는지만 본다).
+            # 그대로 쓰므로 접촉 수는 보지 않는다.
             None if getattr(self, "_nosensor", False) else getattr(self, "_probe_result", []),
         )
-        self._finish_calibration(result.ok, result.describe(), result.error_mm)
+        self.main_screen.show_activity(f"3점 측정 — {result.describe()}")
 
     def _expected_wall_radius_mm(self) -> float:
         """로봇이 호를 그릴 때 쓰는 반지름 = 입력 반지름 + 두께."""
-        pinned = getattr(self, "_calibration_radius_mm", None)
-        if pinned:
-            return float(pinned)
         extra = self._work_area_extra
         return float(extra.get("radius_mm") or 0.0) + float(extra.get("thickness_mm") or 0.0)
-
-    def _finish_calibration(self, ok: bool, detail: str, error_mm: float = 0.0) -> None:
-        """결과를 ERUT 에 내고 로봇을 거둔다. 원점(벽 앞)에 세워 두지 않는다.
-
-        if-0.5: 작업을 마치고 쉬는 동안(idle)에는 이동 안전 자세(home)로 거둔다 —
-        ERUT 는 다음 이동 명령(prepare) 전에 home 인지 물어보고, 아니면 보내지
-        않는다. 실패했으면 장애가 걸려 있으므로 그 자리에 세우기만 한다.
-        """
-        self.main_screen.show_activity(f"캘리브레이션 결과 — {detail}")
-        self.erut_session.finish_calibration(ok, error_mm, detail)
-        if ok:
-            self._send_home()
-        else:
-            self._stop_robot_scan()
 
     def _handle_origin_wait(self, values: list) -> None:
         """로봇이 원점에 도착해 멈춰 서면 ERUT 에 알린다.
@@ -2486,8 +2561,8 @@ class OperatorWindow(QMainWindow):
             self.erut_session.clear_at_origin()
             return
         self.main_screen.show_activity(
-            "로봇이 원점에 도착했습니다 — 프로브 확인(ERUT 의 작업 시작 또는"
-            " MQTT probe_ack)을 기다립니다.")
+            "로봇이 시작점에 붙었습니다 — ERUT 작업이면 접촉 알림 뒤 스스로,"
+            " 사내 MC 면 probe_ack 를 받아 적심으로 넘어갑니다.")
         self.erut_session.notify_at_origin()
 
     def _handle_probe_ack(self, payload: dict) -> None:
@@ -2992,11 +3067,18 @@ class OperatorWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802
         """창 종료 전에 MQTT 네트워크 루프와 ROS 구독을 정리한다."""
         self.mqtt_server.stop()
+        # ERUT 도 닫는다 — offline 을 직접 남기고 paho 스레드를 거둔다. 안 하면
+        # 창이 사라진 뒤에도 스레드가 신호를 쏴 프로세스가 죽는다.
+        self.erut.stop()
         self.ros_status.stop()
         self.data_recorder.close()
         self.screens["tpac_bridge"].shutdown()
         # 우리가 띄운 노드만 거둔다(따로 띄운 노드는 남의 것이다).
         self.robot_node.stop()
+        # 걸어 둔 지연 동작(play·홈·대기 해제 등)도 거둔다 — 창이 닫힌 뒤
+        # 로봇에 명령이 나가면 안 되고, 사라진 객체를 부르다 프로세스가 죽는다.
+        for timer in self.findChildren(QTimer):
+            timer.stop()
         super().closeEvent(event)
 
 

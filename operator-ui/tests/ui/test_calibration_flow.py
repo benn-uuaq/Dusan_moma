@@ -1,9 +1,9 @@
-"""ERUT req/calibrate → 로봇 3점 측정 → evt/complete 까지.
+"""ERUT req/calibrate = 차량(AGV) 캘리브레이션 — 모재 외벽을 따라 한 바퀴.
 
-로봇이 실제로 도는 대신, 제어 노드가 주는 레지스터 값을 시그널로 흘려
-넣는다. 확인할 것은 세 가지다 — 모재 지름이 작업 영역(반지름)으로
-내려가는가, 측정이 끝난 순간에만 완료가 나가는가, 접촉점으로 낸 오차가
-ERUT 규격 자리(calibration_error_mm)에 실리는가.
+로봇의 3점 측정은 캘리브레이션이 아니라 구간 검사(start) 안에서 한다.
+확인할 것: 모재 지름이 작업 영역 반지름으로 내려가는가, 차량이 둘레만큼
+한 바퀴 도는가(로봇은 홈, 아웃트리거는 풀린 채로), 다 돌아야 완료가
+나가고 total_length_mm 이 실리는가.
 """
 
 import math
@@ -39,142 +39,113 @@ def _scan_state(state, zero_ok=1, probe_error=0):
     return values
 
 
-def test_calibration_runs_the_robot_and_reports_the_measured_error(qtbot):
-    window = _window(qtbot)
+def _tap(window):
     events: list[tuple] = []
     window.erut.publish_event = lambda name, req, action, **kw: (
         events.append((name, action, kw)) or True)
     window.erut.publish_res = lambda *a, **kw: True
-    started: list[str] = []
-    window._start_robot_scan = lambda: started.append("play")
-    window._stop_robot_scan = lambda: started.append("stop")
-    window._send_home = lambda: started.append("home")
+    window._push_work_area_to_robot = lambda *values: None
+    return events
+
+
+def test_calibration_drives_the_vehicle_once_around(qtbot):
+    window = _window(qtbot)
+    events = _tap(window)
+    robot: list[str] = []
+    window._start_robot_scan = lambda: robot.append("play")
     sent: list[list] = []
     window._push_work_area_to_robot = lambda *values: sent.append(list(values))
+    window.outrigger.reset(1)                  # 고정돼 있던 차량
 
-    # 로봇이 벽을 누르는 동안 차량이 굳어 있어야 한다 — 아웃트리거 고정이
-    # 끝난 뒤에 로봇이 돈다(안전 순서 1단계).
-    with qtbot.waitSignal(window.outrigger.arrived, timeout=5000):
-        window.erut_session.handle_request(
-            "calibrate", {"req_id": "cal-1", "diameter": 1690, "height": 6000})
+    window.erut_session.handle_request(
+        "calibrate", {"req_id": "cal-1", "diameter": 1690, "height": 6000})
+    assert events == [], "한 바퀴 다 돌기 전에는 완료를 내지 않는다"
 
-    # 모재 지름의 절반이 벽 반지름으로 내려가야 한다.
-    assert started == ["play"]
-    assert window.outrigger.position >= 1
-    assert sent and sent[0][4] == 845.0
-    assert events == []
-
-    # 로봇이 아직 측정 중 — 완료가 나가면 안 된다.
-    window.ros_status.scan_state_changed.emit(_scan_state(2, zero_ok=0))
-    assert events == []
-
-    window.ros_status.probe_poses_changed.emit(_arc_poses(855.0))
-    window.ros_status.probe_result_changed.emit([0, 0, 0, 0, 3, 3])
-    window.ros_status.scan_state_changed.emit(_scan_state(7))
-
+    qtbot.waitUntil(lambda: bool(events), timeout=10000)
     name, action, payload = events[-1]
     assert (name, action) == ("complete", "calibrate")
     assert payload["origin"] == {"x": 0, "y": 0}
-    # 입력 반지름 845 + 두께 10 = 855 로 쟀으니 오차는 1 mm 안쪽이다.
+    # 계획 둘레 π × 1690 ≈ 5309 mm 를 한 바퀴 돌았다.
+    assert abs(payload["total_length_mm"] - math.pi * 1690) <= 1
     assert payload["calibration_error_mm"] < 1.0
-    # 측정이 끝나면 원점(벽 앞)에 세워 두지 않고 홈으로 거둔다 — ERUT if-0.5 는
-    # 다음 이동 명령(prepare) 전에 home 인지 물어보고, 아니면 보내지 않는다.
-    assert started == ["play", "home"]
+    # 모재 지름의 절반이 벽 반지름으로 내려간다(로봇이 start 에서 쓴다).
+    assert sent and sent[0][4] == 845.0
+    # 차량이 달려야 하므로 아웃트리거는 풀고, 로봇은 움직이지 않는다.
+    assert window.outrigger.position == 0
+    assert robot == []
+    # 다 돌면 원점으로 돌아온 것 — 차량 위치를 0 으로 맞춘다.
+    assert window.amr.position == 0.0
     window.close()
 
 
-def test_failed_contact_is_reported_as_a_failure(qtbot):
+def test_calibration_waits_for_the_robot_to_be_home(qtbot):
+    """차량이 움직이므로 로봇이 홈이 아니면 먼저 홈으로 보낸다(if-0.5)."""
     window = _window(qtbot)
-    events: list[tuple] = []
-    window.erut.publish_event = lambda name, req, action, **kw: (
-        events.append((name, action, kw)) or True)
-    window.erut.publish_res = lambda *a, **kw: True
-    window._start_robot_scan = lambda: None
-    window._stop_robot_scan = lambda: None
-    window._push_work_area_to_robot = lambda *values: None
+    _tap(window)
+    homes: list[int] = []
+    window._send_home = lambda: homes.append(1)
+    window.outrigger.reset(0)
+    window._on_robot_task_state(3)
+    window._on_robot_at_home(True)
+    window._on_robot_at_home(False)            # 팔이 나와 있다
 
-    window.outrigger.reset(1)          # 이미 고정돼 있는 상태에서 시작한다
     window.erut_session.handle_request(
         "calibrate", {"req_id": "cal-2", "diameter": 1690, "height": 6000})
-    # 로봇이 벽을 못 찾아 멈췄다(상태 9 · probe_error 1).
-    window.ros_status.scan_state_changed.emit(_scan_state(9, zero_ok=0, probe_error=1))
 
+    assert homes == [1]
+    assert not window.amr.moving, "홈에 닿기 전엔 차량을 움직이지 않는다"
+    window._on_robot_at_home(True)
+    assert window.amr.moving
+    window.close()
+
+
+def test_pause_stops_the_lap_and_resume_finishes_it(qtbot):
+    window = _window(qtbot)
+    events = _tap(window)
+    window.outrigger.reset(0)
+    window.erut_session.handle_request(
+        "calibrate", {"req_id": "cal-3", "diameter": 1000, "height": 6000})
+    assert window.amr.moving
+
+    window.erut_session.handle_request("pause", {"req_id": "pz"})
+    assert not window.amr.moving
+    window.erut_session.handle_request("resume", {"req_id": "rz"})
+    assert window.amr.moving
+
+    qtbot.waitUntil(lambda: bool(events), timeout=10000)
     name, action, payload = events[-1]
     assert (name, action) == ("complete", "calibrate")
-    assert payload["code"] == 500
-    assert not window.erut_session.calibrating
+    assert abs(payload["total_length_mm"] - math.pi * 1000) <= 1
     window.close()
 
 
-def test_scan_states_do_not_touch_calibration_when_none_is_running(qtbot):
+def test_abort_during_the_lap_sends_no_complete(qtbot):
     window = _window(qtbot)
-    events: list[tuple] = []
-    window.erut.publish_event = lambda name, req, action, **kw: (
-        events.append((name, action, kw)) or True)
-
-    window.ros_status.probe_poses_changed.emit(_arc_poses(845.0))
-    window.ros_status.scan_state_changed.emit(_scan_state(7))
-
-    assert events == []
-    window.close()
-
-
-def test_the_robot_starts_at_once_when_the_vehicle_is_already_secured(qtbot) -> None:
-    window = _window(qtbot)
-    window.erut.publish_event = lambda *a, **kw: True
-    window.erut.publish_res = lambda *a, **kw: True
-    started: list[str] = []
-    window._start_robot_scan = lambda: started.append("play")
-    window._push_work_area_to_robot = lambda *values: None
-    window.outrigger.reset(1)
-
+    events = _tap(window)
+    window.outrigger.reset(0)
     window.erut_session.handle_request(
-        "calibrate", {"req_id": "cal-3", "diameter": 1690, "height": 6000})
+        "calibrate", {"req_id": "cal-4", "diameter": 1000, "height": 6000})
+    window.erut_session.handle_request("abort", {"req_id": "ab"})
 
-    assert started == ["play"]
+    qtbot.wait(1500)
+    assert [e for e in events if e[1] == "calibrate"] == []
     window.close()
 
 
-def test_calibration_loads_the_scan_task_first(qtbot):
-    """3점 측정은 스캔 태스크 앞부분이다 — 마킹 태스크가 올라가 있으면 안 된다."""
+def test_three_point_fit_is_logged_when_the_robot_reaches_the_start(qtbot):
+    """로봇 3점 측정은 start 안에서 한다 — 시작점에 서면 잰 벽을 알림에 남긴다."""
     window = _window(qtbot)
-    window.erut.publish_event = lambda *a, **kw: True
-    window.erut.publish_res = lambda *a, **kw: True
-    calls: list[str] = []
-    window.ros_status.call_command = lambda name: calls.append(name) or True
-    window.ros_status.set_task_paths = lambda scan, mark: calls.append("paths") or True
-    window._start_robot_scan = lambda: calls.append("play")
-    window._push_work_area_to_robot = lambda *values: None
-    window.outrigger.reset(1)
-
-    window.erut_session.handle_request(
-        "calibrate", {"req_id": "cal-4", "diameter": 1690, "height": 6000})
-
-    assert calls.index("load_scan_task") < calls.index("play")
-    assert "paths" in calls
-    window.close()
-
-
-def test_nosensor_task_does_not_need_contact_counts(qtbot):
-    """논센서 판은 접촉 센서가 없어 305 가 0 이다 — 그래도 캘리브레이션이 된다."""
-    window = _window(qtbot)
+    _tap(window)
+    window._work_area_extra = {"radius_mm": 845.0, "thickness_mm": 10.0,
+                               "eoat_w_mm": 0.0, "eoat_h_mm": 0.0, "eoat_type": 0.0}
+    said: list[str] = []
+    window.main_screen.activity_shown.connect(said.append)
+    window.erut_session._start_req_id = "s1"
     window._nosensor = True
-    events: list[tuple] = []
-    window.erut.publish_event = lambda name, req, action, **kw: (
-        events.append((name, action, kw)) or True)
-    window.erut.publish_res = lambda *a, **kw: True
-    window._start_robot_scan = lambda: None
-    window._send_home = lambda: None
-    window._push_work_area_to_robot = lambda *values: None
-    window.outrigger.reset(1)
-    window.erut_session.handle_request(
-        "calibrate", {"req_id": "cal-ns", "diameter": 1690, "height": 6000})
 
     window.ros_status.probe_poses_changed.emit(_arc_poses(855.0))
     window.ros_status.probe_result_changed.emit([0, 0, 0, 0, 3, 0])
     window.ros_status.scan_state_changed.emit(_scan_state(7))
 
-    name, action, payload = events[-1]
-    assert (name, action) == ("complete", "calibrate")
-    assert "calibration_error_mm" in payload
+    assert any(text.startswith("3점 측정 — 잰 벽 반지름") for text in said), said
     window.close()

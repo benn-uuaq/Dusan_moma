@@ -5,7 +5,7 @@ from smr_operator_ui.app import OperatorWindow
 
 
 def test_settings_menu_opens_connection_screen(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
     window.navigate("settings")
@@ -17,7 +17,7 @@ def test_settings_menu_opens_connection_screen(qtbot) -> None:
 
 
 def test_connection_screen_collects_all_device_addresses(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     values = window.screens["connection"].values()
     # 협동로봇, 차량용 PLC, MQTT Broker가 한 화면에 모여 있어야 한다.
@@ -37,7 +37,7 @@ def test_connection_screen_collects_all_device_addresses(qtbot) -> None:
 
 
 def test_cobot_settings_no_longer_duplicates_address(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     # 주소 항목은 연결 설정 화면으로 옮겼으므로 여기에 남아 있으면 안 된다.
     assert "IP 주소" not in window.screens["cobot"].values()
@@ -45,7 +45,7 @@ def test_cobot_settings_no_longer_duplicates_address(qtbot) -> None:
 
 
 def test_cobot_endpoint_follows_connection_settings(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window._apply_stored_settings("connection", {"협동로봇 IP": "10.0.0.7"})
     assert "10.0.0.7" in window.cobot_manual_screen.endpoint_label.text()
@@ -53,7 +53,7 @@ def test_cobot_endpoint_follows_connection_settings(qtbot) -> None:
 
 
 def test_cobot_manual_buttons_emit_dashboard_commands(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
     screen = window.cobot_manual_screen
@@ -75,7 +75,7 @@ def test_cobot_manual_buttons_emit_dashboard_commands(qtbot) -> None:
 
 
 def test_cobot_manual_status_updates(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.cobot_manual_screen
     screen.set_connected(True)
@@ -96,7 +96,7 @@ def test_cobot_badge_reflects_real_connection_state(qtbot) -> None:
     connected_changed로만 초록으로 바뀌어야 한다(예전엔 다른 셋과
     똑같이 항상 "연결됨"으로 고정돼 있었다).
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     cobot_badge = window.top_bar.badges["Cobot"]
     assert "연결 안 됨" in cobot_badge.state_label.text()
@@ -118,7 +118,7 @@ def test_top_bar_shrinks_font_to_fit_narrow_width(qtbot) -> None:
     필요한 폭이 실제 폭보다 크면 전체 글자 크기를 비례해서 줄여
     무엇 하나 잘리지 않게 해야 한다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     top_bar = window.top_bar
 
@@ -148,7 +148,7 @@ def test_top_bar_shrinks_font_to_fit_narrow_width(qtbot) -> None:
 
 def test_connection_badges_all_have_the_same_width(qtbot) -> None:
     """연결 상태 배지는 문구가 달라도 크기가 같아야 한다(들쭉날쭉 금지)."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     badges = window.top_bar.badges
     badges["PLC"].set_connected(True)            # "연결됨"
@@ -159,7 +159,7 @@ def test_connection_badges_all_have_the_same_width(qtbot) -> None:
 
 
 def test_cobot_manual_shows_six_pose_components(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.cobot_manual_screen
     axes = ("x", "y", "z", "rx", "ry", "rz")
@@ -186,7 +186,7 @@ def test_cobot_manual_layout_fits_fixed_console_height(qtbot) -> None:
     """1280x720 고정 콘솔에서 카드나 버튼이 잘리지 않아야 한다."""
     from PyQt6.QtWidgets import QFrame
 
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.resize(1280, 720)
     window.navigate("cobot_manual")
@@ -220,7 +220,7 @@ def test_robot_ip_propagates_without_database_save(qtbot) -> None:
     (SMR_DATABASE_URL 미설정)에서는 주소를 고쳐도 TPAC 설정·Cobot 수동
     제어가 옛 주소를 그대로 들고 있었다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     conn = window.screens["connection"]
 
@@ -238,7 +238,7 @@ def test_robot_ip_propagates_without_database_save(qtbot) -> None:
 
 def test_connection_screen_owns_connect_buttons(qtbot) -> None:
     """연결/연결 해제는 "연결 설정" 화면에만 있고, 다른 화면은 그리로 보낸다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     conn = window.screens["connection"]
 
@@ -256,7 +256,7 @@ def test_connection_screen_owns_connect_buttons(qtbot) -> None:
 
 def test_cobot_manual_links_to_connection_screen(qtbot) -> None:
     """연결 버튼 대신 "연결 설정" 버튼이 그 화면으로 보내야 한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
     screen = window.cobot_manual_screen
@@ -272,7 +272,7 @@ def test_settings_fields_never_overlap_at_any_scale(qtbot) -> None:
     입력칸 min-height 가 배율에 따라 같이 커지는데 세로가 모자라면 예전에는
     위젯이 서로 겹쳐 글자가 반씩 잘려 보였다. 이제는 모자라면 스크롤된다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     conn = window.screens["connection"]
     names = ["협동로봇 IP", "Dashboard 포트", "Primary 포트", "Modbus 포트"]
@@ -297,7 +297,7 @@ def test_task_state_is_shown_on_the_status_card(qtbot) -> None:
     작업 영역 전송이 "태스크 실행 중"이면 막히는데, 값이 안 보이면
     "실행 중이 아닌데 왜 안 나가냐"를 가려낼 수가 없다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
     window.navigate("cobot_manual")
@@ -315,7 +315,7 @@ def test_task_state_is_shown_on_the_status_card(qtbot) -> None:
 
 def test_brake_release_waits_for_idle_and_guides_each_step(qtbot) -> None:
     """전원 ON 뒤 IDLE 이 될 때까지 브레이크 해제를 막고, 지금 할 일을 보여 준다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.cobot_manual_screen
     brake = screen.power_buttons["brake_release"]

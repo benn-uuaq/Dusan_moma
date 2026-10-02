@@ -162,7 +162,7 @@ python3 mqtt_test/run_sim_test.py --only mc io  # 고른 것만
 | 시나리오 | 확인하는 것 |
 |---|---|
 | `mc` | 사내 MC 규격 `job_cmd` 하나로 `1A → 1B → … → 2A …` 를 빠짐없이 도는지. 셀마다 원점에서 프로브 확인(`probe_gate` → `probe_ack`)을 거치는지. `job_state` 가 셀마다 3건 나가는지. 작업 영역 레지스터(256~259)가 셀 치수로 실리는지 |
-| `erut` | ERUT 표준 if-0.5 한 바퀴 — 자기소개(`evt/info`) → `calibrate`(3점 측정 → 오차 → 홈으로 거둬 `evt/home`·query `home` 이 home) → `prepare`(activity preparing → 원점에서 `evt/ready`) → `start`(탐촉자 접촉 `evt/contact`·정수 진행률·`pos`/`location` 이 실린 `evt/complete`) → `mark`(점에서 로봇이 서서 `evt/mark_ready` ↔ `req/mark_next`) → `home`(`evt/complete action=home`) → 비상정지 → `reset`(`cleared=true`, idle 복귀) |
+| `erut` | ERUT 표준 if-0.5 한 바퀴 — 자기소개(`evt/info`) → `calibrate`(차량이 모재를 한 바퀴 — `total_length_mm` ≈ π·지름, 로봇은 움직이지 않고 query `home` 이 home) → `prepare`(차량·리프트만, activity preparing → `evt/ready`, 로봇은 홈) → `start`(로봇 3점 측정 → 시작점에서 `evt/contact` attached → 2초 뒤 스캔 · 정수 진행률 · `pos`/`location` 이 실린 `evt/complete`) → `mark`(점에서 로봇이 서서 `evt/mark_ready` ↔ `req/mark_next`) → `home`(`evt/complete action=home`) → 비상정지 → `reset`(`cleared=true`, idle 복귀) |
 | `io` | I/O 화면의 로봇 디지털 출력이 레지스터 2 의 그 비트만 바꾸는지, 화면 표시가 로봇 값을 따라오는지 |
 | `tpac` | 스캔 구간 신호 DO[0..2] 가 전진·후진·동결 순서대로 나가는지, 스캔 중에 리셋이 서지 않는지 |
 

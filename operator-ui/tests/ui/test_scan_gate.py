@@ -10,7 +10,7 @@ from smr_operator_ui.app import OperatorWindow
 
 
 def test_starting_a_cell_clears_the_scan_permission(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple[str, int]] = []
     commands: list[str] = []
@@ -26,7 +26,7 @@ def test_starting_a_cell_clears_the_scan_permission(qtbot) -> None:
 
 
 def test_releasing_the_gate_sends_one(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False)
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple[str, int]] = []
     window.ros_status.send_value = lambda name, value: sent.append((name, value)) or True
@@ -35,4 +35,27 @@ def test_releasing_the_gate_sends_one(qtbot) -> None:
     window._release_scan_gate()
 
     assert ("scan_go", 1) in sent
+    window.close()
+
+
+def test_zero_radius_is_refused_before_play(qtbot) -> None:
+    """반지름(260)이 0 이면 로봇이 "ARC IS ZERO" 로 멈춘다 — 틀기 전에 막는다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    commands: list[str] = []
+    errors: list[dict] = []
+    window.ros_status.send_value = lambda name, value: True
+    window.ros_status.send_pose = lambda name, values: True
+    window.ros_status.call_command = lambda name: commands.append(name) or True
+    window.erut_session.raise_error = errors.append
+
+    window._push_work_area_to_robot(600, 800, 30, 20, 0, 10, 0, 0, 0)
+    window._start_robot_scan()
+
+    assert commands == []
+    assert errors and errors[0]["code"] == "E9304"
+
+    window._push_work_area_to_robot(600, 800, 30, 20, 845, 10, 0, 0, 0)
+    window._start_robot_scan()
+    assert commands[:2] == ["remote_control_on", "stop"]
     window.close()
