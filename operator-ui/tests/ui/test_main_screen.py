@@ -1528,7 +1528,7 @@ def test_sensor_tasks_are_the_default(qtbot) -> None:
 
     assert window.screens["cobot"].nosensor_check.isChecked() is False
     scan, mark = window._task_paths()
-    assert scan.endswith("/dusan_v4.task") and mark.endswith("/dusan_v4_mark.task")
+    assert scan.endswith("/dusan_v5.task") and mark.endswith("/dusan_v5_mark.task")
     window.close()
 
 
@@ -1542,11 +1542,11 @@ def test_checking_nosensor_switches_and_loads_the_scan_task(qtbot) -> None:
 
     window.screens["cobot"].nosensor_check.setChecked(True)
 
-    assert pushed[-1] == ("Dusan/dusan_v4/dusan_v4_nosensor_seq.task",
-                          "Dusan/dusan_v4/dusan_v4_nosensor_mark.task")
+    assert pushed[-1] == ("Dusan/dusan_v5/dusan_v5_nosensor_seq.task",
+                          "Dusan/dusan_v5/dusan_v5_nosensor_mark.task")
     assert calls[-1] == "load_scan_task"
     # 판과 버전을 늘 함께 저장한다 — 파일 저장소는 범위를 통째로 바꿔 쓴다.
-    assert ("robot_task", {"nosensor": True, "task_version": "dusan_v4"}) in saved
+    assert ("robot_task", {"nosensor": True, "task_version": "dusan_v5"}) in saved
     window.close()
 
 
@@ -1573,7 +1573,7 @@ def test_stored_nosensor_choice_is_restored(qtbot) -> None:
     window._apply_stored_settings("robot_task", {"nosensor": True})
 
     assert window.screens["cobot"].nosensor_check.isChecked() is True
-    assert pushed[-1][0].endswith("dusan_v4_nosensor_seq.task")
+    assert pushed[-1][0].endswith("dusan_v5_nosensor_seq.task")
     assert "load_scan_task" not in calls, "불러오기만으로 로봇을 건드리면 안 된다"
     window.close()
 
@@ -1590,7 +1590,7 @@ def test_erut_job_loads_the_chosen_scan_task_first(qtbot) -> None:
     window._start_erut_job(GridPlan(column_count=1, row_count=1,
                                     cell_width=721.0, cell_height=500.0))
 
-    assert pushed[-1][0].endswith("dusan_v4_nosensor_seq.task")
+    assert pushed[-1][0].endswith("dusan_v5_nosensor_seq.task")
     assert calls[:3] == ["remote_control_on", "stop", "load_scan_task"]
     window.close()
 
@@ -1837,22 +1837,23 @@ def test_saving_system_settings_moves_the_record_folder(qtbot, tmp_path, monkeyp
     window.close()
 
 
-# ---- 태스크 선택 (dusan_v4 / dusan_v5) ---------------------------------------------
-def test_task_selector_lists_versions_with_v4_default(qtbot) -> None:
+# ---- 태스크 선택 (dusan_v5 기준 / dusan_v4) ----------------------------------------
+def test_task_selector_lists_versions_with_v5_default(qtbot) -> None:
+    """v5 가 기준이다 — servoj 로 스캔 호를 그리며 센서 눌림 위치를 유지한다."""
     window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     cobot = window.screens["cobot"]
     combo = cobot.task_version_combo
-    assert [combo.itemText(i) for i in range(combo.count())] == ["dusan_v4", "dusan_v5"]
-    assert cobot.task_version() == "dusan_v4"
-    assert window._task_paths() == ("Dusan/dusan_v4/dusan_v4.task",
-                                    "Dusan/dusan_v4/dusan_v4_mark.task")
+    assert [combo.itemText(i) for i in range(combo.count())] == ["dusan_v5", "dusan_v4"]
+    assert cobot.task_version() == "dusan_v5"
+    assert window._task_paths() == ("Dusan/dusan_v5/dusan_v5.task",
+                                    "Dusan/dusan_v5/dusan_v5_mark.task")
     # 폼 필드가 아니다 — Cobot '저장' 때 cobot 설정에 따로 들어가지 않는다.
     assert "태스크 선택" not in cobot.values()
     window.close()
 
 
-def test_choosing_v5_switches_paths_saves_and_loads(qtbot) -> None:
+def test_choosing_v4_switches_paths_saves_and_loads(qtbot) -> None:
     window = OperatorWindow(start_mqtt=False, start_ros=False)
     qtbot.addWidget(window)
     pushed, calls = _task_spy(window)
@@ -1863,15 +1864,15 @@ def test_choosing_v5_switches_paths_saves_and_loads(qtbot) -> None:
     combo.setCurrentIndex(1)
     combo.activated.emit(1)                     # 사용자가 목록에서 고른 것
 
-    assert pushed[-1] == ("Dusan/dusan_v5/dusan_v5.task", "Dusan/dusan_v5/dusan_v5_mark.task")
+    assert pushed[-1] == ("Dusan/dusan_v4/dusan_v4.task", "Dusan/dusan_v4/dusan_v4_mark.task")
     assert calls[-1] == "load_scan_task"
-    assert saved[-1] == ("robot_task", {"nosensor": False, "task_version": "dusan_v5"})
+    assert saved[-1] == ("robot_task", {"nosensor": False, "task_version": "dusan_v4"})
 
     # 태스크 판(논센서)과 함께 쓴다.
     window.screens["cobot"].nosensor_check.setChecked(True)
-    assert pushed[-1] == ("Dusan/dusan_v5/dusan_v5_nosensor_seq.task",
-                          "Dusan/dusan_v5/dusan_v5_nosensor_mark.task")
-    assert saved[-1] == ("robot_task", {"nosensor": True, "task_version": "dusan_v5"})
+    assert pushed[-1] == ("Dusan/dusan_v4/dusan_v4_nosensor_seq.task",
+                          "Dusan/dusan_v4/dusan_v4_nosensor_mark.task")
+    assert saved[-1] == ("robot_task", {"nosensor": True, "task_version": "dusan_v4"})
     window.close()
 
 
@@ -1880,15 +1881,15 @@ def test_stored_task_version_is_restored_without_loading(qtbot) -> None:
     qtbot.addWidget(window)
     pushed, calls = _task_spy(window)
 
-    window._apply_stored_settings("robot_task", {"nosensor": False, "task_version": "dusan_v5"})
-    assert window.screens["cobot"].task_version() == "dusan_v5"
-    assert pushed[-1][0] == "Dusan/dusan_v5/dusan_v5.task"
+    window._apply_stored_settings("robot_task", {"nosensor": False, "task_version": "dusan_v4"})
+    assert window.screens["cobot"].task_version() == "dusan_v4"
+    assert pushed[-1][0] == "Dusan/dusan_v4/dusan_v4.task"
     assert "load_scan_task" not in calls, "불러오기만으로 로봇을 건드리면 안 된다"
 
-    # 예전 설정(버전 없음)이나 목록에 없는 값이면 기본 v4 로 둔다.
+    # 예전 설정(버전 없음)이나 목록에 없는 값이면 기본 v5 로 둔다.
     window._apply_stored_settings("robot_task", {"nosensor": False})
-    assert window.screens["cobot"].task_version() == "dusan_v4"
+    assert window.screens["cobot"].task_version() == "dusan_v5"
     window._apply_stored_settings("robot_task", {"task_version": "dusan_v9"})
-    assert window.screens["cobot"].task_version() == "dusan_v4"
-    assert window._task_paths()[0] == "Dusan/dusan_v4/dusan_v4.task"
+    assert window.screens["cobot"].task_version() == "dusan_v5"
+    assert window._task_paths()[0] == "Dusan/dusan_v5/dusan_v5.task"
     window.close()

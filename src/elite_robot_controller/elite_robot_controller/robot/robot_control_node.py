@@ -171,8 +171,9 @@ class RobotControlNode(Node):
             Int32MultiArray, 'robot/command/digital_out', self.cb_digital_out, 10)
         # 태스크 바꿔 끼우기. 마킹은 스캔과 다른 태스크라 29999 로 불러온다.
         # 경로는 컨트롤러 안의 실제 위치라 현장에서 한 번 확인해야 한다.
-        self.declare_parameter('mark_task_path', 'Dusan/dusan_v4/dusan_v4_mark.task')
-        self.declare_parameter('scan_task_path', 'Dusan/dusan_v4/dusan_v4.task')
+        # 기준 판은 v5 다(servoj 스캔). RCS 가 고른 판으로 바로 덮어쓴다.
+        self.declare_parameter('mark_task_path', 'Dusan/dusan_v5/dusan_v5_mark.task')
+        self.declare_parameter('scan_task_path', 'Dusan/dusan_v5/dusan_v5.task')
         self.create_service(Trigger, 'robot/dashboard/load_mark_task', self.cb_load_mark_task)
         self.create_service(Trigger, 'robot/dashboard/load_scan_task', self.cb_load_scan_task)
 
@@ -527,8 +528,8 @@ class RobotControlNode(Node):
         """29999 `task -p <경로>` 로 태스크를 불러온다.
 
         경로는 파라미터(mark_task_path / scan_task_path)다. 센서가 없을 때는
-        scan_task_path 를 dusan_v4_nosensor_seq.task, mark_task_path 를
-        dusan_v4_nosensor_mark.task 로 바꿔 띄운다.
+        scan_task_path 를 dusan_v5_nosensor_seq.task, mark_task_path 를
+        dusan_v5_nosensor_mark.task 로 바꿔 띄운다.
         """
         path = self._param_str(param_name, '')
         if not path:

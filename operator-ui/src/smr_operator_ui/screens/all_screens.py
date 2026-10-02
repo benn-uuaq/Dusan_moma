@@ -1078,8 +1078,8 @@ class CobotSettingsScreen(FormScreen):
     task_version_changed = pyqtSignal(str)
 
     #: 고를 수 있는 태스크 버전 = 로봇의 Dusan/<버전> 폴더. 앞의 것이 기본값.
-    #: v5 는 스캔 호를 servoj 로 그리며 눌림을 계속 확인한다.
-    TASK_VERSIONS = ("dusan_v4", "dusan_v5")
+    #: v5 가 기준이다 — 스캔 호를 servoj 로 그리며 센서 눌림 위치를 계속 유지한다.
+    TASK_VERSIONS = ("dusan_v5", "dusan_v4")
 
     def __init__(self):
         # pyqtSignal은 QObject.__init__()이 돌기 전에는 바인딩되지 않으므로,

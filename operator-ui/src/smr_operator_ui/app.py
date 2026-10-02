@@ -84,7 +84,7 @@ MAX_LINEAR_SPEED_MM_S = 100
 ROBOT_RESTART_DELAY_MS = 1200
 
 #: 기본 태스크 버전. Cobot 설정의 '태스크 선택'으로 바꾼다(dusan_v4 / dusan_v5).
-DEFAULT_TASK_VERSION = "dusan_v4"
+DEFAULT_TASK_VERSION = "dusan_v5"
 
 
 def robot_task_paths(version: str, nosensor: bool) -> tuple[str, str]:
