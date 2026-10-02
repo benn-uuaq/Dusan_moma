@@ -188,6 +188,8 @@ class ScanTaskSim(threading.Thread):
       277 스캔 구간 : 0 없음 · 1 전진 · 2 줄 바꿈(상승) · 3 후진  (TPAC DO 신호)
       276 홈 위치   : 홈에 있으면 1, 벗어나면 0
       267 스캔 허가 : RCS 가 1 을 쓰면 원점 대기가 풀린다(통과하며 0 으로 지운다)
+      279 이어 할 줄: 적심 뒤 읽고 지운다. n 이면 n 줄을 건너뛰고 거기서부터 훑는다
+      291 끝낸 줄 수: 줄 하나를 마칠 때마다 올라간다(실제 태스크와 같다)
       309 차량 고정 : 1 이어야 움직인다. 아니면 290 = 14 로 서서 기다린다
       500 태스크    : 1 실행 중 · 3 중지됨
       300~305 / 330~355 : 3점 측정 결과와 접촉 자세(캘리브레이션이 읽는다)
@@ -206,6 +208,8 @@ class ScanTaskSim(threading.Thread):
     RADIUS, THICKNESS, PARAM_SRC = 260, 261, 266
     # 오가는 신호들.
     SCAN_GO, SEGMENT, HOME_FLAG, VEHICLE_READY, TASK_STATE = 267, 277, 276, 309, 500
+    #: 이어 할 줄. RCS 가 재개할 때 끝낸 줄 수를 쓴다(dus5_goto_zero 가 읽고 지운다).
+    RESUME_ROW = 279
     ARC_POS, ARC_TOTAL = 286, 287
     # 3점 측정 결과.
     PROBE_CX, PROBE_LX, PROBE_RX, PRESS_OFF, N_PROBE, N_HIT = 300, 301, 302, 303, 304, 305
@@ -229,6 +233,8 @@ class ScanTaskSim(threading.Thread):
         self._start_requested = threading.Event()
         self._abort = threading.Event()
         self._alive_count = 0
+        #: 마지막 스캔이 몇 줄을 건너뛰고 시작했는가(279). 확인용.
+        self.resumed_from = 0
         self._set(self.HOME_FLAG, 1)
         self._set(self.TASK_STATE, 3)
 
@@ -384,18 +390,33 @@ class ScanTaskSim(threading.Thread):
         self._set(self.N_HIT, 3)
 
     def _scan_rows(self, rows: int) -> bool:
-        """ㄹ자 스캔. 줄마다 구간 신호(277)를 실제 순서대로 낸다."""
+        """ㄹ자 스캔. 줄마다 구간 신호(277)를 실제 순서대로 낸다.
+
+        279 에 이어 할 줄이 있으면 그만큼 건너뛰고, 그 줄은 원점 쪽에서
+        올라가 시작하므로 전진(277 = 1)부터 간다 — dus5_goto_zero 와 같다.
+        """
         arc_mm = self._get(self.APP_WIDTH) or 700
         self._set(self.STATE, 6)
-        for row in range(rows):
-            self._set(self.ROW_IDX, row)
-            forward = row % 2 == 0
+        start = min(max(self._get(self.RESUME_ROW), 0), rows)
+        self._set(self.RESUME_ROW, 0)
+        self.resumed_from = start
+        if start:
+            print(f"[Task] {start} 줄까지 끝난 셀 — {start + 1}번째 줄부터 잇는다")
+            self._set(self.ROW_IDX, start)
+            self._set(self.PROGRESS, int(start / rows * 100))
+            if start < rows:
+                self._set(self.SEGMENT, 2)
+                if not self._tick(self.STEP_SECONDS / 2):
+                    return False
+        for row in range(start, rows):
+            forward = (row - start) % 2 == 0
             self._set(self.SEGMENT, 1 if forward else 3)
             if not self._tick(self.STEP_SECONDS):
                 return False
             self._set(self.ARC_POS, round(arc_mm * 10))
             self._set(self.ARC_TOTAL, round(arc_mm * (row + 1)))
             self._set(self.SEGMENT, 0)          # 줄 끝 — 스캔 동결
+            self._set(self.ROW_IDX, row + 1)
             self._set(self.PROGRESS, int((row + 1) / rows * 100))
             if row + 1 < rows:
                 self._set(self.SEGMENT, 2)      # 줄 바꿈(상승)
@@ -417,6 +438,7 @@ class ScanTaskSim(threading.Thread):
         self._set(self.PROGRESS, 0)
         self._set(self.ZERO_OK, 0)
         self._set(self.SEGMENT, 0)
+        self._set(self.ROW_IDX, 0)
         self._set(self.STATE, 0)
 
         if not self._wait_for_vehicle():

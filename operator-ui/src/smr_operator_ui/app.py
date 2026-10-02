@@ -1216,6 +1216,14 @@ class OperatorWindow(QMainWindow):
         # 그냥 지나간다 — 프로브 확인을 건너뛴 채 훑게 된다. 태스크는 시작할
         # 때 이 칸을 지우지 않으므로 여기서 지운다.
         self.ros_status.send_value("scan_go", 0)
+        # 이어 할 줄(279). 새 셀이면 0, 일시정지 뒤 재개면 끝낸 줄 수다.
+        # 로봇은 3점 측정·원점·적심을 다시 한 뒤 그 줄부터 훑는다(v5 태스크).
+        resume_row = int(getattr(self.sequencer, "resume_row", 0) or 0)
+        self.ros_status.send_value("resume_row", resume_row)
+        if resume_row > 0:
+            self.main_screen.show_activity(
+                f"{self.sequencer.current_cell()}: {resume_row}줄까지 끝냈습니다 — "
+                f"3점 측정·적심 뒤 {resume_row + 1}번째 줄부터 이어 합니다.")
         # 원격 제어 모드가 아니면 컨트롤러가 play/stop 을 모두 거부한다
         # ("not supported in local control mode"). 펜던트를 만지면 로컬로
         # 돌아가므로 셀마다 켜 준다.
@@ -1444,8 +1452,9 @@ class OperatorWindow(QMainWindow):
         내려가야 한다.
 
         `pause` 가 아니라 `stop` 을 쓴다. 재개는 `_start_robot_scan()` 이
-        제로점부터 다시 play 하는 방식이라, 태스크를 중간에 붙들고 있을
-        이유가 없다. 원격 제어 모드가 아니면 컨트롤러가 stop 을 거부하므로
+        태스크를 다시 play 하는 방식이라(끝낸 줄 수를 279 로 넘겨 그 줄부터
+        잇는다), 태스크를 중간에 붙들고 있을 이유가 없다. 컨트롤러 pause 로
+        붙들면 servoJ 호 이동이 멈춘 속도 그대로 다시 튀어 나간다. 원격 제어 모드가 아니면 컨트롤러가 stop 을 거부하므로
         (`not supported in local control mode`) 먼저 켜 준다.
 
         같은 정지가 여러 경로로 겹쳐 들어올 수 있는데(장애 + 순회 일시정지),

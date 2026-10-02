@@ -7,7 +7,7 @@
   mc     사내 MC 규격: job_cmd 로 1A 부터 마지막 셀까지 순회한다.
          원점마다 프로브 확인(probe_ack)을 보내 스캔을 풀어 준다.
   erut   ERUT 표준(if-0.5): 자기소개 → calibrate(차량 한 바퀴) → prepare(차량만)
-         → start(3점 → contact → 스캔) → mark(mark_ready ↔ mark_next) → home
+         → start(3점 → contact → 스캔, 중간에 pause/resume) → mark(mark_ready ↔ mark_next) → home
          → 비상정지 → reset.
   io     로봇 디지털 출력(레지스터 2)을 화면 경로로 켜고 끈다.
   tpac   TPAC 브리지가 스캔 구간 신호(DO[0..2])를 내보내는지 본다.
@@ -52,6 +52,7 @@ os.environ["ROS_DOMAIN_ID"] = os.environ.get("SIM_TEST_ROS_DOMAIN", "77")
 
 # 로봇 태스크가 쓰는 레지스터 (dus_*.script 참고).
 STATE_REG, SEGMENT_REG, DIGITAL_OUT_REG = 290, 277, 2
+ROWS_DONE_REG, TASK_REG = 291, 500
 STATE_AT_ORIGIN, STATE_DONE = 7, 5
 #: 시뮬레이터가 벽을 입력값보다 이만큼 어긋나게 둔다 [mm]. 캘리브레이션이 잡아낸다.
 WALL_ERROR_MM = 0.3
@@ -324,6 +325,37 @@ def scenario_erut(h: Harness) -> list[str]:
     session.handle_request("start", {"req_id": "start-1", "job_id": "jb-erut",
                                      "surface": "outer", "area": area,
                                      "scan": {"pitch": 20, "speed": 100}})
+
+    # 스캔 도중 일시정지 → 재개: 처음 줄부터가 아니라 끝낸 줄 다음부터 잇는다(279).
+    if not h.wait_until(lambda: h.register(STATE_REG, 2) == [6, 2], timeout=120, poll=0.02):
+        return problems + ["[erut] 스캔 중 2줄을 끝낸 순간을 못 잡았습니다"]
+    paused_rows = h.register(ROWS_DONE_REG)[0]
+    session.handle_request("pause", {"req_id": "pz-scan"})
+    h.pump(1.0)
+    log(f"  {paused_rows}줄 끝낸 뒤 일시정지 · 태스크 {h.register(TASK_REG)[0]} (3 = 중지)")
+    session.handle_request("resume", {"req_id": "rs-scan"})
+    restarted: list = []
+
+    def first_row_after_resume() -> bool:
+        state, rows_done = h.register(STATE_REG, 2)
+        if state in (2, 3, 7, 8):
+            restarted.append(state)
+        elif restarted and state == 6:
+            restarted.append(("rows", rows_done))
+            return True
+        return False
+
+    if not h.wait_until(first_row_after_resume, timeout=120, poll=0.02):
+        return problems + ["[erut] 재개 뒤 스캔으로 돌아가지 않았습니다"]
+    resumed_rows = restarted[-1][1]
+    log(f"  재개 — 3점 측정·적심 다시 하고 {resumed_rows}줄 끝낸 자리부터 이어 훑는다")
+    # RCS 는 로봇 상태를 10 Hz 로 읽으므로 줄이 막 끝난 순간에 멈추면 한 줄
+    # 늦게 알 수 있다 — 그 줄을 한 번 더 훑을 뿐(안전한 쪽)이다. 처음부터
+    # 다시 하거나, 안 훑은 줄을 건너뛰면 안 된다.
+    if not 0 < resumed_rows <= paused_rows:
+        problems.append(f"[erut] 재개 줄이 이상합니다 — 멈춘 때 {paused_rows}줄, "
+                        f"재개 {resumed_rows}줄부터")
+
     if not h.wait_until(lambda: tap.event("complete", "start"), timeout=180):
         return problems + ["[erut] 구간 완료(evt/complete)가 오지 않았습니다"]
     done = tap.event("complete", "start")

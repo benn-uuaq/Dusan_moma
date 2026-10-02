@@ -59,3 +59,19 @@ def test_zero_radius_is_refused_before_play(qtbot) -> None:
     window._start_robot_scan()
     assert commands[:2] == ["remote_control_on", "stop"]
     window.close()
+
+
+def test_resume_row_is_sent_before_play(qtbot) -> None:
+    """재개면 끝낸 줄 수를, 새 셀이면 0 을 279 로 보낸 뒤 play 한다."""
+    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    sent: list[tuple[str, int]] = []
+    window.ros_status.send_value = lambda name, value: sent.append((name, value)) or True
+    window.ros_status.call_command = lambda name: True
+
+    window._start_robot_scan()
+    window.sequencer.resume_row = 3
+    window._start_robot_scan()
+
+    assert [v for n, v in sent if n == "resume_row"] == [0, 3]
+    window.close()

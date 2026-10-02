@@ -202,6 +202,10 @@
       "address": 278,
       "count": 1
     },
+    "resume_row": {
+      "address": 279,
+      "count": 1
+    },
     "vehicle_ready": {
       "address": 309,
       "count": 1

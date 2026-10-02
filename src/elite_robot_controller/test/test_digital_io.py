@@ -115,3 +115,24 @@ def test_mark_go_is_written_to_its_register():
     assert node.robot_modbus.writes == [(278, 1)]
     assert register_map.load().write_entry('mark_go').address == 278
     assert register_map.load().read_entry('scan_arc').address == 286
+
+
+def test_resume_row_is_written_and_never_negative():
+    """이어 할 줄(279) — 재개할 때 끝낸 줄 수를 쓴다. 음수는 0(처음부터)."""
+    node = make_node({}, {
+        'scale': {'position_per_count': 0.1, 'rotation_per_count': 1.0},
+        'read': {},
+        'write': {'resume_row': {'address': 279, 'count': 1}},
+    })
+
+    class Msg:
+        data = 3
+
+    class Bad:
+        data = -2
+
+    node.cb_resume_row(Msg())
+    node.cb_resume_row(Bad())
+
+    assert node.robot_modbus.writes == [(279, 3), (279, 0)]
+    assert register_map.load().write_entry('resume_row').address == 279

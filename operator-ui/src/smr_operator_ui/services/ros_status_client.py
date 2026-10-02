@@ -78,6 +78,8 @@ class RosTopics:
     MARK_TARGET = "robot/command/mark_target"
     # 마킹 끝(레지스터 278). 로봇은 마킹 자리에서 이게 1 이 될 때까지 선다.
     MARK_GO = "robot/command/mark_go"
+    # 이어 할 줄(레지스터 279). 재개할 때 끝낸 줄 수, 새 구간이면 0.
+    RESUME_ROW = "robot/command/resume_row"
     # 차량 고정 확인(레지스터 309). 차량 정지·아웃트리거 고정·리프트 정지를
     # RCS 가 확인해 1 을 쓴다. 로봇은 1 이어야 움직인다.
     VEHICLE_READY = "robot/command/vehicle_ready"
@@ -315,6 +317,7 @@ class RosStatusClient(QObject):
                 "jog_tcp": self._node.create_publisher(Int32, RosTopics.JOG_TCP, 10),
                 "scan_go": self._node.create_publisher(Int32, RosTopics.SCAN_GO, 10),
                 "mark_go": self._node.create_publisher(Int32, RosTopics.MARK_GO, 10),
+                "resume_row": self._node.create_publisher(Int32, RosTopics.RESUME_ROW, 10),
                 "vehicle_ready": self._node.create_publisher(
                     Int32, RosTopics.VEHICLE_READY, 10),
                 "digital_out": self._node.create_publisher(
