@@ -713,17 +713,13 @@ class ErutSession(QObject):
     def _cell_label(self) -> str:
         """이 구역이 전체 격자에서 몇 열·몇 행인가 (1A, 2B …).
 
-        ERUT 는 구역 하나씩 보내므로 시퀀서 안에서는 늘 1A 다. area 원점과
-        격자 간격(구역 크기 - 겹침)으로 전체 격자에서의 자리를 센다.
+        ERUT 는 구역 하나씩 보내므로 시퀀서 안에서는 늘 1A 다. area 원점을
+        구간 길이로 나눠 전체 격자에서의 자리를 센다(GridPlan.section_column).
         """
         plan = self._plan
         if plan is None:
             return self.sequencer.current_cell() if self.sequencer.plan else ""
-        step_x = plan.cell_width - plan.pitch_x
-        step_y = plan.cell_height - plan.pitch_y
-        col = int(round(plan.origin_x / step_x)) if step_x > 0 else 0
-        row = int(round(plan.origin_y / step_y)) if step_y > 0 else 0
-        return cell_label(max(col, 0), max(row, 0))
+        return cell_label(plan.section_column, plan.section_row)
 
     def _publish_progress(self) -> None:
         """구간 검사 중 진행률 (탭2 9행, QoS 0). 0~100 정수, 뒤로 가지 않는다."""

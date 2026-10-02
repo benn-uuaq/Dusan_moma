@@ -149,3 +149,26 @@ def test_three_point_fit_is_logged_when_the_robot_reaches_the_start(qtbot):
 
     assert any(text.startswith("3점 측정 — 잰 벽 반지름") for text in said), said
     window.close()
+
+
+def test_prepared_area_is_placed_on_the_whole_circumference(qtbot):
+    """ERUT area 는 모재 둘레를 가로 길이로 자른 자리에 그리고, 차량은 겹침만큼 덜 간다."""
+    window = _window(qtbot)
+    _tap(window)
+    window.erut_session._calibrated = True
+    window.main_screen.orbit_view.set_target_dimensions(1.69, 6.0)
+    targets: list[float] = []
+    window.amr.move_to = lambda distance, unit="", label=None: targets.append(distance)
+
+    window.erut_session.handle_request("prepare", {
+        "req_id": "prep-3", "job_id": "jb-3", "surface": "outer",
+        "area": {"start": {"x": 1200, "y": 0}, "end": {"x": 1800, "y": 800}},
+        "scan": {"pitch": 20, "speed": 100}})
+
+    assert targets == [1160.0], "3번 구간 = 2 × (600 - 20)"
+    view = window.main_screen.orbit_view
+    # π × 1690 = 5309 mm 를 580 mm 간격으로 덮으려면 10 구간.
+    assert view.section_count() == 10
+    assert view._sections[3] == 2              # 지금 3번 구간(0 부터 2)
+    assert window.main_screen.segment_label.text() == "03"
+    window.close()

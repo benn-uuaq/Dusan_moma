@@ -449,3 +449,24 @@ def test_pause_at_ready_resumes_to_ready(qtbot) -> None:
 
     assert h.seq.state is SequencerState.READY
     assert h.plays == 0
+
+
+# ---- ERUT area → 차량·리프트 위치: 길이만큼 놓되 겹침만큼 덜 간다 -------------
+def _area(x0: float, y0: float) -> GridPlan:
+    return GridPlan(column_count=1, row_count=1, cell_width=600.0, cell_height=800.0,
+                    pitch_x=20.0, pitch_y=20.0, origin_x=x0, origin_y=y0)
+
+
+def test_area_origin_maps_to_section_number_and_overlapped_position() -> None:
+    """area 0·600·1200 은 1·2·3번 구간 — 차량은 0·580·1160 으로 간다."""
+    assert [_area(x, 0).section_column for x in (0, 600, 1200)] == [0, 1, 2]
+    assert [_area(x, 0).vehicle_offset_mm for x in (0, 600, 1200)] == [0.0, 580.0, 1160.0]
+    # 세로도 같다: 800 은 2층 — 리프트는 780.
+    assert _area(0, 800).section_row == 1
+    assert _area(0, 800).lift_offset_mm == 780.0
+
+
+def test_area_already_shifted_by_the_overlap_maps_to_the_same_section() -> None:
+    """ERUT 가 겹침을 빼서 보내도(580) 같은 2번 구간·같은 자리다."""
+    assert _area(580, 0).section_column == 1
+    assert _area(580, 0).vehicle_offset_mm == 580.0

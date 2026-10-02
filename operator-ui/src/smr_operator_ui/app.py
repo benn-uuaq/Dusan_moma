@@ -734,7 +734,8 @@ class OperatorWindow(QMainWindow):
         self._push_task_paths()
         self._load_scan_task()
         self._record_job("ERUT", self.erut_session.job_id, plan)
-        self.sequencer.start(plan, scan_h_mm, base_lift_mm=plan.origin_y,
+        self._erut_layout_plan = plan
+        self.sequencer.start(plan, scan_h_mm, base_lift_mm=plan.lift_offset_mm,
                              move_first=True, hold_before_scan=prepare_only)
 
     def _abort_job(self) -> None:
@@ -822,9 +823,11 @@ class OperatorWindow(QMainWindow):
         """열 번호를 이동 거리로 바꿔 AMR 더미에 넘긴다."""
         plan = self.sequencer.plan
         pitch = plan.column_pitch if plan is not None else 0.0
-        origin = plan.origin_x if plan is not None else 0.0
-        # 구간 원점(ERUT area.start.x)에서 열 간격만큼 더 간다.
-        distance = origin + max(0, int(column) - 1) * pitch
+        # ERUT 구간이면 area 원점을 구간 번호로 바꿔 번호 × (가로 - 겹침) 만큼
+        # 간다 — area.start.x 그대로 가면 옆 구간과 겹치지 않는다. 그 뒤로는
+        # 열 간격(가로 - 겹침)만큼 더 간다.
+        offset = plan.vehicle_offset_mm if plan is not None else 0.0
+        distance = offset + max(0, int(column) - 1) * pitch
         self.amr.move_to(distance, " mm", label=f"{column}구역 ({distance:.0f} mm)")
 
     def motion_state(self) -> dict:
@@ -1539,10 +1542,53 @@ class OperatorWindow(QMainWindow):
             # "총 구간 수"는 MQTT(ERUT)가 보낸 열 수 × 행 수를 그대로 따른다.
             self.main_screen.set_total_cells(total)
         self._sync_cycle_display()
+        self._show_erut_layout()
+
+    def _erut_layout(self):
+        """ERUT 구간의 모재 전체 배치 — (열 수, 층 수, 열, 층, 이 층에서 끝낸 열들).
+
+        열 수 = 둘레(π × 모재 지름) / (가로 - 겹침), 층 수 = 높이 / (세로 - 겹침)
+        (둘 다 올림). ERUT 작업이 아니거나 모재 크기를 모르면 None.
+        """
+        plan = self.sequencer.plan
+        if plan is None or plan is not getattr(self, "_erut_layout_plan", None):
+            return None
+        diameter_m, height_m = self.main_screen.orbit_view.target_dimensions()
+        circumference = math.pi * diameter_m * 1000.0
+        if circumference <= 0 or plan.cell_width <= 0:
+            return None
+        columns = max(1, math.ceil(circumference / plan.column_pitch - 1e-6))
+        rows = max(1, math.ceil(height_m * 1000.0 / plan.lift_pitch - 1e-6))
+        column, row = plan.section_column, plan.section_row
+        done = {c for c, r in getattr(self, "_erut_done_sections", set()) if r == row}
+        return columns, rows, column, row, done
+
+    def _show_erut_layout(self) -> None:
+        """ERUT 구간을 모재 전체에서의 자리로 보여 준다.
+
+        ERUT 는 구간을 하나씩 보내므로 시퀀서 안에서는 늘 1/1 이다. 그대로
+        그리면 원주 전체가 한 칸으로 칠해진다. 둘레(π × 모재 지름)를 area 가로
+        길이로 잘라 그리고(구간끼리는 겹침만큼 덜 떨어진다), 지금 구간을 실제
+        자리에, 층은 높이 / (세로 - 겹침) 으로 센다.
+        """
+        layout = self._erut_layout()
+        if layout is None:
+            return
+        columns, rows, column, row, done = layout
+        plan = self.sequencer.plan
+        circumference = math.pi * self.main_screen.orbit_view.target_dimensions()[0] * 1000.0
+        view = self.main_screen.orbit_view
+        view.set_sections(circumference, plan.cell_width, plan.column_pitch,
+                          column % columns, done)
+        self.main_screen.set_grid_position(column + 1, columns, row + 1, rows)
+        self.main_screen.set_total_cells(columns)
+        self.main_screen.set_work_cell_label(
+            f"{cell_label(column, row)} (구간 {column + 1}/{columns} · 층 {row + 1}/{rows})")
 
     def _show_sequencer_state(self, _state_name: str) -> None:
         """시퀀서 상태가 바뀔 때마다 화면 진행 단계를 맞춘다."""
         self._sync_cycle_display()
+        self._show_erut_layout()
 
     def _sync_cycle_display(self) -> None:
         """화면의 구간/단계 표시를 시퀀서의 실제 진행에 맞춘다.
@@ -1555,10 +1601,20 @@ class OperatorWindow(QMainWindow):
         plan = seq.plan
         if plan is None:
             return
+        phase = _SEQUENCER_PHASES.get(seq.state, CyclePhase.INSPECTING)
+        layout = self._erut_layout()
+        if layout is not None:
+            # ERUT 구간은 시퀀서 안에서 늘 1/1 이다 — 모재 전체에서의 번호와
+            # 이 층에서 끝낸 구간 수로 보여 준다(원주 진행률).
+            columns, _rows, column, _row, done = layout
+            self.simulator.apply_external_state(
+                phase, current_segment=column + 1, completed_segments=len(done),
+                total_segments=columns)
+            return
         column = seq.cell_ordinal() - 1
         column_index = column // plan.row_count if plan.row_count else 0
         self.simulator.apply_external_state(
-            _SEQUENCER_PHASES.get(seq.state, CyclePhase.INSPECTING),
+            phase,
             current_segment=column_index + 1,
             completed_segments=column_index,
         )
@@ -1572,6 +1628,13 @@ class OperatorWindow(QMainWindow):
 
     def _finish_job(self) -> None:
         """전체 격자를 다 돌면 검사 사이클도 함께 멈춘다."""
+        plan = self.sequencer.plan
+        if plan is not None and plan is getattr(self, "_erut_layout_plan", None):
+            # ERUT 구간 하나를 끝냈다 — 원주 표시에서 완료로 칠한다.
+            done = getattr(self, "_erut_done_sections", set())
+            done.add((plan.section_column, plan.section_row))
+            self._erut_done_sections = done
+            self._show_erut_layout()
         self.simulator.stop_cycle()
         self.main_screen.show_activity("전체 격자 스캔을 완료했습니다.")
 
@@ -2013,6 +2076,9 @@ class OperatorWindow(QMainWindow):
         표시는 시퀀서가 주도하게 한다(데모 타이머로 혼자 앞서 나가지 않게).
         """
         grid = self._fill_from_local_setup(grid)
+        # 사내 MC·RCS 격자는 열 수로 똑같이 나눠 그린다.
+        self._erut_layout_plan = None
+        self.main_screen.orbit_view.clear_sections()
         self.simulator.begin_external(grid.column_count)
         self._push_task_paths()
         self._load_scan_task()
@@ -2496,6 +2562,8 @@ class OperatorWindow(QMainWindow):
         (docs/vehicle_request_calibration_lap_battery.md). 지금은 차량 어댑터에
         모재 둘레만큼 이동을 시키고, 그 이동량을 잰 거리로 쓴다.
         """
+        # 좌표계를 새로 잡는다 — 앞서 끝낸 구간 표시는 지운다.
+        self._erut_done_sections = set()
         radius_mm = float(diameter_mm) / 2.0
         extra = dict(self._work_area_extra)
         extra["radius_mm"] = radius_mm

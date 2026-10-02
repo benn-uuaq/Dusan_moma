@@ -31,6 +31,9 @@ class OrbitView(QWidget):
         # 지금 몇 번째 행(층)을 도는지. 열(구간)만으로는 알 수 없다.
         self._current_row = 1
         self._total_rows = 1
+        # 원주 위 실제 구간 배치(ERUT). None 이면 열 수로 똑같이 나눈다(사내 MC).
+        #   (둘레, 구간 가로, 구간 간격, 지금 구간 번호(0부터), 끝낸 구간 번호들)
+        self._sections: tuple[float, float, float, int, frozenset[int]] | None = None
         source = QPixmap(str(files("smr_operator_ui.resources").joinpath("amr-cobot2.png")))
         if source.isNull():
             self._robot_pixmap = source
@@ -78,6 +81,74 @@ class OrbitView(QWidget):
         self._current_row = row
         self._total_rows = rows
         self.update()
+
+    def set_sections(self, circumference_mm: float, width_mm: float, step_mm: float,
+                     current: int, done: set[int] | frozenset[int] = frozenset()) -> None:
+        """원주를 **실제 구간 길이**로 잘라 그린다(ERUT area).
+
+        구간 하나는 area 의 x 길이(`width_mm`)만큼, 구간끼리는 겹침만큼 덜
+        떨어져(`step_mm` = 가로 - 겹침) 놓인다. 둘레(π × 모재 지름)를 다
+        덮는 데 필요한 만큼 그리고, 마지막 구간은 첫 구간과 겹친다.
+        `current` 는 0 부터 센 지금 구간, `done` 은 끝낸 구간들이다.
+        """
+        if circumference_mm <= 0 or width_mm <= 0 or step_mm <= 0:
+            self._sections = None
+        else:
+            self._sections = (float(circumference_mm), float(width_mm), float(step_mm),
+                              int(current), frozenset(done))
+        self.update()
+
+    def clear_sections(self) -> None:
+        """구간 배치를 지우고 열 수로 똑같이 나누는 표시로 돌아간다."""
+        self._sections = None
+        self.update()
+
+    def section_count(self) -> int:
+        """둘레를 다 덮는 구간 수. 구간 배치가 없으면 0."""
+        if self._sections is None:
+            return 0
+        circumference, _width, step, _current, _done = self._sections
+        return max(1, math.ceil(circumference / step - 1e-6))
+
+    def _segments(self) -> list[tuple[float, float, str]]:
+        """그릴 조각들 — (12시 기준 반시계 중심각, 폭[도], 색). 그리는 순서대로.
+
+        구간 배치가 있으면 실제 길이 비율로, 없으면 열 수로 똑같이 나눈다.
+        지금 구간은 겹친 이웃에 가리지 않게 맨 뒤에 그린다.
+        """
+        if self._sections is not None:
+            circumference, width, step, current, done = self._sections
+            span = min(360.0, width / circumference * 360.0)
+            pending, finished, now = [], [], []
+            for index in range(self.section_count()):
+                center = index * step / circumference * 360.0
+                if index == current:
+                    now.append((center, span, COLORS["warning"]))
+                elif index in done:
+                    finished.append((center, span, COLORS["success"]))
+                else:
+                    pending.append((center, span, COLORS["pending"]))
+            return pending + finished + now
+        total = max(1, self._state.total_segments)
+        step_deg = 360.0 / total
+        out = []
+        for index in range(total):
+            if index < self._state.completed_segments:
+                color = COLORS["success"]
+            elif index + 1 == self._state.current_segment:
+                color = COLORS["warning"]
+            else:
+                color = COLORS["pending"]
+            out.append((index * step_deg, step_deg, color))
+        return out
+
+    def _robot_angle_deg(self) -> float:
+        """로봇을 놓을 자리 — 12시 기준 반시계 각도."""
+        if self._sections is not None:
+            circumference, _width, step, current, _done = self._sections
+            return current * step / circumference * 360.0
+        total = max(1, self._state.total_segments)
+        return (self._state.current_segment - 1) * 360.0 / total
 
     def target_dimensions(self) -> tuple[float, float]:
         """현재 검사 대상의 지름과 높이를 미터 단위로 반환한다."""
@@ -142,27 +213,21 @@ class OrbitView(QWidget):
         #
         # 조각 수·간격은 **실제 열 수**를 따른다. 12 로 못박아 두면 3 열
         # 짜리 작업에서 12 칸 중 3 칸만 칠해져 나머지가 비어 보인다.
-        total = max(1, self._state.total_segments)
-        step = 360.0 / total
-        # 조각 사이 간격 [도]. 칸이 많아지면 간격도 같이 줄여야 조각이
-        # 사라지지 않는다.
-        gap_deg = min(4.0, step * 0.2)
-        span = (step - gap_deg) * 16
-        gap = gap_deg * 16
-        for index in range(total):
-            start_deg = 90 + index * step - (step - gap_deg) / 2.0
-            if index < self._state.completed_segments:
-                color = COLORS["success"]
-            elif index + 1 == self._state.current_segment:
-                color = COLORS["warning"]
-            else:
-                color = COLORS["pending"]
+        #
+        # ERUT 구간은 실제 길이 비율로 그린다(set_sections) — area 가로만큼
+        # 잘라, 겹침만큼 덜 떨어뜨려 놓는다.
+        segments = self._segments()
+        for center_deg, span_deg, color in segments:
+            # 조각 사이 간격 [도]. 칸이 많아지면 간격도 같이 줄여야 조각이
+            # 사라지지 않는다.
+            gap_deg = min(4.0, span_deg * 0.2)
+            drawn = span_deg - gap_deg
             painter.setPen(QPen(QColor("#FFFFFF"), 2))
             painter.setBrush(QColor(color))
             painter.drawPie(
                 QRectF(center.x() - radius * 1.16, center.y() - radius * 1.16, radius * 2.32, radius * 2.32),
-                int(start_deg * 16),
-                int(span),
+                int((90 + center_deg - drawn / 2.0) * 16),
+                int(drawn * 16),
             )
 
         # 채워진 부채꼴의 안쪽을 배경색 원으로 가려 검사 대상 주변에
@@ -177,18 +242,31 @@ class OrbitView(QWidget):
         painter.drawText(target, Qt.AlignmentFlag.AlignCenter, target_text)
 
         painter.setFont(QFont("Malgun Gothic", 9, 600))
-        for index in range(total):
+        if self._sections is not None:
+            circumference, _width, step_mm, _current, _done = self._sections
+            centers = [i * step_mm / circumference * 360.0 for i in range(self.section_count())]
+        else:
+            total = max(1, self._state.total_segments)
+            centers = [i * 360.0 / total for i in range(total)]
+        placed: list[float] = []
+        for index, center_deg in enumerate(centers):
             # 화면 Y 가 아래로 커지므로 각도를 **빼야** 반시계 방향이다.
             # 차량은 원통을 반시계로 돈다 (1번이 12시, 2번이 그 왼쪽 …).
-            angle = math.radians(-90 - index * step)
-            x = center.x() + math.cos(angle) * radius * 1.28
-            y = center.y() + math.sin(angle) * radius * 1.28
+            angle = math.radians(-90 - center_deg)
+            # 마지막 구간은 둘레를 넘어 첫 구간과 겹칠 수 있다 — 번호가 겹치면
+            # 한 칸 바깥에 적는다.
+            near = any(abs((center_deg - other + 180.0) % 360.0 - 180.0) < 12.0
+                       for other in placed)
+            placed.append(center_deg)
+            ring = radius * (1.44 if near else 1.28)
+            x = center.x() + math.cos(angle) * ring
+            y = center.y() + math.sin(angle) * ring
             painter.setPen(QColor(COLORS["text"]))
             painter.drawText(QRectF(x - 17, y - 12, 34, 24), Qt.AlignmentFlag.AlignCenter, f"{index + 1:02d}")
 
         # 1번 구간은 12시 방향에서 시작하며 이후 구간은 **반시계 방향**으로
         # 30도씩 동일하게 이동한다.
-        robot_angle = math.radians(-90 - (self._state.current_segment - 1) * step)
+        robot_angle = math.radians(-90 - self._robot_angle_deg())
         rx = center.x() + math.cos(robot_angle) * radius*0.9
         ry = center.y() + math.sin(robot_angle) * radius*0.9
         if not self._robot_pixmap.isNull():

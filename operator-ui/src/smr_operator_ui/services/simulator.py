@@ -103,11 +103,20 @@ class InspectionSimulator(QObject):
         phase: CyclePhase,
         current_segment: int,
         completed_segments: int,
+        total_segments: int | None = None,
     ) -> None:
-        """외부 진행 상태를 화면에 그대로 반영한다."""
-        total = max(1, self.snapshot.cycle.total_segments)
+        """외부 진행 상태를 화면에 그대로 반영한다.
+
+        `total_segments` 를 주면 전체 구간 수도 바꾼다(ERUT — 구간을 하나씩
+        받지만 모재 전체 둘레에서의 번호로 보여 준다).
+        """
+        if total_segments is None:
+            total = max(1, self.snapshot.cycle.total_segments)
+        else:
+            total = max(1, int(total_segments))
         cycle = replace(
             self.snapshot.cycle,
+            total_segments=total,
             phase=phase,
             current_segment=max(1, min(current_segment, total)),
             completed_segments=max(0, min(completed_segments, total)),

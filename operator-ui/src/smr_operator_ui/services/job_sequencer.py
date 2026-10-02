@@ -140,6 +140,36 @@ class GridPlan:
         """
         return max(self.cell_height - self.pitch_y, 1.0)
 
+    # ---- ERUT area → 전체 격자에서의 자리 --------------------------------
+    # ERUT 는 area 를 구간 가로(x)·세로(y) 길이 단위로 놓는다(0, 600, 1200 …).
+    # 차량·리프트는 그만큼이 아니라 **겹침만큼 덜** 움직인다 — 그래야 옆·위
+    # 구간과 scan.pitch 만큼 겹친다. 그래서 area 원점을 먼저 구간 번호로 바꾸고,
+    # 번호 × (길이 - 겹침) 으로 차량·리프트 위치를 정한다. 사내 MC 처럼 원점이
+    # 0 이면 둘 다 0 이다.
+    @property
+    def section_column(self) -> int:
+        """area 원점이 전체 격자의 몇 번째 열인가(0 부터)."""
+        if self.cell_width <= 0:
+            return 0
+        return max(0, int(round(self.origin_x / self.cell_width)))
+
+    @property
+    def section_row(self) -> int:
+        """area 원점이 전체 격자의 몇 번째 행인가(0 부터)."""
+        if self.cell_height <= 0:
+            return 0
+        return max(0, int(round(self.origin_y / self.cell_height)))
+
+    @property
+    def vehicle_offset_mm(self) -> float:
+        """이 구간에 서려면 차량이 원점(캘리브레이션 0)에서 갈 거리 [mm]."""
+        return self.section_column * self.column_pitch
+
+    @property
+    def lift_offset_mm(self) -> float:
+        """이 구간에 서려면 리프트가 올라갈 높이 [mm]."""
+        return self.section_row * self.lift_pitch
+
     @property
     def column_pitch(self) -> float:
         """열 하나를 넘어갈 때 AMR 이 이동하는 거리."""
