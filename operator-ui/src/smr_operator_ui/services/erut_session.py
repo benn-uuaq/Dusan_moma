@@ -27,6 +27,7 @@ evt/home(접속 시 + 바뀔 때만) · evt/info(접속 시) · evt/progress(작
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Callable
 
@@ -181,7 +182,9 @@ class ErutSession(QObject):
         self.total_length_mm: Callable[[], float | None] = lambda: None
 
         # 같은 req_id 를 다시 받으면 재실행하지 않고 이전 응답을 되돌려준다(탭2 22행).
-        self._handled: dict[str, tuple[int, str, dict]] = {}
+        #: 받아들인 요청 — 키 → (code, message, extra, 내용, 받은 시각). 재전송 판정용.
+        self._handled: dict[str, tuple[int, str, dict, str, float]] = {}
+        self._request_body = ""
         self._pending: dict[int, QTimer] = {}
 
         client.request_received.connect(self.handle_request)
@@ -358,16 +361,23 @@ class ErutSession(QObject):
             self.client.publish_res("", action, 400, "BAD_REQUEST")
             return
 
-        # 같은 요청을 다시 받으면 재실행하지 않고 이전 응답만 되풀이한다.
-        # mark_next 는 마킹 요청의 req_id 를 그대로 싣고 점마다 오므로 점까지 본다.
-        key = req_id
+        # 재전송이면 다시 실행하지 않고 이전 응답만 되풀이한다(브릿지는 응답이
+        # 없으면 같은 요청을 몇 초 간격으로 다시 보낸다). mark_next 는 마킹
+        # 요청의 req_id 를 그대로 싣고 점마다 오므로 점까지 본다.
+        key = f"{action}:{req_id}"
         if action == "mark_next":
-            key = f"{req_id}#{content.get('point_id', '')}"
-        if key in self._handled:
-            code, message, extra = self._handled[key]
+            key = f"{key}#{content.get('point_id', '')}"
+        body = json.dumps(content, sort_keys=True, ensure_ascii=False, default=str)
+        if self._is_retransmission(key, req_id, body):
+            code, message, extra, _body, _at = self._handled[key]
             self.client.publish_res(req_id, action, code, message, **extra)
-            self.activity.emit(f"ERUT {action}: 이미 처리한 req_id — 이전 응답 재발행")
+            self.activity.emit(f"ERUT {action}: 재전송({req_id}) — 이전 응답 재발행")
             return
+        if self._handled.pop(key, None) is not None:
+            self.activity.emit(
+                f"ERUT {action}: 같은 req_id({req_id})지만 새 요청으로 처리합니다"
+                " — 내용이 다르거나 앞 작업이 이미 끝났습니다.")
+        self._request_body = body
 
         handler = getattr(self, f"_do_{action}", None)
         if handler is None:
@@ -378,14 +388,42 @@ class ErutSession(QObject):
         handler(req_id, content)
         self.refresh_status()
 
+    #: 같은 req_id·같은 내용이 이 시간 안에 다시 오면 재전송으로 본다 [s].
+    RETRANSMIT_WINDOW_S = 30.0
+
+    def _is_retransmission(self, key: str, req_id: str, body: str) -> bool:
+        """재전송인가 — 다시 실행하면 안 되는 같은 요청인가.
+
+        받아들인 요청만 기억한다(거절은 안 남긴다 — 조건이 풀린 뒤 같은
+        req_id 로 다시 보내면 다시 따져야 한다. 예: calibrate 전에 428 을 받은
+        prepare 를 캘리브레이션 뒤에 그대로 다시 보낸 경우). 그리고 내용이
+        같고, 받은 지 RETRANSMIT_WINDOW_S 안이거나 그 요청이 시작한 일이 아직
+        돌고 있을 때만 재전송이다. 작업을 정지한 뒤 같은 req_id 로 다시 보낸
+        calibrate·prepare 는 새 요청이다.
+        """
+        seen = self._handled.get(key)
+        if seen is None or seen[3] != body:
+            return False
+        recent = time.monotonic() - seen[4] <= self.RETRANSMIT_WINDOW_S
+        return recent or self._work_in_progress(req_id)
+
+    def _work_in_progress(self, req_id: str) -> bool:
+        """이 req_id 가 시작한 일이 아직 끝나지 않았는가."""
+        return req_id in {r for r in (
+            getattr(self, "_calibrate_req_id", ""), getattr(self, "_prepare_req_id", ""),
+            getattr(self, "_start_req_id", ""), getattr(self, "_mark_req_id", ""),
+            getattr(self, "_home_req_id", "")) if r}
+
     def _reply(self, key: str, req_id: str, action: str, code: int, message: str,
                **extra) -> None:
-        self._handled[key] = (code, message, extra)
+        if code < 300:
+            self._handled[key] = (code, message, extra, self._request_body,
+                                  time.monotonic())
         self.client.publish_res(req_id, action, code, message, **extra)
 
     def _answer(self, req_id: str, action: str, code: int, message: str,
                 **extra) -> None:
-        self._reply(req_id, req_id, action, code, message, **extra)
+        self._reply(f"{action}:{req_id}", req_id, action, code, message, **extra)
 
     def _refuse_by_state(self, req_id: str, action: str) -> bool:
         """지금 상태로 받을 수 없는 일이면 거절하고 True (탭9).
@@ -901,7 +939,7 @@ class ErutSession(QObject):
     def _do_mark_next(self, req_id: str, content: dict) -> None:
         """ERUT 가 점 하나를 찍었다(또는 못 찍었다) — 다음 점으로."""
         point_id = str(content.get("point_id", "")).strip()
-        key = f"{req_id}#{point_id}"
+        key = f"mark_next:{req_id}#{point_id}"
         if not self._mark_req_id or req_id != self._mark_req_id or not point_id:
             self._reply(key, req_id, "mark_next", 409, "NOT_AT_POINT")
             return

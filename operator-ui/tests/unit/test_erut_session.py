@@ -237,6 +237,69 @@ def test_same_req_id_is_not_run_twice(session):
     assert _codes(client, "prepare") == [202, 202]
 
 
+def _calibrate(s, req_id="cal-001", diameter=1690):
+    s.handle_request(*_req("calibrate", req_id=req_id, diameter=diameter, height=6000))
+
+
+def test_same_req_id_after_the_work_ended_runs_again(session, monkeypatch):
+    """작업 정지 뒤 같은 req_id 로 다시 보낸 calibrate 는 새 요청이다(실기 2026-10-02).
+
+    재전송 판정은 받은 지 얼마 안 됐거나(30초) 그 일이 아직 돌 때뿐이다.
+    """
+    s, client, _seq = session
+    asked: list = []
+    s.calibration_requested.connect(lambda d, h: asked.append(d))
+    _calibrate(s)
+    s.finish_calibration(True, 0.0, total_length_mm=5309)
+    s.handle_request(*_req("abort", req_id="ab-001"))
+
+    monkeypatch.setattr(type(s), "RETRANSMIT_WINDOW_S", 0.0)
+    _calibrate(s)
+
+    assert asked == [1690.0, 1690.0]
+    assert _codes(client, "calibrate") == [202, 202]
+
+
+def test_same_req_id_with_new_content_is_a_new_request(session):
+    """값이 바뀌었으면 재전송이 아니다 — 다시 따진다(돌고 있으면 409)."""
+    s, client, _seq = session
+    asked: list = []
+    s.calibration_requested.connect(lambda d, h: asked.append(d))
+    _calibrate(s)
+    _calibrate(s, diameter=1700)          # 앞 캘리브레이션이 아직 돈다
+
+    assert asked == [1690.0]
+    assert _codes(client, "calibrate") == [202, 409]
+
+    s.finish_calibration(True, 0.0)
+    _calibrate(s, diameter=1700)
+    assert asked == [1690.0, 1700.0]
+
+
+def test_a_refused_request_is_judged_again_when_resent(session):
+    """캘리브레이션 전에 428 을 받은 prepare 를 캘리브레이션 뒤 그대로 다시 보내면 받는다."""
+    s, client, _seq = session
+    s._calibrated = False
+    _prepare(s, req_id="prep-001")
+    s._calibrated = True
+    _prepare(s, req_id="prep-001")
+
+    assert _codes(client, "prepare") == [428, 202]
+
+
+def test_retransmission_while_the_work_runs_is_not_run_again(session, monkeypatch):
+    """돌고 있는 일의 재전송은 시간이 지나도 다시 실행하지 않는다."""
+    s, client, _seq = session
+    asked: list = []
+    s.calibration_requested.connect(lambda d, h: asked.append(d))
+    _calibrate(s)
+    monkeypatch.setattr(type(s), "RETRANSMIT_WINDOW_S", 0.0)
+    _calibrate(s)
+
+    assert asked == [1690.0]
+    assert _codes(client, "calibrate") == [202, 202]
+
+
 # ---- calibrate (탭3 ②) --------------------------------------------------------
 def test_calibrate_accepts_then_completes(session):
     s, client, _seq = session
