@@ -1038,6 +1038,13 @@ def dspin(value:float,suffix:str)->TouchDoubleSpinBox:
     w=TouchDoubleSpinBox(); w.setRange(-9999,9999); w.setDecimals(2); w.setValue(value); w.setSuffix(suffix); return w
 
 
+def _password_line() -> TouchLineEdit:
+    """입력은 받되 화면에는 가리는 칸 (브로커 비밀번호)."""
+    edit = line("")
+    edit.setEchoMode(TouchLineEdit.EchoMode.Password)
+    return edit
+
+
 class SystemSettingsScreen(FormScreen):
     """콘솔, 갱신 주기, 보존 기간, 저장 경로를 설정하는 화면."""
 
@@ -1183,13 +1190,14 @@ class ConnectionSettingsScreen(FormScreen):
         "MQTT Client ID": "Client ID",
         "MQTT Keep Alive": "Keep Alive", "MQTT TLS 사용": "TLS 사용",
         "ERUT Broker 주소": "주소", "ERUT 포트": "포트",
-        "ERUT 장치 ID": "장치 ID",
+        "ERUT 장치 ID": "장치 ID", "ERUT 계정": "계정", "ERUT 비밀번호": "비밀번호",
     }
 
     #: 값이 바뀌면 바로 알려야 하는 MQTT 항목(브로커를 다시 잡는다).
     MQTT_FIELDS = ("MQTT Broker 주소", "MQTT 포트", "MQTT Client ID",
                    "MQTT Keep Alive", "MQTT TLS 사용")
-    ERUT_FIELDS = ("ERUT Broker 주소", "ERUT 포트", "ERUT 장치 ID")
+    ERUT_FIELDS = ("ERUT Broker 주소", "ERUT 포트", "ERUT 장치 ID",
+                   "ERUT 계정", "ERUT 비밀번호")
 
     connect_requested = pyqtSignal()
     disconnect_requested = pyqtSignal()
@@ -1233,6 +1241,9 @@ class ConnectionSettingsScreen(FormScreen):
                 ("ERUT Broker 주소",line("127.0.0.1")),
                 ("ERUT 포트",spin(1883,1,65535)),
                 ("ERUT 장치 ID",line("robot1")),
+                # 계정은 ERUT 가 정해 알려 준다. 비밀번호는 화면에 보이지 않게.
+                ("ERUT 계정",line("")),
+                ("ERUT 비밀번호",_password_line()),
             ],
             columns=5,
         )
@@ -1271,6 +1282,8 @@ class ConnectionSettingsScreen(FormScreen):
             "host": str(values.get("ERUT Broker 주소", "")).strip(),
             "port": int(values.get("ERUT 포트") or 1883),
             "device_id": str(values.get("ERUT 장치 ID", "")).strip() or "robot1",
+            "username": str(values.get("ERUT 계정", "")).strip(),
+            "password": str(values.get("ERUT 비밀번호", "")),
         }
 
     def robot_ip(self) -> str:

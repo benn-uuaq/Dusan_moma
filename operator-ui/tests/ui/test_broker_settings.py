@@ -20,7 +20,8 @@ def test_connection_screen_has_broker_fields(qtbot) -> None:
     values = window.screens["connection"].values()
 
     for name in ("MQTT Broker 주소", "MQTT 포트", "MQTT Client ID",
-                 "ERUT Broker 주소", "ERUT 포트", "ERUT 장치 ID"):
+                 "ERUT Broker 주소", "ERUT 포트", "ERUT 장치 ID",
+                 "ERUT 계정", "ERUT 비밀번호"):
         assert name in values, name
     window.close()
 
@@ -32,7 +33,7 @@ def test_saved_addresses_reach_both_brokers(qtbot) -> None:
         "MQTT Broker 주소": "10.20.30.40", "MQTT 포트": 8883,
         "MQTT Client ID": "rcs-1", "MQTT Keep Alive": 45, "MQTT TLS 사용": True,
         "ERUT Broker 주소": "10.20.30.41", "ERUT 포트": 1884,
-        "ERUT 장치 ID": "robot9",
+        "ERUT 장치 ID": "robot9", "ERUT 계정": "erut-3s", "ERUT 비밀번호": "pw",
     })
 
     window._sync_broker_endpoints()
@@ -45,6 +46,8 @@ def test_saved_addresses_reach_both_brokers(qtbot) -> None:
     assert window.erut.config.host == "10.20.30.41"
     assert window.erut.config.port == 1884
     assert window.erut.config.device_id == "robot9"
+    # ERUT 가 정해 준 계정으로 붙는다.
+    assert (window.erut.config.username, window.erut.config.password) == ("erut-3s", "pw")
     # ERUT 토픽도 장치 ID 를 따라간다.
     assert window.erut.res_topic() == "erut/robot9/res"
     window.close()
@@ -108,4 +111,12 @@ def test_changing_the_address_while_connected_reconnects(qtbot) -> None:
     window.erut.start = lambda: erut_calls.append("start")
     assert window.erut.apply_config(ErutConfig(host="10.1.1.2", client_id="y")) is True
     assert erut_calls == ["stop", "start"]
+    window.close()
+
+
+def test_erut_password_is_masked_on_screen(qtbot) -> None:
+    window = _window(qtbot)
+    field = window.screens["connection"].field("ERUT 비밀번호")
+
+    assert field.echoMode() == field.EchoMode.Password
     window.close()

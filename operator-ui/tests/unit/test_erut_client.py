@@ -24,6 +24,7 @@ class Msg:
     def __init__(self, topic, payload):
         self.topic = topic
         self.payload = json.dumps(payload).encode("utf-8")
+        self.retain = False
 
 
 def _client(qtbot):
@@ -136,3 +137,41 @@ def test_home_is_retained_with_state_in_content(qtbot):
     assert topic == "erut/robot1/evt/home"
     assert (qos, retain) == (1, True)
     assert payload["content"] == {"state": "deployed"}
+
+
+def test_account_is_used_and_hidden_from_repr(qtbot):
+    """ERUT 가 준 계정으로 붙는다. 비밀번호는 로그·repr 에 찍히지 않는다."""
+    config = ErutConfig(host="10.0.0.1", port=42883, username="erut-3s", password="secret")
+
+    assert config.username == "erut-3s"
+    assert "secret" not in repr(config)
+
+
+def test_bridge_clock_skew_is_reported(qtbot):
+    """ERUT 는 timestamp 가 10초 넘게 어긋난 메시지를 버린다 — 5초 넘으면 알린다."""
+    client, _paho = _client(qtbot)
+    skews: list[float] = []
+    warnings: list[str] = []
+    client.clock_skew_measured.connect(skews.append)
+    client.error_occurred.connect(warnings.append)
+
+    now_ms = int(time.time() * 1000)
+    client._on_message(None, None, Msg("erut/status", {"timestamp": now_ms + 1400, "state": "online"}))
+    assert abs(skews[-1] - 1.4) < 0.5
+    assert warnings == []
+
+    client._on_message(None, None, Msg("erut/status", {"timestamp": now_ms + 8000, "state": "online"}))
+    assert warnings and "NTP" in warnings[-1]
+
+
+def test_retained_status_is_not_used_for_the_clock(qtbot):
+    """retain 으로 온 것은 예전 값이다 — 시각차를 재면 엉뚱한 경고가 난다."""
+    client, _paho = _client(qtbot)
+    skews: list[float] = []
+    client.clock_skew_measured.connect(skews.append)
+    msg = Msg("erut/status", {"timestamp": 1, "state": "online"})
+    msg.retain = True
+
+    client._on_message(None, None, msg)
+
+    assert skews == []

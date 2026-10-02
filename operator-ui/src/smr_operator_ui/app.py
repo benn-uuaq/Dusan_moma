@@ -1616,6 +1616,7 @@ class OperatorWindow(QMainWindow):
             config = replace(
                 self.erut.config,
                 host=erut["host"], port=erut["port"], device_id=erut["device_id"],
+                username=erut["username"], password=erut["password"],
             )
             if self.erut.apply_config(config):
                 self.main_screen.show_activity(

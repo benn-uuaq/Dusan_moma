@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
@@ -46,6 +46,9 @@ ERUT_STATUS = "erut/status"
 #: 브릿지가 5초마다 내는 erut/status 가 이만큼 끊기면 없는 것으로 본다(탭2 18행).
 #: 브릿지 프로그램이 멈춰 있으면(꺼지지는 않아) 유언이 안 뜨기 때문이다.
 ERUT_SILENCE_S = 20.0
+#: 시각차 경고 기준 [s]. ERUT 는 timestamp 가 10초 넘게 어긋난 메시지를 버린다 —
+#: 그 절반에서 미리 알린다(장비 시각을 NTP 에 맞춰야 한다).
+CLOCK_SKEW_WARN_S = 5.0
 
 # 시험용 주입 토픽. 실제 장애 수집이 아직 없어서, 알람/에러 시험 도구가
 # 이걸로 찔러 주면 RCS 가 **규격대로 evt/error 를 발행**한다.
@@ -68,6 +71,9 @@ class ErutConfig:
     device_id: str = "robot1"
     keep_alive: int = 15
     client_id: str = ""
+    # 브로커 계정. ERUT 가 정해 알려 준다(탭0 초안 「브로커 접속 정보」). 비워 두면 익명.
+    username: str = ""
+    password: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         # 실행할 때마다 바뀌면 브로커가 매번 새 장비로 본다 — 장치 ID 로 고정한다.
@@ -82,6 +88,8 @@ class ErutClient(QObject):
     request_received = pyqtSignal(str, object)
     # ERUT 자신의 생존 상태 (erut/status). offline 이면 진행 중 작업을 멈춰야 한다.
     erut_online_changed = pyqtSignal(bool)
+    # 브릿지 시각 - 우리 시각 [s]. erut/status 를 받을 때마다 잰다.
+    clock_skew_measured = pyqtSignal(float)
     # 시험 도구가 넣어 준 장애. RCS 가 이걸 받아 evt/error 를 발행한다.
     test_error_injected = pyqtSignal(object)
     connected_changed = pyqtSignal(bool)
@@ -127,11 +135,15 @@ class ErutClient(QObject):
             return
 
         # 끊긴 동안 쌓인 옛 요청을 다시 붙자마자 받지 않게 cleanSession=true.
+        # 규격은 MQTT 3.1.1 이다(ERUT 접속 정보 2026-10-01).
         kwargs: dict[str, Any] = {"client_id": self.config.client_id,
-                                  "clean_session": True}
+                                  "clean_session": True,
+                                  "protocol": mqtt.MQTTv311}
         if hasattr(mqtt, "CallbackAPIVersion"):
             kwargs["callback_api_version"] = mqtt.CallbackAPIVersion.VERSION1
         client = mqtt.Client(**kwargs)
+        if self.config.username:
+            client.username_pw_set(self.config.username, self.config.password or None)
         client.on_connect = self._on_connect
         client.on_disconnect = self._on_disconnect
         client.on_message = self._on_message
@@ -345,6 +357,9 @@ class ErutClient(QObject):
             online = str(payload.get("state", "")).lower() == "online"
             if online:
                 self._erut_seen = time.monotonic()
+            # retain 으로 온 것은 예전 값이라 시각차를 재지 않는다.
+            if not getattr(msg, "retain", False):
+                self._note_skew(payload.get("timestamp"))
             self._set_erut_online(online)
             return
 
@@ -359,6 +374,27 @@ class ErutClient(QObject):
             self.error_occurred.emit(f"ERUT 요청에 content 가 없습니다: {action}")
             return
         self.request_received.emit(action, content)
+
+    def _note_skew(self, timestamp: Any) -> None:
+        """브릿지가 붙인 timestamp 와 우리 시각의 차이를 잰다.
+
+        ERUT 는 timestamp 가 10초 넘게 어긋난 메시지를 버린다 — 우리 시계가 틀리면
+        멀쩡한 응답이 조용히 사라진다. 5초를 넘으면 한 번 알린다(다시 들어오면 해제).
+        네트워크 지연이 섞이므로 1초 안팎의 차이는 정상이다.
+        """
+        if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
+            return
+        skew = timestamp / 1000.0 - time.time()
+        self.clock_skew_measured.emit(skew)
+        over = abs(skew) > CLOCK_SKEW_WARN_S
+        if over != getattr(self, "_skew_warned", False):
+            self._skew_warned = over
+            if over:
+                self.error_occurred.emit(
+                    f"ERUT 브릿지와 시각이 {skew:+.1f}초 어긋납니다 — 10초를 넘으면 ERUT 가 "
+                    "우리 메시지를 버립니다. 이 PC 시각을 인터넷 시간(NTP)에 맞추세요.")
+            else:
+                self.activity.emit(f"ERUT 브릿지와 시각차가 정상으로 돌아왔습니다({skew:+.1f}초).")
 
     def _set_erut_online(self, online: bool) -> None:
         if online != self._erut_online:
