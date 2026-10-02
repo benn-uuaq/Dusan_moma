@@ -470,3 +470,17 @@ def test_area_already_shifted_by_the_overlap_maps_to_the_same_section() -> None:
     """ERUT 가 겹침을 빼서 보내도(580) 같은 2번 구간·같은 자리다."""
     assert _area(580, 0).section_column == 1
     assert _area(580, 0).vehicle_offset_mm == 580.0
+
+
+def test_arrival_during_pause_is_taken_on_resume(qtbot) -> None:
+    """멈춘 동안 리프트가 자리에 닿으면 재개 때 이어서 스캔으로 간다(놓치면 영영 기다린다)."""
+    h = Harness(_plan(columns=1, rows=2))
+    h.start()
+    h.seq.secured()                         # 고정 끝 → 리프트 정렬(LEVELING)
+    assert h.seq.state is SequencerState.LEVELING
+    h.seq.pause()
+    h.seq.lift_arrived()                    # 멈춘 동안 도착
+    assert h.seq.state is SequencerState.PAUSED
+
+    h.seq.resume()
+    assert h.seq.state is SequencerState.SCANNING

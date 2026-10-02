@@ -244,6 +244,9 @@ class JobSequencer(QObject):
         self._saw_robot_busy = False
         # 첫 셀에서 로봇을 바로 돌리지 않고 READY 로 서서 기다리는가.
         self._hold_before_scan = False
+        # 일시정지 동안 도착한 차량·리프트·아웃트리거. 재개할 때 이어 받는다 —
+        # 버리면 재개 뒤 이미 끝난 도착을 영영 기다린다.
+        self._arrival_during_pause = None
 
     def _set_state(self, state: SequencerState) -> None:
         """상태를 바꾸고 알린다. 상태 변경은 반드시 여기를 거친다."""
@@ -260,6 +263,18 @@ class JobSequencer(QObject):
     @property
     def plan(self) -> GridPlan | None:
         return self._plan
+
+    @property
+    def resume_state(self) -> SequencerState:
+        """일시정지 직전 상태. 일시정지가 아니면 지금 상태."""
+        return self._resume_state if self._state is SequencerState.PAUSED else self._state
+
+    def _held_by_pause(self, handler, *waiting: SequencerState) -> bool:
+        """일시정지 중에 온 도착이면 기억해 두고 True — 재개 때 처리한다."""
+        if self._state is SequencerState.PAUSED and self._resume_state in waiting:
+            self._arrival_during_pause = handler
+            return True
+        return False
 
     def current_cell(self) -> str:
         """지금 셀 이름. 계획이 없으면 빈 문자열."""
@@ -326,6 +341,7 @@ class JobSequencer(QObject):
                            SequencerState.DONE, SequencerState.STOPPED):
             return
         self._resume_state = self._state
+        self._arrival_during_pause = None
         scanning = self._state is SequencerState.SCANNING
         self._set_state(SequencerState.PAUSED)
         # 로봇도 같이 세운다. 스캔 중이면 태스크를 그 자리에 pause 하고(재개 때
@@ -343,6 +359,11 @@ class JobSequencer(QObject):
             return
         self._set_state(self._resume_state)
         self.activity.emit(f"{self.current_cell()} 에서 재개했습니다.")
+        arrival, self._arrival_during_pause = self._arrival_during_pause, None
+        if arrival is not None:
+            # 멈춰 있는 동안 차량·리프트가 자리에 닿았다 — 이어서 다음 단계로.
+            arrival()
+            return
         # 스캔 도중 멈췄으면 로봇은 멈춘 자리에서 잇는다(play).
         if self._state is SequencerState.SCANNING:
             self.robot_resume_requested.emit()
@@ -357,24 +378,33 @@ class JobSequencer(QObject):
 
     def lift_arrived(self) -> None:
         """리프트가 목표 높이에 도착했다는 신호. 수평 보정이든 셀 사이 이동이든 스캔으로 간다."""
+        if self._held_by_pause(self.lift_arrived, SequencerState.LEVELING,
+                               SequencerState.MOVING_LIFT):
+            return
         if self._state not in (SequencerState.LEVELING, SequencerState.MOVING_LIFT):
             return
         self._start_scan()
 
     def amr_arrived(self) -> None:
         """AMR이 다음 열에 도착했다는 신호. 그 열의 1단계부터 다시 시작한다."""
+        if self._held_by_pause(self.amr_arrived, SequencerState.MOVING_AMR):
+            return
         if self._state is not SequencerState.MOVING_AMR:
             return
         self._begin_column()
 
     def secured(self) -> None:
         """아웃트리거 고정이 끝났다(1단계 완료). 수평 보정으로 넘어간다."""
+        if self._held_by_pause(self.secured, SequencerState.SECURING):
+            return
         if self._state is not SequencerState.SECURING:
             return
         self._request_lift(SequencerState.LEVELING)
 
     def retracted(self) -> None:
         """안전 위치 복귀가 끝났다(4단계 완료). 다음 열로 넘어간다."""
+        if self._held_by_pause(self.retracted, SequencerState.RETRACTING):
+            return
         if self._state is not SequencerState.RETRACTING:
             return
         plan = self._plan

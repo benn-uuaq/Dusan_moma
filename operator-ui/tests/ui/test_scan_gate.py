@@ -7,6 +7,7 @@
 """
 
 from smr_operator_ui.app import OperatorWindow
+from smr_operator_ui.services import SequencerState
 
 
 def test_starting_a_cell_clears_the_scan_permission(qtbot) -> None:
@@ -139,4 +140,39 @@ def test_paused_task_blocks_vehicle_and_lift(qtbot) -> None:
     window._on_robot_task_state(2)
 
     assert window._robot_motion_block_reason()
+    window.close()
+
+
+# ---- if-0.6: 선 뒤에만 paused · 자리를 못 지키면 resumable=false ------------
+def test_pause_settles_only_when_the_task_is_paused_and_the_arm_is_still(qtbot) -> None:
+    window, _commands = _scanning_window(qtbot)
+    window._on_robot_task_state(1)
+    window._show_tcp_pose([600.0, 50.0, 300.0, 0, 0, 0])
+    assert not window._pause_settled(), "태스크가 아직 돈다"
+
+    window._on_robot_task_state(2)
+    window._show_tcp_pose([600.0, 55.0, 300.0, 0, 0, 0])     # 감속하며 5 mm 더 갔다
+    assert not window._pause_settled(), "팔이 아직 움직인다"
+
+    window._tcp_moved_at -= window.STILL_FOR_S + 0.1         # 그 뒤로 가만히 있다
+    assert window._pause_settled()
+    window.close()
+
+
+def test_stopped_task_or_pushed_arm_cannot_resume_in_place(qtbot) -> None:
+    window, _commands = _scanning_window(qtbot)
+    window.sequencer._resume_state = SequencerState.SCANNING
+    window.sequencer._set_state(SequencerState.PAUSED)
+    window._on_robot_task_state(2)
+    window._show_tcp_pose([600.0, 50.0, 300.0, 0, 0, 0])
+    window._tcp_moved_at -= window.STILL_FOR_S + 0.1
+    window._on_pause_tick()                                  # 선 자리를 잡는다
+    assert window._pause_holds_position()
+
+    window._show_tcp_pose([600.0, 50.0, 305.0, 0, 0, 0])     # 누가 팔을 5 mm 밀었다
+    assert not window._pause_holds_position()
+
+    window._show_tcp_pose([600.0, 50.0, 300.0, 0, 0, 0])
+    window._on_robot_task_state(3)                           # 펜던트에서 stop
+    assert not window._pause_holds_position()
     window.close()

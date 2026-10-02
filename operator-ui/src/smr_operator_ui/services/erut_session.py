@@ -37,7 +37,7 @@ from smr_operator_ui.services.erut_client import ErutClient
 from smr_operator_ui.services.job_sequencer import GridPlan, SequencerState, cell_label
 
 # ---- 자기소개 (탭8 evt/info) ------------------------------------------------
-INTERFACE_VERSION = "0.5"
+INTERFACE_VERSION = "0.6"
 VENDOR = "3S"
 MODEL = "SMR-UT-CS612"
 DEVICE_TYPE = "articulated_arm"
@@ -178,6 +178,12 @@ class ErutSession(QObject):
         self.robot_busy: Callable[[], bool] = lambda: False
         # 로봇이 한 번에 훑을 수 있는 최대 구간 가로(호 길이) [mm]. 0 이면 모름.
         self.max_area_width: Callable[[], float] = lambda: 0.0
+        # 일시정지 뒤 장비(팔·차량·리프트)가 실제로 다 섰는가 (if-0.6 — paused 는
+        # 선 뒤에만 알린다. 감속 중에는 아직 running).
+        self.pause_settled: Callable[[], bool] = lambda: True
+        # 선 자리를 그대로 지키고 있어 그 자리에서 이어 갈 수 있는가 (if-0.6 —
+        # 밀렸거나 태스크가 중지됐으면 False → resumable=false, resume 은 412).
+        self.pause_holds_position: Callable[[], bool] = lambda: True
         # 로봇이 홈에 있는가 (레지스터 276). 모르면 None.
         self.at_home: Callable[[], bool | None] = lambda: None
         # 캘리브레이션 때 차량으로 잰 총 둘레 [mm]. 차량 자료가 오기 전엔 None.
@@ -325,10 +331,14 @@ class ErutSession(QObject):
             return "estop"
         if "stop" in levels:
             return "error"
-        if self._paused_work:
-            return "paused"
-        if self.sequencer.state is SequencerState.PAUSED:
-            return "paused"
+        if self._paused_work or self.sequencer.state is SequencerState.PAUSED:
+            if self.pause_settled():
+                return "paused"
+            # 아직 감속 중이다 — 선 뒤에야 paused (if-0.6, 탭2 25행). 작업자는
+            # 「일시정지」를 보고 장비에 다가간다.
+            if self._paused_work == "calibrate":
+                return "calibrating"
+            return _ACTIVITY_MAP.get(self.sequencer.resume_state, "running")
         if self._calibrate_req_id:
             return "calibrating"
         if self._is_ready():
@@ -351,9 +361,16 @@ class ErutSession(QObject):
                     or self.sequencer.state is SequencerState.PAUSED)
 
     def _resumable(self) -> bool:
-        """멈춘 자리를 지키고 있어 이어 갈 수 있는가."""
-        return (self._paused_work == "calibrate"
-                or self.sequencer.state is SequencerState.PAUSED)
+        """멈춘 자리를 지키고 있어 이어 갈 수 있는가 (if-0.6 탭5 59행).
+
+        일시정지는 제자리에서 서므로 보통 True. 아직 서는 중이거나, 밀렸거나,
+        태스크가 중지돼(pause 거절·펜던트 stop 등) 그 자리로 정확히 못 돌아가면
+        False — ERUT 는 abort → query → home → start 로 구간을 처음부터 다시 한다.
+        """
+        if not (self._paused_work == "calibrate"
+                or self.sequencer.state is SequencerState.PAUSED):
+            return False
+        return self.pause_settled() and self.pause_holds_position()
 
     # ------------------------------------------------------------ 요청 처리
     def handle_request(self, action: str, content: dict) -> None:
@@ -808,11 +825,24 @@ class ErutSession(QObject):
     def _do_resume(self, req_id: str, content: dict) -> None:
         """멈춘 자리에서 이어 간다. 완료는 처음 요청의 req_id 로 낸다."""
         if self._paused_work == "calibrate":
+            if not self.pause_settled():
+                self._answer(req_id, "resume", 409, "BUSY")      # 차량이 아직 서는 중
+                return
             self._paused_work = ""
             self._answer(req_id, "resume", 202, "ACCEPTED")
             self.calibration_resume_requested.emit()
             return
         if self.sequencer.state is SequencerState.PAUSED:
+            if not self.pause_settled():
+                # 아직 서는 중이다(activity 는 running) — 탭9: running 에 resume 은 409.
+                self._answer(req_id, "resume", 409, "BUSY")
+                return
+            if not self.pause_holds_position():
+                # 자리를 못 지켰다 — 이어 가지 않는다. abort 뒤 처음부터(탭9·탭7 S-3 4b).
+                self._answer(req_id, "resume", 412, "NOT_RESUMABLE")
+                self.activity.emit("ERUT 재개 거절(412) — 멈춘 자리를 지키지 못했습니다."
+                                   " 구간을 처음부터 다시 해야 합니다.")
+                return
             self._answer(req_id, "resume", 202, "ACCEPTED")
             self.resume_requested.emit()
             return

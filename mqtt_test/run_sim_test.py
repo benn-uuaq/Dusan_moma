@@ -281,7 +281,7 @@ def scenario_erut(h: Harness) -> list[str]:
     session.publish_info()
     info = tap.info[-1]
     log(f"\n[erut] 자기소개: 판 {info['interface_version']} · {', '.join(info['capabilities'])}")
-    if info["interface_version"] != "0.5" or "home" not in info["capabilities"]:
+    if info["interface_version"] != "0.6" or "home" not in info["capabilities"]:
         problems.append(f"[erut] 자기소개가 이상합니다: {info}")
 
     log("[erut] calibrate — 차량(AGV)이 모재를 따라 한 바퀴 돌며 좌표계를 잡는다")
@@ -332,9 +332,21 @@ def scenario_erut(h: Harness) -> list[str]:
                         and h.register(SEGMENT_REG)[0] in (1, 3), timeout=120, poll=0.02):
         return problems + ["[erut] 스캔 중인 순간을 못 잡았습니다"]
     session.handle_request("pause", {"req_id": "pz-scan"})
+    # if-0.6: paused 는 장비가 실제로 선 뒤에만 — 받자마자는 아직 running.
+    right_after = tap.status[-1].get("activity") if tap.status else None
+    if right_after == "paused":
+        problems.append("[erut] 로봇이 서기도 전에 paused 를 알렸습니다(if-0.6)")
     if not h.wait_until(lambda: h.register(TASK_REG)[0] == 2, timeout=10):
         problems.append(f"[erut] 일시정지가 로봇 pause 로 가지 않았습니다 — 500="
                         f"{h.register(TASK_REG)[0]}")
+    if not h.wait_until(lambda: tap.status and tap.status[-1].get("activity") == "paused",
+                        timeout=10):
+        problems.append("[erut] 로봇이 선 뒤에도 activity 가 paused 가 되지 않았습니다")
+    session.handle_request("query", {"req_id": "q-paused"})
+    log(f"  pause 직후 activity {right_after} → 선 뒤 paused · resumable="
+        f"{tap.responses[-1].get('resumable')}")
+    if tap.responses[-1].get("resumable") is not True:
+        problems.append(f"[erut] 제자리에 선 일시정지인데 resumable 이 아닙니다: {tap.responses[-1]}")
     frozen = h.register(STATE_REG, 2)
     h.pump(1.5)
     still = h.register(STATE_REG, 2)
@@ -380,6 +392,33 @@ def scenario_erut(h: Harness) -> list[str]:
     log(f"  evt/home 흐름: {' → '.join(tap.home)}")
     if (done.get("location") or {}).get("cell") != "2A":
         problems.append(f"[erut] 완료의 구역 이름이 2A 가 아닙니다: {done.get('location')}")
+
+    # if-0.6 탭4 D-1 3b: 멈춘 채 abort 를 받으면 작업을 버리고 idle → home.
+    log("[erut] 멈춘 채 abort — 작업을 버리고 idle 이 된 뒤 home 으로 거둔다")
+    session.handle_request("start", {"req_id": "start-2", "job_id": "jb-erut-2",
+                                     "surface": "outer",
+                                     "area": {"start": {"x": 1160, "y": 0},
+                                              "end": {"x": 1760, "y": 800}},
+                                     "scan": {"pitch": 20, "speed": 100}})
+    if not h.wait_until(lambda: h.register(STATE_REG)[0] == 6
+                        and h.register(SEGMENT_REG)[0] in (1, 3), timeout=180, poll=0.02):
+        return problems + ["[erut] 두 번째 구간이 스캔에 들어가지 않았습니다"]
+    session.handle_request("pause", {"req_id": "pz-2"})
+    if not h.wait_until(lambda: tap.status and tap.status[-1].get("activity") == "paused",
+                        timeout=10):
+        problems.append("[erut] 두 번째 구간 일시정지가 paused 가 되지 않았습니다")
+    session.handle_request("abort", {"req_id": "ab-2", "job_id": "jb-erut-2"})
+    if not h.wait_until(lambda: tap.status and tap.status[-1].get("activity") == "idle",
+                        timeout=10):
+        problems.append("[erut] 멈춘 채 abort 뒤 idle 이 되지 않았습니다")
+    if not h.wait_until(lambda: tap.home and tap.home[-1] == "home", timeout=60):
+        problems.append(f"[erut] 멈춘 채 abort 뒤 홈으로 거두지 않았습니다: {tap.home}")
+    session.handle_request("query", {"req_id": "q-after-abort"})
+    answer = tap.responses[-1]
+    log(f"  abort 뒤 query: activity {answer.get('activity')} · home {answer.get('home')}"
+        f" · resumable {answer.get('resumable')}")
+    if (answer.get("activity"), answer.get("home"), answer.get("resumable")) != ("idle", "home", False):
+        problems.append(f"[erut] abort 뒤 query 가 idle·home 이 아닙니다: {answer}")
 
     log("[erut] mark — 점에 붙으면 mark_ready, ERUT 가 찍고 mark_next")
     h.pump(1.0)

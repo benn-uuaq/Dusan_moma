@@ -8,6 +8,7 @@ import math
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from importlib.resources import files
 from math import ceil, isfinite, pi
@@ -624,6 +625,8 @@ class OperatorWindow(QMainWindow):
         # 로봇 위치(호 위 거리·줄 높이·진행률)와 홈 플래그도 응답에 싣는다.
         self.erut_session.position_state = self._erut_position
         self.erut_session.max_area_width = self._max_area_width
+        self.erut_session.pause_settled = self._pause_settled
+        self.erut_session.pause_holds_position = self._pause_holds_position
         self.erut_session.at_home = lambda: getattr(self, "_robot_at_home", None)
         self.erut_session.home_requested.connect(self._send_home_for_erut)
         self.erut_session.job_dropped.connect(self._drop_erut_job)
@@ -790,6 +793,11 @@ class OperatorWindow(QMainWindow):
             lambda column: self._defer_until_robot_idle(
                 f"{column}구역 차량 이동", lambda: self._move_amr_to_column(column)))
         self.lift.arrived.connect(seq.lift_arrived)
+        # 일시정지 뒤 장비가 다 섰는지 다시 본다(if-0.6 — paused 는 선 뒤에만).
+        for motion in (self.lift, self.amr, self.outrigger, self.retractor):
+            motion.arrived.connect(self._on_pause_tick)
+        seq.state_changed.connect(self._on_pause_tick)
+        self.ros_status.task_state_changed.connect(self._on_pause_tick)
         self.amr.arrived.connect(seq.amr_arrived)
         # 아웃트리거 고정(1단계)과 안전 위치 복귀(4단계)도 아직 더미다.
         seq.secure_requested.connect(lambda: self.outrigger.move_to(1, " 고정"))
@@ -1455,6 +1463,100 @@ class OperatorWindow(QMainWindow):
         self._position_stale = True
         self.main_screen.rect_view.park_position()
 
+    # ---- 일시정지가 실제로 섰는가 · 자리를 지키는가 (if-0.6) ------------------
+    #: 이만큼 안 움직이면 팔이 선 것으로 본다 [mm, 한 번 받을 때(10 Hz)].
+    TCP_STILL_MM = 0.2
+    #: 이만큼 가만히 있어야 섰다고 본다 [s].
+    STILL_FOR_S = 0.5
+    #: 선 뒤로 이만큼 넘게 옮겨지면 「밀렸다」 — 그 자리로 못 돌아간다 [mm].
+    PUSHED_TCP_MM = 2.0
+    PUSHED_MOTION_MM = 5.0
+    #: 차량이 섰다고 볼 상태값(vehicle/robot_status 의 state).
+    _VEHICLE_STOPPED = ("PAUSED", "STOP", "HOLD")
+
+    @staticmethod
+    def _tcp_distance(a: list, b: list) -> float:
+        if len(a) < 3 or len(b) < 3:
+            return 0.0
+        return math.dist([float(v) for v in a[:3]], [float(v) for v in b[:3]])
+
+    def _robot_still(self) -> bool:
+        """팔이 멈춰 있는가. 자세를 한 번도 못 받았으면(ROS 없음) 섰다고 본다."""
+        moved_at = getattr(self, "_tcp_moved_at", None)
+        return moved_at is None or time.monotonic() - moved_at >= self.STILL_FOR_S
+
+    def _pause_settled(self) -> bool:
+        """일시정지 뒤 장비가 실제로 다 섰는가 — 섰을 때만 activity=paused (if-0.6).
+
+        팔: 태스크가 실행 중(1)이 아니고 TCP 가 가만히 있다(pause 를 받아도
+        감속하는 동안은 움직인다). 차량: 더미면 이동이 끝났고, 실제 차량이면
+        차량이 보고한 상태가 PAUSED/STOP/HOLD 다. 리프트·아웃트리거: 이동 중이
+        아니다(일시정지를 따로 받지 않아 가던 곳까지 간다).
+        """
+        if getattr(self, "_robot_task_state", 0) == self._TASK_STATE_RUNNING:
+            return False
+        if not self._robot_still():
+            return False
+        if any(m.moving for m in (self.lift, self.outrigger, self.retractor)):
+            return False
+        if self.amr.active == "vehicle":
+            state = (self.vehicle.last_status or {}).get("state")
+            if self.amr.moving and state not in self._VEHICLE_STOPPED:
+                return False
+            if state == "RUNNING":
+                return False
+        elif self.amr.moving:
+            return False
+        return True
+
+    def _pause_anchor_now(self) -> tuple:
+        return (self.amr.position, self.lift.position,
+                list(getattr(self, "_last_tcp_pose", None) or []))
+
+    def _on_pause_tick(self, *_args) -> None:
+        """일시정지 중이면 선 순간의 자리를 잡아 두고 ERUT 상태를 맞춘다.
+
+        자세(10 Hz)·태스크 상태·차량 상태·이동 도착마다 불린다. evt/status 는
+        값이 바뀔 때만 나가므로 자주 불러도 된다.
+        """
+        paused = (self.sequencer.state is SequencerState.PAUSED
+                  or getattr(self.erut_session, "_paused_work", ""))
+        if not paused:
+            self._pause_anchor = None
+            return
+        anchor = getattr(self, "_pause_anchor", None)
+        if self._pause_settled():
+            if anchor is None:
+                self._pause_anchor = self._pause_anchor_now()
+            elif not anchor[2] and getattr(self, "_last_tcp_pose", None):
+                # 선 자리를 잡을 때 자세가 아직 없었다 — 처음 받은 자세로 채운다.
+                self._pause_anchor = (anchor[0], anchor[1], list(self._last_tcp_pose))
+        self.erut_session.refresh_status()
+
+    def _pause_holds_position(self) -> bool:
+        """선 자리를 그대로 지키고 있는가 — False 면 resumable=false (if-0.6).
+
+        * 스캔 중 멈췄는데 태스크가 일시정지(2)가 아니다 — pause 를 거절해
+          stop 했거나, 펜던트에서 멈췄다. 그 자리에서 이을 수 없다.
+          (play 를 보내기 전에 멈춘 것은 아직 아무것도 안 했으니 괜찮다.)
+        * 선 뒤로 팔(TCP)이나 차량·리프트가 옮겨졌다 — 밀렸다.
+        """
+        if (self.sequencer.state is SequencerState.PAUSED
+                and self.sequencer.resume_state is SequencerState.SCANNING
+                and not getattr(self, "_paused_before_play", False)
+                and getattr(self, "_robot_task_state", 0) != self._TASK_STATE_PAUSED):
+            return False
+        anchor = getattr(self, "_pause_anchor", None)
+        if anchor is None:
+            return True
+        amr, lift, tcp = anchor
+        now_amr, now_lift, now_tcp = self._pause_anchor_now()
+        if abs(now_amr - amr) > self.PUSHED_MOTION_MM or abs(now_lift - lift) > self.PUSHED_MOTION_MM:
+            return False
+        if tcp and now_tcp and self._tcp_distance(tcp, now_tcp) > self.PUSHED_TCP_MM:
+            return False
+        return True
+
     def _pause_robot_scan(self) -> None:
         """스캔 중 일시정지 — 로봇 태스크를 29999 `pause` 로 그 자리에 세운다.
 
@@ -1469,9 +1571,11 @@ class OperatorWindow(QMainWindow):
         if timer is not None and timer.isActive():
             timer.stop()
             self._resume_needs_restart = True
+            self._paused_before_play = True
             self.main_screen.show_activity("일시정지 — 로봇은 아직 출발 전입니다.")
             return
         self._resume_needs_restart = False
+        self._paused_before_play = False
         self._pause_sent = True
         self.ros_status.call_command("remote_control_on")
         self.ros_status.call_command("pause")
@@ -2220,7 +2324,11 @@ class OperatorWindow(QMainWindow):
 
     def _show_tcp_pose(self, values: list) -> None:
         """현재 TCP 자세를 수동 제어와 조그 화면에 함께 표시한다."""
+        previous = getattr(self, "_last_tcp_pose", None)
+        if previous is None or self._tcp_distance(previous, values) > self.TCP_STILL_MM:
+            self._tcp_moved_at = time.monotonic()
         self._last_tcp_pose = list(values)
+        self._on_pause_tick()
         formatted = self._format_pose(values)
         self.cobot_manual_screen.apply_tcp(formatted)
         self.cobot_jog_screen.apply_position(formatted)
@@ -2908,6 +3016,7 @@ class OperatorWindow(QMainWindow):
         manual.stop_requested.connect(lambda: self.vehicle.control("STOP"))
         manual.reset_requested.connect(lambda: self.vehicle.control(reset=True))
         self.vehicle.status_changed.connect(manual.set_status)
+        self.vehicle.status_changed.connect(self._on_pause_tick)
         self.vehicle.command_result.connect(self._show_vehicle_command_result)
         # 목록에서 고르는 즉시 적용한다(저장은 값을 남길 뿐이다).
         self.screens["connection"].vehicle_mode_changed.connect(

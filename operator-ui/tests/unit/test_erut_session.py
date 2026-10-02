@@ -703,7 +703,7 @@ def test_info_introduces_the_device(session):
     s.publish_info()
 
     info = client.info[-1]
-    assert info["interface_version"] == INTERFACE_VERSION == "0.5"
+    assert info["interface_version"] == INTERFACE_VERSION == "0.6"
     assert info["vendor"] == "3S" and info["device_type"] == "articulated_arm"
     assert "probe_contact" in info["capabilities"]
     assert "mark_positioning" in info["capabilities"]
@@ -773,6 +773,62 @@ def test_pause_and_resume_of_a_running_section(session):
     # 완료는 처음 start 의 req_id 로(resume 의 번호가 아니라).
     s.on_job_complete()
     assert client.events[-1][1]["req_id"] == "s1"
+
+
+def _paused_section(s, seq):
+    s.pause_requested.connect(seq.pause)
+    s.resume_requested.connect(seq.resume)
+    _start(s)
+    seq._plan = seq.plan or s._plan
+    seq._set_state(SequencerState.SCANNING)
+    s.handle_request(*_req("pause", req_id="pz"))
+
+
+def test_paused_is_reported_only_after_the_equipment_stopped(session):
+    """if-0.6: 감속하는 동안은 아직 running — 선 뒤에야 paused."""
+    s, client, seq = session
+    settled = {"v": False}
+    s.pause_settled = lambda: settled["v"]
+    _paused_section(s, seq)
+
+    assert s.activity_state() == "running"
+    s.handle_request(*_req("query", req_id="q1"))
+    assert client.res[-1]["resumable"] is False
+    s.handle_request(*_req("resume", req_id="r1"))
+    assert client.res[-1]["code"] == 409, "아직 서는 중이면 running 과 같다(탭9)"
+
+    settled["v"] = True
+    assert s.activity_state() == "paused"
+    s.handle_request(*_req("query", req_id="q2"))
+    assert client.res[-1]["resumable"] is True
+
+
+def test_resume_after_losing_the_spot_is_412(session):
+    """밀렸거나 태스크가 중지됐으면 resumable=false, resume 은 412 NOT_RESUMABLE."""
+    s, client, seq = session
+    resumed: list[int] = []
+    s.pause_holds_position = lambda: False
+    _paused_section(s, seq)
+    s.resume_requested.connect(lambda: resumed.append(1))
+
+    s.handle_request(*_req("query", req_id="q"))
+    assert client.res[-1]["resumable"] is False
+    s.handle_request(*_req("resume", req_id="r"))
+    assert (client.res[-1]["code"], client.res[-1]["message"]) == (412, "NOT_RESUMABLE")
+    assert resumed == []
+    assert s.activity_state() == "paused"
+
+
+def test_calibration_pause_reports_calibrating_until_the_vehicle_stops(session):
+    s, _client, _seq = session
+    settled = {"v": False}
+    s.pause_settled = lambda: settled["v"]
+    s.handle_request(*_req("calibrate", req_id="c1", diameter=1690, height=6000))
+    s.handle_request(*_req("pause", req_id="pz"))
+
+    assert s.activity_state() == "calibrating"
+    settled["v"] = True
+    assert s.activity_state() == "paused"
 
 
 def test_resume_with_nothing_paused_is_409(session):
