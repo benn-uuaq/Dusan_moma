@@ -627,6 +627,7 @@ class OperatorWindow(QMainWindow):
         self.erut_session.max_area_width = self._max_area_width
         self.erut_session.pause_settled = self._pause_settled
         self.erut_session.pause_holds_position = self._pause_holds_position
+        self.erut_session.errors_cleared.connect(self._home_after_reset)
         self.erut_session.at_home = lambda: getattr(self, "_robot_at_home", None)
         self.erut_session.home_requested.connect(self._send_home_for_erut)
         self.erut_session.job_dropped.connect(self._drop_erut_job)
@@ -1347,6 +1348,34 @@ class OperatorWindow(QMainWindow):
         """준비해 둔(또는 장애로 실패한) ERUT 구간을 접는다. 홈으로는 안 보낸다."""
         self._origin_waiting = False
         self.sequencer.stop()
+
+    def _home_after_reset(self, codes: list) -> None:
+        """초기화로 장애가 풀리면 펴져 있는 팔을 스스로 홈으로 거둔다.
+
+        쉬는 동안(idle)에는 팔을 접어 둔다는 규칙(if-0.5/0.6 탭2 30행)을
+        비상정지·장애 뒤에도 지키려는 것이다 — 그때는 하던 구간이 끝난 것으로
+        처리돼 팔이 벽 앞에 그대로 남는다. 규격도 초기화 때 장치가 스스로 하는
+        복구 동작(원점 복귀 등)을 허용한다(탭4 reset). 사람이 가까이 있으면
+        차량 라이다가 막아 로봇이 움직이지 못한다.
+
+        안 하는 때: 이어 갈 작업을 멈춰 둔 채다(일시정지는 제자리 — 이어 가려면
+        그 자리를 지켜야 한다) · 작업이나 로봇 태스크가 돌고 있다 · 이미 홈이다 ·
+        로봇과 연결이 없다.
+        """
+        if (self.sequencer.state is SequencerState.PAUSED
+                or getattr(self.erut_session, "_paused_work", "")):
+            return
+        if self._job_running() or self._robot_task_running():
+            return
+        if getattr(self, "_robot_at_home", False):
+            return
+        if not getattr(self, "_robot_link_up", False):
+            self.main_screen.show_activity(
+                "초기화했지만 로봇과 연결이 없어 팔을 홈으로 거두지 못했습니다.")
+            return
+        self.main_screen.show_activity(
+            f"초기화({', '.join(codes)}) — 펴져 있는 팔을 홈으로 거둡니다.")
+        self._send_home()
 
     def _send_home_for_erut(self) -> None:
         """ERUT 홈 요청 — 보내고, 로봇이 실제로 홈에 닿으면 완료를 낸다."""

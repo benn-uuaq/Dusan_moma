@@ -176,3 +176,47 @@ def test_stopped_task_or_pushed_arm_cannot_resume_in_place(qtbot) -> None:
     window._on_robot_task_state(3)                           # 펜던트에서 stop
     assert not window._pause_holds_position()
     window.close()
+
+
+# ---- 초기화(reset) 때 펴진 팔을 스스로 홈으로 ---------------------------------
+def _deployed_window(qtbot):
+    window, commands = _scanning_window(qtbot)
+    window._robot_link_up = True
+    window._on_robot_task_state(3)
+    window._on_robot_at_home(True)
+    window._on_robot_at_home(False)          # 비상정지로 벽 앞에 선 채
+    window.erut_session.raise_error({"code": "E1002", "message": "E_STOP",
+                                     "level": "estop", "recovery": "reset_required"})
+    commands.clear()
+    return window, commands
+
+
+def test_reset_folds_a_deployed_arm(qtbot) -> None:
+    window, commands = _deployed_window(qtbot)
+
+    window.erut_session.handle_request("reset", {"req_id": "rst-1"})
+
+    assert "home" in commands
+    window.close()
+
+
+def test_reset_keeps_the_arm_when_a_paused_job_waits(qtbot) -> None:
+    """일시정지는 제자리 — 이어 갈 작업이 있으면 접지 않는다."""
+    window, commands = _deployed_window(qtbot)
+    window.sequencer._resume_state = SequencerState.SCANNING
+    window.sequencer._set_state(SequencerState.PAUSED)
+
+    window._reset_alarms()                   # 화면 알람 리셋도 같은 길
+
+    assert "home" not in commands
+    window.close()
+
+
+def test_reset_does_nothing_when_already_home(qtbot) -> None:
+    window, commands = _deployed_window(qtbot)
+    window._on_robot_at_home(True)
+
+    window.erut_session.handle_request("reset", {"req_id": "rst-2"})
+
+    assert "home" not in commands
+    window.close()

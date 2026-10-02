@@ -447,16 +447,32 @@ def scenario_erut(h: Harness) -> list[str]:
     else:
         log(f"  홈 도착: code {tap.event('complete', 'home')['code']}")
 
-    log("[erut] 비상정지 → reset")
+    # 스캔 중 비상정지 → 구간은 끝난 것(if-0.4) · 팔은 벽 앞에 펴진 채 →
+    # 초기화(reset)하면 장애가 풀리고 RCS 가 스스로 팔을 홈으로 거둔다.
+    log("[erut] 스캔 중 비상정지 → reset — 풀리면 펴진 팔을 스스로 홈으로")
+    session.handle_request("start", {"req_id": "start-3", "job_id": "jb-erut-3",
+                                     "surface": "outer",
+                                     "area": {"start": {"x": 1740, "y": 0},
+                                              "end": {"x": 2340, "y": 800}},
+                                     "scan": {"pitch": 20, "speed": 100}})
+    if not h.wait_until(lambda: h.register(STATE_REG)[0] == 6, timeout=180, poll=0.02):
+        return problems + ["[erut] 세 번째 구간이 스캔에 들어가지 않았습니다"]
     session.raise_error({"code": "E1002", "message": "E_STOP", "level": "estop",
                          "recovery": "reset_required"})
+    h.wait_until(lambda: h.register(TASK_REG)[0] == 3, timeout=10)
     h.pump(0.5)
+    if tap.home and tap.home[-1] != "deployed":
+        problems.append(f"[erut] 비상정지 뒤 팔이 펴진 채가 아닙니다(시험 전제): {tap.home}")
     session.handle_request("reset", {"req_id": "reset-1"})
     h.pump(0.5)
     cleared = [e for e in tap.errors if e["code"] == "E1002" and e["cleared"]]
     log(f"  해제 통보 {len(cleared)}회 · activity {session.activity_state()}")
     if not cleared or session.activity_state() != "idle":
         problems.append("[erut] 비상정지 해제(cleared=true)·idle 복귀가 안 됐습니다")
+    if not h.wait_until(lambda: tap.home and tap.home[-1] == "home", timeout=60):
+        problems.append(f"[erut] 초기화 뒤 팔을 홈으로 거두지 않았습니다: {tap.home}")
+    else:
+        log("  초기화 뒤 evt/home → home (스스로 거둠)")
 
     refused = [r for r in tap.responses if r["code"] >= 300]
     if refused:

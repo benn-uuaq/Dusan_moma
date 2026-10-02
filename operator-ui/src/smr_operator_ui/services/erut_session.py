@@ -108,6 +108,9 @@ class ErutSession(QObject):
     job_requested = pyqtSignal(object, bool)
     # 준비해 둔 구간에서 로봇을 시작해 달라는 요청(start). 3점 측정부터 한다.
     proceed_requested = pyqtSignal()
+    # 장애가 풀렸다(ERUT req/reset 또는 화면 알람 리셋). 푼 코드 목록.
+    # 앱은 이걸 받아 쉬는 팔을 홈으로 거둔다(쉬는 동안 home — if-0.5/0.6).
+    errors_cleared = pyqtSignal(list)
     pause_requested = pyqtSignal()
     resume_requested = pyqtSignal()
     abort_requested = pyqtSignal()
@@ -1127,6 +1130,8 @@ class ErutSession(QObject):
         codes = list(self._errors)
         for code in codes:
             self._clear(code)
+        if codes:
+            self.errors_cleared.emit(codes)
         return codes
 
     def error_codes(self) -> list[str]:
