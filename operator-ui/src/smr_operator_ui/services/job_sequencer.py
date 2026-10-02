@@ -176,6 +176,9 @@ class JobSequencer(QObject):
     # 계속 돌린다. 차량·리프트·배터리 쪽 장애로 작업을 세울 때도 로봇 팔은
     # 그대로 벽을 훑고 있게 되므로, 멈춤은 반드시 로봇까지 내려가야 한다.
     robot_stop_requested = pyqtSignal()
+    # 스캔 중 일시정지 / 재개 — 로봇 태스크를 그 자리에 세웠다가(pause) 잇는다(play).
+    robot_pause_requested = pyqtSignal()
+    robot_resume_requested = pyqtSignal()
     # 아웃트리거로 차량을 고정해 달라는 요청. 더미 어댑터가 받는다.
     secure_requested = pyqtSignal()
     # 로봇을 안전 위치로 물리라는 요청. 더미 어댑터가 받는다.
@@ -293,9 +296,15 @@ class JobSequencer(QObject):
                            SequencerState.DONE, SequencerState.STOPPED):
             return
         self._resume_state = self._state
+        scanning = self._state is SequencerState.SCANNING
         self._set_state(SequencerState.PAUSED)
-        # 로봇도 같이 세운다. 재개하면 resume() 이 제로점부터 다시 play 한다.
-        self.robot_stop_requested.emit()
+        # 로봇도 같이 세운다. 스캔 중이면 태스크를 그 자리에 pause 하고(재개 때
+        # play 로 이어 간다), 그 밖의 단계(차량·리프트 이동 등)에서는 태스크가
+        # 안 돌고 있으므로 stop 으로 확실히 세운다.
+        if scanning:
+            self.robot_pause_requested.emit()
+        else:
+            self.robot_stop_requested.emit()
         self.activity.emit(f"{self.current_cell()} 에서 일시정지했습니다.")
 
     def resume(self) -> None:
@@ -304,9 +313,9 @@ class JobSequencer(QObject):
             return
         self._set_state(self._resume_state)
         self.activity.emit(f"{self.current_cell()} 에서 재개했습니다.")
-        # 스캔 도중 멈췄으면 로봇은 제로점에서 다시 시작해야 한다.
+        # 스캔 도중 멈췄으면 로봇은 멈춘 자리에서 잇는다(play).
         if self._state is SequencerState.SCANNING:
-            self._start_scan()
+            self.robot_resume_requested.emit()
 
     def stop(self) -> None:
         """순회를 완전히 중단한다."""

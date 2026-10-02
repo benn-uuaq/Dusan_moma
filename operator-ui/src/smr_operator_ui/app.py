@@ -629,6 +629,7 @@ class OperatorWindow(QMainWindow):
         self.ros_status.scan_arc_changed.connect(self._on_scan_arc)
         self.ros_status.scan_state_changed.connect(self._track_erut_contact)
         self.ros_status.command_result.connect(self._on_home_command_result)
+        self.ros_status.command_result.connect(self._on_pause_command_result)
         # 캘리브레이션: 모재 치수를 받아 작업 영역을 고치고 로봇 3점 측정을 돌린다.
         self.erut_session.calibration_requested.connect(self._run_calibration)
         self.erut_session.calibration_stop_requested.connect(self._pause_calibration_lap)
@@ -798,6 +799,8 @@ class OperatorWindow(QMainWindow):
         seq.work_area_requested.connect(self._send_work_area)
         seq.robot_start_requested.connect(self._start_robot_scan)
         seq.robot_stop_requested.connect(self._stop_robot_scan)
+        seq.robot_pause_requested.connect(self._pause_robot_scan)
+        seq.robot_resume_requested.connect(self._resume_robot_scan)
         self.ros_status.scan_state_changed.connect(seq.handle_scan_state)
         self.ros_status.scan_state_changed.connect(self._handle_probe_error)
         self.ros_status.scan_state_changed.connect(self._handle_alive)
@@ -912,6 +915,9 @@ class OperatorWindow(QMainWindow):
 
     # 로봇 컨트롤러가 주는 태스크 상태(레지스터 500). 1 = 실행 중.
     _TASK_STATE_RUNNING = 1
+    #: 29999 pause 로 세운 태스크. 팔은 벽에 붙은 채 그 자리에 서 있고, play 가
+    #: 오면 거기서 잇는다 — 실행 중과 똑같이 취급한다(차량·리프트·홈 금지).
+    _TASK_STATE_PAUSED = 2
     # 작업 영역 중 다이얼로그가 안 묻는 값들. 화면에서 고칠 때 이어 붙인다.
     _work_area_extra: dict = {
         "radius_mm": 0.0, "thickness_mm": 0.0,
@@ -939,8 +945,7 @@ class OperatorWindow(QMainWindow):
         """
         if not getattr(self, "_robot_link_up", False):
             return "로봇 Modbus 연결이 없습니다"
-        state = getattr(self, "_robot_task_state", None)
-        if state == self._TASK_STATE_RUNNING:
+        if self._robot_task_running():
             return "로봇 태스크가 실행 중입니다"
         return ""
 
@@ -1084,7 +1089,9 @@ class OperatorWindow(QMainWindow):
     ROBOT_TASK_WAIT_MS = 30_000
 
     def _robot_task_running(self) -> bool:
-        return getattr(self, "_robot_task_state", 0) == self._TASK_STATE_RUNNING
+        """태스크가 살아 있는가 — 실행 중이거나 **일시정지**(그 자리에 서 있음)."""
+        return getattr(self, "_robot_task_state", 0) in (
+            self._TASK_STATE_RUNNING, self._TASK_STATE_PAUSED)
 
     def _home_interlock_active(self) -> bool:
         """홈 위치까지 확인해야 하는 상황인가.
@@ -1396,11 +1403,10 @@ class OperatorWindow(QMainWindow):
 
         둘 중 하나면 동작 중으로 본다.
           * RCS 작업이 도는 중 (스캔 순회·마킹, 일시정지 포함)
-          * 로봇 태스크가 실행 중 (레지스터 500 == 1) — 프로브·원점 대기·
+          * 로봇 태스크가 실행 중·일시정지 (레지스터 500 == 1, 2) — 프로브·원점 대기·
             ㄹ자·마킹 어느 단계든, 펜던트에서 직접 튼 경우도 여기 걸린다.
         """
-        return (self._job_running()
-                or getattr(self, "_robot_task_state", 0) == self._TASK_STATE_RUNNING)
+        return self._job_running() or self._robot_task_running()
 
     def _request_home(self) -> None:
         """RCS 의 '로봇 홈' — 로봇이 쉬고 있을 때만 홈으로 보낸다.
@@ -1435,17 +1441,83 @@ class OperatorWindow(QMainWindow):
         self._position_stale = True
         self.main_screen.rect_view.park_position()
 
+    def _pause_robot_scan(self) -> None:
+        """스캔 중 일시정지 — 로봇 태스크를 29999 `pause` 로 그 자리에 세운다.
+
+        stop 이 아니다. stop 은 태스크를 끝내 버려 재개가 처음(3점 측정)부터
+        다시 시작된다. pause 는 줄 한가운데서도 그 자리에 서고, 재개(`play`)
+        하면 멈춘 곳에서 잇는다.
+
+        play 를 아직 안 보냈으면(시작 직후 대기 중) 태스크는 이미 서 있다 —
+        play 만 거둬 두고 재개 때 처음부터 튼다.
+        """
+        timer = getattr(self, "_play_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+            self._resume_needs_restart = True
+            self.main_screen.show_activity("일시정지 — 로봇은 아직 출발 전입니다.")
+            return
+        self._resume_needs_restart = False
+        self._pause_sent = True
+        self.ros_status.call_command("remote_control_on")
+        self.ros_status.call_command("pause")
+        self.main_screen.show_activity("로봇을 그 자리에 일시정지합니다(pause).")
+
+    def _resume_robot_scan(self) -> None:
+        """일시정지한 자리에서 잇는다 — 29999 `play`.
+
+        태스크가 일시정지(500 = 2)여야 그 자리에서 이어진다. 그 사이 펜던트·
+        장애 등으로 태스크가 **중지**됐으면 이어 갈 자리가 없으므로 구간을
+        처음부터 다시 튼다(알리고 한다).
+        """
+        if getattr(self, "_resume_needs_restart", False):
+            self._resume_needs_restart = False
+            self._start_robot_scan()
+            return
+        state = getattr(self, "_robot_task_state", None)
+        if state == self._TASK_STATE_PAUSED:
+            self.ros_status.call_command("remote_control_on")
+            self.ros_status.call_command("play")
+            self.main_screen.show_activity("재개 — 로봇이 멈춘 자리에서 잇습니다(play).")
+            return
+        if state == self._TASK_STATE_RUNNING:
+            # pause 가 안 먹었다(그동안 계속 돌았다). 더 할 것 없다.
+            self.main_screen.show_activity("재개 — 로봇 태스크가 이미 돌고 있습니다.")
+            return
+        text = (f"재개 — 로봇 태스크가 일시정지 상태가 아니라"
+                f"{self._task_state_note()} 멈춘 자리에서 이을 수 없습니다. "
+                f"{self.sequencer.current_cell()} 구간을 처음부터 다시 합니다.")
+        self.main_screen.show_activity(text)
+        self.cobot_manual_screen.add_alarm(text)
+        self._start_robot_scan()
+
+    def _on_pause_command_result(self, name: str, ok: bool, message: str) -> None:
+        """pause 를 로봇이 거절하면 세우기만은 반드시 한다 — stop 으로 대신한다.
+
+        이 경우 태스크가 끝나므로 재개는 구간을 처음부터 다시 한다.
+        """
+        if name != "pause" or not getattr(self, "_pause_sent", False):
+            return
+        self._pause_sent = False
+        if ok:
+            return
+        text = f"로봇이 일시정지(pause)를 거절했습니다 — {message}. 대신 정지(stop)합니다."
+        self.main_screen.show_activity(text)
+        self.cobot_manual_screen.add_alarm(text)
+        self._resume_needs_restart = True
+        self._stop_robot_scan()
+
     def _stop_robot_scan(self) -> None:
-        """로봇 태스크를 멈춘다. 장애·일시정지·정지가 모두 여기로 모인다.
+        """로봇 태스크를 멈춘다. 장애·정지·abort 가 여기로 모인다.
 
         순회(시퀀서)를 멈추는 것만으로는 로봇이 서지 않는다 — 로봇은 자기
         태스크를 계속 돌리기 때문이다. 장애가 로봇 자신이 아니라 차량·리프트·
         배터리 쪽에서 나도 팔은 계속 벽을 훑게 되므로, 멈춤은 반드시 로봇까지
         내려가야 한다.
 
-        `pause` 가 아니라 `stop` 을 쓴다. 재개는 `_start_robot_scan()` 이
-        제로점부터 다시 play 하는 방식이라, 태스크를 중간에 붙들고 있을
-        이유가 없다. 원격 제어 모드가 아니면 컨트롤러가 stop 을 거부하므로
+        여기는 **끝내는** 멈춤(장애·정지·abort)이다. 스캔 중 일시정지는
+        `_pause_robot_scan()` 이 29999 `pause` 로 그 자리에 세우고, 재개는
+        `play` 로 잇는다. 원격 제어 모드가 아니면 컨트롤러가 stop 을 거부하므로
         (`not supported in local control mode`) 먼저 켜 준다.
 
         같은 정지가 여러 경로로 겹쳐 들어올 수 있는데(장애 + 순회 일시정지),

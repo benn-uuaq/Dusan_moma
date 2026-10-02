@@ -228,6 +228,8 @@ class ScanTaskSim(threading.Thread):
         self.max_rows = max(1, int(max_rows))
         self._start_requested = threading.Event()
         self._abort = threading.Event()
+        # 29999 pause 로 세운 상태. play 가 오면 처음부터가 아니라 그 자리에서 잇는다.
+        self._paused = threading.Event()
         self._alive_count = 0
         self._set(self.HOME_FLAG, 1)
         self._set(self.TASK_STATE, 3)
@@ -242,11 +244,26 @@ class ScanTaskSim(threading.Thread):
         self.task_path = path
 
     def play(self) -> None:
-        """제로점에서 프로그램을 다시 재생한다."""
+        """일시정지 중이면 그 자리에서 잇고, 아니면 프로그램을 처음부터 돌린다."""
+        if self._paused.is_set():
+            self._paused.clear()
+            self._set(self.TASK_STATE, 1)
+            print("[Task] 재개 — 멈춘 자리에서 잇는다")
+            return
         self._abort.set()          # 돌고 있으면 먼저 접는다
         self._start_requested.set()
 
+    def pause(self) -> bool:
+        """돌고 있는 태스크를 그 자리에 세운다(500 = 2). 안 돌고 있으면 거절."""
+        if self._get(self.TASK_STATE) != 1:
+            return False
+        self._paused.set()
+        self._set(self.TASK_STATE, 2)
+        print("[Task] 일시정지")
+        return True
+
     def stop(self) -> None:
+        self._paused.clear()
         self._abort.set()
         self._start_requested.clear()
         self._set(self.STATE, 0)
@@ -264,10 +281,23 @@ class ScanTaskSim(threading.Thread):
     def _get(self, address: int) -> int:
         return self.bank.read(address, 1)[0]
 
+    def _hold_while_paused(self) -> bool:
+        """일시정지 동안 그 자리에 선다(시간이 흐르지 않는다). 중단이면 False."""
+        while self._paused.is_set():
+            if self._abort.is_set():
+                return False
+            time.sleep(0.05)
+        return not self._abort.is_set()
+
     def _tick(self, seconds: float) -> bool:
-        """지정한 시간만큼 대기한다. 중단 요청이 오면 False."""
+        """지정한 시간만큼 대기한다. 중단 요청이 오면 False. 일시정지 동안은 멈춘다."""
         end = time.time() + seconds
         while time.time() < end:
+            if self._paused.is_set():
+                left = end - time.time()
+                if not self._hold_while_paused():
+                    return False
+                end = time.time() + left
             if self._abort.is_set():
                 return False
             self._alive_count = (self._alive_count + 1) % 30000
@@ -279,6 +309,8 @@ class ScanTaskSim(threading.Thread):
         """레지스터가 원하는 값이 될 때까지 기다린다. 중단·시간 초과면 False."""
         end = time.time() + limit_s
         while time.time() < end:
+            if self._paused.is_set() and not self._hold_while_paused():
+                return False
             if self._abort.is_set():
                 return False
             if self._get(address) == value:
@@ -498,7 +530,6 @@ class DashboardServer(threading.Thread):
             "robotControl -on": "Powering on",
             "robotControl -off": "Powering off",
             "brakeRelease": "Brake releasing",
-            "pause": "Pausing program",
         }
         if command == "variable -get Home_joint":
             home = [round(v / 1000.0, 6) for v in self.motion.home_joints_mrad()]
@@ -507,9 +538,12 @@ class DashboardServer(threading.Thread):
             self.task.load(command[len("task -p "):].strip())
             reply = f"ok: {command}"
         elif command == "play":
-            # 실제 로봇처럼 제로점에서 태스크를 처음부터 다시 돌린다.
+            # 일시정지 중이면 그 자리에서 잇고, 아니면 처음부터 돌린다.
             self.task.play()
             reply = "Starting program"
+        elif command == "pause":
+            reply = ("Pausing program" if self.task.pause()
+                     else "Failed to execute: pause")
         elif command == "stop":
             self.motion.stop_all()
             self.task.stop()

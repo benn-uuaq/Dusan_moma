@@ -7,7 +7,7 @@
   mc     사내 MC 규격: job_cmd 로 1A 부터 마지막 셀까지 순회한다.
          원점마다 프로브 확인(probe_ack)을 보내 스캔을 풀어 준다.
   erut   ERUT 표준(if-0.5): 자기소개 → calibrate(차량 한 바퀴) → prepare(차량만)
-         → start(3점 → contact → 스캔) → mark(mark_ready ↔ mark_next) → home
+         → start(3점 → contact → 스캔, 줄 중간 pause/resume) → mark(mark_ready ↔ mark_next) → home
          → 비상정지 → reset.
   io     로봇 디지털 출력(레지스터 2)을 화면 경로로 켜고 끈다.
   tpac   TPAC 브리지가 스캔 구간 신호(DO[0..2])를 내보내는지 본다.
@@ -52,6 +52,7 @@ os.environ["ROS_DOMAIN_ID"] = os.environ.get("SIM_TEST_ROS_DOMAIN", "77")
 
 # 로봇 태스크가 쓰는 레지스터 (dus_*.script 참고).
 STATE_REG, SEGMENT_REG, DIGITAL_OUT_REG = 290, 277, 2
+TASK_REG = 500
 STATE_AT_ORIGIN, STATE_DONE = 7, 5
 #: 시뮬레이터가 벽을 입력값보다 이만큼 어긋나게 둔다 [mm]. 캘리브레이션이 잡아낸다.
 WALL_ERROR_MM = 0.3
@@ -324,8 +325,35 @@ def scenario_erut(h: Harness) -> list[str]:
     session.handle_request("start", {"req_id": "start-1", "job_id": "jb-erut",
                                      "surface": "outer", "area": area,
                                      "scan": {"pitch": 20, "speed": 100}})
-    if not h.wait_until(lambda: tap.event("complete", "start"), timeout=180):
+
+    # 줄 한가운데서 일시정지 → 재개: 태스크를 끝내지 않고 그 자리에 세웠다가
+    # (pause, 500 = 2) 그 자리에서 잇는다(play). 3점 측정부터 다시 하면 안 된다.
+    if not h.wait_until(lambda: h.register(STATE_REG)[0] == 6
+                        and h.register(SEGMENT_REG)[0] in (1, 3), timeout=120, poll=0.02):
+        return problems + ["[erut] 스캔 중인 순간을 못 잡았습니다"]
+    session.handle_request("pause", {"req_id": "pz-scan"})
+    if not h.wait_until(lambda: h.register(TASK_REG)[0] == 2, timeout=10):
+        problems.append(f"[erut] 일시정지가 로봇 pause 로 가지 않았습니다 — 500="
+                        f"{h.register(TASK_REG)[0]}")
+    frozen = h.register(STATE_REG, 2)
+    h.pump(1.5)
+    still = h.register(STATE_REG, 2)
+    log(f"  줄 한가운데서 일시정지 — 290/291 {frozen} → 1.5초 뒤 {still} · 500=2")
+    if still != frozen:
+        problems.append(f"[erut] 일시정지 중에 로봇이 계속 진행했습니다: {frozen} → {still}")
+    session.handle_request("resume", {"req_id": "rs-scan"})
+    states_after: list[int] = []
+
+    def resumed_and_done() -> bool:
+        states_after.append(h.register(STATE_REG)[0])
+        return bool(tap.event("complete", "start"))
+
+    if not h.wait_until(resumed_and_done, timeout=180, poll=0.02):
         return problems + ["[erut] 구간 완료(evt/complete)가 오지 않았습니다"]
+    if any(state in (2, 3, 7) for state in states_after):
+        problems.append("[erut] 재개가 3점 측정부터 다시 시작했습니다 — 그 자리에서 이어야 합니다")
+    else:
+        log("  재개 — 3점 측정 없이 멈춘 자리에서 이어 끝까지 훑었다")
     done = tap.event("complete", "start")
     log(f"  구간 완료: {done.get('job_id')} · 스캔 거리 {done.get('scanned_distance_mm')} mm"
         f" · 위치 {done.get('location')}")

@@ -636,8 +636,10 @@ class ErutSession(QObject):
             f"시작점에 붙었습니다 — 물 공급을 기다렸다가 {CONTACT_LEAD_MS / 1000:g}초 뒤 적심을 시작합니다.")
 
         def release() -> None:
-            # 그 사이 abort·장애로 작업이 바뀌었으면 풀지 않는다.
-            if self._start_req_id == req_id:
+            # 그 사이 abort·장애로 작업이 바뀌었거나 일시정지했으면 풀지 않는다.
+            # 일시정지 중이면 재개 뒤 로봇이 다시 원점 대기로 잡혀 새로 센다.
+            if (self._start_req_id == req_id
+                    and self.sequencer.state is not SequencerState.PAUSED):
                 self.scan_go_requested.emit()
 
         self._after(CONTACT_LEAD_MS, release)

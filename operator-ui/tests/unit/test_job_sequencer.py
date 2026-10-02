@@ -259,12 +259,15 @@ def test_scan_in_progress_does_not_advance(qtbot) -> None:
     assert h.cells == ["1A"]
 
 
-def test_pause_blocks_advance_and_resume_restarts_scan(qtbot) -> None:
+def test_pause_blocks_advance_and_resume_continues_in_place(qtbot) -> None:
     """일시정지 중에는 완료 신호를 받아도 넘어가지 않는다.
 
-    재개하면 로봇은 제로점에서 다시 play되어야 한다.
+    재개는 태스크를 처음부터 다시 틀지 않는다(play 를 새로 걸지 않는다) —
+    멈춘 자리에서 잇도록 로봇에 재개를 요청한다.
     """
     h = Harness(_plan(columns=1, rows=2))
+    resumes: list[int] = []
+    h.seq.robot_resume_requested.connect(lambda: resumes.append(1))
     h.start()
     h.settle()
     plays_before = h.plays
@@ -277,23 +280,40 @@ def test_pause_blocks_advance_and_resume_restarts_scan(qtbot) -> None:
 
     h.seq.resume()
     assert h.seq.state is SequencerState.SCANNING
-    assert h.plays == plays_before + 1
+    assert h.plays == plays_before, "재개가 셀을 처음부터 다시 틀었다"
+    assert resumes == [1]
 
 
-def test_pause_also_stops_the_robot(qtbot) -> None:
-    """일시정지는 로봇 태스크까지 세워야 한다.
+def test_pause_during_scan_pauses_the_robot_in_place(qtbot) -> None:
+    """스캔 중 일시정지는 로봇 태스크를 끝내지(stop) 않고 그 자리에 세운다(pause).
 
-    순회만 멈추면 로봇은 자기 태스크를 계속 돌려 벽을 훑는다. 장애가
-    차량·리프트·배터리 쪽에서 나도 마찬가지이므로 멈춤은 로봇까지 내려가야 한다.
+    순회만 멈추면 로봇은 자기 태스크를 계속 돌려 벽을 훑으므로 반드시 로봇까지
+    내려가야 한다. stop 이면 태스크가 끝나 재개가 처음부터가 된다.
     """
     h = Harness(_plan(columns=1, rows=2))
+    pauses: list[int] = []
+    h.seq.robot_pause_requested.connect(lambda: pauses.append(1))
     h.start()
     h.settle()
     h.seq.handle_scan_state(SCAN_RUNNING)
     stops_before = h.stops
 
     h.seq.pause()
-    assert h.stops == stops_before + 1, "일시정지가 로봇까지 내려가지 않았다"
+    assert pauses == [1], "일시정지가 로봇까지 내려가지 않았다"
+    assert h.stops == stops_before
+
+
+def test_pause_outside_the_scan_stops_the_robot(qtbot) -> None:
+    """차량·리프트가 움직이는 단계에서는 태스크가 안 돈다 — stop 으로 확실히 세운다."""
+    h = Harness(_plan(columns=1, rows=2))
+    pauses: list[int] = []
+    h.seq.robot_pause_requested.connect(lambda: pauses.append(1))
+    h.start()                               # 고정(SECURING) 중
+    stops_before = h.stops
+
+    h.seq.pause()
+    assert pauses == []
+    assert h.stops == stops_before + 1
 
 
 def test_stop_also_stops_the_robot(qtbot) -> None:
