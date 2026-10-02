@@ -133,3 +133,23 @@ def test_the_robot_starts_at_once_when_the_vehicle_is_already_secured(qtbot) -> 
 
     assert started == ["play"]
     window.close()
+
+
+def test_calibration_loads_the_scan_task_first(qtbot):
+    """3점 측정은 스캔 태스크 앞부분이다 — 마킹 태스크가 올라가 있으면 안 된다."""
+    window = _window(qtbot)
+    window.erut.publish_event = lambda *a, **kw: True
+    window.erut.publish_res = lambda *a, **kw: True
+    calls: list[str] = []
+    window.ros_status.call_command = lambda name: calls.append(name) or True
+    window.ros_status.set_task_paths = lambda scan, mark: calls.append("paths") or True
+    window._start_robot_scan = lambda: calls.append("play")
+    window._push_work_area_to_robot = lambda *values: None
+    window.outrigger.reset(1)
+
+    window.erut_session.handle_request(
+        "calibrate", {"req_id": "cal-4", "diameter": 1690, "height": 6000})
+
+    assert calls.index("load_scan_task") < calls.index("play")
+    assert "paths" in calls
+    window.close()

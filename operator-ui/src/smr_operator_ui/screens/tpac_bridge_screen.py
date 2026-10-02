@@ -405,7 +405,8 @@ class TpacBridgeScreen(BaseScreen):
     def _stop_robot(self) -> None:
         if self.poller is None:
             return
-        self.poller.stop()
+        # 연결 시도 중이면 1초(접속 타임아웃)까지 막혀 있다 — 그 뒤에 끝난다.
+        self.poller.stop(wait=2.0)
         self.poller = None
         self._set_read_fields_enabled(True)
         self.robot_status.setText("● 연결 안 됨")

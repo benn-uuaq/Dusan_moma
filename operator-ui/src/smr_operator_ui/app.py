@@ -2389,6 +2389,11 @@ class OperatorWindow(QMainWindow):
         self._calibration_deadline = time.monotonic() + self.CALIBRATION_TIMEOUT_MS / 1000.0
         self.main_screen.show_activity(
             f"캘리브레이션: 벽 반지름 {radius_mm:g} mm 로 로봇 3점 측정을 시작합니다.")
+        # 3점 측정은 **스캔 태스크**의 앞부분이다. 직전에 마킹 태스크가 올라가
+        # 있으면 그게 돌아 엉뚱한 자리로 간다 — ERUT 구간 시작과 같이 체크한
+        # 판의 스캔 태스크를 먼저 불러 둔다.
+        self._push_task_paths()
+        self._load_scan_task()
         # 로봇이 벽을 누르는 동안 차량이 굳어 있어야 한다(안전 순서 1단계).
         # 고정이 안 돼 있으면 먼저 고정하고, 끝나면 그때 로봇을 돌린다 —
         # 안 그러면 로봇이 차량 고정 확인(309)을 기다리다 멈춘다.

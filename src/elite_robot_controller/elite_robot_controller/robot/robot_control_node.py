@@ -42,6 +42,10 @@ class RobotControlNode(Node):
         # stop 신호가 아예 안 왔을 때"의 안전 타임아웃일 뿐이다 — 평소 조그
         # 조작을 방해하지 않을 만큼 넉넉하게 잡는다.
         self.declare_parameter('jog_hold_time', 3.0)
+        # 홈 판정 허용 오차 [rad]. 태스크의 home_tol_j 와 같은 값이다.
+        self.declare_parameter('home_tol_j', 0.02)
+        # 로봇의 Home_joint 를 29999 로 다시 읽어 오는 간격 [s].
+        self.declare_parameter('home_refresh_s', 60.0)
         robot_ip = self.get_parameter('robot_ip').get_parameter_value().string_value
         map_path = self.get_parameter('register_map').get_parameter_value().string_value
         self.registers = register_map.load(map_path or None)
@@ -61,6 +65,12 @@ class RobotControlNode(Node):
         self._connect_lock = threading.Lock()
         # 로봇 자체 속도 비율 [%]. 조그 속도도 이 값을 따른다.
         self.speed_ratio = 100
+        # 마지막으로 읽은 레지스터 값(publish_code) · 관절값 [mrad].
+        self._last_codes = {}
+        self._last_joint_mrad = None
+        # 홈 관절값 [rad] 과 그걸 읽어 온 때. 태스크가 안 돌 때 276 을 직접 판정한다.
+        self._home_target = None
+        self._home_target_at = 0.0
 
         # 발행할 토픽 정의
         self.pub_robot_mode = self.create_publisher(Int32, 'robot/status/robot_mode', 10)
@@ -324,6 +334,7 @@ class RobotControlNode(Node):
         self.publish_raw('scan_state', self.pub_scan_state)
         self.publish_raw('scan_arc', self.pub_scan_arc)
         self.publish_code('task_state', self.pub_task_state)
+        self._watch_home()
         self.publish_code('home_flag', self.pub_home_flag)
         self.publish_code('speed_scale', self.pub_speed_scale)
         self.publish_code('digital_in', self.pub_digital_in)
@@ -360,6 +371,7 @@ class RobotControlNode(Node):
             value = None
         if value is None:
             return False
+        self.__dict__.setdefault('_last_codes', {})[name] = value
         publisher.publish(Int32(data=value))
         return True
 
@@ -377,6 +389,8 @@ class RobotControlNode(Node):
         if not regs or len(regs) != entry.count:
             return
 
+        if name == 'joint_position':
+            self._last_joint_mrad = list(regs)
         scales = self.registers.scales_for(entry)
         pose_msg = Float32MultiArray()
         pose_msg.data = [value * scale for value, scale in zip(regs, scales)]
@@ -608,6 +622,60 @@ class RobotControlNode(Node):
     def cb_vehicle_ready(self, msg):
         """차량 고정 확인을 레지스터 309 에 그대로 전한다(1 고정 / 0 아님)."""
         self._write_topic('vehicle_ready', Int32(data=1 if int(msg.data) else 0))
+
+    # ---------------------------------------------------------------- 홈 판정
+    #: 태스크 상태(500) 중 태스크가 직접 276 을 쓰는 값(실행 중).
+    _TASK_RUNNING = 1
+
+    def _home_joint_target(self):
+        """홈 관절값 [rad]. 308 이 1 이면 310~315, 아니면 로봇의 Home_joint.
+
+        태스크(dus_init)와 홈 이동 스크립트가 고르는 방식과 같다. 29999 로
+        읽는 값은 home_refresh_s 마다 다시 읽는다(펜던트에서 고칠 수 있다).
+        """
+        override = self.registers.read_entry('pose_src')
+        write_override = self.registers.write_entry('pose_src')
+        address = (override if override.available else write_override).address
+        if address is not None and self.robot_modbus.get_register(address) == 1:
+            regs = self.robot_modbus.get_all_registers(310, 6)
+            if regs and len(regs) == 6 and any(regs):
+                return [v / 1000.0 for v in regs]
+        now = time.monotonic()
+        refresh = self.get_parameter('home_refresh_s').value
+        if getattr(self, '_home_target', None) is None \
+                or now - getattr(self, '_home_target_at', 0.0) > refresh:
+            value = self.robot_dash.get_variable('Home_joint')
+            self._home_target_at = now
+            if isinstance(value, list) and len(value) == 6:
+                self._home_target = [float(v) for v in value]
+        return getattr(self, '_home_target', None)
+
+    def _watch_home(self):
+        """태스크가 안 도는 동안 홈 플래그(276)를 실제 관절값으로 판정해 쓴다.
+
+        태스크가 돌 때는 태스크의 발행 스레드가 제어주기마다 276 을 쓴다.
+        안 돌 때는 아무도 안 써서, RCS 를 막 켰을 때(레지스터 0)나 펜던트로
+        손으로 옮긴 뒤에는 값이 실제와 달랐다 — 로봇이 홈에 있는데도 ERUT 에
+        deployed 로 나가 캘리브레이션을 못 받는다(if-0.5 evt/home). 관절값을
+        홈 관절과 비교해(태스크와 같은 허용 오차) 값이 다를 때만 고쳐 쓴다.
+        홈 관절을 모르면 건드리지 않는다.
+        """
+        if getattr(self, '_last_codes', {}).get('task_state') == self._TASK_RUNNING:
+            return
+        joints = getattr(self, '_last_joint_mrad', None)
+        if not joints or len(joints) != 6:
+            return
+        target = self._home_joint_target()
+        if not target:
+            return
+        tol = float(self.get_parameter('home_tol_j').value)
+        at_home = all(abs(q / 1000.0 - h) <= tol for q, h in zip(joints, target))
+        entry = self.registers.read_entry('home_flag')
+        if not entry.available:
+            return
+        current = self.robot_modbus.get_register(entry.address)
+        if current is not None and bool(current) != at_home:
+            self.write_register('home_flag', 1 if at_home else 0)
 
     def _leaving_home(self):
         """로봇을 홈 밖으로 움직이기 직전에 홈 플래그를 내린다.

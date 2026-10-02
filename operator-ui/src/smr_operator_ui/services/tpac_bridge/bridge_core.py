@@ -70,8 +70,16 @@ class RobotPoller(threading.Thread):
         self.err_count = 0
 
     # ------------------------------------------------------------------
-    def stop(self):
+    def stop(self, wait: float = 0.0):
+        """폴링을 멈춘다. `wait` 초까지 스레드가 끝나기를 기다린다.
+
+        스레드는 끝나면서 on_conn·on_log 를 한 번 더 부른다. 화면을 닫는
+        중이면(앱 종료) 그 사이 화면이 지워져, 지워진 객체에 신호를 보내다
+        프로세스가 죽었다 — 그래서 닫을 때는 끝날 때까지 기다린다.
+        """
         self._running = False
+        if wait and self.is_alive() and threading.current_thread() is not self:
+            self.join(wait)
 
     def run(self):
         self._running = True
