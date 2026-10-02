@@ -623,6 +623,7 @@ class OperatorWindow(QMainWindow):
         self.erut_session.robot_busy = self._robot_busy
         # 로봇 위치(호 위 거리·줄 높이·진행률)와 홈 플래그도 응답에 싣는다.
         self.erut_session.position_state = self._erut_position
+        self.erut_session.max_area_width = self._max_area_width
         self.erut_session.at_home = lambda: getattr(self, "_robot_at_home", None)
         self.erut_session.home_requested.connect(self._send_home_for_erut)
         self.erut_session.job_dropped.connect(self._drop_erut_job)
@@ -845,6 +846,18 @@ class OperatorWindow(QMainWindow):
             "moved": round(self.amr.position, 1),
         }
 
+    def _max_area_width(self) -> float:
+        """로봇이 한 번에 훑을 수 있는 최대 구간 가로(호 길이) [mm]. 모르면 0.
+
+        현 한계(MAX_PROBE_CHORD_MM, 700 mm)와 벽 바깥면 반지름으로 정한다.
+        반지름은 작업 영역 값, 없으면 검사 대상 지름의 절반(캘리브레이션과 같다).
+        """
+        extra = self._work_area_extra
+        radius = float(extra.get("radius_mm", 0) or 0)
+        if radius <= 0:
+            radius = self.main_screen.orbit_view.target_dimensions()[0] * 500.0
+        return max_safe_arc_mm(radius, float(extra.get("thickness_mm", 0) or 0))
+
     def _clamp_work_width(self, width_mm: float, radius_mm: float,
                           thickness_mm: float, eoat_w_mm: float) -> float:
         """호 길이를 충돌 안전 한계로 자르고, 잘렸으면 알린다.
@@ -854,11 +867,9 @@ class OperatorWindow(QMainWindow):
         안에서만 움직이므로, 그보다 긴 값을 그대로 그리면 **로봇이 따라올 수
         없는 경로를 화면에만 그리게 된다**(마커가 경로 끝에 못 닿는다).
         """
-        # 한계의 근거는 **좌우 프로브 사이** 거리다. EOAT 를 안 고르면
-        # (eoat_w = 0) 옆으로 벌어진 프로브 자체가 없어 이 제약이 성립하지
-        # 않는다 — 그때는 자르지 않는다.
-        if eoat_w_mm <= 0:
-            return width_mm
+        # 한계는 로봇 팔이 좌우로 갈 수 있는 현 길이다(700 mm) — EOAT 를
+        # 골랐든 안 골랐든 같다. 예전에는 EOAT 가 없으면 자르지 않아, 호
+        # 1000 mm 가 그대로 나가 로봇이 왼쪽 끝 자세를 못 풀고 멈췄다.
         limit = max_safe_arc_mm(radius_mm, thickness_mm, eoat_w_mm)
         if limit <= 0 or width_mm <= limit:
             return width_mm

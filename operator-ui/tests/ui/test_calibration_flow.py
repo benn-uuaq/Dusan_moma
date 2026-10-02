@@ -172,3 +172,16 @@ def test_prepared_area_is_placed_on_the_whole_circumference(qtbot):
     assert view._sections[3] == 2              # 지금 3번 구간(0 부터 2)
     assert window.main_screen.segment_label.text() == "03"
     window.close()
+
+
+def test_max_area_width_follows_the_700mm_chord(qtbot):
+    """지름 1690 (반지름 845) 이면 현 700 mm 가 되는 호는 약 721 mm."""
+    window = _window(qtbot)
+    window.main_screen.orbit_view.set_target_dimensions(1.69, 6.0)
+    window._work_area_extra["radius_mm"] = 0.0
+    window._work_area_extra["thickness_mm"] = 0.0
+
+    assert 715 <= window._max_area_width() <= 725
+    # EOAT 를 안 골라도 자른다 — 한계는 팔이 갈 수 있는 거리다.
+    assert window._clamp_work_width(1000.0, 845.0, 0.0, 0.0) <= 725
+    window.close()

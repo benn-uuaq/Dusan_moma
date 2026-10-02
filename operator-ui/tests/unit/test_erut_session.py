@@ -1073,3 +1073,27 @@ def test_contact_outside_an_erut_section_is_detached(session):
     s.set_contact(True)
 
     assert all(c["state"] == "detached" for c in client.contact)
+
+
+def test_area_wider_than_the_robot_can_reach_is_refused(session):
+    """구간 가로 1000 mm 는 반지름 845 에서 현 942 mm — 로봇 한계(700)를 넘는다.
+
+    줄여서 하면 구간 일부를 안 훑은 채 끝나므로 거절하고 최대값을 알려 준다
+    (실기 2026-10-02: 호 1000 이 그대로 나가 probe_l 역기구학 오류).
+    """
+    s, client, _seq = session
+    jobs: list = []
+    s.job_requested.connect(lambda plan, prepare_only: jobs.append(plan))
+    s.max_area_width = lambda: 721.0
+    wide = {"start": {"x": 0, "y": 1000}, "end": {"x": 1000, "y": 1500}}
+
+    _prepare(s, req_id="p-wide", area=wide)
+    _start(s, req_id="s-wide", area=wide)
+
+    assert jobs == []
+    refused = [r for r in client.res if r["code"] == 400]
+    assert [r["action"] for r in refused] == ["prepare", "start"]
+    assert refused[0]["reason"] == "area_width" and refused[0]["max_width"] == 721
+
+    _prepare(s, req_id="p-ok")             # 600 mm 는 된다
+    assert len(jobs) == 1

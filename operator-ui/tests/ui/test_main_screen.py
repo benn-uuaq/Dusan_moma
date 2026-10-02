@@ -222,14 +222,15 @@ def test_mqtt_arc_geometry_reaches_the_robot(qtbot, monkeypatch) -> None:
 
     mqtt_server.command_received.emit(MqttTopics.JOB_COMMAND, _job_command_payload(
         column_count="1", row_count="1",
-        cell_width="1214", cell_height="500", overlap="20",
+        cell_width="700", cell_height="500", overlap="20",
         radius="834.6", thickness="10",
     ))
 
     # 뒤 둘은 EOAT 가로/세로. 여기서는 안 골랐으므로 0 (격자 전체를 훑는다).
     # 마지막 값은 EOAT 종류(레지스터 264). 안 고르면 0 이다.
+    # 가로는 현 700 mm 한계(반지름 844.6 에서 호 약 721) 안의 값을 쓴다.
     assert sent_poses == [
-        ("work_area", [1214.0, 500.0, 300, 20.0, 8346, 100, 0, 0, 0.0])]
+        ("work_area", [700.0, 500.0, 300, 20.0, 8346, 100, 0, 0, 0.0])]
     window.close()
 
 

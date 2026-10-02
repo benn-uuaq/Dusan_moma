@@ -176,6 +176,8 @@ class ErutSession(QObject):
         self.position_state: Callable[[], dict] = dict
         # 로봇이 동작 중인가 (RCS 작업·로봇 태스크 실행)
         self.robot_busy: Callable[[], bool] = lambda: False
+        # 로봇이 한 번에 훑을 수 있는 최대 구간 가로(호 길이) [mm]. 0 이면 모름.
+        self.max_area_width: Callable[[], float] = lambda: 0.0
         # 로봇이 홈에 있는가 (레지스터 276). 모르면 None.
         self.at_home: Callable[[], bool | None] = lambda: None
         # 캘리브레이션 때 차량으로 잰 총 둘레 [mm]. 차량 자료가 오기 전엔 None.
@@ -631,6 +633,17 @@ class ErutSession(QObject):
         plan = self._read_plan(content)
         if plan is None:
             self._answer(req_id, action, 400, "BAD_REQUEST", reason="area")
+            return None
+        # 로봇은 좌우 현 700 mm 넘게 못 움직인다(호 1000 mm 를 받아 왼쪽 끝 자세의
+        # 역기구학이 안 풀려 멈춘 일이 있다 — 2026-10-02). 줄여서 하면 구간 일부를
+        # 안 훑은 채 끝나므로 거절하고 최대값을 알려 준다.
+        limit = float(self.max_area_width() or 0.0)
+        if limit > 0 and plan.cell_width > limit:
+            self.activity.emit(
+                f"ERUT {action}: 구간 가로 {plan.cell_width:.0f} mm 는 로봇이 한 번에 훑을 수"
+                f" 있는 최대 {limit:.0f} mm 를 넘어 거절합니다.")
+            self._answer(req_id, action, 400, "BAD_REQUEST", reason="area_width",
+                         max_width=int(limit))
             return None
         surface = str(content.get("surface", "")).strip()
         if surface and surface not in SURFACES:
