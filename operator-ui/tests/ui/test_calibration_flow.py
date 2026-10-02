@@ -153,3 +153,28 @@ def test_calibration_loads_the_scan_task_first(qtbot):
     assert calls.index("load_scan_task") < calls.index("play")
     assert "paths" in calls
     window.close()
+
+
+def test_nosensor_task_does_not_need_contact_counts(qtbot):
+    """논센서 판은 접촉 센서가 없어 305 가 0 이다 — 그래도 캘리브레이션이 된다."""
+    window = _window(qtbot)
+    window._nosensor = True
+    events: list[tuple] = []
+    window.erut.publish_event = lambda name, req, action, **kw: (
+        events.append((name, action, kw)) or True)
+    window.erut.publish_res = lambda *a, **kw: True
+    window._start_robot_scan = lambda: None
+    window._send_home = lambda: None
+    window._push_work_area_to_robot = lambda *values: None
+    window.outrigger.reset(1)
+    window.erut_session.handle_request(
+        "calibrate", {"req_id": "cal-ns", "diameter": 1690, "height": 6000})
+
+    window.ros_status.probe_poses_changed.emit(_arc_poses(855.0))
+    window.ros_status.probe_result_changed.emit([0, 0, 0, 0, 3, 0])
+    window.ros_status.scan_state_changed.emit(_scan_state(7))
+
+    name, action, payload = events[-1]
+    assert (name, action) == ("complete", "calibrate")
+    assert "calibration_error_mm" in payload
+    window.close()

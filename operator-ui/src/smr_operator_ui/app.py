@@ -2434,7 +2434,9 @@ class OperatorWindow(QMainWindow):
         result = calibration.evaluate(
             getattr(self, "_probe_poses", []),
             self._expected_wall_radius_mm(),
-            getattr(self, "_probe_result", []),
+            # 논센서 판은 눌림 센서가 없어 접촉 수(305)가 늘 0 이다 — 계산한 접점을
+            # 그대로 쓰므로 접촉 수는 보지 않는다(세 점이 다 기록됐는지만 본다).
+            None if getattr(self, "_nosensor", False) else getattr(self, "_probe_result", []),
         )
         self._finish_calibration(result.ok, result.describe(), result.error_mm)
 
