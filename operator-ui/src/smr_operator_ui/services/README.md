@@ -57,8 +57,9 @@
 
 ### `erut_session.py`
 
-- ERUT 표준 인터페이스 **if-0.4** 의 검사로봇 쪽 **프로토콜 계층**입니다. 표준 동작 9개(`calibrate`/`prepare`/`start`/`pause`/`resume`/`abort`/`reset`/`mark`/`query`)에 3S 확장 `home`·`mark_next` 를 더했고, 모르는 동작은 501 로 답합니다.
+- ERUT 표준 인터페이스 **if-0.5** 의 검사로봇 쪽 **프로토콜 계층**입니다. 표준 동작 9개(`calibrate`/`prepare`/`start`/`pause`/`resume`/`abort`/`reset`/`mark`/`query`)에 3S 확장 `home`·`mark_next` 를 더했고, 모르는 동작은 501 로 답합니다.
 - 상시 발행: `evt/status`(state 는 online/offline 만, 활동은 `activity` 8값 — 5초 + 바뀌면 바로), `evt/contact`(탐촉자 접촉 — ERUT 가 물을 켠다, 2초), `evt/info`(자기소개, 접속 시), `evt/progress`(2초, 정수·뒤로 안 감).
+- `evt/home`(if-0.5): 이동 안전 자세 home / deployed. 홈 플래그(276)로 정하고 모르면 deployed. 붙을 때 + 바뀔 때만 냅니다. ERUT 는 이동 명령(calibrate·prepare·다음 구역 start) 직전에 query 의 `home` 으로 판단하므로, 캘리브레이션 뒤·이동 전에는 RCS 가 로봇을 홈으로 거둡니다.
 - 받는 상태는 탭9(초안)대로: idle·ready 에서만 새 일을 받고, 다른 일 중이면 409, 장애 중이면 423. pause·abort·reset·query 는 늘 받는다.
 - 장애 해제는 발생 때와 같은 code 에 `cleared=true` 입니다. stop·estop 장애는 하던 일을 5xx 완료로 끝냅니다(비상정지 뒤에는 이어 가지 않는다 — if-0.4).
 - 진행률·완료에는 표준 `pos{x,y}` 와 3S 확장 `location{cell, vehicle_mm, lift_mm, robot}` 을 싣습니다 — 앞 구역 완료를 못 받은 채 다음 구역이 와도 어느 구역 값인지 가를 수 있게.

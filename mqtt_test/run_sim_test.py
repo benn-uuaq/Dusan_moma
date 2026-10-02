@@ -6,7 +6,7 @@
 
   mc     사내 MC 규격: job_cmd 로 1A 부터 마지막 셀까지 순회한다.
          원점마다 프로브 확인(probe_ack)을 보내 스캔을 풀어 준다.
-  erut   ERUT 표준(if-0.4): 자기소개 → calibrate → prepare → start → mark
+  erut   ERUT 표준(if-0.5): 자기소개 → calibrate(→ 홈으로 거둠) → prepare → start → mark
          (mark_ready ↔ mark_next) → home → 비상정지 → reset.
   io     로봇 디지털 출력(레지스터 2)을 화면 경로로 켜고 끈다.
   tpac   TPAC 브리지가 스캔 구간 신호(DO[0..2])를 내보내는지 본다.
@@ -220,6 +220,7 @@ class ErutTap:
         self.progress: list[dict] = []
         self.errors: list[dict] = []
         self.info: list[dict] = []
+        self.home: list[str] = []
         erut = window.erut
         erut.publish_event = lambda name, req, action, code=200, message="OK", **kw: (
             self.events.append((name, {"req_id": req, "action": action, "code": code,
@@ -234,6 +235,7 @@ class ErutTap:
         erut.publish_contact = lambda state, job_id: (
             self.contact.append({"state": state, "job_id": job_id}) or True)
         erut.publish_info = lambda content: self.info.append(content) or True
+        erut.publish_home = lambda state: self.home.append(state) or True
         erut.publish_error = lambda code, message, level, recovery, cleared=False, **kw: (
             self.errors.append({"code": code, "level": level, "cleared": cleared}) or True)
         erut.publish_message = lambda *a, **kw: True
@@ -264,7 +266,7 @@ def scenario_erut(h: Harness) -> list[str]:
     session.publish_info()
     info = tap.info[-1]
     log(f"\n[erut] 자기소개: 판 {info['interface_version']} · {', '.join(info['capabilities'])}")
-    if info["interface_version"] != "0.4" or "probe_contact" not in info["capabilities"]:
+    if info["interface_version"] != "0.5" or "home" not in info["capabilities"]:
         problems.append(f"[erut] 자기소개가 이상합니다: {info}")
 
     log("[erut] calibrate — 로봇이 벽을 세 번 눌러 좌표계를 잡는다")
@@ -276,6 +278,16 @@ def scenario_erut(h: Harness) -> list[str]:
     log(f"  캘리브레이션 오차: {error_mm} mm (시뮬레이터가 벽을 {WALL_ERROR_MM} mm 어긋나게 둠)")
     if error_mm is None or error_mm > 2.0:
         problems.append(f"[erut] 캘리브레이션 오차가 이상합니다: {result}")
+
+    # if-0.5: ERUT 는 이동 명령(prepare) 전에 query 로 home 인지 묻고, 아니면
+    # 10초까지 기다린다. 캘리브레이션 뒤 로봇이 스스로 홈으로 거둬야 한다.
+    if not h.wait_until(lambda: tap.home and tap.home[-1] == "home", timeout=30):
+        problems.append(f"[erut] 캘리브레이션 뒤 홈 자세(evt/home)로 돌아오지 않았습니다: {tap.home}")
+    session.handle_request("query", {"req_id": "q-home-1"})
+    home_answer = tap.responses[-1].get("home")
+    log(f"  캘리브레이션 뒤 evt/home: {tap.home[-1] if tap.home else None} · query home={home_answer}")
+    if home_answer != "home":
+        problems.append(f"[erut] prepare 전 query 의 home 이 {home_answer} 입니다")
 
     log("[erut] prepare — 준비 중(preparing) → 원점에서 ready")
     h.pump(1.0)
@@ -314,6 +326,11 @@ def scenario_erut(h: Harness) -> list[str]:
     if progress and (progress != sorted(progress)
                      or not all(isinstance(v, int) for v in progress)):
         problems.append(f"[erut] 진행률이 정수가 아니거나 뒤로 갔습니다: {progress}")
+    if "deployed" not in tap.home:
+        problems.append(f"[erut] 검사 중 evt/home 이 deployed 가 된 적이 없습니다: {tap.home}")
+    if not h.wait_until(lambda: tap.home and tap.home[-1] == "home", timeout=30):
+        problems.append(f"[erut] 구간을 마친 뒤 홈 자세로 거두지 않았습니다: {tap.home}")
+    log(f"  evt/home 흐름: {' → '.join(tap.home)}")
     if (done.get("location") or {}).get("cell") != "2A":
         problems.append(f"[erut] 완료의 구역 이름이 2A 가 아닙니다: {done.get('location')}")
 

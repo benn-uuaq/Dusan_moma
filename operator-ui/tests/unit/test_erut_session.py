@@ -1,7 +1,7 @@
-"""ERUT 표준 인터페이스(if-0.4) — 검사로봇 쪽 처리.
+"""ERUT 표준 인터페이스(if-0.5) — 검사로봇 쪽 처리.
 
 브로커 없이 돌리기 위해 `ErutClient` 자리에 발행 내용을 모으는 대역을 넣는다.
-규격은 `mqtt_test/ERUT_검사로봇_MQTT_표준인터페이스_if-0.4.xlsx` 탭1~5·8~10.
+규격은 `mqtt_test/ERUT_검사로봇_MQTT_표준인터페이스_if-0.5.xlsx` 탭1~5·8~10.
 """
 
 import pytest
@@ -24,6 +24,7 @@ class FakeClient:
         self.messages: list[dict] = []
         self.contact: list[dict] = []
         self.info: list[dict] = []
+        self.home: list[str] = []
         self.is_connected = True
 
     class _Sig:
@@ -58,6 +59,10 @@ class FakeClient:
 
     def publish_info(self, content):
         self.info.append(dict(content))
+        return True
+
+    def publish_home(self, state):
+        self.home.append(state)
         return True
 
     def publish_message(self, code, message, text, **extra):
@@ -551,12 +556,51 @@ def test_status_is_not_repeated_when_nothing_changed(session):
     assert len(client.status) == before
 
 
-def test_status_carries_the_home_flag(session):
+# ---- 이동 안전 자세 (if-0.5 evt/home) --------------------------------------------
+def test_home_goes_out_only_when_it_changes(session):
+    """evt/home 은 붙을 때 + 바뀔 때만 — 주기 재전송이 없다(탭2 14행)."""
+    s, client, _seq = session
+    at_home = {"v": True}
+    s.at_home = lambda: at_home["v"]
+    s.publish_home()
+    s.refresh_status()
+    s.refresh_status()
+    at_home["v"] = False
+    s.refresh_status()
+    at_home["v"] = True
+    s.refresh_status()
+
+    assert client.home == ["home", "deployed", "home"]
+
+
+def test_unknown_home_flag_is_deployed(session):
+    """모르면 위험한 쪽 — 홈 플래그를 아직 못 받았으면 deployed(탭5 130행)."""
+    s, client, _seq = session
+    s.at_home = lambda: None
+    s.publish_home()
+
+    assert client.home == ["deployed"]
+
+
+def test_query_carries_home(session):
+    """ERUT 는 이동 명령 직전에 query 의 home 으로 판단한다."""
+    s, client, _seq = session
+    s.at_home = lambda: True
+    s.handle_request(*_req("query", req_id="q1"))
+    assert client.res[-1]["home"] == "home"
+
+    s.at_home = lambda: False
+    s.handle_request(*_req("query", req_id="q2"))
+    assert client.res[-1]["home"] == "deployed"
+
+
+def test_status_no_longer_carries_at_home(session):
+    """홈 자세는 evt/home 으로 옮겼다 — evt/status 에 같은 뜻을 두 번 싣지 않는다."""
     s, client, _seq = session
     s.at_home = lambda: True
     s.publish_status()
 
-    assert client.status[-1]["at_home"] is True
+    assert "at_home" not in client.status[-1]
 
 
 def test_info_introduces_the_device(session):
@@ -564,10 +608,11 @@ def test_info_introduces_the_device(session):
     s.publish_info()
 
     info = client.info[-1]
-    assert info["interface_version"] == INTERFACE_VERSION == "0.4"
+    assert info["interface_version"] == INTERFACE_VERSION == "0.5"
     assert info["vendor"] == "3S" and info["device_type"] == "articulated_arm"
     assert "probe_contact" in info["capabilities"]
     assert "mark_positioning" in info["capabilities"]
+    assert "home" in info["capabilities"]
     # 마커는 ERUT 것이고 배터리 자료는 아직 없다.
     assert "marking" not in CAPABILITIES
     assert "battery" not in CAPABILITIES and "charging" not in CAPABILITIES

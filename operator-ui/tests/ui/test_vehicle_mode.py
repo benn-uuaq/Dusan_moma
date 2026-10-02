@@ -149,16 +149,58 @@ def _home(window, at_home: bool) -> None:
 
 
 def test_lift_waits_until_the_robot_reaches_home(window) -> None:
-    """태스크가 멈췄어도 팔이 벽 앞에 있으면(276 = 0) 리프트를 올리지 않는다."""
+    """태스크가 멈췄어도 팔이 벽 앞에 있으면(276 = 0) 리프트를 올리지 않는다.
+
+    기다리기만 하지 않고 **먼저 홈으로 거둔다**(ERUT if-0.5 — 이동하기 전에
+    스스로 home 으로 간다). 팔은 저절로 접히지 않는다.
+    """
+    said: list[str] = []
+    homes: list[int] = []
+    window.main_screen.activity_shown.connect(said.append)
+    window._send_home = lambda: homes.append(1)
     window._on_robot_task_state(3)                      # 태스크는 끝났다
     _home(window, False)                                # 그런데 홈이 아니다
     window.sequencer.lift_target_requested.emit(480.0)
 
     assert window.lift.target != 480.0
-    assert "홈 위치" in window.main_screen.activity_label.text()
+    assert any("홈 위치" in text for text in said), said
+    assert homes == [1]
+    window.sequencer.lift_target_requested.emit(500.0)
+    assert homes == [1], "홈 명령은 한 번만"
 
     window._on_robot_at_home(True)                      # 홈 도착
-    assert window.lift.target == 480.0
+    assert window.lift.target == 500.0
+
+
+def test_no_move_while_the_arm_stays_out_after_the_wait(window, qtbot) -> None:
+    """한도가 지나도 팔이 홈이 아니면 움직이지 않고 장애로 알린다(if-0.5)."""
+    raised: list[dict] = []
+    window.erut_session.raise_error = lambda fields: raised.append(fields)
+    window._send_home = lambda: None
+    window.ROBOT_TASK_WAIT_MS = 120
+    window._on_robot_task_state(3)
+    _home(window, False)
+    window.sequencer.lift_target_requested.emit(300.0)
+
+    qtbot.waitUntil(lambda: bool(raised), timeout=2000)
+    assert raised[-1]["code"] == "E9302"
+    assert window.lift.target != 300.0
+    assert not window._pending_motions
+
+
+def test_vehicle_stops_when_the_arm_leaves_home_while_moving(window) -> None:
+    """이동 중에 팔이 펴지면 차량·리프트를 스스로 멈춘다(if-0.5 탭2 30행)."""
+    raised: list[dict] = []
+    window.erut_session.raise_error = lambda fields: raised.append(fields)
+    window._on_robot_task_state(3)
+    _home(window, True)
+    window.sequencer.lift_target_requested.emit(400.0)
+    assert window.lift.moving
+
+    window._on_robot_at_home(False)
+
+    assert not window.lift.moving
+    assert raised and raised[-1]["code"] == "E9303"
 
 
 def test_home_flag_is_ignored_until_the_robot_reports_home_once(window) -> None:

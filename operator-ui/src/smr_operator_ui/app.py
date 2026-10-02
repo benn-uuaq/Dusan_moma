@@ -729,6 +729,7 @@ class OperatorWindow(QMainWindow):
         """
         self._cancel_play()                 # 걸려 있던 play 가 뒤늦게 가지 않게
         self._pending_motions.clear()       # 미뤄 둔 차량·리프트 이동도 버린다
+        self._auto_home_sent = False
         self._motion_wait_timer.stop()
         self.sequencer.stop()
         for adapter in (self.lift, self.amr, self.outrigger, self.retractor):
@@ -1102,6 +1103,12 @@ class OperatorWindow(QMainWindow):
             return
         self._pending_motions.append((label, run))
         self.main_screen.show_activity(f"{reason} — {label}은(는) 로봇이 홈에서 멈춘 뒤에 합니다.")
+        # 이동하기 전에 스스로 홈으로 간다(ERUT if-0.5) — 태스크가 끝났는데 팔이
+        # 펴져 있으면(캘리브레이션 뒤·조그 뒤 등) 기다려도 저절로 접히지 않는다.
+        if not self._robot_task_running() and not getattr(self, "_auto_home_sent", False):
+            self._auto_home_sent = True
+            self.main_screen.show_activity(f"{label} 전에 로봇을 홈으로 거둡니다.")
+            self._send_home()
         if not self._motion_wait_timer.isActive():
             self._motion_wait_timer.start(self.ROBOT_TASK_WAIT_MS)
 
@@ -1112,7 +1119,22 @@ class OperatorWindow(QMainWindow):
         reason = self._robot_motion_block_reason()
         if reason and not timed_out:
             return                      # 아직 로봇이 움직인다 — 더 기다린다
+        if timed_out and self._home_interlock_active() and not self._robot_at_home:
+            # 팔이 펴진 채로는 차량·리프트를 움직이지 않는다(ERUT if-0.5 — 이동
+            # 중에는 home 이어야 한다). 예전에는 한도가 지나면 그대로 움직였다.
+            pending, self._pending_motions = self._pending_motions, []
+            self._auto_home_sent = False
+            labels = ", ".join(label for label, _ in pending)
+            self.main_screen.show_activity(
+                f"로봇이 홈 자세가 아니라 {labels}을(를) 하지 않습니다.")
+            self.erut_session.raise_error({
+                "code": "E9302", "message": "ROBOT_NOT_HOME", "level": "stop",
+                "recovery": "manual",
+                "detail": f"로봇 팔이 이동 안전 자세(홈)가 아니라 이동을 멈췄습니다 — {labels}",
+            })
+            return
         pending, self._pending_motions = self._pending_motions, []
+        self._auto_home_sent = False
         self._motion_wait_timer.stop()
         if timed_out:
             self.main_screen.show_activity(
@@ -1131,7 +1153,16 @@ class OperatorWindow(QMainWindow):
             if getattr(self, "_erut_home_armed", False):
                 self._erut_home_armed = False
                 self.erut_session.home_arrived()
-        # ERUT evt/status 의 at_home 도 바로 바꿔 낸다.
+        elif self._home_interlock_active() and any(m.moving for m in (self.amr, self.lift)):
+            # 이동 중에 팔이 펴지면 스스로 멈춘다(ERUT if-0.5 탭2 30행).
+            for motion in (self.amr, self.lift):
+                motion.cancel()
+            self.erut_session.raise_error({
+                "code": "E9303", "message": "ROBOT_LEFT_HOME_WHILE_MOVING",
+                "level": "stop", "recovery": "manual",
+                "detail": "차량·리프트가 움직이는 중에 로봇이 홈을 벗어나 이동을 멈췄습니다",
+            })
+        # ERUT evt/home 을 바로 바꿔 낸다(바뀔 때만 나간다).
         self.erut_session.refresh_status()
         self._run_pending_motions()
         self._sync_manual_interlock()
@@ -1302,6 +1333,7 @@ class OperatorWindow(QMainWindow):
         """
         self._cancel_play()
         self._pending_motions.clear()          # 미뤄 둔 차량·리프트 이동도 버린다
+        self._auto_home_sent = False
         self._motion_wait_timer.stop()
         self.simulator.stop_cycle()
         self.sequencer.stop()
@@ -2342,9 +2374,11 @@ class OperatorWindow(QMainWindow):
         radius_mm = float(diameter_mm) / 2.0
         extra = dict(self._work_area_extra)
         extra["radius_mm"] = radius_mm
-        # 저장은 비동기라 여기서 바로 반영해 둔다 — 측정이 끝나는 순간
-        # 이 값으로 오차를 계산한다.
+        # 저장은 비동기라 여기서 바로 반영해 둔다. 오차를 낼 기준 반지름은
+        # 따로 붙잡아 둔다 — 측정 도중 설정 불러오기가 늦게 도착해
+        # _work_area_extra 를 덮어써도 기준이 바뀌지 않게.
         self._work_area_extra = extra
+        self._calibration_radius_mm = radius_mm + float(extra.get("thickness_mm") or 0.0)
         width_mm, height_mm, scan_h_mm, overlap_mm = \
             self.main_screen.rect_view.work_area()
         self._send_work_area(width_mm, height_mm, scan_h_mm, overlap_mm, **extra)
@@ -2400,14 +2434,25 @@ class OperatorWindow(QMainWindow):
 
     def _expected_wall_radius_mm(self) -> float:
         """로봇이 호를 그릴 때 쓰는 반지름 = 입력 반지름 + 두께."""
+        pinned = getattr(self, "_calibration_radius_mm", None)
+        if pinned:
+            return float(pinned)
         extra = self._work_area_extra
         return float(extra.get("radius_mm") or 0.0) + float(extra.get("thickness_mm") or 0.0)
 
     def _finish_calibration(self, ok: bool, detail: str, error_mm: float = 0.0) -> None:
-        """결과를 ERUT 에 내고 로봇을 세운다. 원점에 계속 세워 두지 않는다."""
+        """결과를 ERUT 에 내고 로봇을 거둔다. 원점(벽 앞)에 세워 두지 않는다.
+
+        if-0.5: 작업을 마치고 쉬는 동안(idle)에는 이동 안전 자세(home)로 거둔다 —
+        ERUT 는 다음 이동 명령(prepare) 전에 home 인지 물어보고, 아니면 보내지
+        않는다. 실패했으면 장애가 걸려 있으므로 그 자리에 세우기만 한다.
+        """
         self.main_screen.show_activity(f"캘리브레이션 결과 — {detail}")
         self.erut_session.finish_calibration(ok, error_mm, detail)
-        self._stop_robot_scan()
+        if ok:
+            self._send_home()
+        else:
+            self._stop_robot_scan()
 
     def _handle_origin_wait(self, values: list) -> None:
         """로봇이 원점에 도착해 멈춰 서면 ERUT 에 알린다.

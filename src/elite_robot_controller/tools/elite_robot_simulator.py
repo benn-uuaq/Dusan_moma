@@ -252,7 +252,7 @@ class ScanTaskSim(threading.Thread):
         self._set(self.FINISHED, 0)
         self._set(self.SEGMENT, 0)
         self._set(self.TASK_STATE, 3)
-        self._set(self.HOME_FLAG, 1)
+        # 홈 플래그는 그대로 둔다 — 태스크를 세운다고 팔이 홈으로 가지는 않는다.
 
     def _set(self, address: int, value: int) -> None:
         self.bank.write(address, int(value))

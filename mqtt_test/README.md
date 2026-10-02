@@ -48,7 +48,7 @@ python3 mqtt_test/alarm_sim.py
 
 ## ERUT 시뮬레이터 (`erut_sim.py`)
 
-협력사 ERUT 의 Robot Service(로봇 브릿지) 역할을 대신해 RCS와 통신을 시험한다. 규격은 이 폴더의 `ERUT_검사로봇_MQTT_표준인터페이스_if-0.4.xlsx`(탭6·7 은 ERUT 내부라 3S 무관).
+협력사 ERUT 의 Robot Service(로봇 브릿지) 역할을 대신해 RCS와 통신을 시험한다. 규격은 이 폴더의 `ERUT_검사로봇_MQTT_표준인터페이스_if-0.5.xlsx`(탭6·7 은 ERUT 내부라 3S 무관).
 
 ```bash
 python3 mqtt_test/erut_sim.py
@@ -162,7 +162,7 @@ python3 mqtt_test/run_sim_test.py --only mc io  # 고른 것만
 | 시나리오 | 확인하는 것 |
 |---|---|
 | `mc` | 사내 MC 규격 `job_cmd` 하나로 `1A → 1B → … → 2A …` 를 빠짐없이 도는지. 셀마다 원점에서 프로브 확인(`probe_gate` → `probe_ack`)을 거치는지. `job_state` 가 셀마다 3건 나가는지. 작업 영역 레지스터(256~259)가 셀 치수로 실리는지 |
-| `erut` | ERUT 표준 if-0.4 한 바퀴 — 자기소개(`evt/info`) → `calibrate`(3점 측정 → 오차) → `prepare`(activity preparing → 원점에서 `evt/ready`) → `start`(탐촉자 접촉 `evt/contact`·정수 진행률·`pos`/`location` 이 실린 `evt/complete`) → `mark`(점에서 로봇이 서서 `evt/mark_ready` ↔ `req/mark_next`) → `home`(`evt/complete action=home`) → 비상정지 → `reset`(`cleared=true`, idle 복귀) |
+| `erut` | ERUT 표준 if-0.5 한 바퀴 — 자기소개(`evt/info`) → `calibrate`(3점 측정 → 오차 → 홈으로 거둬 `evt/home`·query `home` 이 home) → `prepare`(activity preparing → 원점에서 `evt/ready`) → `start`(탐촉자 접촉 `evt/contact`·정수 진행률·`pos`/`location` 이 실린 `evt/complete`) → `mark`(점에서 로봇이 서서 `evt/mark_ready` ↔ `req/mark_next`) → `home`(`evt/complete action=home`) → 비상정지 → `reset`(`cleared=true`, idle 복귀) |
 | `io` | I/O 화면의 로봇 디지털 출력이 레지스터 2 의 그 비트만 바꾸는지, 화면 표시가 로봇 값을 따라오는지 |
 | `tpac` | 스캔 구간 신호 DO[0..2] 가 전진·후진·동결 순서대로 나가는지, 스캔 중에 리셋이 서지 않는지 |
 

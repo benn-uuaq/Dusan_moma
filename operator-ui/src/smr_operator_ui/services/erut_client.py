@@ -1,6 +1,6 @@
 """ERUT Robot Service(로봇 브릿지)와 주고받는 MQTT 전송 계층.
 
-규격은 `mqtt_test/ERUT_검사로봇_MQTT_표준인터페이스_if-0.4.xlsx` 다(탭1~5·8~10.
+규격은 `mqtt_test/ERUT_검사로봇_MQTT_표준인터페이스_if-0.5.xlsx` 다(탭1~5·8~10.
 탭6·7 은 ERUT 내부 규격이라 3S 와 무관하다). 기존 `MqttServer`가
 다루는 `doosan/robot/req/{mc_cmd,job_cmd,...}` 와는 **봉투 구조가 다르다.**
 
@@ -21,8 +21,8 @@ from typing import Any
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 # ERUT 가 보내오는 동작. 토픽 끝부분으로 구분한다.
-# 앞의 9개가 표준(if-0.4 탭5 action)이다. 뒤는 표준에 아직 없는 것:
-#   home      — 홈 이동. 3S 가 요청해 ERUT 가 다음 판에 넣기로 했다.
+# 앞의 9개가 표준(if-0.5 탭5 action)이다. 뒤는 표준에 없는 3S 확장:
+#   home      — 홈 이동 명령. if-0.5 는 홈 **확인 신호**(evt/home)만 넣었다.
 #   mark_next — 마커가 ERUT 것일 때 다음 점으로 가라는 신호(탭2 초안 「마킹 주체」).
 ACTIONS = (
     "calibrate", "prepare", "start", "pause", "resume",
@@ -263,6 +263,15 @@ class ErutClient(QObject):
         return self._publish(self.evt_topic("contact"), {
             "timestamp": utc_ms(),
             "content": {"state": state, "job_id": job_id},
+        }, qos=1, retain=True)
+
+    def publish_home(self, state: str) -> bool:
+        """이동 안전 자세 (if-0.5 탭2 14행). home / deployed.
+
+        붙을 때 + 바뀔 때만 보낸다(주기 재전송 없음), QoS 1 · retain.
+        """
+        return self._publish(self.evt_topic("home"), {
+            "timestamp": utc_ms(), "content": {"state": state},
         }, qos=1, retain=True)
 
     def publish_info(self, content: dict) -> bool:

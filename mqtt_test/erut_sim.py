@@ -2,7 +2,7 @@
 """ERUT Robot Service(로봇 브릿지) 역할을 대신하는 시뮬레이터.
 
 실제 ERUT 가 아직 없으므로 이 도구가 그 자리에서 요청을 보내고 응답을 받는다.
-규격은 `ERUT_검사로봇_MQTT_표준인터페이스_if-0.4.xlsx` 탭3(정상 시나리오)이다.
+규격은 `ERUT_검사로봇_MQTT_표준인터페이스_if-0.5.xlsx` 탭3(정상 시나리오)이다.
 
     ① 접속 확인   erut/status 발행(5초마다) → req/query → res 확인
     ② 캘리브레이션 req/calibrate → res 202 → evt/complete
@@ -12,6 +12,7 @@
                                          → evt/complete
     중간 개입     req/pause · req/resume · req/abort · req/reset
     홈 이동       req/home → res 202 → evt/complete(action=home)   ※ 3S 확장
+    이동 안전 자세 evt/home (home / deployed) — 바뀔 때만 온다(if-0.5)
 
 브릿지처럼 erut/status 를 **5초마다** 다시 낸다 — RCS 는 20초 넘게 조용하면
 브릿지가 없는 것으로 보고 하던 일을 일시정지한다. 마커도 ERUT 것이므로, 로봇이
@@ -55,7 +56,7 @@ def utc_ms() -> int:
 class ErutSimApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        root.title("ERUT 시뮬레이터 (Robot Service 대역 · if-0.4)")
+        root.title("ERUT 시뮬레이터 (Robot Service 대역 · if-0.5)")
         root.geometry("1000x760")
         root.minsize(900, 680)
 
@@ -397,11 +398,16 @@ class ErutSimApp:
         if tail == "evt/status":
             c = payload if isinstance(payload, dict) else {}
             line = (f"[상태] {c.get('state')} · {c.get('activity')} · "
-                    f"calibrated={c.get('calibrated')} · job={c.get('job_id', '-')} · "
-                    f"홈={c.get('at_home')}")
+                    f"calibrated={c.get('calibrated')} · job={c.get('job_id', '-')}")
             if line != getattr(self, "_last_status_line", ""):
                 self._last_status_line = line
                 self._log(line)
+            return
+        if tail == "evt/home":
+            c = (payload or {}).get("content", {}) if isinstance(payload, dict) else {}
+            state = c.get("state")
+            self._log(f"[이동 안전 자세] {state}"
+                      + ("  → 이동 명령 보내도 됨" if state == "home" else "  → 이동 명령 보류"))
             return
         if tail == "evt/contact":
             c = (payload or {}).get("content", {}) if isinstance(payload, dict) else {}

@@ -126,3 +126,13 @@ def test_silent_bridge_is_treated_as_offline(qtbot):
     client._erut_seen = time.monotonic() - ERUT_SILENCE_S - 1
     client._check_erut_silence()
     assert changes == [True, False]
+
+
+def test_home_is_retained_with_state_in_content(qtbot):
+    client, paho = _client(qtbot)
+    client.publish_home("deployed")
+
+    topic, payload, qos, retain = paho.published[-1]
+    assert topic == "erut/robot1/evt/home"
+    assert (qos, retain) == (1, True)
+    assert payload["content"] == {"state": "deployed"}

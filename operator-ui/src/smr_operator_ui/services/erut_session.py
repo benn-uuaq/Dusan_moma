@@ -1,6 +1,6 @@
-"""ERUT 표준 인터페이스(if-0.4)의 검사로봇 쪽을 구현하는 프로토콜 계층.
+"""ERUT 표준 인터페이스(if-0.5)의 검사로봇 쪽을 구현하는 프로토콜 계층.
 
-규격은 `mqtt_test/ERUT_검사로봇_MQTT_표준인터페이스_if-0.4.xlsx` 다. 3S 가 구현할
+규격은 `mqtt_test/ERUT_검사로봇_MQTT_표준인터페이스_if-0.5.xlsx` 다. 3S 가 구현할
 것은 탭1~5·8~10 이고, 탭6·7 은 ERUT 내부(클라이언트↔브릿지) 규격이라 무관하다.
 상대는 ERUT 의 Robot Service(로봇 브릿지)다.
 
@@ -11,11 +11,11 @@
     pause · abort · reset → res 2xx (「받았다」 — 섰는지는 evt/status 의 activity 로)
     resume    → res 202 (완료는 처음 요청의 req_id 로)
     mark      → res 202 → [evt/mark_ready → req/mark_next] × 점 → evt/complete
-    home      → res 202 → evt/complete (action=home)        ※ 표준에 아직 없음
+    home      → res 202 → evt/complete (action=home)        ※ 3S 확장 (명령은 표준에 없다)
     그 밖     → res 501 NOT_IMPLEMENTED
 
 상시 발행: evt/status(5초 + 바뀌면 바로) · evt/contact(2초 + 바뀌면 바로) ·
-evt/info(접속 시) · evt/progress(작업 중 2초).
+evt/home(접속 시 + 바뀔 때만) · evt/info(접속 시) · evt/progress(작업 중 2초).
 
 **아직 시험용·미구현**: 배터리·충전(차량 개발자에게 받기로 했다 — 그때까지는
 칸을 싣지 않는다. 규격이 0 으로 채우지 말라고 한다), 캘리브레이션의 총 둘레
@@ -33,15 +33,16 @@ from smr_operator_ui.services.erut_client import ErutClient
 from smr_operator_ui.services.job_sequencer import GridPlan, SequencerState, cell_label
 
 # ---- 자기소개 (탭8 evt/info) ------------------------------------------------
-INTERFACE_VERSION = "0.4"
+INTERFACE_VERSION = "0.5"
 VENDOR = "3S"
 MODEL = "SMR-UT-CS612"
 DEVICE_TYPE = "articulated_arm"
 #: 지원하는 기능. battery·charging 은 차량 자료가 오면 넣는다(TODO).
 #: 마킹은 마커가 ERUT 것이라 marking 이 아니라 mark_positioning 이다(탭2 초안).
+#: home(if-0.5): 이동 안전 자세를 evt/home 으로 알린다 — 3S 가 요청한 기능.
 CAPABILITIES = (
     "core_control", "core_events", "calibration", "prepare",
-    "probe_contact", "mark_positioning", "position_feedback",
+    "probe_contact", "mark_positioning", "position_feedback", "home",
 )
 
 #: 합의한 검사면. 모르는 surface 는 400 으로 거절한다(탭4 E-1 11번) — 짐작으로
@@ -220,6 +221,7 @@ class ErutSession(QObject):
         self.publish_info()
         self._status_sig = None
         self.publish_status()
+        self.publish_home()
         self._publish_contact()
 
     def publish_info(self) -> None:
@@ -239,24 +241,44 @@ class ErutSession(QObject):
 
         battery·charging 은 싣지 않는다 — 차량 자료가 아직 없다(TODO). 규격은
         배터리가 없는 장비는 칸을 빼라고 한다(0 으로 채우면 시작을 영영 못 한다).
-        `at_home` 은 3S 확장 칸이다(ERUT 가 홈 확인 신호를 규격에 넣기로 했다 —
-        자리가 정해지면 옮긴다). 모르는 칸은 받는 쪽이 무시한다.
+        홈 자세는 if-0.5 부터 따로 `evt/home` 으로 낸다(예전 at_home 칸은 뺐다).
         """
         sig = self._signature()
         self._status_sig = sig
-        activity, calibrated, job_id, at_home = sig
+        activity, calibrated, job_id = sig
         self.client.publish_status(
             "online", activity=activity, calibrated=calibrated,
-            job_id=job_id or None, at_home=at_home)
+            job_id=job_id or None)
 
     def refresh_status(self) -> None:
-        """값이 바뀌었으면 주기를 기다리지 않고 바로 낸다(탭2 11행)."""
+        """값이 바뀌었으면 주기를 기다리지 않고 바로 낸다(탭2 11·14행)."""
         if self._signature() != self._status_sig:
             self.publish_status()
+        self.refresh_home()
 
     def _signature(self) -> tuple:
         return (self.activity_state(), self._calibrated,
-                self._job_id if self._job_active() else "", self.at_home())
+                self._job_id if self._job_active() else "")
+
+    # ---- 이동 안전 자세 (if-0.5 evt/home) ----------------------------------------
+    def home_state(self) -> str:
+        """home / deployed. 모르면 deployed 다 — 모르면 위험한 쪽(탭5 130행).
+
+        홈 플래그(레지스터 276)를 쓴다. 태스크가 제어주기마다 **실제 관절값**을
+        홈 관절과 비교해 쓰는 값이라 「접으라고 명령했다」가 아니라 「접힌 것을
+        확인했다」다. 홈으로 가는 동안(접는 중)은 0 이라 deployed 로 나간다.
+        """
+        return "home" if self.at_home() is True else "deployed"
+
+    def publish_home(self) -> None:
+        """evt/home — 붙을 때 + 바뀔 때만(주기 재전송 없음)."""
+        state = self.home_state()
+        self._home_published = state
+        self.client.publish_home(state)
+
+    def refresh_home(self) -> None:
+        if self.home_state() != getattr(self, "_home_published", None):
+            self.publish_home()
 
     def set_contact(self, attached: bool) -> None:
         """탐촉자가 검사면에 붙었는가. 바뀌면 바로 알린다(탭2 12행).
@@ -408,6 +430,8 @@ class ErutSession(QObject):
             "activity": self.activity_state(),
             "resumable": self._resumable(),
             "calibrated": self._calibrated,
+            # ERUT 는 이동 명령 직전에 이 칸으로 판단한다(evt/home 보다 기준).
+            "home": self.home_state(),
         }
         if self._job_active() and self._job_id:
             extra["job_id"] = self._job_id
@@ -739,13 +763,13 @@ class ErutSession(QObject):
         self._paused_work = ""
         self._home_timer.stop()
 
-    # ---- home (3S 확장 — ERUT 가 다음 판에 넣기로 했다) ------------------------
+    # ---- home 명령 (3S 확장 — if-0.5 는 확인 신호 evt/home 만 넣었다) ------------
     def _do_home(self, req_id: str, content: dict) -> None:
         """로봇을 홈으로 보낸다. 202 → 홈에 닿으면 evt/complete(action=home).
 
-        ERUT 가 홈 명령과 **홈 도착 확인 신호**를 규격에 넣기로 했다(아직 판에
-        없다). 그때까지는 표준의 작업 요청 모양(202 → complete)을 따르고, 홈에
-        있는지는 evt/status 의 at_home 에도 싣는다. 이름·자리가 정해지면 맞춘다.
+        if-0.5 는 홈 **확인 신호**(evt/home)만 표준에 넣었고, 홈으로 보내는
+        명령은 없다(장비가 이동 전·쉬는 동안 스스로 간다). 이 명령은 3S 확장으로
+        남겨 둔다 — 표준의 작업 요청 모양(202 → complete)을 따른다.
         """
         if self.activity_state() not in ("idle",) or self.robot_busy():
             self._answer(req_id, "home", 409, "BUSY")
@@ -771,7 +795,7 @@ class ErutSession(QObject):
         if not req_id:
             return
         if ok:
-            self.client.publish_event("complete", req_id, "home", at_home=True)
+            self.client.publish_event("complete", req_id, "home", home="home")
             self._record_last(req_id, "home", 200)
             self.activity.emit("ERUT 에 홈 도착을 알렸습니다.")
         else:

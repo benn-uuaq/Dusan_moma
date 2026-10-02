@@ -84,7 +84,10 @@
 - [x] **ERUT 표준 인터페이스 if-0.4 반영** (2026-09-30) — `evt/status` 에 activity(8값)·calibrated·job_id(5초 + 바뀌면 바로), query 의 activity·errors[{code,level,recovery,message}]·last_job, 장애 해제는 같은 code + `cleared=true`, 준비 실패는 `evt/complete(action=prepare)` 5xx, 모르는 동작 501·모르는 surface 400·속도 초과 400, 바쁠 때 409·장애 중 423(탭9 초안), pause 는 준비·캘리브레이션 중에도, reset 멱등(장애 없으면 200), 비상정지 때 하던 구간은 끝난 것으로(재개 없음), 좌표계 무효 시 E1003, `evt/contact`(탐촉자 접촉 — ERUT 가 물을 켠다)·`evt/info`(자기소개), `erut/status` 20초 무소식이면 브릿지 없음으로 보고 일시정지, 진행률·좌표 정수, keepalive 15초·client_id 고정
 - [x] ERUT 응답에 위치를 같이 싣는다 — `pos{x,y}`(검사면 좌표) + 3S 확장 `location{cell, vehicle_mm, lift_mm, robot{x,y}}`. 앞 구역 완료를 못 받은 채 다음 구역이 와도 어느 구역·어느 자리 값인지 가를 수 있게. 준비해 둔 구역과 다른 job_id 의 start 가 오면 준비를 버리고 새로 돈다
 - [x] 마킹 = ERUT 마커(`mark_positioning`) — 로봇이 마킹 자리(290 = 11)에서 **278 = 1 이 올 때까지 선다**(v4·v5 마킹 태스크). RCS 는 `evt/mark_ready` 를 내고 ERUT 의 `req/mark_next` 를 받으면 278 을 세운다. 사내 MC 마킹은 바로 푼다. ※ 규격상 아직 초안(탭2 「마킹 주체」)
-- [x] 홈 명령 — `req/home` → 202 → 홈 플래그(276)가 서면 `evt/complete(action=home)`, `evt/status.at_home`. ※ ERUT 가 홈 명령·홈 확인 신호를 다음 판에 넣기로 함 — 이름·자리가 정해지면 맞춘다
+- [x] 홈 명령 — `req/home` → 202 → 홈 플래그(276)가 서면 `evt/complete(action=home)`. ※ if-0.5 는 확인 신호(evt/home)만 표준에 넣었고 홈 **명령**은 없다 — 3S 확장으로 남김
+- [x] **ERUT if-0.5 반영** (2026-10-02) — 이동 안전 자세 `evt/home`(home / deployed, 붙을 때 + 바뀔 때만, retain), query 의 `home`, 기능 `home`, 판 0.5. 장비 쪽 규칙도 넣었다: 캘리브레이션을 마치면 원점에 세워 두지 않고 홈으로 거둔다 · 차량·리프트를 움직이기 전에 팔이 나와 있으면 먼저 홈으로 보낸다 · 30초가 지나도 홈이 아니면 **움직이지 않고** E9302 ROBOT_NOT_HOME(예전에는 그대로 움직였다) · 이동 중 팔이 홈을 벗어나면 차량·리프트를 세우고 E9303. evt/status 의 at_home 칸은 뺐다
+- [ ] ERUT 에 회신(if-0.5 home 질문): ① 확인 방식 — 276 은 태스크가 **실제 관절값**을 홈 관절과 비교해 쓰는 값(명령이 아니라 확인). 단, 태스크가 안 돌 때는 노드가 조그(0)·홈 이동 끝(1)으로만 갱신해 펜던트 손조작은 못 잡는다 ② 쉬는 동안 — 구간·마킹 태스크는 끝에 홈으로 가고, 캘리브레이션 뒤에도 RCS 가 홈으로 보낸다 ③ 접는 시간 — 실측 필요(벽 앞에서 홈까지)
+- [ ] 펜던트 태스크의 홈 복귀 MoveL 노드(`15 move_home` 등)가 150 mm/s · 600 mm/s² 다 — 운영 상한(100 · 400)보다 빠르다. v4·v5 태스크 XML 의 MoveNode 값 정리 필요
 - [x] RCS 장애 코드를 표준 형식의 제조사 대역으로 — E9101~E9108(로봇 태스크 299), E9201(로봇 알람), E9301(차량 동작 실패). message 는 영문 상수, 한글 문구는 detail
 - [ ] **배터리·충전** — 차량 개발자에게 받기로 함(`docs/vehicle_request_calibration_lap_battery.md`). 그때까지 ERUT 에 칸을 싣지 않는다(규격: 없으면 빼라)
 - [ ] **캘리브레이션 `total_length_mm`** — 차량으로 한 바퀴 돈 거리. 같은 요청서로 차량 개발자에게 요청. 받으면 `ErutSession.total_length_mm` 에 잇는다

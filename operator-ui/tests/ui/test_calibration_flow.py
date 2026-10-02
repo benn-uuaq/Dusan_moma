@@ -48,6 +48,7 @@ def test_calibration_runs_the_robot_and_reports_the_measured_error(qtbot):
     started: list[str] = []
     window._start_robot_scan = lambda: started.append("play")
     window._stop_robot_scan = lambda: started.append("stop")
+    window._send_home = lambda: started.append("home")
     sent: list[list] = []
     window._push_work_area_to_robot = lambda *values: sent.append(list(values))
 
@@ -76,8 +77,9 @@ def test_calibration_runs_the_robot_and_reports_the_measured_error(qtbot):
     assert payload["origin"] == {"x": 0, "y": 0}
     # 입력 반지름 845 + 두께 10 = 855 로 쟀으니 오차는 1 mm 안쪽이다.
     assert payload["calibration_error_mm"] < 1.0
-    # 측정이 끝나면 로봇을 원점에 세워 두지 않는다.
-    assert started == ["play", "stop"]
+    # 측정이 끝나면 원점(벽 앞)에 세워 두지 않고 홈으로 거둔다 — ERUT if-0.5 는
+    # 다음 이동 명령(prepare) 전에 home 인지 물어보고, 아니면 보내지 않는다.
+    assert started == ["play", "home"]
     window.close()
 
 
