@@ -319,6 +319,7 @@ class ErutSession(QObject):
             return
         self._contact = attached
         self._publish_contact()
+        self.refresh_home()          # 붙어 있는 동안은 home 이 아니다
 
     def _publish_contact(self) -> None:
         if self._contact is None:
@@ -358,6 +359,11 @@ class ErutSession(QObject):
     def _is_ready(self) -> bool:
         """준비가 끝나 start 를 기다리는가 (activity = ready)."""
         return self._at_origin or self.sequencer.state is SequencerState.READY
+
+    def has_work(self) -> bool:
+        """ERUT 가 시킨 일(캘리브레이션·준비·구간·마킹)이 걸려 있는가."""
+        return bool(self._calibrate_req_id or self._prepare_req_id
+                    or self._start_req_id or self._mark_req_id)
 
     def _job_active(self) -> bool:
         return bool(self._prepare_req_id or self._start_req_id

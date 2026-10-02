@@ -815,8 +815,13 @@ def test_oversized_work_length_is_clamped_and_alarmed(qtbot) -> None:
                            radius_mm=834.6, thickness_mm=10.0, eoat_w_mm=30.0)
 
     assert window.main_screen.rect_view.work_area()[0] == 721.0
-    # 줄여서 진행하는 것은 장애가 아니다 — evt/error 가 아니라 알림으로 낸다.
+    # 줄여서 진행하는 것은 장애가 아니다 — evt/error 로 내지 않는다. ERUT 가
+    # 시킨 일이 아니면(사내 MC 작업) ERUT 알림도 안 낸다.
     assert raised == []
+    assert notes == []
+    window.erut_session._prepare_req_id = "p1"
+    window._send_work_area(1110.0, 500.0, 30.0, 20.0,
+                           radius_mm=834.6, thickness_mm=10.0, eoat_w_mm=30.0)
     assert [n[0] for n in notes] == ["M2001"]
     assert "721" in notes[0][2]
     alarms = [window.cobot_manual_screen.alarm_list.item(i).text()
@@ -955,6 +960,10 @@ def test_work_area_is_held_back_while_the_robot_task_runs(qtbot) -> None:
     # 연결이 없으면 못 보낸다 — 사유를 알린다.
     window._send_work_area(978.0, 500.0, 257.0, 0.0, **area)
     assert sent == []
+    # ERUT 가 시킨 일이 없으면(프로그램을 막 켰을 때 등) ERUT 에는 안 알린다.
+    assert notes == []
+    window.erut_session._prepare_req_id = "p1"
+    window._send_work_area(978.0, 500.0, 257.0, 0.0, **area)
     # ERUT 에는 알림(M2002)만 — 내부 통신 사정은 RCS 알람에만 남긴다.
     assert notes[-1][0] == "M2002"
     assert "연결" not in notes[-1][2]

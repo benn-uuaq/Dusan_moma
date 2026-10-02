@@ -628,13 +628,14 @@ class OperatorWindow(QMainWindow):
         self.erut_session.pause_settled = self._pause_settled
         self.erut_session.pause_holds_position = self._pause_holds_position
         self.erut_session.errors_cleared.connect(self._home_after_reset)
-        self.erut_session.at_home = lambda: getattr(self, "_robot_at_home", None)
+        self.erut_session.at_home = self._erut_at_home
         self.erut_session.home_requested.connect(self._send_home_for_erut)
         self.erut_session.job_dropped.connect(self._drop_erut_job)
         self.ros_status.scan_arc_changed.connect(self._on_scan_arc)
         self.ros_status.scan_state_changed.connect(self._track_erut_contact)
         self.ros_status.command_result.connect(self._on_home_command_result)
         self.ros_status.command_result.connect(self._on_pause_command_result)
+        self.ros_status.command_result.connect(self._clear_home_pending_on_failure)
         # 캘리브레이션: 모재 치수를 받아 작업 영역을 고치고 로봇 3점 측정을 돌린다.
         self.erut_session.calibration_requested.connect(self._run_calibration)
         self.erut_session.calibration_stop_requested.connect(self._pause_calibration_lap)
@@ -891,10 +892,12 @@ class OperatorWindow(QMainWindow):
         self.main_screen.show_activity(message)
         self.cobot_manual_screen.add_alarm(message)
         # 장애가 아니다 — 줄여서 그대로 진행하므로 알림(evt/message)으로 낸다.
-        self.erut_session.notify(
-            *MSG_ARC_LIMIT_CLAMPED,
-            f"구간 폭 {width_mm:.0f} mm 가 최대 작업 폭을 넘어 "
-            f"최대값 {limit:.0f} mm 로 줄여 진행합니다.")
+        # ERUT 가 시킨 일이 있을 때만(ERUT 구간은 넘으면 앞에서 400 으로 거절한다).
+        if self.erut_session.has_work():
+            self.erut_session.notify(
+                *MSG_ARC_LIMIT_CLAMPED,
+                f"구간 폭 {width_mm:.0f} mm 가 최대 작업 폭을 넘어 "
+                f"최대값 {limit:.0f} mm 로 줄여 진행합니다.")
         return limit
 
     def _send_work_area(
@@ -938,6 +941,7 @@ class OperatorWindow(QMainWindow):
 
     # 로봇 컨트롤러가 주는 태스크 상태(레지스터 500). 1 = 실행 중.
     _TASK_STATE_RUNNING = 1
+    _TASK_STATE_STOPPED = 3
     #: 29999 pause 로 세운 태스크. 팔은 벽에 붙은 채 그 자리에 서 있고, play 가
     #: 오면 거기서 잇는다 — 실행 중과 똑같이 취급한다(차량·리프트·홈 금지).
     _TASK_STATE_PAUSED = 2
@@ -1004,10 +1008,13 @@ class OperatorWindow(QMainWindow):
             self.main_screen.show_activity(message)
             self.cobot_manual_screen.add_alarm(message)
             # 장애가 아니다 — 조건이 풀리면 스스로 다시 보내므로 알림으로 낸다.
-            # ERUT 에는 내부 통신 사정(연결·태스크 상태)을 싣지 않는다.
-            self.erut_session.notify(
-                *MSG_AREA_APPLY_PENDING,
-                "구간 설정을 아직 반영하지 못했습니다. 준비되면 자동으로 다시 반영합니다.")
+            # ERUT 에는 내부 통신 사정(연결·태스크 상태)을 싣지 않는다. ERUT 가
+            # 시킨 일이 있을 때만 알린다 — 프로그램을 켤 때마다 저장된 작업 영역을
+            # 다시 보내다 막혀 나가던 것은 ERUT 와 상관없는 소음이었다(ERUT Q-09).
+            if self.erut_session.has_work():
+                self.erut_session.notify(
+                    *MSG_AREA_APPLY_PENDING,
+                    "구간 설정을 아직 반영하지 못했습니다. 준비되면 자동으로 다시 반영합니다.")
             return
 
         if self.ros_status.send_pose("work_area", values):
@@ -1196,6 +1203,12 @@ class OperatorWindow(QMainWindow):
     def _on_robot_at_home(self, at_home: bool) -> None:
         """홈 위치 플래그(276)가 바뀌었다. 홈에 닿으면 미뤄 둔 이동을 한다."""
         self._robot_at_home = bool(at_home)
+        if not self._robot_at_home:
+            self._home_pending_saw_low = True
+        elif getattr(self, "_home_move_pending", False) and getattr(
+                self, "_home_pending_saw_low", False):
+            # 노드는 홈 이동 전에 276 을 0 으로 내린다 — 내려갔다 다시 선 것이 도착이다.
+            self._home_move_pending = False
         if self._robot_at_home:
             # 이 값을 쓰는 태스크가 올라가 있다는 뜻 — 이제부터 믿는다.
             self._home_flag_seen = True
@@ -1218,6 +1231,9 @@ class OperatorWindow(QMainWindow):
 
     def _on_robot_task_state(self, state: int) -> None:
         self._robot_task_state = int(state)
+        # 태스크가 돌면 팔은 홈이 아니다 — ERUT evt/home 을 바로 맞춘다.
+        self.erut_session.refresh_status()
+        self._watch_scan_task(self._robot_task_state)
         if not self._robot_task_running():
             # 태스크가 끝났다 — 홈 이동까지 마친 시점이다. 미뤄 둔 것을 한다.
             self._run_pending_motions()
@@ -1246,6 +1262,8 @@ class OperatorWindow(QMainWindow):
         # 그냥 지나간다 — 프로브 확인을 건너뛴 채 훑게 된다. 태스크는 시작할
         # 때 이 칸을 지우지 않으므로 여기서 지운다.
         self.ros_status.send_value("scan_go", 0)
+        # 이번 play 에서 태스크가 도는 걸 볼 때까지는 멈춤(3)을 장애로 안 본다.
+        self._scan_task_seen_running = False
         # 원격 제어 모드가 아니면 컨트롤러가 play/stop 을 모두 거부한다
         # ("not supported in local control mode"). 펜던트를 만지면 로컬로
         # 돌아가므로 셀마다 켜 준다.
@@ -1333,7 +1351,9 @@ class OperatorWindow(QMainWindow):
         return {
             "arc_mm": (arc[0] / 10.0) if arc else 0.0,
             "row_mm": float(row * pitch),
-            "progress": int(state[7]) if len(state) > 7 else None,
+            # 290~299 의 9번째(298)가 진행률이다. 예전엔 8번째(297, 스캔한 경로
+            # 0.1 단위)를 읽어 1 m 만 가도 100 이 됐다(ERUT Q-02, 2026-10-02).
+            "progress": int(state[8]) if len(state) > 8 else None,
             "scanned_mm": float(arc[1]) if len(arc) > 1 and arc[1] > 0 else None,
         }
 
@@ -1348,6 +1368,29 @@ class OperatorWindow(QMainWindow):
         """준비해 둔(또는 장애로 실패한) ERUT 구간을 접는다. 홈으로는 안 보낸다."""
         self._origin_waiting = False
         self.sequencer.stop()
+
+    def _erut_at_home(self) -> bool | None:
+        """ERUT 에 home 으로 알려도 되는가 — 접혀 있고 **쉬고 있을 때만**.
+
+        홈 플래그(276) 하나만 믿으면 안 된다(ERUT Q-01·Q-05, 2026-10-02):
+        스캔 중 탐촉자가 붙어 있는데도 home 이 나갔고, abort 뒤 홈으로 접는
+        중인데도 query 에 home 이 나갔다(플래그가 내려가기 전 0.5초). 그래서
+        아래 중 하나라도 맞으면 deployed 다(접는 중 포함 deployed — 탭2 14행).
+          * 홈 플래그가 1 이 아니다
+          * 로봇 태스크가 실행 중이거나 일시정지다 — 팔이 움직이거나 벽 앞이다
+          * 탐촉자가 붙어 있다(evt/contact attached)
+          * 홈으로 보내 놓고 아직 닿은 걸 못 봤다
+        """
+        at_home = getattr(self, "_robot_at_home", None)
+        if at_home is not True:
+            return at_home
+        if self._robot_task_running():
+            return False
+        if getattr(self.erut_session, "_contact", None):
+            return False
+        if getattr(self, "_home_move_pending", False):
+            return False
+        return True
 
     def _home_after_reset(self, codes: list) -> None:
         """초기화로 장애가 풀리면 펴져 있는 팔을 스스로 홈으로 거둔다.
@@ -1381,6 +1424,12 @@ class OperatorWindow(QMainWindow):
         """ERUT 홈 요청 — 보내고, 로봇이 실제로 홈에 닿으면 완료를 낸다."""
         self._erut_home_armed = False
         self._send_home()
+
+    def _clear_home_pending_on_failure(self, name: str, ok: bool, _message: str) -> None:
+        """홈 명령이 거절되면 「접는 중」을 거둔다 — 안 그러면 deployed 로 굳는다."""
+        if name == "home" and not ok and getattr(self, "_home_move_pending", False):
+            self._home_move_pending = False
+            self.erut_session.refresh_status()
 
     def _on_home_command_result(self, name: str, ok: bool, message: str) -> None:
         """노드가 홈 스크립트를 받았다. 그 뒤로 홈 플래그가 서면 도착이다.
@@ -1484,6 +1533,10 @@ class OperatorWindow(QMainWindow):
         """
         self.main_screen.show_activity("로봇을 홈으로 보냅니다.")
         self._park_position()
+        # 닿은 걸 볼 때까지 ERUT 에는 deployed(접는 중)로 낸다.
+        self._home_move_pending = True
+        self._home_pending_saw_low = not getattr(self, "_robot_at_home", False)
+        self.erut_session.refresh_status()
         self.ros_status.call_command("home")
 
     def _park_position(self) -> None:
@@ -2904,10 +2957,65 @@ class OperatorWindow(QMainWindow):
         필요 없다 — cobot_manual_screen.add_alarm 쪽 목록 표시와는 별개로,
         여기서는 MQTT 전달만 담당한다.
         """
+        # 알람 스트림은 그 순간의 기록이라 「풀렸다」가 따로 오지 않는다. 경고로
+        # 내고, 같은 알람이 잠잠해지면 스스로 해제를 보낸다(recovery=auto) —
+        # 예전엔 manual 로 내고 풀지 않아 errors[] 에 계속 남았다(ERUT Q-03).
+        # 태스크를 멈추게 한 알람이면 E9202 가 따로 stop 으로 나간다.
+        self._last_robot_alarm = (time.monotonic(), str(text))
         self.erut_session.raise_error({
             "code": "E9201", "message": "ROBOT_ALARM", "detail": text,
-            "level": "warning", "recovery": "manual",
+            "level": "warning", "recovery": "auto",
         })
+        timer = getattr(self, "_robot_alarm_clear_timer", None)
+        if timer is None:
+            timer = self._robot_alarm_clear_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda: self.erut_session.clear_error("E9201"))
+        timer.start(self.ROBOT_ALARM_CLEAR_MS)
+
+    #: 로봇 알람(E9201) 경고를 스스로 푸는 때 — 같은 알람이 이만큼 잠잠하면 [ms].
+    ROBOT_ALARM_CLEAR_MS = 10_000
+    #: 스캔 중 태스크가 멈춘 것을 장애로 보기 전에 기다리는 시간 [ms]. 정상 완료면
+    #: 로봇이 완료(290 = 5)를 먼저 쓰고 홈으로 간 뒤 멈추므로 그 사이 넘어간다.
+    TASK_STOP_GRACE_MS = 1_500
+
+    def _watch_scan_task(self, state: int) -> None:
+        """스캔 중 로봇 태스크가 스스로 멈췄는지 본다 — 멈췄으면 E9202(stop).
+
+        역기구학 해 없음·특이점처럼 컨트롤러가 태스크를 세우는 오류는 299 에
+        사유가 안 남는다. 그대로 두면 RCS 는 스캔 중인 줄 알고 기다리고, ERUT 는
+        완료(evt/complete)를 영영 못 받는다(ERUT Q-08, 2026-10-02 15:07). 이번
+        play 에서 태스크가 도는 걸 본 뒤에 멈춘(3) 것만 본다 — 셀을 시작할 때
+        RCS 가 보내는 stop 은 거르기 위해서다.
+        """
+        if self.sequencer.state is not SequencerState.SCANNING:
+            return
+        if state == self._TASK_STATE_RUNNING:
+            self._scan_task_seen_running = True
+            return
+        if state != self._TASK_STATE_STOPPED or not getattr(self, "_scan_task_seen_running", False):
+            return
+        QTimer.singleShot(self.TASK_STOP_GRACE_MS, self._report_scan_task_stopped)
+
+    def _report_scan_task_stopped(self) -> None:
+        if (self.sequencer.state is not SequencerState.SCANNING
+                or getattr(self, "_robot_task_state", 0) != self._TASK_STATE_STOPPED
+                or not getattr(self, "_scan_task_seen_running", False)):
+            return
+        self._scan_task_seen_running = False
+        alarm = getattr(self, "_last_robot_alarm", None)
+        cause = ""
+        if alarm is not None and time.monotonic() - alarm[0] < 30.0:
+            cause = f" — 로봇 알람: {alarm[1]}"
+        text = f"스캔 중 로봇 태스크가 멈췄습니다{cause}"
+        self.main_screen.show_activity(text)
+        self.cobot_manual_screen.add_alarm(text)
+        self.erut_session.raise_error({
+            "code": "E9202", "message": "ROBOT_TASK_STOPPED", "detail": text,
+            "level": "stop", "recovery": "reset_required",
+        })
+        if self.sequencer.state is SequencerState.SCANNING:
+            self.sequencer.stop()
 
     def _reset_alarms(self) -> None:
         """화면에 남은 알림·알람을 지우고, 걸려 있던 장애도 해제한다.

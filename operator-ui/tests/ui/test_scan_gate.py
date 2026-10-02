@@ -220,3 +220,80 @@ def test_reset_does_nothing_when_already_home(qtbot) -> None:
 
     assert "home" not in commands
     window.close()
+
+
+# ---- ERUT 문의(2026-10-02 탭11) 로 고친 것 ----------------------------------
+def test_progress_comes_from_register_298_not_297(qtbot) -> None:
+    """Q-02: 297(스캔 경로 0.1 단위)을 진행률로 읽어 1 m 만 가도 100 이 됐다."""
+    window, _commands = _scanning_window(qtbot)
+    window._last_scan_state = [6, 3, 28, 100, 1, 0, 296, 1750, 11, 0]
+
+    assert window._erut_position()["progress"] == 11
+    window.close()
+
+
+def test_home_is_deployed_while_the_task_runs_or_the_probe_is_attached(qtbot) -> None:
+    """Q-01: 276 만 믿으면 스캔 중에도 home 이 나갔다."""
+    window, _commands = _scanning_window(qtbot)
+    window._on_robot_task_state(3)
+    window._on_robot_at_home(True)
+    assert window._erut_at_home() is True
+
+    window._on_robot_task_state(1)                       # 태스크가 돈다
+    assert window._erut_at_home() is False
+    window._on_robot_task_state(3)
+    window.erut_session._contact = True                  # 탐촉자가 붙어 있다
+    assert window._erut_at_home() is False
+    window.close()
+
+
+def test_home_is_deployed_until_the_fold_is_seen(qtbot) -> None:
+    """Q-05: abort 뒤 홈으로 접는 중인데 query 에 home 이 나갔다(플래그가 내려가기 전)."""
+    window, _commands = _scanning_window(qtbot)
+    window._on_robot_task_state(3)
+    window._on_robot_at_home(True)
+
+    window._send_home()
+    assert window._erut_at_home() is False, "보내자마자는 접는 중이다"
+    window._on_robot_at_home(False)                      # 노드가 이동 전에 내린다
+    window._on_robot_at_home(True)                       # 닿았다
+    assert window._erut_at_home() is True
+    window.close()
+
+
+def test_robot_alarm_warning_clears_itself(qtbot) -> None:
+    """Q-03: 알람 스트림은 순간 기록 — 잠잠하면 같은 code 로 cleared=true."""
+    window, _commands = _scanning_window(qtbot)
+    window.ROBOT_ALARM_CLEAR_MS = 50
+    published: list[tuple] = []
+    window.erut.publish_error = lambda code, msg, level, recovery, cleared=False, **kw: (
+        published.append((code, level, recovery, cleared)) or True)
+
+    window._handle_robot_alarm("inv_kin_singularity")
+    assert published[-1] == ("E9201", "warning", "auto", False)
+    qtbot.waitUntil(lambda: published[-1][3] is True, timeout=2000)
+    assert "E9201" not in window.erut_session.error_codes()
+    window.close()
+
+
+def test_task_stopping_by_itself_during_the_scan_is_a_fault(qtbot) -> None:
+    """Q-08: 역기구학 오류로 태스크가 멈췄는데 RCS 는 스캔 중인 줄 알고 기다렸다."""
+    window, _commands = _scanning_window(qtbot)
+    window.TASK_STOP_GRACE_MS = 10
+    raised: list[dict] = []
+    window.erut_session.raise_error = raised.append
+    window.sequencer._set_state(SequencerState.SCANNING)
+    window._scan_task_seen_running = False
+
+    window._on_robot_task_state(3)                       # 셀 시작 때 RCS 의 stop — 무시
+    qtbot.wait(50)
+    assert raised == []
+
+    window._on_robot_task_state(1)
+    window._handle_robot_alarm("inv_kin_singularity")
+    raised.clear()
+    window._on_robot_task_state(3)                       # 스스로 멈췄다
+    qtbot.waitUntil(lambda: bool(raised), timeout=2000)
+    assert raised[0]["code"] == "E9202" and raised[0]["level"] == "stop"
+    assert "inv_kin_singularity" in raised[0]["detail"]
+    window.close()
