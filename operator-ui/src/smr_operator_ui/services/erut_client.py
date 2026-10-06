@@ -365,6 +365,16 @@ class ErutClient(QObject):
 
         if not msg.topic.startswith(REQ_PREFIX):
             return
+        if getattr(msg, "retain", False):
+            # 브로커에 남아 있던(retain) 요청이다 — 지금 누가 보낸 것이 아니라
+            # 붙을 때마다 다시 온다. 실행하면 다시 붙을 때마다 캘리브레이션·
+            # 구간이 또 돈다(2026-10-06 시험: retain 으로 남은 query 가 재접속마다
+            # 들어왔다). 규격도 요청은 retain 하지 않고, retain 으로 온 요청은
+            # 버린다(if-0.6 탭6).
+            self.error_occurred.emit(
+                f"ERUT 브로커에 남아 있던(retain) 요청을 버렸습니다: {msg.topic}"
+                " — 요청은 retain 없이 보내야 합니다.")
+            return
         action = msg.topic[len(REQ_PREFIX):]
         if action in MC_ACTIONS or not isinstance(payload, dict):
             return

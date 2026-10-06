@@ -175,3 +175,20 @@ def test_retained_status_is_not_used_for_the_clock(qtbot):
     client._on_message(None, None, msg)
 
     assert skews == []
+
+
+def test_retained_requests_are_dropped(qtbot):
+    """브로커에 남은(retain) 요청은 붙을 때마다 다시 온다 — 실행하지 않는다."""
+    client, _paho = _client(qtbot)
+    got: list = []
+    warnings: list[str] = []
+    client.request_received.connect(lambda a, c: got.append(a))
+    client.error_occurred.connect(warnings.append)
+    msg = Msg("doosan/robot/req/calibrate",
+              {"timestamp": 0, "content": {"req_id": "cal-001", "diameter": 1690}})
+    msg.retain = True
+
+    client._on_message(None, None, msg)
+
+    assert got == []
+    assert warnings and "retain" in warnings[-1]
