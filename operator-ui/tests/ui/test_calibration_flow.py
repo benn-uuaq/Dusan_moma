@@ -284,3 +284,17 @@ def test_mc_plan_taller_than_1200mm_is_refused(qtbot):
         window._parse_mqtt_plan({"column_count": "1", "row_count": "1", "cell_width": "600",
                                  "cell_height": "1300", "overlap": "20"})
     window.close()
+
+
+def test_home_within_ms_follows_the_speed_ratio(qtbot):
+    """접는 시간은 속도 비율을 따른다 — 100 % 20초, 40 % 50초. 바뀌면 evt/info 를 다시 낸다."""
+    window = _window(qtbot)
+    infos: list[dict] = []
+    window.erut_session.client.publish_info = lambda content: infos.append(content) or True
+
+    assert window._home_within_ms() == 20_000
+    window._show_speed_scale(40)
+
+    assert window._home_within_ms() == 50_000
+    assert infos[-1]["timings"]["home_within_ms"] == 50_000
+    window.close()

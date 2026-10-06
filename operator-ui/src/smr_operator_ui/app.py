@@ -631,6 +631,7 @@ class OperatorWindow(QMainWindow):
         self.erut_session.position_state = self._erut_position
         self.erut_session.max_area_width = self._max_area_width
         self.erut_session.max_area_height = lambda: float(MAX_AREA_HEIGHT_MM)
+        self.erut_session.home_within_ms = self._home_within_ms
         self.erut_session.area_diameter = (
             lambda: self.main_screen.orbit_view.target_dimensions()[0] * 1000.0)
         self.erut_session.mark_waiting_point = lambda: self.mark_runner.waiting_point
@@ -2528,6 +2529,25 @@ class OperatorWindow(QMainWindow):
         노드가 읽어 발행한 것이다.
         """
         self.main_screen.set_speed_scale(percent)
+        self._speed_scale_percent = int(percent)
+        # 접는 시간이 속도 비율을 따라 바뀐다 — ERUT 자기소개의 home_within_ms 를 맞춘다.
+        self.erut_session.refresh_info()
+
+    #: 속도 비율 100 % 에서 펴진 자세 → home 이 가장 오래 걸릴 때 [ms].
+    #: 시험 기록 최대 약 17초(2026-10-02·06)에 여유를 둔 값.
+    HOME_WITHIN_MS_AT_FULL_SPEED = 20_000
+
+    def _home_within_ms(self) -> int:
+        """지금 속도 비율에서 home 으로 접는 데 가장 오래 걸리는 시간 [ms].
+
+        접는 동작도 로봇 속도 비율을 그대로 따른다(접을 때 따로 올리지 않는다
+        — 2026-10-06 결정). 그래서 100 % 기준값을 비율로 나눠 늘린다. 비율을
+        모르면(로봇 값 수신 전) 100 % 로 본다.
+        """
+        percent = int(getattr(self, "_speed_scale_percent", 0) or 100)
+        percent = max(SPEED_MIN, min(SPEED_MAX, percent))
+        ms = self.HOME_WITHIN_MS_AT_FULL_SPEED * 100 / percent
+        return int(-(-ms // 1000) * 1000)        # 초 단위로 올림
 
     def _show_mqtt_connection_state(self, connected: bool) -> None:
         """MQTT Broker 연결 상태를 메인 화면 활동 문구로 표시한다."""

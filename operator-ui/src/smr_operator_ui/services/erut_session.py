@@ -189,6 +189,9 @@ class ErutSession(QObject):
         self.max_area_height: Callable[[], float] = lambda: 0.0
         # 그 한계를 정한 모재 지름 [mm] (evt/info area_limit.diameter). 0 이면 모름.
         self.area_diameter: Callable[[], float] = lambda: 0.0
+        # 펴진 자세에서 home 까지 가장 오래 걸릴 때 [ms] (evt/info timings.home_within_ms).
+        # 0 이면 싣지 않는다(ERUT 는 30초를 쓴다).
+        self.home_within_ms: Callable[[], int] = lambda: 0
         # 마킹 ②: 지금 자리에서 마킹을 기다리는 점 id (없으면 빈 문자열).
         self.mark_waiting_point: Callable[[], str] = lambda: ""
         # 일시정지 뒤 장비(팔·차량·리프트)가 실제로 다 섰는가 (if-0.6 — paused 는
@@ -271,6 +274,10 @@ class ErutSession(QObject):
                 "scan_speed_max_mm_s": SCAN_SPEED_MAX,
             },
         }
+        home_ms = int(self.home_within_ms() or 0)
+        if home_ms > 0:
+            # 이동 명령 전에 ERUT 가 home 을 기다리는 시간(if-0.7 탭8 69행).
+            content["timings"]["home_within_ms"] = home_ms
         limit = self._area_limit()
         if limit:
             content["area_limit"] = limit
