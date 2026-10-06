@@ -121,7 +121,7 @@ class VehicleAmrAdapter(_VehicleStep):
     COMMAND = "set_job"
     TOLERANCE_M = 0.002
 
-    def __init__(self, client, speed_mps: float = 0.2, parent: QObject | None = None) -> None:
+    def __init__(self, client, speed_mps: float = 0.3, parent: QObject | None = None) -> None:
         super().__init__("AMR", client, parent)
         self.speed_mps = float(speed_mps)
         #: SetJob 의 total_distance / total_height 로 싣는 작업 전체 크기 [m].

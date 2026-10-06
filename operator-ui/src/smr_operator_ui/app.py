@@ -79,6 +79,11 @@ from smr_operator_ui.styles import load_stylesheet
 # TCP 직선 속도의 안전 상한 [mm/s]. 로봇 태스크(dus_init.script)도 같은
 # 값으로 자르지만, 넘는 값을 애초에 보내지 않는다.
 MAX_LINEAR_SPEED_MM_S = 100
+# 한 구간 세로의 상한 [mm]. 리프트를 한 높이에 세운 채 로봇 팔이 위아래로
+# 훑을 수 있는 범위다(2026-10-06 결정). 넘는 구간은 받지 않는다 — ERUT 는 400
+# area_height, 사내 MC·RCS 는 시작 전에 막는다. 모재 전체 높이는 리프트로
+# 구간을 올려 가며 채우므로 이 값과 상관없다.
+MAX_AREA_HEIGHT_MM = 1200
 
 # 로봇 태스크를 stop 한 뒤 play 하기까지 두는 간격. 컨트롤러가 태스크를
 # 정리할 시간을 주지 않으면 play 가 거부된다.
@@ -625,6 +630,7 @@ class OperatorWindow(QMainWindow):
         # 로봇 위치(호 위 거리·줄 높이·진행률)와 홈 플래그도 응답에 싣는다.
         self.erut_session.position_state = self._erut_position
         self.erut_session.max_area_width = self._max_area_width
+        self.erut_session.max_area_height = lambda: float(MAX_AREA_HEIGHT_MM)
         self.erut_session.area_diameter = (
             lambda: self.main_screen.orbit_view.target_dimensions()[0] * 1000.0)
         self.erut_session.mark_waiting_point = lambda: self.mark_runner.waiting_point
@@ -2316,6 +2322,10 @@ class OperatorWindow(QMainWindow):
             if not isfinite(value) or value <= 0:
                 raise ValueError(
                     f"{name}는 0보다 큰 값이어야 합니다 (받은 값 {value:g}).")
+        if grid.cell_height > MAX_AREA_HEIGHT_MM:
+            raise ValueError(
+                f"셀 세로 {grid.cell_height:g} mm 는 한 구간 최대 {MAX_AREA_HEIGHT_MM} mm 를"
+                f" 넘습니다 — 리프트 한 높이에서 로봇 팔이 훑을 수 있는 범위입니다.")
         # 겹침은 0 이어도 된다(격자를 딱 붙여 놓는 경우). 다만 격자보다
         # 크면 차량·리프트가 뒤로 가거나 제자리를 맴돈다.
         if not isfinite(overlap) or overlap < 0:
@@ -2425,6 +2435,12 @@ class OperatorWindow(QMainWindow):
             self.main_screen.show_activity("이미 작업 중입니다 — 끝나거나 정지한 뒤 시작하세요.")
             return
         width, height, _scan_h, overlap = self.main_screen.rect_view.work_area()
+        if height > MAX_AREA_HEIGHT_MM:
+            text = (f"작업 영역 세로 {height:g} mm 는 한 구간 최대 {MAX_AREA_HEIGHT_MM} mm 를"
+                    " 넘어 시작하지 않습니다 — 작업 영역 세로를 줄이세요.")
+            self.main_screen.show_activity(text)
+            self.cobot_manual_screen.add_alarm(text)
+            return
         diameter_m, target_h_m = self.main_screen.orbit_view.target_dimensions()
         column_pitch = max(width - overlap, 1.0)
         row_pitch = max(height - overlap, 1.0)
@@ -3254,8 +3270,8 @@ class OperatorWindow(QMainWindow):
         self.data_recorder.comms(direction, "MC", topic, payload)
 
     # ------------------------------------------------------------ 차량
-    #: 차량 주행 속도 [m/s]. SetJob.set_speed 로 싣는다.
-    VEHICLE_SPEED_MPS = 0.2
+    #: 차량 주행 속도 [m/s]. SetJob.set_speed 로 싣는다(2026-10-06 0.2 → 0.3).
+    VEHICLE_SPEED_MPS = 0.3
 
     def _setup_vehicle(self) -> None:
         """ROS 차량 제어 노드와 붙는다(vehicle_interfaces). 없으면 더미로만 돈다."""

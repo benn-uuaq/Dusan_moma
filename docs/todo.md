@@ -104,8 +104,9 @@
 - [ ] ERUT 에 알림: 브릿지 시계가 NTP 와 안 맞는다(10/2 +2.2초, 10/6 −2.5초 — 3S PC 는 NTP 와 0.24초)
 - [x] **ERUT if-0.7 반영** (2026-10-06) — 판 0.7 · evt/info area_limit{diameter, max_width}(캘리브레이션 성공 뒤 다시 보냄, 좌표계 무효면 뺌) · area_height/max_height 거절 자리(값은 미정 — max_area_height 0) · 마킹 ②: marker 없으면 device → 501, 기다리는 점이 아닌 mark_next 는 400(waiting_point_id), 멈춘 동안 mark_next 409, pause 는 그 자리(점에서 기다리던 중이면 그대로·가던 중이면 로봇 pause), resume 이면 기다리던 점 mark_ready 다시, mark_ready 에 pos · 마킹 점으로 갈 때도 리프트 내림·아웃트리거 해제 뒤 주행
 - [ ] ERUT 확인: 마킹 중 activity — 0.7 탭2 44행 ③ 은 marking 이라 했는데 탭5 activity 표(8값)에는 marking 이 없다. 지금은 running
-- [ ] 세로 한계(max_area_height) 실측 — 한 리프트 높이에서 팔이 위아래로 닿는 범위
-- [ ] 접는 시간: 속도 비율을 따라 느려진다(100 % 5~8초, 최대 17초 · 40 % 16.5초). 접을 때만 100 % 로 올릴지 결정
+- [x] 한 구간 세로 한계 1200 mm (2026-10-06 결정) — ERUT 는 400 area_height·max_height, area_limit 에 max_height, 사내 MC·RCS 는 시작 전에 막는다
+- [x] 접는 시간: 속도 비율을 따라 느려진다(100 % 5~8초, 최대 17초 · 40 % 16.5초). 접을 때만 100 % 로 올리지 않기로 함(2026-10-06) — ERUT 가 기다리는 시간을 속도에 맞춘다
+- [x] 차량 주행 속도 0.3 m/s (2026-10-06, 예전 0.2)
 - [x] 반지름 0 막기 (2026-10-02) — 로봇 태스크는 256(호 길이)·260(반지름) 중 하나라도 0 이면 펜던트에 "ARC IS ZERO" 를 띄우고 멈춘다. 작업 영역 반지름이 비어 있으면 검사 대상 지름의 절반을 쓰고(MC·RCS·ERUT 공통), 그래도 0 이면 play 전에 막고 E9304 WORK_AREA_NOT_SET 을 낸다
 - [x] 창을 닫을 때 ERUT 연결(offline 발행·paho 스레드)과 걸어 둔 지연 동작(play 등)을 거둔다 — 안 하면 닫힌 뒤에 로봇에 play 가 나가거나 프로세스가 죽었다(UI 시험이 가끔 segfault 나던 원인)
 - [x] `run_sim_test.py` 격리 — 설정 파일·데이터 폴더를 임시 경로로, ROS 도메인을 77 로 고정, UI 가 노드를 따로 띄우지 않게. 예전에는 운영 설정(검사 대상·작업 영역)과 D:/SMR/Data 기록에 시험 값이 섞였다

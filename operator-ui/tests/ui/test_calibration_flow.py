@@ -244,3 +244,43 @@ def test_next_band_up_in_the_same_column_only_moves_the_lift(qtbot):
     assert ("outrigger", 0.0) not in moves
     assert moves[-1] == ("lift", 780.0)
     window.close()
+
+
+def test_section_taller_than_1200mm_is_refused_and_area_limit_carries_it(qtbot):
+    """한 구간 세로 최대 1200 mm — ERUT 는 400 area_height, 자기소개에도 싣는다."""
+    window = _window(qtbot)
+    events = _tap(window)
+    responses: list[dict] = []
+    window.erut_session.client.publish_res = lambda req, action, code, message, **kw: (
+        responses.append({"code": code, **kw}) or True)
+    infos: list[dict] = []
+    window.erut_session.client.publish_info = lambda content: infos.append(content) or True
+    window.erut_session._calibrated = True
+    window.main_screen.orbit_view.set_target_dimensions(1.69, 6.0)
+
+    window.erut_session.handle_request("prepare", {
+        "req_id": "p-tall", "job_id": "jb-tall", "surface": "outer",
+        "area": {"start": {"x": 0, "y": 0}, "end": {"x": 600, "y": 1300}},
+        "scan": {"pitch": 20, "speed": 100}})
+
+    assert responses[-1] == {"code": 400, "reason": "area_height", "max_height": 1200}
+    window.erut_session.publish_info()
+    assert infos[-1]["area_limit"]["max_height"] == 1200
+    assert infos[-1]["area_limit"]["diameter"] == 1690
+    assert events == []
+    window.close()
+
+
+def test_vehicle_drives_at_0_3_m_per_s(qtbot):
+    window = _window(qtbot)
+    assert window.VEHICLE_SPEED_MPS == 0.3
+    window.close()
+
+
+def test_mc_plan_taller_than_1200mm_is_refused(qtbot):
+    import pytest
+    window = _window(qtbot)
+    with pytest.raises(ValueError, match="1200"):
+        window._parse_mqtt_plan({"column_count": "1", "row_count": "1", "cell_width": "600",
+                                 "cell_height": "1300", "overlap": "20"})
+    window.close()
