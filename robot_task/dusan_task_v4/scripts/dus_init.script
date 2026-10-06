@@ -356,9 +356,14 @@ end
 if (a_scan > a_lin_limit):
   a_scan = a_lin_limit
 end
-# 스캔은 고정 스펙(100 mm/s). 값이 비었으면 스펙으로 되돌린다.
+# 스캔은 고정 스펙(100 mm/s). 값이 비었으면 스펙으로 되돌리고, 펜던트
+# 변수(v_scan_set)가 더 크게 남아 있어도 100 mm/s 로 자른다 — 작업 속도
+# (v_l)와 같은 상한이다. 예전에는 위로는 막지 않았다.
 if (v_scan <= 0):
   v_scan = 0.1
+end
+if (v_scan > v_l_limit):
+  v_scan = v_l_limit
 end
 
 # ---- 기준 위치 : 308 이 1 이면 310~321 의 값을 쓴다 --------------------
