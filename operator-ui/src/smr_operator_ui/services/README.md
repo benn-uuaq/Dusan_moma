@@ -57,7 +57,7 @@
 
 ### `erut_session.py`
 
-- ERUT 표준 인터페이스 **if-0.6** 의 검사로봇 쪽 **프로토콜 계층**입니다. 표준 동작 9개(`calibrate`/`prepare`/`start`/`pause`/`resume`/`abort`/`reset`/`mark`/`query`)에 3S 확장 `home`·`mark_next` 를 더했고, 모르는 동작은 501 로 답합니다.
+- ERUT 표준 인터페이스 **if-0.7** 의 검사로봇 쪽 **프로토콜 계층**입니다. 표준 동작 9개(`calibrate`/`prepare`/`start`/`pause`/`resume`/`abort`/`reset`/`mark`/`query`)에 3S 확장 `home`·`mark_next` 를 더했고, 모르는 동작은 501 로 답합니다.
 - 상시 발행: `evt/status`(state 는 online/offline 만, 활동은 `activity` 8값 — 5초 + 바뀌면 바로), `evt/contact`(탐촉자 접촉 — ERUT 가 물을 켠다, 2초), `evt/info`(자기소개, 접속 시), `evt/progress`(2초, 정수·뒤로 안 감).
 - `evt/home`(if-0.5): 이동 안전 자세 home / deployed. 홈 플래그(276)로 정하고 모르면 deployed. 붙을 때 + 바뀔 때만 냅니다. ERUT 는 이동 명령(calibrate·prepare·다음 구역 start) 직전에 query 의 `home` 으로 판단하므로, 캘리브레이션 뒤·이동 전에는 RCS 가 로봇을 홈으로 거둡니다.
 - 일시정지(if-0.6): `activity=paused` 는 장비가 **실제로 선 뒤에만** 냅니다 — 로봇 태스크가 실행 중이 아니고(pause 로 2) TCP 가 0.5초 가만히 있고, 차량·리프트·아웃트리거가 멈춘 뒤. 그 전까지는 하던 활동(running·calibrating 등) 그대로이고 resume 은 409 입니다. 선 자리를 잡아 두었다가 팔(2 mm)·차량·리프트(5 mm)가 옮겨졌거나, 스캔 중 멈췄는데 태스크가 일시정지(2)가 아니면(pause 거절 뒤 stop·펜던트 stop) `resumable=false` 이고 resume 은 **412 NOT_RESUMABLE** 입니다 — ERUT 는 abort → query → home → start 로 처음부터 다시 합니다. 멈춘 채 abort 를 받으면 작업을 버리고 idle → 홈으로 거둡니다. 초기화(reset)로 장애가 풀릴 때도, 멈춰 둔 작업이 없고 팔이 펴져 있으면 스스로 홈으로 거둡니다(쉬는 동안 home).

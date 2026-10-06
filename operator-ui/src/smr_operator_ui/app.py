@@ -625,6 +625,9 @@ class OperatorWindow(QMainWindow):
         # 로봇 위치(호 위 거리·줄 높이·진행률)와 홈 플래그도 응답에 싣는다.
         self.erut_session.position_state = self._erut_position
         self.erut_session.max_area_width = self._max_area_width
+        self.erut_session.area_diameter = (
+            lambda: self.main_screen.orbit_view.target_dimensions()[0] * 1000.0)
+        self.erut_session.mark_waiting_point = lambda: self.mark_runner.waiting_point
         self.erut_session.pause_settled = self._pause_settled
         self.erut_session.pause_holds_position = self._pause_holds_position
         self.erut_session.errors_cleared.connect(self._home_after_reset)
@@ -662,6 +665,13 @@ class OperatorWindow(QMainWindow):
         self.mark_runner.point_reached.connect(self.erut_session.mark_point_ready)
         self.erut_session.mark_next_requested.connect(self.mark_runner.point_marked)
         self.erut_session.mark_stop_requested.connect(self._stop_erut_marking)
+        self.erut_session.mark_pause_requested.connect(self.mark_runner.pause)
+        self.erut_session.mark_resume_requested.connect(self._resume_erut_marking)
+        self.mark_runner.robot_pause_requested.connect(self._pause_mark_robot)
+        self.mark_runner.robot_resume_requested.connect(self._resume_mark_robot)
+        # 다른 자리로 갈 때는 리프트를 내리고 아웃트리거를 푼 뒤에 달린다.
+        self.mark_runner.prepare_drive = lambda drive: self._prepare_to_drive(
+            drive, guard=self._drive_guard_for_mark)
         self.mark_runner.finished.connect(self._finish_mqtt_mark)
         self.erut_session.mark_requested.connect(self._start_marking)
         self.ros_status.scan_state_changed.connect(self.mark_runner.handle_scan_state)
@@ -901,7 +911,7 @@ class OperatorWindow(QMainWindow):
         waiting = getattr(self, "_drive_waiting", None)
         if waiting is None:
             return
-        if self.sequencer.state is SequencerState.PAUSED:
+        if self.sequencer.state is SequencerState.PAUSED or self.mark_runner.paused:
             return
         self._drive_waiting = None
         waiting()
@@ -1389,6 +1399,28 @@ class OperatorWindow(QMainWindow):
         width, height, _scan_h, _overlap = self.main_screen.rect_view.work_area()
         self.mark_runner.start(points, width, height, hold=True)
 
+    def _drive_guard_for_mark(self) -> str:
+        runner = self.mark_runner
+        if not runner.running:
+            return "drop"
+        return "wait" if runner.paused else "go"
+
+    def _resume_erut_marking(self) -> None:
+        """ERUT 마킹 재개 — 멈춘 자리에서 잇는다(기다리던 점이면 mark_ready 다시)."""
+        self.mark_runner.resume()
+        self._resume_waiting_drive()
+
+    def _pause_mark_robot(self) -> None:
+        """점으로 가거나 물러나던 로봇을 그 자리에 세운다(29999 pause)."""
+        self.ros_status.call_command("remote_control_on")
+        self.ros_status.call_command("pause")
+
+    def _resume_mark_robot(self) -> None:
+        """세워 둔 마킹 태스크를 그 자리에서 잇는다(29999 play)."""
+        if getattr(self, "_robot_task_state", None) == self._TASK_STATE_PAUSED:
+            self.ros_status.call_command("remote_control_on")
+            self.ros_status.call_command("play")
+
     def _stop_erut_marking(self) -> None:
         """ERUT 마킹을 도중에 접는다(일시정지·장애). 찍은 점까지는 완료에 싣는다."""
         marked, failed = self.mark_runner.progress()
@@ -1659,7 +1691,10 @@ class OperatorWindow(QMainWindow):
         차량이 보고한 상태가 PAUSED/STOP/HOLD 다. 리프트·아웃트리거: 이동 중이
         아니다(일시정지를 따로 받지 않아 가던 곳까지 간다).
         """
-        if getattr(self, "_robot_task_state", 0) == self._TASK_STATE_RUNNING:
+        holding_at_point = self.mark_runner.paused and self.mark_runner.step == "marking"
+        if (getattr(self, "_robot_task_state", 0) == self._TASK_STATE_RUNNING
+                and not holding_at_point):
+            # 마킹 점에서 기다리는 중이면 태스크는 돌지만(278 대기) 팔은 서 있다.
             return False
         if not self._robot_still():
             return False
@@ -1711,6 +1746,10 @@ class OperatorWindow(QMainWindow):
                 and self.sequencer.resume_state is SequencerState.SCANNING
                 and not getattr(self, "_paused_before_play", False)
                 and getattr(self, "_robot_task_state", 0) != self._TASK_STATE_PAUSED):
+            return False
+        if (self.mark_runner.paused and self.mark_runner.step == "robot"
+                and getattr(self, "_robot_task_state", 0) != self._TASK_STATE_PAUSED):
+            # 점으로 가던 로봇을 세웠는데 태스크가 일시정지가 아니다 — 못 잇는다.
             return False
         anchor = getattr(self, "_pause_anchor", None)
         if anchor is None:

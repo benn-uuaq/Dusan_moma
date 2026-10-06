@@ -37,7 +37,7 @@ from smr_operator_ui.services.erut_client import ErutClient
 from smr_operator_ui.services.job_sequencer import GridPlan, SequencerState, cell_label
 
 # ---- 자기소개 (탭8 evt/info) ------------------------------------------------
-INTERFACE_VERSION = "0.6"
+INTERFACE_VERSION = "0.7"
 VENDOR = "3S"
 MODEL = "SMR-UT-CS612"
 DEVICE_TYPE = "articulated_arm"
@@ -128,6 +128,9 @@ class ErutSession(QObject):
     mark_next_requested = pyqtSignal(str, bool)
     # 마킹을 도중에 접어 달라는 요청(일시정지·장애). 완료는 세션이 낸다.
     mark_stop_requested = pyqtSignal()
+    # 마킹 일시정지·재개 — 그 자리에 섰다가 잇는다(if-0.7 마킹 ② ⑥).
+    mark_pause_requested = pyqtSignal()
+    mark_resume_requested = pyqtSignal()
     # 로봇을 홈으로 보내 달라는 요청. 로봇이 쉬고 있을 때만 나간다.
     home_requested = pyqtSignal()
     # 모재 기준 좌표계를 잡아 달라는 요청 (지름 mm, 높이 mm) — 차량이 한 바퀴 돈다.
@@ -180,8 +183,14 @@ class ErutSession(QObject):
         self.position_state: Callable[[], dict] = dict
         # 로봇이 동작 중인가 (RCS 작업·로봇 태스크 실행)
         self.robot_busy: Callable[[], bool] = lambda: False
-        # 로봇이 한 번에 훑을 수 있는 최대 구간 가로(호 길이) [mm]. 0 이면 모름.
+        # 로봇이 한 번에 훑을 수 있는 최대 구간 가로(호 길이)·세로 [mm]. 0 이면
+        # 모름(한계를 따지지 않는다).
         self.max_area_width: Callable[[], float] = lambda: 0.0
+        self.max_area_height: Callable[[], float] = lambda: 0.0
+        # 그 한계를 정한 모재 지름 [mm] (evt/info area_limit.diameter). 0 이면 모름.
+        self.area_diameter: Callable[[], float] = lambda: 0.0
+        # 마킹 ②: 지금 자리에서 마킹을 기다리는 점 id (없으면 빈 문자열).
+        self.mark_waiting_point: Callable[[], str] = lambda: ""
         # 일시정지 뒤 장비(팔·차량·리프트)가 실제로 다 섰는가 (if-0.6 — paused 는
         # 선 뒤에만 알린다. 감속 중에는 아직 running).
         self.pause_settled: Callable[[], bool] = lambda: True
@@ -252,9 +261,8 @@ class ErutSession(QObject):
         self.publish_home()
         self._publish_contact()
 
-    def publish_info(self) -> None:
-        """장비 자기소개 (탭8). 안 보내면 브릿지는 core 기능만 있는 장비로 본다."""
-        self.client.publish_info({
+    def _info_content(self) -> dict:
+        content: dict[str, Any] = {
             "interface_version": INTERFACE_VERSION,
             "vendor": VENDOR, "model": MODEL, "device_type": DEVICE_TYPE,
             "capabilities": list(CAPABILITIES),
@@ -262,7 +270,42 @@ class ErutSession(QObject):
                 "progress_interval_ms": PROGRESS_PERIOD_MS,
                 "scan_speed_max_mm_s": SCAN_SPEED_MAX,
             },
-        })
+        }
+        limit = self._area_limit()
+        if limit:
+            content["area_limit"] = limit
+        return content
+
+    def _area_limit(self) -> dict:
+        """한 구간으로 검사할 수 있는 최대 가로·세로 (if-0.7 탭2 13행, 선택).
+
+        모재 지름에 따라 달라지므로 좌표계(캘리브레이션)가 서서 지름을 알 때만
+        싣는다. 한계가 있는 쪽만 — 세로 한계는 정해지면 싣는다.
+        """
+        diameter = float(self.area_diameter() or 0.0)
+        if not self._calibrated or diameter <= 0:
+            return {}
+        limit: dict[str, int] = {}
+        width = float(self.max_area_width() or 0.0)
+        height = float(self.max_area_height() or 0.0)
+        if width > 0:
+            limit["max_width"] = int(width)
+        if height > 0:
+            limit["max_height"] = int(height)
+        if limit:
+            limit = {"diameter": int(round(diameter)), **limit}
+        return limit
+
+    def publish_info(self) -> None:
+        """장비 자기소개 (탭8). 안 보내면 브릿지는 core 기능만 있는 장비로 본다."""
+        content = self._info_content()
+        self._info_published = content
+        self.client.publish_info(content)
+
+    def refresh_info(self) -> None:
+        """자기소개가 바뀌었으면 다시 보낸다(evt/info 는 값이 바뀔 때 다시 보낸다)."""
+        if self._info_content() != getattr(self, "_info_published", None):
+            self.publish_info()
 
     def publish_status(self) -> None:
         """장치 상태 (탭2 11행). 모든 칸이 맨 바깥이다.
@@ -507,6 +550,7 @@ class ErutSession(QObject):
         code, message = E_CALIBRATION_LOST
         self.raise_error({"code": code, "message": message, "level": "stop",
                           "recovery": "reset_required", "detail": reason or None})
+        self.refresh_info()          # 지름이 무효 — area_limit 을 뺀다
 
     # ---- query --------------------------------------------------------------
     def _do_query(self, req_id: str, content: dict) -> None:
@@ -586,6 +630,8 @@ class ErutSession(QObject):
         note = f" ({detail})" if detail else ""
         self.activity.emit(
             f"ERUT 캘리브레이션 완료 — 오차 {error_mm:.2f} mm{note}")
+        # 지름을 알게 됐다 — 한 구간 최대 가로를 자기소개에 실어 다시 보낸다.
+        self.refresh_info()
         self.refresh_status()
 
     # ---- prepare ------------------------------------------------------------
@@ -666,6 +712,14 @@ class ErutSession(QObject):
         # 로봇은 좌우 현 700 mm 넘게 못 움직인다(호 1000 mm 를 받아 왼쪽 끝 자세의
         # 역기구학이 안 풀려 멈춘 일이 있다 — 2026-10-02). 줄여서 하면 구간 일부를
         # 안 훑은 채 끝나므로 거절하고 최대값을 알려 준다.
+        height_limit = float(self.max_area_height() or 0.0)
+        if height_limit > 0 and plan.cell_height > height_limit:
+            self.activity.emit(
+                f"ERUT {action}: 구간 세로 {plan.cell_height:.0f} mm 는 한 구간 최대"
+                f" {height_limit:.0f} mm 를 넘어 거절합니다.")
+            self._answer(req_id, action, 400, "BAD_REQUEST", reason="area_height",
+                         max_height=int(height_limit))
+            return None
         limit = float(self.max_area_width() or 0.0)
         if limit > 0 and plan.cell_width > limit:
             self.activity.emit(
@@ -831,9 +885,11 @@ class ErutSession(QObject):
             self._paused_work = "calibrate"
             self.calibration_stop_requested.emit()
             self.activity.emit("ERUT 일시정지 — 캘리브레이션 주행을 멈췄습니다.")
-        elif self._mark_req_id:
-            # 마킹은 점 하나를 반쯤 찍다 멈출 수 없다 — 여기서 접고 완료를 낸다.
-            self.mark_stop_requested.emit()
+        elif self._mark_req_id and not self._paused_work:
+            # 그 자리에 선다 — 점에서 기다리던 중이면 그대로, 가던 중이면 거기서
+            # (if-0.7 마킹 ② ⑥). 재개하면 기다리던 점의 mark_ready 를 다시 낸다.
+            self._paused_work = "mark"
+            self.mark_pause_requested.emit()
         elif self._home_req_id:
             self.robot_stop_requested.emit()
             self.finish_home(False, "INTERRUPTED")
@@ -843,6 +899,17 @@ class ErutSession(QObject):
 
     def _do_resume(self, req_id: str, content: dict) -> None:
         """멈춘 자리에서 이어 간다. 완료는 처음 요청의 req_id 로 낸다."""
+        if self._paused_work == "mark":
+            if not self.pause_settled():
+                self._answer(req_id, "resume", 409, "BUSY")      # 아직 서는 중
+                return
+            if not self.pause_holds_position():
+                self._answer(req_id, "resume", 412, "NOT_RESUMABLE")
+                return
+            self._paused_work = ""
+            self._answer(req_id, "resume", 202, "ACCEPTED")
+            self.mark_resume_requested.emit()
+            return
         if self._paused_work == "calibrate":
             if not self.pause_settled():
                 self._answer(req_id, "resume", 409, "BUSY")      # 차량이 아직 서는 중
@@ -970,8 +1037,10 @@ class ErutSession(QObject):
             except (KeyError, TypeError, ValueError):
                 self._answer(req_id, "mark", 400, "BAD_REQUEST", reason="points")
                 return
-        marker = str(content.get("marker", "erut")).strip().lower()
-        if marker not in ("", "erut"):
+        # marker 가 없거나 device 면 장비가 찍는 마킹(①)이다 — 3S 는 마커가
+        # ERUT 것이라(mark_positioning ②) ① 은 없다 → 501 (if-0.7 탭2 44행 ①).
+        marker = str(content.get("marker", "") or "device").strip().lower()
+        if marker != "erut":
             # 장비가 가진 마커로 찍는 방식(marking)은 지원하지 않는다.
             self._answer(req_id, "mark", 501, "NOT_IMPLEMENTED")
             return
@@ -990,9 +1059,9 @@ class ErutSession(QObject):
         """로봇이 마킹 자리에 붙어 섰다. ERUT 에 쏘라고 알린다."""
         if not self._mark_req_id:
             return
-        _pos, location = self._position()
+        pos, location = self._position()
         self.client.publish_event("mark_ready", self._mark_req_id, "mark",
-                                  point_id=str(point_id), location=location)
+                                  point_id=str(point_id), pos=pos, location=location)
 
     def _do_mark_next(self, req_id: str, content: dict) -> None:
         """ERUT 가 점 하나를 찍었다(또는 못 찍었다) — 다음 점으로."""
@@ -1000,6 +1069,16 @@ class ErutSession(QObject):
         key = f"mark_next:{req_id}#{point_id}"
         if not self._mark_req_id or req_id != self._mark_req_id or not point_id:
             self._reply(key, req_id, "mark_next", 409, "NOT_AT_POINT")
+            return
+        if self._paused_work == "mark":
+            # 멈춰 있다 — 재개해 mark_ready 를 다시 낸 뒤에 받는다.
+            self._reply(key, req_id, "mark_next", 409, "BUSY")
+            return
+        waiting = str(self.mark_waiting_point() or "")
+        if point_id != waiting:
+            # 기다리는 점이 아니다 — 거절하고 그 자리에 그대로 선다(if-0.7 ④).
+            self._reply(key, req_id, "mark_next", 400, "BAD_REQUEST",
+                        reason="point_id", waiting_point_id=waiting)
             return
         marked = content.get("marked", True)
         if isinstance(marked, str):
@@ -1229,6 +1308,9 @@ class ErutSession(QObject):
         if self._calibrate_req_id and not self._paused_work:
             self._paused_work = "calibrate"
             self.calibration_stop_requested.emit()
+        elif self._mark_req_id and not self._paused_work:
+            self._paused_work = "mark"
+            self.mark_pause_requested.emit()
         elif self.sequencer.state not in _SEQ_IDLE:
             self.pause_requested.emit()
         self.refresh_status()

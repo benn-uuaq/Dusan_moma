@@ -225,3 +225,69 @@ def test_progress_lists_the_points_not_reached(qtbot):
     r.handle_scan_state(_state(12))
 
     assert r.progress() == (["p1"], ["p2"])
+
+
+# ---- if-0.7 마킹 ② ⑥: 일시정지는 그 자리에, 재개면 기다리던 점을 다시 알린다 ----
+def _to_point(r, axes):
+    amr, lift, outrigger, _retractor = axes
+    r.start([{"id": "p1", "x": 1000.0, "y": 1200.0},
+             {"id": "p2", "x": 1000.0, "y": 2000.0}], 721.0, 500.0)
+    amr.arrived.emit()
+    outrigger.arrived.emit()
+    lift.arrived.emit()
+
+
+def test_pause_while_waiting_at_a_point_holds_and_resume_announces_it_again(qtbot):
+    r, axes, _calls, _log = _runner(qtbot)
+    reached: list[str] = []
+    r.point_reached.connect(reached.append)
+    _to_point(r, axes)
+    r.handle_scan_state(_state(10))
+    r.handle_scan_state(_state(11))                  # 자리에 붙어 기다린다
+    assert reached == ["p1"]
+
+    r.pause()
+    assert r.paused and r.waiting_point == "p1"
+    assert not r.point_marked("p1"), "멈춘 동안은 받지 않는다"
+
+    r.resume()
+    assert reached == ["p1", "p1"], "재개하면 기다리던 점을 다시 알린다"
+    assert r.point_marked("p1")
+
+
+def test_pause_while_the_robot_moves_pauses_the_robot(qtbot):
+    r, axes, _calls, _log = _runner(qtbot)
+    pauses: list[int] = []
+    resumes: list[int] = []
+    r.robot_pause_requested.connect(lambda: pauses.append(1))
+    r.robot_resume_requested.connect(lambda: resumes.append(1))
+    _to_point(r, axes)
+    r.handle_scan_state(_state(10))                  # 로봇이 점으로 가는 중
+
+    r.pause()
+    r.resume()
+
+    assert (pauses, resumes) == ([1], [1])
+
+
+def test_arrival_during_pause_is_taken_on_resume(qtbot):
+    r, (amr, lift, outrigger, retractor), _calls, log = _runner(qtbot)
+    r.start([{"id": "p1", "x": 1000.0, "y": 1200.0}], 721.0, 500.0)
+    r.pause()
+    amr.arrived.emit()                               # 멈춘 동안 차량이 닿았다
+    assert "고정" not in log
+
+    r.resume()
+    assert log[-1] == "고정"
+
+
+def test_driving_to_another_spot_goes_through_the_prepare_hook(qtbot):
+    """다른 자리로 갈 때는 앱이 리프트를 내리고 아웃트리거를 푼 뒤 달린다."""
+    r, (amr, *_rest), _calls, log = _runner(qtbot)
+    amr.position = 0.0
+    prepared: list = []
+    r.prepare_drive = lambda drive: (prepared.append(1), drive())
+    r.start([{"id": "p1", "x": 1000.0, "y": 1200.0}], 721.0, 500.0)
+
+    assert prepared == [1]
+    assert log == ["차량"]

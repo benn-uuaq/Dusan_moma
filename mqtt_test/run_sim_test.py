@@ -281,7 +281,7 @@ def scenario_erut(h: Harness) -> list[str]:
     session.publish_info()
     info = tap.info[-1]
     log(f"\n[erut] 자기소개: 판 {info['interface_version']} · {', '.join(info['capabilities'])}")
-    if info["interface_version"] != "0.6" or "home" not in info["capabilities"]:
+    if info["interface_version"] != "0.7" or "home" not in info["capabilities"]:
         problems.append(f"[erut] 자기소개가 이상합니다: {info}")
 
     log("[erut] calibrate — 차량(AGV)이 모재를 따라 한 바퀴 돌며 좌표계를 잡는다")
@@ -422,7 +422,7 @@ def scenario_erut(h: Harness) -> list[str]:
 
     log("[erut] mark — 점에 붙으면 mark_ready, ERUT 가 찍고 mark_next")
     h.pump(1.0)
-    session.handle_request("mark", {"req_id": "mark-1", "method": "paint",
+    session.handle_request("mark", {"req_id": "mark-1", "method": "paint", "marker": "erut",
                                     "points": [{"id": "d1", "x": 900, "y": 300}]})
     if not h.wait_until(lambda: tap.event("mark_ready", "mark"), timeout=90):
         return problems + ["[erut] 마킹 자리 도착(evt/mark_ready)이 오지 않았습니다"]
@@ -431,6 +431,20 @@ def scenario_erut(h: Harness) -> list[str]:
     h.pump(1.0)
     if h.register(STATE_REG)[0] != 11:
         problems.append(f"[erut] 마킹 자리에서 로봇이 서 있지 않습니다(290={h.register(STATE_REG)[0]})")
+    # if-0.7 마킹 ② ⑥: 기다리는 중 pause 면 그 자리에, resume 이면 mark_ready 를 다시.
+    readies = sum(1 for n, _e in tap.events if n == "mark_ready")
+    session.handle_request("pause", {"req_id": "pz-mark"})
+    if not h.wait_until(lambda: tap.status and tap.status[-1].get("activity") == "paused",
+                        timeout=10):
+        problems.append("[erut] 마킹 점에서 일시정지가 paused 가 되지 않았습니다")
+    if h.register(STATE_REG)[0] != 11:
+        problems.append("[erut] 마킹 일시정지 중에 로봇이 자리를 떠났습니다")
+    session.handle_request("resume", {"req_id": "rs-mark"})
+    if not h.wait_until(lambda: sum(1 for n, _e in tap.events if n == "mark_ready") > readies,
+                        timeout=10):
+        problems.append("[erut] 마킹 재개 뒤 mark_ready 를 다시 내지 않았습니다")
+    else:
+        log("  마킹 점에서 pause → paused · resume → mark_ready 다시")
     session.handle_request("mark_next", {"req_id": "mark-1", "point_id": "d1", "marked": True})
     if not h.wait_until(lambda: tap.event("complete", "mark"), timeout=90):
         return problems + ["[erut] 마킹 완료(evt/complete)가 오지 않았습니다"]

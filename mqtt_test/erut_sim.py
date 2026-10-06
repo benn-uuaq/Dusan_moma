@@ -263,7 +263,7 @@ class ErutSimApp:
                       "speed": float(self.speed_var.get())},
             )
         elif action == "mark":
-            c.update(method="paint",
+            c.update(method="paint", marker="erut",
                      points=[{"id": "p1", "x": 350, "y": 1200},
                              {"id": "p2", "x": 780, "y": 1350}])
         elif action in ("pause", "resume", "abort"):

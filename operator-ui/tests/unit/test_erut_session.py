@@ -703,7 +703,7 @@ def test_info_introduces_the_device(session):
     s.publish_info()
 
     info = client.info[-1]
-    assert info["interface_version"] == INTERFACE_VERSION == "0.6"
+    assert info["interface_version"] == INTERFACE_VERSION == "0.7"
     assert info["vendor"] == "3S" and info["device_type"] == "articulated_arm"
     assert "probe_contact" in info["capabilities"]
     assert "mark_positioning" in info["capabilities"]
@@ -976,7 +976,7 @@ def test_mark_hands_the_points_over(session):
     s, client, _seq = session
     points: list = []
     s.mark_requested.connect(points.append)
-    s.handle_request(*_req("mark", method="paint",
+    s.handle_request(*_req("mark", method="paint", marker="erut",
                            points=[{"id": "p1", "x": 350, "y": 1200}]))
 
     assert client.res[-1]["code"] == 202
@@ -989,12 +989,13 @@ def test_mark_point_handshake(session):
     s, client, _seq = session
     nexts: list[tuple] = []
     s.mark_next_requested.connect(lambda pid, ok: nexts.append((pid, ok)))
-    s.handle_request(*_req("mark", req_id="m1",
+    s.mark_waiting_point = lambda: "p1"
+    s.handle_request(*_req("mark", req_id="m1", marker="erut",
                            points=[{"id": "p1", "x": 350, "y": 1200}]))
 
     s.mark_point_ready("p1")
     name, evt = client.events[-1]
-    assert (name, evt["req_id"], evt["point_id"]) == ("mark_ready", "m1", "p1")
+    assert (name, evt["req_id"], evt["action"], evt["point_id"]) == ("mark_ready", "m1", "mark", "p1")
 
     s.handle_request("mark_next", {"req_id": "m1", "point_id": "p1", "marked": True})
     assert client.res[-1]["code"] == 200
@@ -1014,14 +1015,15 @@ def test_mark_next_for_another_job_is_refused(session):
 def test_mark_complete_is_200_even_with_some_failures(session):
     """일부가 실패해도 완료는 200 — 전부 실패했을 때만 5xx(탭3 19번)."""
     s, client, _seq = session
-    s.handle_request(*_req("mark", req_id="m1", points=[
+    s.handle_request(*_req("mark", req_id="m1", marker="erut", points=[
         {"id": "p1", "x": 1, "y": 1}, {"id": "p2", "x": 2, "y": 2}]))
     s.finish_mark(["p1"], ["p2"])
 
     evt = client.events[-1][1]
     assert (evt["code"], evt["marked"], evt["failed"]) == (200, ["p1"], ["p2"])
 
-    s.handle_request(*_req("mark", req_id="m2", points=[{"id": "p3", "x": 3, "y": 3}]))
+    s.handle_request(*_req("mark", req_id="m2", marker="erut",
+                           points=[{"id": "p3", "x": 3, "y": 3}]))
     s.finish_mark([], ["p3"])
     assert client.events[-1][1]["code"] == 500
 
@@ -1041,15 +1043,54 @@ def test_mark_with_broken_points_is_400(session):
     assert client.res[-1]["code"] == 400
 
 
-def test_pause_during_marking_asks_rcs_to_stop_it(session):
-    s, _client, _seq = session
+def test_pause_during_marking_holds_in_place_and_resume_continues(session):
+    """if-0.7 마킹 ② ⑥: 일시정지는 그 자리에 — 접지도, 완료를 내지도 않는다."""
+    s, client, _seq = session
     stops: list[int] = []
+    pauses: list[int] = []
+    resumes: list[int] = []
     s.mark_stop_requested.connect(lambda: stops.append(1))
-    s.handle_request(*_req("mark", req_id="m1", points=[{"id": "p1", "x": 1, "y": 1}]))
+    s.mark_pause_requested.connect(lambda: pauses.append(1))
+    s.mark_resume_requested.connect(lambda: resumes.append(1))
+    s.mark_waiting_point = lambda: "p1"
+    s.handle_request(*_req("mark", req_id="m1", marker="erut",
+                           points=[{"id": "p1", "x": 1, "y": 1}]))
 
     s.handle_request(*_req("pause", req_id="pz"))
+    assert (stops, pauses) == ([], [1])
+    assert s.activity_state() == "paused"
+    # 멈춘 동안의 mark_next 는 받지 않는다(재개해 mark_ready 를 다시 낸 뒤에).
+    s.handle_request("mark_next", {"req_id": "m1", "point_id": "p1", "marked": True})
+    assert client.res[-1]["code"] == 409
 
-    assert stops == [1]
+    s.handle_request(*_req("resume", req_id="rz"))
+    assert client.res[-1]["code"] == 202
+    assert resumes == [1]
+    assert not [e for e in client.events if e[0] == "complete"]
+
+
+def test_mark_without_marker_is_the_device_marker_and_not_implemented(session):
+    """if-0.7 ①: marker 가 없으면 device — 3S 는 마커가 ERUT 것이라 501."""
+    s, client, _seq = session
+    s.handle_request(*_req("mark", points=[{"id": "p1", "x": 1, "y": 1}]))
+
+    assert client.res[-1]["code"] == 501
+
+
+def test_mark_next_for_a_point_not_waiting_is_400(session):
+    """if-0.7 ④: 기다리는 점이 아닌 point_id 는 400 — 그 자리에 그대로 선다."""
+    s, client, _seq = session
+    nexts: list = []
+    s.mark_next_requested.connect(lambda pid, ok: nexts.append(pid))
+    s.mark_waiting_point = lambda: "p1"
+    s.handle_request(*_req("mark", req_id="m1", marker="erut", points=[
+        {"id": "p1", "x": 1, "y": 1}, {"id": "p2", "x": 2, "y": 2}]))
+
+    s.handle_request("mark_next", {"req_id": "m1", "point_id": "p2", "marked": True})
+
+    res = client.res[-1]
+    assert (res["code"], res["action"], res["waiting_point_id"]) == (400, "mark_next", "p1")
+    assert nexts == []
 
 
 # ---- 우리 쪽에서 끊음 ------------------------------------------------------------
@@ -1172,3 +1213,31 @@ def test_moved_mm_is_the_distance_scanned_in_this_section(session):
         s._publish_progress()
 
     assert [m["moved_mm"] for m in sent] == [650, 1240, 1240]
+
+
+# ---- if-0.7 한 구간 크기 한계 ----------------------------------------------------
+def test_area_limit_goes_into_info_once_the_diameter_is_known(session):
+    """evt/info 의 area_limit{diameter, max_width} — 캘리브레이션을 마치면 다시 낸다."""
+    s, client, _seq = session
+    infos: list[dict] = []
+    s.client.publish_info = lambda content: infos.append(content) or True
+    s._calibrated = False
+    s.max_area_width = lambda: 721.7
+    s.area_diameter = lambda: 1690.0
+    s.publish_info()
+    assert "area_limit" not in infos[-1]
+
+    s.handle_request(*_req("calibrate", req_id="c1", diameter=1690, height=6000))
+    s.finish_calibration(True, 0.0)
+
+    assert infos[-1]["area_limit"] == {"diameter": 1690, "max_width": 721}
+    assert infos[-1]["interface_version"] == "0.7"
+
+
+def test_area_taller_than_the_limit_is_refused_with_area_height(session):
+    s, client, _seq = session
+    s.max_area_height = lambda: 600.0
+    _prepare(s, req_id="p-tall")
+
+    res = client.res[-1]
+    assert (res["code"], res["reason"], res["max_height"]) == (400, "area_height", 600)

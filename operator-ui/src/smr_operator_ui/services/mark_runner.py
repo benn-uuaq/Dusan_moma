@@ -48,6 +48,9 @@ class MarkRunner(QObject):
     finished = pyqtSignal(list, list)
     #: 로봇이 마킹 자리에 붙어 기다린다 (점 id). ERUT 에 evt/mark_ready 로 알린다.
     point_reached = pyqtSignal(str)
+    #: 점으로 가거나 물러나던 로봇을 그 자리에 세운다 / 잇는다(일시정지·재개).
+    robot_pause_requested = pyqtSignal()
+    robot_resume_requested = pyqtSignal()
 
     #: 점 하나에 주는 시간 [ms]. 프로브 3점 + 이동 + 홈이라 넉넉히.
     POINT_TIMEOUT_MS = 300_000
@@ -76,6 +79,13 @@ class MarkRunner(QObject):
         self._saw_busy = False
         self._marked: list[str] = []
         self._failed: list[str] = []
+        # 일시정지(if-0.7 마킹 ② ⑥). 멈춘 동안 도착한 장비는 재개 때 이어 받는다.
+        self._paused = False
+        self._arrival_during_pause = ""
+        self._timer_left_ms = 0
+        #: 차량을 다른 자리로 옮기기 전 준비(리프트 내리기·아웃트리거 풀기)를
+        #: 하고 나서 넘긴 함수를 부르는 훅. 앱이 넣는다. 없으면 바로 옮긴다.
+        self.prepare_drive: Callable[[Callable[[], object]], object] | None = None
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._on_timeout)
@@ -87,6 +97,15 @@ class MarkRunner(QObject):
     @property
     def running(self) -> bool:
         return 0 <= self._index < len(self._points)
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    @property
+    def step(self) -> str:
+        """지금 기다리는 단계 — amr · secure · lift · robot · marking · retract."""
+        return self._step
 
     @property
     def waiting_point(self) -> str:
@@ -103,7 +122,7 @@ class MarkRunner(QObject):
 
     def point_marked(self, point_id: str, marked: bool = True) -> bool:
         """마킹이 끝났다(ERUT req/mark_next). 대기를 풀어 로봇을 돌려보낸다."""
-        if self.waiting_point != str(point_id):
+        if self._paused or self.waiting_point != str(point_id):
             return False
         self._point_ok = bool(marked)
         self._step = "robot"
@@ -137,9 +156,48 @@ class MarkRunner(QObject):
         self._timer.stop()
         self._index = len(self._points)
         self._step = ""
+        self._paused = False
+        self._arrival_during_pause = ""
         if was_running:
             self._restore_scan_task()
             self.activity.emit("마킹을 중단했습니다.")
+
+    # ------------------------------------------------------------ 일시정지
+    def pause(self) -> None:
+        """그 자리에 선다(if-0.7 마킹 ② ⑥).
+
+        * 점에서 마킹을 기다리는 중이면 로봇은 이미 서 있다 — 그대로 둔다.
+        * 로봇이 점으로 가거나 물러나는 중이면 로봇 태스크를 그 자리에 세운다.
+        * 차량·리프트·아웃트리거는 가던 곳까지 가서 선다. 그 도착은 재개 때 잇는다.
+        점마다 주는 시간도 멈춘다.
+        """
+        if not self.running or self._paused:
+            return
+        self._paused = True
+        if self._timer.isActive():
+            self._timer_left_ms = max(1, self._timer.remainingTime())
+            self._timer.stop()
+        if self._step == "robot":
+            self.robot_pause_requested.emit()
+        self.activity.emit("마킹을 그 자리에 일시정지했습니다.")
+
+    def resume(self) -> None:
+        """멈춘 자리에서 잇는다. 점에서 기다리던 중이면 mark_ready 를 다시 낸다."""
+        if not self.running or not self._paused:
+            return
+        self._paused = False
+        if self._timer_left_ms:
+            self._timer.start(self._timer_left_ms)
+            self._timer_left_ms = 0
+        self.activity.emit("마킹을 이어 갑니다.")
+        arrived, self._arrival_during_pause = self._arrival_during_pause, ""
+        if arrived:
+            self._advance(arrived)
+        elif self._step == "robot":
+            self.robot_resume_requested.emit()
+        elif self._step == "marking":
+            # 기다리던 점을 다시 알린다 — ERUT 가 그 점을 찍고 mark_next 를 보낸다.
+            self.point_reached.emit(self.waiting_point)
 
     # ------------------------------------------------------------ 점 하나
     def _point(self) -> dict:
@@ -164,11 +222,22 @@ class MarkRunner(QObject):
         self._timer.start(self.POINT_TIMEOUT_MS)
         self.activity.emit(
             f"마킹 {pt['id']} ({self._index + 1}/{len(self._points)}): 차량 정렬")
-        self._amr.move_to(x0, " mm", label=f"마킹 {pt['id']} ({x0:.0f} mm)")
+
+        def drive() -> None:
+            self._amr.move_to(x0, " mm", label=f"마킹 {pt['id']} ({x0:.0f} mm)")
+
+        if self.prepare_drive is not None and abs(x0 - float(self._amr.position)) > 1.0:
+            # 다른 자리로 간다 — 리프트를 내리고 아웃트리거를 푼 뒤에 달린다.
+            self.prepare_drive(drive)
+        else:
+            drive()
 
     def _advance(self, arrived: str) -> None:
         """장비 하나가 도착했다. 지금 기다리던 단계면 다음으로 넘어간다."""
         if not self.running or arrived != self._step:
+            return
+        if self._paused:
+            self._arrival_during_pause = arrived
             return
         pt = self._point()
         if arrived == "amr":
