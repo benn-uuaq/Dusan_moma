@@ -1153,3 +1153,22 @@ def test_area_wider_than_the_robot_can_reach_is_refused(session):
 
     _prepare(s, req_id="p-ok")             # 600 mm 는 된다
     assert len(jobs) == 1
+
+
+def test_moved_mm_is_the_distance_scanned_in_this_section(session):
+    """moved_mm = 이 구간에서 지금까지 훑은 거리(끝나면 scanned_distance_mm).
+
+    예전엔 차량 위치를 실어 첫 구간에서 늘 0 이었다. 왼쪽으로 가는 줄에서
+    로봇 값이 잠깐 줄어도 뒤로 가지 않는다.
+    """
+    s, client, seq = session
+    _start(s)
+    seq._plan = seq.plan or s._plan
+    seq._set_state(SequencerState.SCANNING)
+    sent: list[dict] = []
+    s.client.publish_progress = lambda req, action, **kw: sent.append(kw) or True
+    for scanned in (650.0, 1240.0, 1100.0):
+        s.position_state = lambda v=scanned: {"progress": 10, "scanned_mm": v}
+        s._publish_progress()
+
+    assert [m["moved_mm"] for m in sent] == [650, 1240, 1240]

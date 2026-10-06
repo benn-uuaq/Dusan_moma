@@ -1338,19 +1338,38 @@ class OperatorWindow(QMainWindow):
     def _on_scan_arc(self, values: list) -> None:
         self._scan_arc = [int(v) for v in values]
 
+    def _row_pitch_01mm(self, state: list) -> int:
+        """줄 간격(296)을 0.1 mm 로. 옛 태스크(정수 mm)가 올라가 있어도 맞게 읽는다.
+
+        2026-10-06 부터 태스크는 296 을 0.1 mm 로 쓴다. 로봇에 태스크를 다시 올리기
+        전에는 mm 로 와서 10 배 틀린다 — 작업 영역 높이 ÷ (줄 수 - 1) 과 비교해
+        더 가까운 쪽 단위로 읽는다.
+        """
+        raw = int(state[6]) if len(state) > 6 else 0
+        rows = int(state[2]) if len(state) > 2 else 0
+        area = getattr(self, "_robot_work_area", None)
+        if raw > 0 and rows > 1 and area and float(area[1]) > 0:
+            expected = float(area[1]) / (rows - 1)
+            if abs(raw - expected) < abs(raw / 10.0 - expected):
+                return raw * 10          # 옛 태스크 — mm 로 왔다
+        return raw
+
     def _erut_position(self) -> dict:
         """격자 안 로봇 위치와 진행률 (ERUT pos·progress 용).
 
         가로 = 이번 줄에서 원점부터 호를 따라 간 거리(286, 0.1mm), 세로 = 줄 번호
-        (291) x 줄 간격(296). 진행률은 로봇이 내는 298, 스캔한 거리는 287(누적 mm).
+        (291) x 줄 간격(296, 0.1mm). 진행률은 로봇이 내는 298, 스캔한 거리는
+        287(누적 mm).
         """
         arc = getattr(self, "_scan_arc", None) or []
         state = getattr(self, "_last_scan_state", None) or []
         row = int(state[1]) if len(state) > 1 else 0
-        pitch = int(state[6]) if len(state) > 6 else 0
+        # 296 은 0.1 mm 단위다(2026-10-06 — 정수 mm 면 29.6 이 30 이 되어 줄마다
+        # 0.4 mm 씩 위로 밀렸다).
+        pitch_01mm = self._row_pitch_01mm(state)
         return {
             "arc_mm": (arc[0] / 10.0) if arc else 0.0,
-            "row_mm": float(row * pitch),
+            "row_mm": row * pitch_01mm / 10.0,
             # 290~299 의 9번째(298)가 진행률이다. 예전엔 8번째(297, 스캔한 경로
             # 0.1 단위)를 읽어 1 m 만 가도 100 이 됐다(ERUT Q-02, 2026-10-02).
             "progress": int(state[8]) if len(state) > 8 else None,

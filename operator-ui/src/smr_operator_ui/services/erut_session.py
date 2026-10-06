@@ -169,6 +169,7 @@ class ErutSession(QObject):
         self._errors: dict[str, dict] = {}
         self._last_job: dict | None = None
         self._progress = 0
+        self._moved_mm = 0
         self._contact: bool | None = None
         self._status_sig: tuple | None = None
 
@@ -626,6 +627,7 @@ class ErutSession(QObject):
             self._start_req_id = req_id
             self._started_at = time.time()
             self._progress = 0
+            self._moved_mm = 0
             self.activity.emit("ERUT 구간 검사 시작 — 로봇 3점 측정부터 합니다.")
             self.proceed_requested.emit()
             return
@@ -651,6 +653,7 @@ class ErutSession(QObject):
         self._job_id = str(content.get("job_id", "")).strip()
         self._plan = plan
         self._progress = 0
+        self._moved_mm = 0
         self._contact = None           # 새 구역 — 접촉 상태는 모름에서 시작
         self._apply_speed(content)
 
@@ -768,11 +771,18 @@ class ErutSession(QObject):
         value = robot.get("progress")
         if value is not None:
             self._progress = max(self._progress, min(100, int(value)))
+        # moved_mm(선택, 표시용) = 이 구간에서 지금까지 훑은 거리 — 끝나면
+        # evt/complete 의 scanned_distance_mm 가 된다(탭3 예: 45 % · 2100 → 4600).
+        # 예전엔 차량 위치를 실어 첫 구간(차량 0 mm)에서 늘 0 이었다. 왼쪽으로
+        # 가는 줄에서는 로봇 값이 잠깐 줄 수 있어 뒤로 가지 않게 잡는다.
+        scanned = robot.get("scanned_mm")
+        if scanned is not None:
+            self._moved_mm = max(getattr(self, "_moved_mm", 0), int(round(float(scanned))))
         pos, location = self._position(robot)
         self.client.publish_progress(
             self._start_req_id, "start", job_id=self._job_id,
             progress=self._progress, activity="running",
-            moved_mm=location["vehicle_mm"], pos=pos, location=location)
+            moved_mm=getattr(self, "_moved_mm", 0), pos=pos, location=location)
 
     def on_cell_changed(self, *_args) -> None:
         """셀이 넘어갈 때 진행률을 한 번 더 알린다(주기 발행과 같은 내용)."""

@@ -229,6 +229,8 @@ def test_progress_comes_from_register_298_not_297(qtbot) -> None:
     window._last_scan_state = [6, 3, 28, 100, 1, 0, 296, 1750, 11, 0]
 
     assert window._erut_position()["progress"] == 11
+    # 줄 간격(296)은 0.1 mm — 29.6 mm 로 3줄이면 88.8 mm (정수 mm 면 90 이 됐다).
+    assert window._erut_position()["row_mm"] == 88.8
     window.close()
 
 
@@ -296,4 +298,16 @@ def test_task_stopping_by_itself_during_the_scan_is_a_fault(qtbot) -> None:
     qtbot.waitUntil(lambda: bool(raised), timeout=2000)
     assert raised[0]["code"] == "E9202" and raised[0]["level"] == "stop"
     assert "inv_kin_singularity" in raised[0]["detail"]
+    window.close()
+
+
+def test_old_task_sending_pitch_in_mm_is_still_read_right(qtbot) -> None:
+    """태스크를 다시 올리기 전(296 이 정수 mm)이어도 10 배 틀리지 않는다."""
+    window, _commands = _scanning_window(qtbot)
+    window._robot_work_area = [600, 800, 300, 20, 8450, 0, 0, 0, 0]
+    window._last_scan_state = [6, 3, 28, 100, 1, 0, 30, 1750, 11, 0]      # 옛 판: 30 mm
+
+    assert window._erut_position()["row_mm"] == 90.0
+    window._last_scan_state = [6, 3, 28, 100, 1, 0, 296, 1750, 11, 0]     # 새 판: 29.6 mm
+    assert window._erut_position()["row_mm"] == 88.8
     window.close()

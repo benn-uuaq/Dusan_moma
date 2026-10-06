@@ -445,7 +445,7 @@ class ScanTaskSim(threading.Thread):
         self._set(self.PROBE_ERROR, 0)
         self._set(self.FINISHED, 0)
         self._set(self.ROWS, rows)
-        self._set(self.PITCH, pitch)
+        self._set(self.PITCH, pitch * 10)       # 0.1 mm (dus5_init 과 같다)
         self._set(self.PROGRESS, 0)
         self._set(self.ZERO_OK, 0)
         self._set(self.SEGMENT, 0)
