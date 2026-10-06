@@ -84,11 +84,12 @@ class OrbitView(QWidget):
 
     def set_sections(self, circumference_mm: float, width_mm: float, step_mm: float,
                      current: int, done: set[int] | frozenset[int] = frozenset()) -> None:
-        """원주를 **실제 구간 길이**로 잘라 그린다(ERUT area).
+        """원주를 ERUT 구간 수만큼 나눠 그린다.
 
-        구간 하나는 area 의 x 길이(`width_mm`)만큼, 구간끼리는 겹침만큼 덜
-        떨어져(`step_mm` = 가로 - 겹침) 놓인다. 둘레(π × 모재 지름)를 다
-        덮는 데 필요한 만큼 그리고, 마지막 구간은 첫 구간과 겹친다.
+        구간 수 = 둘레(π × 모재 지름) ÷ 차량이 구간마다 가는 거리(`step_mm`
+        = 가로 - 겹침), 올림. 원을 그 수로 **똑같이** 나눠 조각마다 한 구간이다
+        — 겹침(20 mm 등)이나 마지막 구간의 자투리는 따로 그리지 않는다(작은
+        회색 조각이 지금 구간 옆에 붙어 보여 헷갈렸다, 2026-10-06).
         `current` 는 0 부터 센 지금 구간, `done` 은 끝낸 구간들이다.
         """
         if circumference_mm <= 0 or width_mm <= 0 or step_mm <= 0:
@@ -117,11 +118,12 @@ class OrbitView(QWidget):
         지금 구간은 겹친 이웃에 가리지 않게 맨 뒤에 그린다.
         """
         if self._sections is not None:
-            circumference, width, step, current, done = self._sections
-            span = min(360.0, width / circumference * 360.0)
+            _circumference, _width, _step, current, done = self._sections
+            count = self.section_count()
+            span = 360.0 / count
             pending, finished, now = [], [], []
-            for index in range(self.section_count()):
-                center = index * step / circumference * 360.0
+            for index in range(count):
+                center = index * span
                 if index == current:
                     now.append((center, span, COLORS["warning"]))
                 elif index in done:
@@ -145,8 +147,8 @@ class OrbitView(QWidget):
     def _robot_angle_deg(self) -> float:
         """로봇을 놓을 자리 — 12시 기준 반시계 각도."""
         if self._sections is not None:
-            circumference, _width, step, current, _done = self._sections
-            return current * step / circumference * 360.0
+            current = self._sections[3]
+            return current * 360.0 / self.section_count()
         total = max(1, self._state.total_segments)
         return (self._state.current_segment - 1) * 360.0 / total
 
@@ -243,8 +245,8 @@ class OrbitView(QWidget):
 
         painter.setFont(QFont("Malgun Gothic", 9, 600))
         if self._sections is not None:
-            circumference, _width, step_mm, _current, _done = self._sections
-            centers = [i * step_mm / circumference * 360.0 for i in range(self.section_count())]
+            count = self.section_count()
+            centers = [i * 360.0 / count for i in range(count)]
         else:
             total = max(1, self._state.total_segments)
             centers = [i * 360.0 / total for i in range(total)]

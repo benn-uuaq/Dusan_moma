@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from smr_operator_ui.services.erut_session import HOME_BUSY_TEXT
 from smr_operator_ui.app import OperatorWindow, _scale_stylesheet
-from smr_operator_ui.services import GridPlan, MqttServer, MqttTopics
+from smr_operator_ui.services import GridPlan, MqttServer, MqttTopics, SequencerState
 from smr_operator_ui.state import CyclePhase
 
 
@@ -1341,9 +1341,12 @@ def test_multi_cell_job_moves_the_vehicle_and_lift(qtbot) -> None:
     plan = window.sequencer.plan
     assert plan is not None and plan.total_cells == 12
 
-    # 3열이면 차량이 두 번 옮겨 간다(1 -> 2 -> 3).
+    # 3열이면 차량이 두 번 옮겨 간다(1 -> 2 -> 3). 다음 열로 가는 단계에서,
+    # 리프트를 내리고 아웃트리거를 푼 뒤에 달린다.
+    window.sequencer._set_state(SequencerState.MOVING_AMR)
     window._move_amr_to_column(3)
-    assert window.amr.target == 2 * (721.0 - 20.0)
+    qtbot.waitUntil(lambda: window.amr.target == 2 * (721.0 - 20.0), timeout=5000)
+    assert window.outrigger.position == 0
     # 리프트는 행마다 (셀 세로 - 겹침) 만큼 오른다.
     assert plan.lift_pitch == 500.0 - 20.0
     window.close()

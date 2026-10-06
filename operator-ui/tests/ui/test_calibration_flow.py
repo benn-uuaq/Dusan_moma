@@ -185,3 +185,62 @@ def test_max_area_width_follows_the_700mm_chord(qtbot):
     # EOAT 를 안 골라도 자른다 — 한계는 팔이 갈 수 있는 거리다.
     assert window._clamp_work_width(1000.0, 845.0, 0.0, 0.0) <= 725
     window.close()
+
+
+def _record_moves(window) -> list[tuple]:
+    """차량·리프트·아웃트리거에 내린 이동을 순서대로 적는다(더미는 그대로 움직인다)."""
+    moves: list[tuple] = []
+    for name in ("amr", "lift", "outrigger"):
+        motion = getattr(window, name)
+        original = motion.move_to
+
+        def wrapped(target, unit="", label=None, _name=name, _orig=original):
+            moves.append((_name, float(target)))
+            return _orig(target, unit, label=label) if label is not None else _orig(target, unit)
+        motion.move_to = wrapped
+    return moves
+
+
+def _prepare_area(window, req_id, x0, y0):
+    window.erut_session.handle_request("prepare", {
+        "req_id": req_id, "job_id": req_id, "surface": "outer",
+        "area": {"start": {"x": x0, "y": y0}, "end": {"x": x0 + 600, "y": y0 + 800}},
+        "scan": {"pitch": 20, "speed": 100}})
+
+
+def test_next_column_lowers_the_lift_and_frees_the_outrigger_before_driving(qtbot):
+    """옆 세로 줄로: 리프트 0 → 아웃트리거 해제 → 주행 → 고정 → 리프트 그 높이."""
+    window = _window(qtbot)
+    _tap(window)
+    window.erut_session._calibrated = True
+    window.main_screen.orbit_view.set_target_dimensions(1.69, 6.0)
+    window.lift.reset(780.0)                  # 위 구간을 끝내고 리프트가 올라가 있다
+    window.outrigger.reset(1)
+    window.amr.reset(0.0)
+    moves = _record_moves(window)
+
+    _prepare_area(window, "p-next-col", 600, 0)
+    qtbot.waitUntil(lambda: window.sequencer.state.name == "READY", timeout=10000)
+
+    assert moves == [("lift", 0.0), ("outrigger", 0.0), ("amr", 580.0),
+                     ("outrigger", 1.0), ("lift", 0.0)]
+    window.close()
+
+
+def test_next_band_up_in_the_same_column_only_moves_the_lift(qtbot):
+    """같은 세로 줄의 위 구간: 차량은 그대로, 리프트만 780 으로(겹침 20)."""
+    window = _window(qtbot)
+    _tap(window)
+    window.erut_session._calibrated = True
+    window.main_screen.orbit_view.set_target_dimensions(1.69, 6.0)
+    window.lift.reset(0.0)
+    window.outrigger.reset(1)
+    window.amr.reset(0.0)
+    moves = _record_moves(window)
+
+    _prepare_area(window, "p-next-band", 0, 800)
+    qtbot.waitUntil(lambda: window.sequencer.state.name == "READY", timeout=10000)
+
+    assert ("outrigger", 0.0) not in moves
+    assert moves[-1] == ("lift", 780.0)
+    window.close()

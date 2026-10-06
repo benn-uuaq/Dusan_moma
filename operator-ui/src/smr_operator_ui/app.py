@@ -799,6 +799,7 @@ class OperatorWindow(QMainWindow):
         for motion in (self.lift, self.amr, self.outrigger, self.retractor):
             motion.arrived.connect(self._on_pause_tick)
         seq.state_changed.connect(self._on_pause_tick)
+        seq.state_changed.connect(self._resume_waiting_drive)
         self.ros_status.task_state_changed.connect(self._on_pause_tick)
         self.amr.arrived.connect(seq.amr_arrived)
         # 아웃트리거 고정(1단계)과 안전 위치 복귀(4단계)도 아직 더미다.
@@ -839,7 +840,71 @@ class OperatorWindow(QMainWindow):
         # 열 간격(가로 - 겹침)만큼 더 간다.
         offset = plan.vehicle_offset_mm if plan is not None else 0.0
         distance = offset + max(0, int(column) - 1) * pitch
-        self.amr.move_to(distance, " mm", label=f"{column}구역 ({distance:.0f} mm)")
+        label = f"{column}구역 ({distance:.0f} mm)"
+        if abs(distance - self.amr.position) <= self.DRIVE_TOLERANCE_MM:
+            # 같은 세로 줄(바로 위·아래 구간) — 차량은 그대로 두고 리프트만 옮긴다.
+            self.amr.move_to(distance, " mm", label=label)
+            return
+        self._prepare_to_drive(
+            lambda: self.amr.move_to(distance, " mm", label=label),
+            guard=self._drive_guard_for_job)
+
+    #: 이보다 가까우면 차량은 안 움직인다고 본다 [mm].
+    DRIVE_TOLERANCE_MM = 1.0
+
+    def _prepare_to_drive(self, drive, guard=None) -> None:
+        """차량이 달리기 전에 리프트를 내리고 아웃트리거를 푼 뒤 drive() 한다.
+
+        옆 세로 줄로 갈 때 순서: 리프트 0 mm(아웃트리거가 고정된 채 — 차량은
+        고정돼 있어야 리프트를 움직인다) → 아웃트리거 해제 → 주행. 도착하면
+        시퀀서가 다시 고정(1단계) → 리프트를 그 구간 높이로(2단계) 한다.
+        예전에는 리프트를 올린 채, 아웃트리거를 고정한 채 차량을 달렸다.
+
+        `guard()` 는 단계마다 "go"/"wait"/"drop" 을 돌려준다 — 그 사이 작업이
+        일시정지되면 기다렸다 재개 때 잇고, 정지되면 버린다.
+        """
+        steps = []
+        if self.lift.position > self.DRIVE_TOLERANCE_MM:
+            steps.append((self.lift, "주행 전에 리프트를 내립니다.",
+                          lambda: self.lift.move_to(0.0, " mm", label="주행 전 0 mm")))
+        if self.outrigger.position >= 1:
+            steps.append((self.outrigger, "주행 전에 아웃트리거를 풉니다.",
+                          lambda: self.outrigger.move_to(0, " 해제")))
+
+        def run(index: int) -> None:
+            state = guard() if guard else "go"
+            if state == "drop":
+                return
+            if state == "wait":
+                self._drive_waiting = lambda: run(index)
+                return
+            if index >= len(steps):
+                drive()
+                return
+            motion, text, start = steps[index]
+            self.main_screen.show_activity(text)
+            self._once(motion.arrived, lambda: run(index + 1))
+            start()
+
+        run(0)
+
+    def _drive_guard_for_job(self) -> str:
+        state = self.sequencer.state
+        if state is SequencerState.MOVING_AMR:
+            return "go"
+        if state is SequencerState.PAUSED and self.sequencer.resume_state is SequencerState.MOVING_AMR:
+            return "wait"
+        return "drop"
+
+    def _resume_waiting_drive(self, *_args) -> None:
+        """일시정지로 멈춰 둔 주행 준비를 재개 때 잇는다."""
+        waiting = getattr(self, "_drive_waiting", None)
+        if waiting is None:
+            return
+        if self.sequencer.state is SequencerState.PAUSED:
+            return
+        self._drive_waiting = None
+        waiting()
 
     def motion_state(self) -> dict:
         """가상 차량·리프트의 현재 값. ERUT 응답에 실어 나간다.
@@ -2804,15 +2869,14 @@ class OperatorWindow(QMainWindow):
         self._drive_calibration_lap()
 
     def _drive_calibration_lap(self) -> None:
-        """아웃트리거를 풀고(고정돼 있으면), 로봇이 홈에 서면 한 바퀴 주행."""
+        """리프트를 내리고 아웃트리거를 푼 뒤, 로봇이 홈에 서면 한 바퀴 주행."""
         if not self.erut_session.calibrating:
             return
-        if self.outrigger.position >= 1 and not self.outrigger.moving:
-            self.main_screen.show_activity("캘리브레이션 주행 전에 아웃트리거를 풉니다.")
-            self._once(self.outrigger.arrived, self._drive_calibration_lap)
-            self.outrigger.move_to(0, " 해제")
-            return
-        self._defer_until_robot_idle("캘리브레이션 주행", self._start_calibration_lap)
+        # 주행 전 순서는 구간 이동과 같다 — 리프트를 내리고 아웃트리거를 푼다.
+        self._prepare_to_drive(
+            lambda: self._defer_until_robot_idle("캘리브레이션 주행", self._start_calibration_lap),
+            # 일시정지·abort 면 버린다(calibrating 이 거짓) — 재개가 처음부터 다시 부른다.
+            guard=lambda: "go" if self.erut_session.calibrating else "drop")
 
     def _start_calibration_lap(self) -> None:
         lap = getattr(self, "_calibration_lap", None)
