@@ -191,6 +191,7 @@ class MqttServer(QObject):
         try:
             self._reconnect_failures = 0
             self._retry_stop_requested = False
+            self._gave_up = False
             client = self._create_client()
             self._client = client
             client.connect_async(
@@ -210,9 +211,13 @@ class MqttServer(QObject):
         그대로면 아무것도 하지 않는다 — 저장을 누를 때마다 접속이 끊기면
         진행 중인 작업 알림이 끊긴다.
         """
-        if config == self.config:
+        # 재접속을 포기한 뒤(10회 실패)에도 저장하면 다시 붙는다 — 주소를 고치거나
+        # 브로커를 켠 뒤 연결 설정을 저장하면 된다. 예전에는 포기한 뒤로는 저장해도
+        # 다시 붙지 않아 RCS 를 껐다 켜야 했다.
+        gave_up = getattr(self, "_gave_up", False)
+        if config == self.config and not gave_up:
             return False
-        running = self._client is not None
+        running = self._client is not None or gave_up
         if running:
             self.stop()
         self.config = config
@@ -513,7 +518,8 @@ class MqttServer(QObject):
             self._set_connected(False)
             self._record_reconnect_failure(
                 client,
-                f"MQTT Broker 연결 거부: {reason_code}",
+                f"MQTT Broker 연결 거부 {self._endpoint()}: {reason_code}"
+                " — 브로커의 계정·접속 허용 설정을 확인하세요",
             )
             return
 
@@ -537,7 +543,16 @@ class MqttServer(QObject):
 
     def _on_connect_fail(self, client: Any, _userdata: Any) -> None:
         """TCP 연결 실패를 재접속 횟수에 포함한다."""
-        self._record_reconnect_failure(client, "MQTT Broker 연결 실패")
+        self._record_reconnect_failure(client, f"MQTT Broker 연결 실패 {self._endpoint()}")
+
+    def _endpoint(self) -> str:
+        return f"{self.config.host}:{self.config.port}"
+
+    #: 재접속을 그만둘 때 덧붙이는 안내 — 현장에서 무엇을 볼지.
+    GIVE_UP_HINT = (
+        " 브로커(mosquitto)가 켜져 있는지(systemctl status mosquitto), 연결 설정의"
+        " MQTT 주소·포트가 맞는지 확인한 뒤 연결 설정을 저장하면 다시 연결합니다."
+        " (사내 MC 를 쓰지 않으면 무시해도 됩니다 — ERUT 는 따로 붙습니다.)")
 
     def _record_reconnect_failure(self, client: Any, reason: str) -> None:
         """재접속 실패를 세고 10회 도달 시 네트워크 루프를 종료한다."""
@@ -549,7 +564,7 @@ class MqttServer(QObject):
         if attempt >= limit:
             self._retry_stop_requested = True
             self.error_occurred.emit(
-                f"{reason} ({attempt}/{limit}). 자동 재접속을 종료합니다."
+                f"{reason} ({attempt}/{limit}). 자동 재접속을 종료합니다." + self.GIVE_UP_HINT
             )
             self._retry_limit_reached.emit()
             return
@@ -558,6 +573,7 @@ class MqttServer(QObject):
     def _stop_after_retry_limit(self) -> None:
         """Paho 콜백 스레드 밖에서 안전하게 연결 루프를 정리한다."""
         self.stop()
+        self._gave_up = True
 
     def _on_message(self, _client: Any, _userdata: Any, message: Any) -> None:
         """수신 JSON을 검증하고 Topic 종류에 맞는 Qt 시그널을 발생시킨다."""

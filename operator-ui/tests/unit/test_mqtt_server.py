@@ -259,3 +259,45 @@ def test_probe_ack_payload_is_validated() -> None:
     with pytest.raises(MqttPayloadError):
         validate_command_payload(
             MqttTopics.PROBE_ACK, {"timestamp": "1786500000000", "pressed": "maybe"})
+
+
+def test_connect_failure_names_the_broker_and_says_what_to_check(qtbot):
+    """현장에서 어디로 붙으려다 실패했는지, 무엇을 볼지 알려 준다."""
+    from smr_operator_ui.services import MqttServer
+    from smr_operator_ui.services.mqtt_server import MqttConfig
+
+    server = MqttServer(MqttConfig(host="10.1.2.3", port=1883, max_reconnect_attempts=2))
+    errors: list[str] = []
+    server.error_occurred.connect(errors.append)
+    class Fake:
+        def disconnect(self):
+            pass
+
+        def loop_stop(self):
+            pass
+
+    fake = Fake()
+    server._client = fake
+
+    server._on_connect_fail(fake, None)
+    server._on_connect_fail(fake, None)
+
+    assert "10.1.2.3:1883" in errors[0]
+    assert "mosquitto" in errors[-1] and "자동 재접속을 종료" in errors[-1]
+
+
+def test_saving_settings_after_giving_up_connects_again(qtbot):
+    """재접속을 포기한 뒤에도 연결 설정을 저장하면 다시 붙는다(껐다 켜지 않아도)."""
+    from dataclasses import replace
+
+    from smr_operator_ui.services import MqttServer
+    from smr_operator_ui.services.mqtt_server import MqttConfig
+
+    server = MqttServer(MqttConfig(host="127.0.0.1", port=1883))
+    starts: list[str] = []
+    server.start = lambda: starts.append(server.config.host)
+    server._client = None
+    server._gave_up = True                      # 10회 실패 뒤 루프를 접었다
+
+    assert server.apply_config(replace(server.config, host="192.168.0.20")) is True
+    assert starts == ["192.168.0.20"]
