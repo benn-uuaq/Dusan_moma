@@ -281,7 +281,7 @@ def scenario_erut(h: Harness) -> list[str]:
     session.publish_info()
     info = tap.info[-1]
     log(f"\n[erut] 자기소개: 판 {info['interface_version']} · {', '.join(info['capabilities'])}")
-    if info["interface_version"] != "0.7" or "home" not in info["capabilities"]:
+    if info["interface_version"] != "0.8" or "home" not in info["capabilities"]:
         problems.append(f"[erut] 자기소개가 이상합니다: {info}")
 
     log("[erut] calibrate — 차량(AGV)이 모재를 따라 한 바퀴 돌며 좌표계를 잡는다")
@@ -419,6 +419,24 @@ def scenario_erut(h: Harness) -> list[str]:
         f" · resumable {answer.get('resumable')}")
     if (answer.get("activity"), answer.get("home"), answer.get("resumable")) != ("idle", "home", False):
         problems.append(f"[erut] abort 뒤 query 가 idle·home 이 아닙니다: {answer}")
+
+    # ERUT Q-19(10/6 16:29): start 직후(팔이 홈에서 아직 안 나갔을 때) pause → abort 하면
+    # 이미 홈인 팔에 홈을 보낸다. 그래도 evt/home 이 home 으로 돌아와야 한다.
+    log("[erut] start 직후 pause → abort — 홈에 있던 팔도 home 으로 돌아온다")
+    session.handle_request("start", {"req_id": "start-q19", "job_id": "jb-q19",
+                                     "surface": "outer",
+                                     "area": {"start": {"x": 1160, "y": 0},
+                                              "end": {"x": 1760, "y": 800}},
+                                     "scan": {"pitch": 20, "speed": 100}})
+    h.wait_until(lambda: window.sequencer.state.name == "SCANNING", timeout=60, poll=0.02)
+    session.handle_request("pause", {"req_id": "pz-q19"})
+    h.pump(0.5)
+    session.handle_request("abort", {"req_id": "ab-q19"})
+    if not h.wait_until(lambda: tap.home and tap.home[-1] == "home"
+                        and session.home_state() == "home", timeout=30):
+        problems.append(f"[erut] 홈에 있던 팔이 abort 뒤 deployed 로 굳었습니다: {tap.home[-4:]}")
+    else:
+        log("  abort 뒤 evt/home → home")
 
     log("[erut] mark — 점에 붙으면 mark_ready, ERUT 가 찍고 mark_next")
     h.pump(1.0)

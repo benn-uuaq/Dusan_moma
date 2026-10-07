@@ -19,6 +19,13 @@ class _WorkerSignals(QObject):
     failed = pyqtSignal(str)
 
 
+#: 아직 결과를 넘기지 않은 작업자. 서비스(창)가 먼저 없어져도 작업자와 그
+#: 연결이 살아 있게 모듈에 잡아 둔다. 서비스 안에만 두면 창을 닫을 때 같이
+#: 지워져, 스레드가 뒤늦게 보낸 결과를 받을 함수가 사라진 채 불려 프로세스가
+#: 죽었다(시험에서 드물게 — 창을 닫자마자 다음 시험이 이벤트를 돌릴 때).
+_LIVE_WORKERS: set = set()
+
+
 class _DatabaseWorker(QRunnable):
     """블로킹 저장소 작업 하나를 GUI 스레드 밖에서 실행한다."""
 
@@ -101,10 +108,29 @@ class SettingsService(QObject):
         """작업을 제출하고 완료 시그널이 올 때까지 QRunnable을 유지한다."""
         worker = _DatabaseWorker(operation)
         # QThreadPool이 QRunnable을 실행하는 동안 Python이 작업자를 먼저
-        # 정리하지 않도록 강한 참조를 유지한다.
+        # 정리하지 않도록 강한 참조를 유지한다 — 서비스가 먼저 사라져도
+        # 남도록 모듈에도 잡아 둔다(_LIVE_WORKERS).
         self._workers.add(worker)
-        worker.signals.succeeded.connect(success)
-        worker.signals.succeeded.connect(lambda _result, item=worker: self._workers.discard(item))
-        worker.signals.failed.connect(lambda message: self.failed.emit(scope, message))
-        worker.signals.failed.connect(lambda _message, item=worker: self._workers.discard(item))
+        _LIVE_WORKERS.add(worker)
+
+        def finish(item=worker) -> None:
+            self._workers.discard(item)
+            _LIVE_WORKERS.discard(item)
+
+        def delivered(result) -> None:
+            finish()
+            try:
+                success(result)
+            except RuntimeError:
+                pass             # 서비스(창)가 이미 닫혔다 — 받을 쪽이 없다
+
+        def failed(message) -> None:
+            finish()
+            try:
+                self.failed.emit(scope, message)
+            except RuntimeError:
+                pass
+
+        worker.signals.succeeded.connect(delivered)
+        worker.signals.failed.connect(failed)
         self._pool.start(worker)

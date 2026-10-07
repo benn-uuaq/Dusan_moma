@@ -183,7 +183,8 @@ def test_no_move_while_the_arm_stays_out_after_the_wait(window, qtbot) -> None:
     window.sequencer.lift_target_requested.emit(300.0)
 
     qtbot.waitUntil(lambda: bool(raised), timeout=2000)
-    assert raised[-1]["code"] == "E9302"
+    # 먼저 홈으로 보냈는데도 안 왔다 — 표준 E2002 HOME_FAILED(if-0.8).
+    assert (raised[-1]["code"], raised[-1]["message"]) == ("E2002", "HOME_FAILED")
     assert window.lift.target != 300.0
     assert not window._pending_motions
 

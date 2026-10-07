@@ -37,7 +37,7 @@ from smr_operator_ui.services.erut_client import ErutClient
 from smr_operator_ui.services.job_sequencer import GridPlan, SequencerState, cell_label
 
 # ---- 자기소개 (탭8 evt/info) ------------------------------------------------
-INTERFACE_VERSION = "0.7"
+INTERFACE_VERSION = "0.8"
 VENDOR = "3S"
 MODEL = "SMR-UT-CS612"
 DEVICE_TYPE = "articulated_arm"
@@ -111,6 +111,8 @@ class ErutSession(QObject):
     # 장애가 풀렸다(ERUT req/reset 또는 화면 알람 리셋). 푼 코드 목록.
     # 앱은 이걸 받아 쉬는 팔을 홈으로 거둔다(쉬는 동안 home — if-0.5/0.6).
     errors_cleared = pyqtSignal(list)
+    # 걸린 장애 없이 reset 이 왔는데 팔이 펴져 있다 — home 으로 거둬 달라(if-0.8).
+    fold_requested = pyqtSignal()
     pause_requested = pyqtSignal()
     resume_requested = pyqtSignal()
     abort_requested = pyqtSignal()
@@ -192,6 +194,8 @@ class ErutSession(QObject):
         # 펴진 자세에서 home 까지 가장 오래 걸릴 때 [ms] (evt/info timings.home_within_ms).
         # 0 이면 싣지 않는다(ERUT 는 30초를 쓴다).
         self.home_within_ms: Callable[[], int] = lambda: 0
+        # reset 으로 팔을 거둘 수 있는 때인가(돌거나 멈춰 둔 작업이 없고 로봇이 붙어 있다).
+        self.can_fold: Callable[[], bool] = lambda: False
         # 마킹 ②: 지금 자리에서 마킹을 기다리는 점 id (없으면 빈 문자열).
         self.mark_waiting_point: Callable[[], str] = lambda: ""
         # 일시정지 뒤 장비(팔·차량·리프트)가 실제로 다 섰는가 (if-0.6 — paused 는
@@ -400,7 +404,11 @@ class ErutSession(QObject):
             return "ready"
         if self._prepare_req_id and not self._ready_sent:
             return "preparing"
-        if self._mark_req_id or self._home_req_id:
+        if self._mark_req_id:
+            # mark 를 받고 complete 를 낼 때까지 — 점으로 가는 중·점에서 기다리는
+            # 중 모두(if-0.8). running 은 구역 검사라 ERUT 가 물을 켤 수 있다.
+            return "marking"
+        if self._home_req_id:
             return "running"
         return _ACTIVITY_MAP.get(self.sequencer.state, "idle")
 
@@ -1015,13 +1023,20 @@ class ErutSession(QObject):
         한 번씩 내고 activity 가 idle 이 된다(비상정지 때 하던 구간은 이미
         끝난 것으로 처리했다 — if-0.4).
         """
-        if not self._errors:
+        # home 기능이 있는 장비는 reset 으로 home 까지 거둔다 — 걸린 장애가 없어도
+        # (if-0.8 탭5 47행). 돌거나 멈춰 둔 작업이 있으면 거두지 않는다(탭9).
+        fold = self.home_state() != "home" and bool(self.can_fold())
+        if not self._errors and not fold:
             self._answer(req_id, "reset", 200, "OK")
-            self.activity.emit("ERUT 리셋 요청 (해제할 장애 없음)")
+            self.activity.emit("ERUT 리셋 요청 (해제할 장애 없음 · 이미 home)")
             return
         self._answer(req_id, "reset", 202, "ACCEPTED")
-        cleared = self.clear_errors()
-        self.activity.emit(f"ERUT 리셋 — 장애 해제: {', '.join(cleared)}")
+        cleared = self.clear_errors()          # 풀리면 앱이 팔을 거둔다(errors_cleared)
+        if cleared:
+            self.activity.emit(f"ERUT 리셋 — 장애 해제: {', '.join(cleared)}")
+        elif fold:
+            self.activity.emit("ERUT 리셋 — 펴진 팔을 home 으로 거둡니다.")
+            self.fold_requested.emit()
 
     # ---- mark (mark_positioning — 마커는 ERUT 것) -----------------------------
     def _do_mark(self, req_id: str, content: dict) -> None:

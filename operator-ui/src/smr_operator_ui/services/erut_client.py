@@ -37,9 +37,9 @@ MC_ACTIONS = frozenset({
     "mc_cmd", "job_cmd", "job_clear", "ems", "speed", "probe_ack", "mark_cmd",
 })
 
-# 활동 상태 8값 (if-0.4 탭5 activity). evt/status 의 state 는 online/offline 만 쓴다.
+# 활동 상태 9값 (if-0.8 탭5 activity). evt/status 의 state 는 online/offline 만 쓴다.
 ACTIVITIES = ("idle", "calibrating", "preparing", "ready", "running",
-              "paused", "error", "estop")
+              "marking", "paused", "error", "estop")       # marking: if-0.8 (9값)
 
 REQ_PREFIX = "doosan/robot/req/"
 ERUT_STATUS = "erut/status"

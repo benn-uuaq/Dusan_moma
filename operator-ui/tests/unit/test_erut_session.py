@@ -703,7 +703,7 @@ def test_info_introduces_the_device(session):
     s.publish_info()
 
     info = client.info[-1]
-    assert info["interface_version"] == INTERFACE_VERSION == "0.7"
+    assert info["interface_version"] == INTERFACE_VERSION == "0.8"
     assert info["vendor"] == "3S" and info["device_type"] == "articulated_arm"
     assert "probe_contact" in info["capabilities"]
     assert "mark_positioning" in info["capabilities"]
@@ -981,7 +981,8 @@ def test_mark_hands_the_points_over(session):
 
     assert client.res[-1]["code"] == 202
     assert points == [[{"id": "p1", "x": 350.0, "y": 1200.0}]]
-    assert s.activity_state() == "running"
+    # if-0.8: 마킹 중은 running 이 아니라 marking(구역 검사로 잘못 읽지 않게).
+    assert s.activity_state() == "marking"
 
 
 def test_mark_point_handshake(session):
@@ -1231,7 +1232,7 @@ def test_area_limit_goes_into_info_once_the_diameter_is_known(session):
     s.finish_calibration(True, 0.0)
 
     assert infos[-1]["area_limit"] == {"diameter": 1690, "max_width": 721}
-    assert infos[-1]["interface_version"] == "0.7"
+    assert infos[-1]["interface_version"] == "0.8"
 
 
 def test_area_taller_than_the_limit_is_refused_with_area_height(session):

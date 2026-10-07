@@ -311,3 +311,76 @@ def test_old_task_sending_pitch_in_mm_is_still_read_right(qtbot) -> None:
     window._last_scan_state = [6, 3, 28, 100, 1, 0, 296, 1750, 11, 0]     # 새 판: 29.6 mm
     assert window._erut_position()["row_mm"] == 88.8
     window.close()
+
+
+# ---- if-0.8 · ERUT 문의 Q-18·19·24 -------------------------------------------
+def test_home_sent_to_an_arm_already_home_is_confirmed(qtbot) -> None:
+    """Q-19: 이미 홈인 팔에 홈을 보내면 플래그가 0 → 1 로 안 바뀐다 — 그래도 home 으로 돌아와야 한다."""
+    window, _commands = _scanning_window(qtbot)
+    window.HOME_SETTLE_S = 0.05
+    window._on_robot_task_state(3)
+    window._on_robot_at_home(True)
+
+    window._send_home()
+    assert window._erut_at_home() is False, "보내자마자는 접는 중"
+    window._clear_home_pending_on_failure("home", True, "")      # 노드가 받았다
+    qtbot.waitUntil(lambda: window._erut_at_home() is True, timeout=3000)
+    window.close()
+
+
+def test_fold_not_finished_in_time_raises_e2002_and_clears_when_home(qtbot) -> None:
+    """if-0.8 E2002 HOME_FAILED — home_within_ms 안에 못 접으면 내고, home 이 되면 푼다."""
+    window, _commands = _scanning_window(qtbot)
+    window.HOME_SETTLE_S = 0.05
+    window.HOME_WITHIN_MS_AT_FULL_SPEED = 300
+    published: list[tuple] = []
+    window.erut.publish_error = lambda code, msg, level, recovery, cleared=False, **kw: (
+        published.append((code, msg, level, cleared)) or True)
+    window._on_robot_task_state(3)
+    window._on_robot_at_home(False)
+
+    window._send_home()
+    window._clear_home_pending_on_failure("home", True, "")
+    qtbot.waitUntil(lambda: any(p[0] == "E2002" for p in published), timeout=3000)
+    assert published[-1][:3] == ("E2002", "HOME_FAILED", "stop")
+
+    window._on_robot_at_home(True)                               # 늦게라도 닿았다
+    qtbot.waitUntil(lambda: published[-1] == ("E2002", "HOME_FAILED", "stop", True),
+                    timeout=3000)
+    window.close()
+
+
+def test_stale_scan_state_after_abort_is_not_reported_as_contact(qtbot) -> None:
+    """Q-18: 멈춘 로봇의 290(원점 대기·스캔)이 남아 있어도 새 출발 전엔 attached 가 아니다."""
+    window, _commands = _scanning_window(qtbot)
+    window.erut_session._start_req_id = "s1"
+    window._on_robot_task_state(1)
+    window._start_robot_scan()                      # 새 구역 출발
+    window._track_erut_contact([6, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    assert window.erut_session._contact is not True, "옛 290 = 6 을 접촉으로 쳤다"
+
+    window._track_erut_contact([2, 0, 0, 0, 0, 0, 0, 0, 0, 0])   # 이번 play 의 3점 측정
+    window._track_erut_contact([7, 0, 0, 0, 0, 0, 0, 0, 0, 0])   # 시작점에 붙음
+    assert window.erut_session._contact is True
+    window._stop_robot_scan()                       # abort·정지
+    assert window.erut_session._contact is False
+    window.close()
+
+
+def test_reset_folds_a_deployed_arm_even_without_faults(qtbot) -> None:
+    """Q-24 · if-0.8: reset 은 걸린 장애가 없어도 home 으로 거둔다. 이미 home 이면 200."""
+    window, commands = _scanning_window(qtbot)
+    responses: list[int] = []
+    window.erut.publish_res = lambda req, action, code, message, **kw: responses.append(code) or True
+    window._robot_link_up = True
+    window._on_robot_task_state(3)
+    window._on_robot_at_home(True)
+
+    window.erut_session.handle_request("reset", {"req_id": "r-home"})
+    assert responses[-1] == 200 and "home" not in commands
+
+    window._on_robot_at_home(False)                  # 장애 없이 펴진 채
+    window.erut_session.handle_request("reset", {"req_id": "r-out"})
+    assert responses[-1] == 202
+    assert "home" in commands
+    window.close()

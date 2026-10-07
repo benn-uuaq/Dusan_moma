@@ -14,7 +14,7 @@ from importlib.resources import files
 from math import ceil, isfinite, pi
 from typing import Any
 
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QObject, QTimer, Qt
 from PyQt6.QtGui import QFontDatabase
 from PyQt6.QtWidgets import (
     QApplication,
@@ -159,6 +159,20 @@ def _scale_stylesheet(base_qss: str, scale: float) -> str:
     return _PX_RE.sub(_scale_one, base_qss)
 
 
+def _call_later(owner: QObject, delay_ms: int, slot) -> None:
+    """잠시 뒤 한 번 부른다 — owner 의 자식 타이머로 건다.
+
+    QTimer.singleShot 은 창이 닫혀도 남아 닫힌 뒤에 불릴 수 있다(시험에서
+    드물게 프로세스가 죽었다). 자식 타이머는 창의 closeEvent 가 함께 세우고,
+    owner 가 없어지면 같이 없어진다.
+    """
+    timer = QTimer(owner)
+    timer.setSingleShot(True)
+    timer.timeout.connect(slot)
+    timer.timeout.connect(timer.deleteLater)
+    timer.start(int(delay_ms))
+
+
 class TopBar(QFrame):
     """제품 정보와 시스템 요약 상태를 항상 표시하는 상단 바.
 
@@ -230,7 +244,7 @@ class TopBar(QFrame):
         # 안 끝난 시점이라 sizeHint 계산이 살짝 부정확할 때가 있다.
         # 이벤트 루프가 레이아웃/스타일 적용을 마친 다음 한 번 더
         # 재보정해 첫 화면부터 정확히 맞게 한다.
-        QTimer.singleShot(0, self._rescale_to_fit)
+        _call_later(self, 0, self._rescale_to_fit)
 
     def _register_scalable(self, label: QLabel, base_px: int) -> None:
         """resizeEvent에서 배율을 적용할 대상으로 라벨을 등록한다."""
@@ -638,6 +652,8 @@ class OperatorWindow(QMainWindow):
         self.erut_session.pause_settled = self._pause_settled
         self.erut_session.pause_holds_position = self._pause_holds_position
         self.erut_session.errors_cleared.connect(self._home_after_reset)
+        self.erut_session.fold_requested.connect(lambda: self._home_after_reset([]))
+        self.erut_session.can_fold = self._can_fold
         self.erut_session.at_home = self._erut_at_home
         self.erut_session.home_requested.connect(self._send_home_for_erut)
         self.erut_session.job_dropped.connect(self._drop_erut_job)
@@ -784,7 +800,7 @@ class OperatorWindow(QMainWindow):
         self._origin_waiting = False
         self.main_screen.show_activity("작업을 중단했습니다 — 벽에서 물러나 홈으로 갑니다.")
         # 정지·태스크 교체가 먼저 처리되도록 잠깐 뒤에 홈을 보낸다.
-        QTimer.singleShot(ABORT_HOME_DELAY_MS, self._send_home)
+        _call_later(self, ABORT_HOME_DELAY_MS, self._send_home)
 
     def _connect_sequencer(self) -> None:
         """격자 순회를 로봇·리프트·AMR·화면·MQTT에 잇는다.
@@ -1265,11 +1281,9 @@ class OperatorWindow(QMainWindow):
             labels = ", ".join(label for label, _ in pending)
             self.main_screen.show_activity(
                 f"로봇이 홈 자세가 아니라 {labels}을(를) 하지 않습니다.")
-            self.erut_session.raise_error({
-                "code": "E9302", "message": "ROBOT_NOT_HOME", "level": "stop",
-                "recovery": "manual",
-                "detail": f"로봇 팔이 이동 안전 자세(홈)가 아니라 이동을 멈췄습니다 — {labels}",
-            })
+            # 먼저 홈으로 보냈는데도 안 왔다 — 표준 E2002 HOME_FAILED(if-0.8).
+            self._raise_home_failed(
+                f"로봇 팔이 이동 안전 자세(홈)가 아니라 이동을 멈췄습니다 — {labels}")
             return
         pending, self._pending_motions = self._pending_motions, []
         self._auto_home_sent = False
@@ -1290,7 +1304,7 @@ class OperatorWindow(QMainWindow):
         elif getattr(self, "_home_move_pending", False) and getattr(
                 self, "_home_pending_saw_low", False):
             # 노드는 홈 이동 전에 276 을 0 으로 내린다 — 내려갔다 다시 선 것이 도착이다.
-            self._home_move_pending = False
+            self._home_fold_done()
         if self._robot_at_home:
             # 이 값을 쓰는 태스크가 올라가 있다는 뜻 — 이제부터 믿는다.
             self._home_flag_seen = True
@@ -1344,6 +1358,8 @@ class OperatorWindow(QMainWindow):
         # 그냥 지나간다 — 프로브 확인을 건너뛴 채 훑게 된다. 태스크는 시작할
         # 때 이 칸을 지우지 않으므로 여기서 지운다.
         self.ros_status.send_value("scan_go", 0)
+        # 이번 play 에서 3점 측정을 볼 때까지는 290 의 옛 값을 접촉으로 치지 않는다.
+        self._contact_armed = False
         # 이번 play 에서 태스크가 도는 걸 볼 때까지는 멈춤(3)을 장애로 안 본다.
         self._scan_task_seen_running = False
         # 원격 제어 모드가 아니면 컨트롤러가 play/stop 을 모두 거부한다
@@ -1480,12 +1496,27 @@ class OperatorWindow(QMainWindow):
             "scanned_mm": float(arc[1]) if len(arc) > 1 and arc[1] > 0 else None,
         }
 
+    #: 이번 play 에서 로봇이 3점 측정·원점 복귀를 시작했다는 표시(290 = 2, 3).
+    _CONTACT_ARM_STATES = frozenset({2, 3})
+
     def _track_erut_contact(self, values: list) -> None:
-        """탐촉자 접촉을 ERUT 에 알린다 — ERUT 가 이것으로 물을 켜고 끈다."""
+        """탐촉자 접촉을 ERUT 에 알린다 — ERUT 가 이것으로 물을 켜고 끈다.
+
+        로봇은 태스크를 멈춰도 290 에 마지막 상태(원점 대기·적심·스캔)를 들고
+        있다. 그대로 믿으면 abort 뒤 다음 구역의 start 를 받자마자, 팔이 펴지기도
+        전에 attached 가 나가 물이 켜졌다(ERUT Q-18, 2026-10-06). 그래서 RCS 가
+        로봇을 출발시킨 뒤 이번 play 에서 3점 측정·원점 복귀(2·3)를 본 다음에만
+        접촉으로 친다. 멈추면(정지·abort·장애) 다시 막는다.
+        """
         if not values:
             return
         self._last_scan_state = list(values)
-        self.erut_session.set_contact(int(values[0]) in self._CONTACT_STATES)
+        state = int(values[0])
+        if (state in self._CONTACT_ARM_STATES
+                and getattr(self, "_robot_task_state", 0) == self._TASK_STATE_RUNNING):
+            self._contact_armed = True
+        attached = getattr(self, "_contact_armed", False) and state in self._CONTACT_STATES
+        self.erut_session.set_contact(attached)
 
     def _drop_erut_job(self) -> None:
         """준비해 둔(또는 장애로 실패한) ERUT 구간을 접는다. 홈으로는 안 보낸다."""
@@ -1528,31 +1559,48 @@ class OperatorWindow(QMainWindow):
         그 자리를 지켜야 한다) · 작업이나 로봇 태스크가 돌고 있다 · 이미 홈이다 ·
         로봇과 연결이 없다.
         """
-        if (self.sequencer.state is SequencerState.PAUSED
-                or getattr(self.erut_session, "_paused_work", "")):
-            return
-        if self._job_running() or self._robot_task_running():
-            return
-        if getattr(self, "_robot_at_home", False):
+        if self.erut_session.home_state() == "home":
             return
         if not getattr(self, "_robot_link_up", False):
             self.main_screen.show_activity(
                 "초기화했지만 로봇과 연결이 없어 팔을 홈으로 거두지 못했습니다.")
             return
-        self.main_screen.show_activity(
-            f"초기화({', '.join(codes)}) — 펴져 있는 팔을 홈으로 거둡니다.")
+        if not self._can_fold():
+            return
+        what = f"({', '.join(codes)}) " if codes else ""
+        self.main_screen.show_activity(f"초기화{what}— 펴져 있는 팔을 홈으로 거둡니다.")
         self._send_home()
+
+    def _can_fold(self) -> bool:
+        """초기화로 팔을 거둘 수 있는가 — 돌거나 멈춰 둔 작업이 없고 로봇과 붙어 있다.
+
+        일시정지는 제자리(이어 가려면 그 자리를 지켜야 한다), 작업 중이면 그
+        작업이 팔을 쓴다 — 둘 다 reset 은 200 으로 아무것도 안 한다(if-0.8 탭9).
+        """
+        if (self.sequencer.state is SequencerState.PAUSED
+                or getattr(self.erut_session, "_paused_work", "")):
+            return False
+        if self._job_running() or self._robot_task_running():
+            return False
+        return bool(getattr(self, "_robot_link_up", False))
 
     def _send_home_for_erut(self) -> None:
         """ERUT 홈 요청 — 보내고, 로봇이 실제로 홈에 닿으면 완료를 낸다."""
         self._erut_home_armed = False
         self._send_home()
 
-    def _clear_home_pending_on_failure(self, name: str, ok: bool, _message: str) -> None:
-        """홈 명령이 거절되면 「접는 중」을 거둔다 — 안 그러면 deployed 로 굳는다."""
-        if name == "home" and not ok and getattr(self, "_home_move_pending", False):
-            self._home_move_pending = False
-            self.erut_session.refresh_status()
+    def _clear_home_pending_on_failure(self, name: str, ok: bool, message: str) -> None:
+        """홈 명령의 결과. 받았으면 그때부터 도착을 살피고, 거절되면 E2002."""
+        if name != "home" or not getattr(self, "_home_move_pending", False):
+            return
+        if ok:
+            self._home_acked_at = time.monotonic()
+            return
+        self._home_move_pending = False
+        if getattr(self, "_home_watch_timer", None) is not None:
+            self._home_watch_timer.stop()
+        self._raise_home_failed(f"로봇이 홈 명령을 거절했습니다 — {message}")
+        self.erut_session.refresh_status()
 
     def _on_home_command_result(self, name: str, ok: bool, message: str) -> None:
         """노드가 홈 스크립트를 받았다. 그 뒤로 홈 플래그가 서면 도착이다.
@@ -1567,7 +1615,7 @@ class OperatorWindow(QMainWindow):
             return
         self._erut_home_armed = True
         if getattr(self, "_robot_at_home", False) and not self._robot_task_running():
-            QTimer.singleShot(1500, self._check_erut_home)
+            _call_later(self, 1500, self._check_erut_home)
 
     def _check_erut_home(self) -> None:
         if getattr(self, "_erut_home_armed", False) and getattr(self, "_robot_at_home", False):
@@ -1659,8 +1707,67 @@ class OperatorWindow(QMainWindow):
         # 닿은 걸 볼 때까지 ERUT 에는 deployed(접는 중)로 낸다.
         self._home_move_pending = True
         self._home_pending_saw_low = not getattr(self, "_robot_at_home", False)
+        self._home_sent_at = time.monotonic()
+        self._home_acked_at = None
+        if getattr(self, "_home_watch_timer", None) is None:
+            self._home_watch_timer = QTimer(self)
+            self._home_watch_timer.setInterval(self.HOME_WATCH_MS)
+            self._home_watch_timer.timeout.connect(self._watch_home_fold)
+        self._home_watch_timer.start()
         self.erut_session.refresh_status()
         self.ros_status.call_command("home")
+
+    #: 접기를 살피는 주기 [ms].
+    HOME_WATCH_MS = 500
+    #: 홈 명령을 노드가 받은 뒤 이만큼 지나야 홈 플래그를 믿는다 [s] — 노드는
+    #: 움직이기 전에 플래그를 내리는데 RCS 는 10 Hz 로 읽어 그 순간을 놓칠 수 있다.
+    HOME_SETTLE_S = 1.0
+
+    def _watch_home_fold(self) -> None:
+        """보낸 홈 이동이 끝났는지 본다. 끝나면 「접는 중」을 풀고, 시간을 넘기면 E2002.
+
+        예전에는 홈 플래그가 0 → 1 로 바뀌는 것만 도착으로 봤다. 이미 홈에 있던
+        팔이면(일시정지 직후 abort 등) 그 변화를 못 봐 deployed 로 굳었다(ERUT
+        Q-19, 2026-10-06 16:29). 이제는 노드가 명령을 받은 뒤 잠시 지나 홈 플래그가
+        1 이고 태스크가 쉬고 팔이 서 있으면 도착이다.
+        """
+        if not getattr(self, "_home_move_pending", False):
+            self._home_watch_timer.stop()
+            return
+        now = time.monotonic()
+        acked = getattr(self, "_home_acked_at", None)
+        if (acked is not None and now - acked >= self.HOME_SETTLE_S
+                and getattr(self, "_robot_at_home", False)
+                and not self._robot_task_running() and self._robot_still()):
+            self._home_fold_done()
+            return
+        within_s = self._home_within_ms() / 1000.0
+        if now - getattr(self, "_home_sent_at", now) > within_s:
+            self._raise_home_failed(
+                f"{within_s:.0f}초 안에 이동 안전 자세(home)로 거두지 못했습니다")
+
+    def _home_fold_done(self) -> None:
+        self._home_move_pending = False
+        if getattr(self, "_home_watch_timer", None) is not None:
+            self._home_watch_timer.stop()
+        if "E2002" in self.erut_session.error_codes():
+            self.erut_session.clear_error("E2002")
+        self.erut_session.refresh_status()
+
+    def _raise_home_failed(self, detail: str) -> None:
+        """표준 장애 E2002 HOME_FAILED (if-0.8). home 이 되면 같은 code 로 풀린다.
+
+        「아직 접는 중」 과 「접기가 멈춤」 을 ERUT 가 가릴 수 있게 한다. 초기화(reset)
+        하면 다시 거둔다.
+        """
+        if "E2002" in self.erut_session.error_codes():
+            return
+        self.main_screen.show_activity(f"E2002 HOME_FAILED — {detail}")
+        self.cobot_manual_screen.add_alarm(f"홈 거두기 실패 — {detail}")
+        self.erut_session.raise_error({
+            "code": "E2002", "message": "HOME_FAILED", "level": "stop",
+            "recovery": "reset_required", "detail": detail,
+        })
 
     def _park_position(self) -> None:
         """현재 위치를 영점에 세우고, 로봇이 다시 좌표를 낼 때까지
@@ -1855,6 +1962,9 @@ class OperatorWindow(QMainWindow):
         """
         self.ros_status.call_command("remote_control_on")
         self.ros_status.call_command("stop")
+        # 멈춘 로봇의 290 은 옛 값이다 — 다음 출발 전까지 접촉으로 치지 않는다.
+        self._contact_armed = False
+        self.erut_session.set_contact(False)
 
     def _show_sequencer_cell(
         self, column: int, row: int, label: str, ordinal: int
@@ -3153,7 +3263,7 @@ class OperatorWindow(QMainWindow):
             return
         if state != self._TASK_STATE_STOPPED or not getattr(self, "_scan_task_seen_running", False):
             return
-        QTimer.singleShot(self.TASK_STOP_GRACE_MS, self._report_scan_task_stopped)
+        _call_later(self, self.TASK_STOP_GRACE_MS, self._report_scan_task_stopped)
 
     def _report_scan_task_stopped(self) -> None:
         if (self.sequencer.state is not SequencerState.SCANNING
