@@ -42,7 +42,7 @@ class SequencerState(str, Enum):
 
 
 class CellStatus(str, Enum):
-    """셀 하나의 진행 상태. MQTT `job_state`로 외부에 알린다."""
+    """셀 하나의 진행 상태. 작업기록에 남긴다."""
 
     WAITING = "waiting"
     EXECUTING = "executing"
@@ -112,7 +112,7 @@ class GridPlan:
     eoat_probes: int = 0
     # 이 구간의 원점 — 검사면 좌표 [mm] (ERUT area.start). 외주면에서
     # x 는 원주 전개 거리, y 는 높이다. 차량은 x, 리프트는 y 로 정렬한다.
-    # 사내 MC job_cmd 처럼 격자를 우리가 도는 경우는 0 이다.
+    # RCS '검사 시작'처럼 격자를 우리가 도는 경우는 0 이다.
     origin_x: float = 0.0
     origin_y: float = 0.0
 
@@ -144,8 +144,8 @@ class GridPlan:
     # ERUT 는 area 를 구간 가로(x)·세로(y) 길이 단위로 놓는다(0, 600, 1200 …).
     # 차량·리프트는 그만큼이 아니라 **겹침만큼 덜** 움직인다 — 그래야 옆·위
     # 구간과 scan.pitch 만큼 겹친다. 그래서 area 원점을 먼저 구간 번호로 바꾸고,
-    # 번호 × (길이 - 겹침) 으로 차량·리프트 위치를 정한다. 사내 MC 처럼 원점이
-    # 0 이면 둘 다 0 이다.
+    # 번호 × (길이 - 겹침) 으로 차량·리프트 위치를 정한다. RCS '검사 시작'처럼
+    # 원점이 0 이면 둘 다 0 이다.
     @property
     def section_column(self) -> int:
         """area 원점이 전체 격자의 몇 번째 열인가(0 부터)."""
@@ -192,7 +192,7 @@ class JobSequencer(QObject):
 
     # (열 0-base, 행 0-base, 셀 이름, 전체 셀 중 몇 번째인지 1-base)
     cell_changed = pyqtSignal(int, int, str, int)
-    # 셀 이름과 상태. MQTT job_state 발행에 그대로 쓴다.
+    # 셀 이름과 상태. 작업기록(_record_cell_status)이 받는다.
     cell_status_changed = pyqtSignal(str, str)
     # 리프트를 이 높이(mm)로 옮겨 달라는 요청. 더미 어댑터가 받는다.
     lift_target_requested = pyqtSignal(float)
@@ -295,7 +295,7 @@ class JobSequencer(QObject):
 
         `move_first` 면 **차량 정렬부터** 한다. ERUT 는 구간마다 따로
         요청하므로(구간 하나 = job 하나) 매번 그 구간 자리로 차량을
-        옮겨야 한다. 사내 MC 처럼 차량이 이미 1구역에 서 있는 경우는 끈다.
+        옮겨야 한다. RCS '검사 시작'처럼 차량이 이미 1구역에 서 있는 경우는 끈다.
 
         `hold_before_scan` 이면 차량·리프트를 세운 뒤 로봇을 돌리기 전에
         READY 로 서서 `proceed()` 를 기다린다 — ERUT prepare(준비) 와

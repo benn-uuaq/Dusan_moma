@@ -15,7 +15,7 @@ from smr_operator_ui.app import OperatorWindow
 @pytest.fixture
 def window(qtbot, tmp_path, monkeypatch):
     monkeypatch.setenv("SMR_DATA_DIR", str(tmp_path / "data"))
-    w = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    w = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(w)
     w.ros_status.call_command = lambda name: True
     w.ros_status.set_task_paths = lambda scan, mark: True

@@ -27,28 +27,15 @@
 - `operator_settings` 테이블이 없으면 자동으로 생성합니다.
 - 설정 범위(`scope`)와 항목 키(`key`)를 기준으로 JSONB 값을 조회하거나 갱신합니다.
 
-### `mqtt_server.py`
+### 사내 MC MQTT (`mqtt_server.py`, 2026-10-07 삭제)
 
-- `docs/mqtt_topic_form.md`에 정의된 로봇 MQTT Topic을 관리합니다.
-- 외부 MQTT Broker에 비동기로 연결하고 명령, 상태, 응답, Heartbeat Topic을 구독합니다.
-- AMR/Cobot 동작, 리셋, 비상정지, Job 초기화 및 신규 Job 명령 발행 API를 제공합니다.
-- `job_cmd`는 "전체 작업 시작" 명령입니다. 검사 대상(`job_info`) 정보 외에 격자 분할 계획(`plan`: 열 수·행 수·셀 가로·셀 세로·겹침)도 함께 받습니다. 원통을 편 직사각형을 열(AMR 정차 구역) × 행(리프트 높이)으로 나누기 때문입니다. `app.py`의 `_apply_mqtt_plan()`이 이 블록을 받아 검사 사이클을 시작하고, 메인 화면의 AMR 위치(열 1)·사각형 작업 모델(행 A)을 갱신한 뒤 `robot/command/work_area` 토픽으로 로봇에도 전달합니다.
-  - **`job_info.height`(원통 전체 높이)를 셀 높이로 쓰면 안 됩니다.** ㄹ자는 `plan.cell_height`짜리 셀 하나에만 그립니다. 전체 높이(예: 6000 mm)를 셀 높이로 넘기면 ㄹ자 패스가 수십 행으로 늘어나 로봇이 실행할 수 없는 경로가 됩니다.
-  - **`scan_h`(스캐너 유효높이)는 MQTT에 없습니다.** 장비 고유값이므로 로컬 설정값(작업 영역 대화상자 입력값)을 그대로 써서 로봇에 전달합니다.
-  - 셀을 하나씩 넘어가는 자동 진행은 MC가 아니라 이쪽(Operator UI/로봇)의 책임이라, 지금 몇 번째 셀인지는 `job_cmd`에 담기지 않습니다. 일시정지·재개는 `mc_cmd`, 정지는 `job_clear`를 그대로 재사용합니다. 상세 설계는 `docs/grid_sequencer_design.md`를 참고하세요.
-- 격자 순회 결과를 외부(MC)로 내보내는 발행 API가 있습니다.
-  - `publish_job_state(cell_id, state)` → `doosan/robot/job_state`. `job_id`가 곧 격자 이름(`1A`, `12F`)이고 상태는 `waiting`/`executing`/`completed`입니다.
-  - `publish_speed(percent)` → `doosan/robot/req/speed`. 로봇 전체 동작 속도 비율(2~100 %)을 실시간으로 바꿉니다. 노드가 29999 `speed -v` 로 전달하며, 작업 중에도 바로 먹습니다. 실제 적용된 값은 `robot/status/speed_scale`(Modbus 17)로 확인합니다.
-  - `publish_tcp(values, cell_id)` → `doosan/robot/tcp`. **제로점 기준** 좌표(레지스터 280~285)에 격자 이름을 붙여 보냅니다. 이 값이 스캐너 관리 시스템으로 나가는 실제 데이터입니다. 베이스 프레임 좌표(384~389)는 모니터링용이라 내보내지 않습니다.
-- 수신 Command의 JSON 구조, 허용값, 유효시간과 중복 `timestamp`를 검사합니다.
-- 연결 상태와 수신 결과를 Qt 시그널로 화면에 전달합니다.
-- 기본 Broker는 `127.0.0.1:1883`이며 `SMR_MQTT_*` 환경 변수로 변경할 수 있습니다.
-- 재접속 간격은 1초부터 최대 30초까지 증가하며 10회 실패하면 자동 재접속을 종료합니다.
+- 사내 MC 규격(`job_cmd`·`mc_cmd`·`job_clear`·`probe_ack`·`mark_cmd`, `docs/mqtt_topic_form.md`)을 다루던 모듈입니다. 외부 통신을 ERUT 브로커 하나로 줄이면서 뺐습니다.
+- MC `probe_ack` 가 하던 원점 해제는 RCS '검사 시작' 작업이면 `app.py` 가 접촉 뒤 `CONTACT_LEAD_MS`(2초) 지나 스스로 하고, ERUT 작업이면 `erut_session` 이 같은 시간 뒤에 합니다.
 
 ### `erut_client.py`
 
 - ERUT(스테이션)와 주고받는 **전송 계층**입니다. 규격은 `mqtt_test/ERUT-3S_MQTT_인터페이스_*.xlsx`.
-- **`mqtt_server.py`와 봉투 구조가 다릅니다.** ERUT는 `{"timestamp": 숫자, "content": {...}}`이고 doosan 규격은 `{"timestamp": "문자열", ...}`입니다. 같은 `doosan/robot/req/` 접두어를 쓰지만 동작명이 갈리고 규격도 달라서, 섞지 않고 **접속부터 따로** 둡니다. 이쪽이 협력사로 나가는 규격입니다.
+- RCS 의 외부 통신은 이 브로커 하나입니다. 봉투는 `{"timestamp": 숫자, "content": {...}}` 입니다. 같은 `doosan/robot/req/` 아래로 옛 사내 MC 규격(`job_cmd` 등, `MC_ACTIONS`)이 와도 남의 요청으로 보고 못 본 척합니다(501 로 답하지 않음).
 - 구독: `doosan/robot/req/{9개 동작}`, `erut/status`. 발행: `erut/{장치ID}/res`·`evt/{ready,complete,progress,error,status}` — 규격(`ERUT-3S_MQTT_인터페이스_20260818.xlsx` 탭2)의 6개가 전부입니다.
 - **`evt/telemetry`는 없습니다.** 한때 1초 주기 상시 상태로 넣었다가 규격에 없어 걷어냈습니다. 되살리지 않도록 `test_no_telemetry_topic_exists` 가 막고 있습니다.
 - `evt/status`는 retained + LWT이고, **접속 시 + 30~60초 주기로 다시 발행**합니다(`STATUS_PERIOD_MS`). LWT는 1회성이라 프로그램이 굳은 경우를 못 잡는데, 상대가 이 갱신이 끊기는 것으로 굳음을 판정합니다.
@@ -151,7 +138,7 @@
 ### `__init__.py`
 
 - 다른 모듈에서 공통으로 사용할 서비스 클래스를 공개합니다.
-- 현재 `InspectionSimulator`, `SettingsService`, `MqttServer`, `RosStatusClient`, `JobSequencer`, `DummyMotionAdapter` 관련 클래스를 패키지 외부에 제공합니다.
+- 현재 `InspectionSimulator`, `SettingsService`, `ErutClient`, `ErutSession`, `RosStatusClient`, `JobSequencer`, `DummyMotionAdapter` 관련 클래스를 패키지 외부에 제공합니다.
 
 ## 사용 규칙
 

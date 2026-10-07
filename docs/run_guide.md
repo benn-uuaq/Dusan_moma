@@ -4,10 +4,13 @@
 
 > 이미 설치해 쓰던 현장 RCS PC 를 새 버전으로 올리는 순서는 [rcs_update_guide.md](rcs_update_guide.md) 에 있다.
 
-- **터미널 1** — MQTT 브로커
+- **터미널 1** — MQTT 브로커 (ERUT 브로커 대역 — 로컬 시험용)
 - **터미널 2** — ROS 2 로봇 제어 노드 (VM 시뮬레이션 로봇에 연결)
 - **터미널 3** — 운영 UI (RCS)
-- **터미널 4** — MQTT 작업 계획 시뮬레이터 (외부 MC 대역)
+- **터미널 4** — ERUT 시뮬레이터 (ERUT 쪽 PC 대역)
+
+RCS 의 외부 통신은 **ERUT 브로커(MQTT) 하나**와 TPAC(Modbus TCP 502)뿐이다. 사내 MC MQTT 와
+UT 설정은 2026-10-07 에 뺐다. 현장에서는 MQTT Explorer(나중에는 랜선으로 ERUT 쪽 PC)가 ERUT 자리에 선다.
 
 모든 터미널은 `cd /home/user/dusan_ws`에서 시작한다. direnv가 걸려 있으면 ROS 소싱과 venv 활성화가 자동으로 된다. direnv를 안 쓰면 각 터미널에서 먼저 아래를 실행한다.
 
@@ -19,7 +22,7 @@ source /opt/ros/humble/setup.bash && source install/setup.bash && source .venv/b
 
 ## 0. 최초 1회 준비
 
-MQTT 브로커가 아직 설치되어 있지 않다.
+로컬에서 ERUT 시험을 하려면 MQTT 브로커가 필요하다(현장처럼 ERUT 브로커에 바로 붙으면 필요 없다).
 
 ```bash
 sudo apt install -y mosquitto mosquitto-clients
@@ -52,7 +55,7 @@ mosquitto -v -p 1883
 오가는 메시지만 따로 보고 싶으면 별도 터미널에서:
 
 ```bash
-mosquitto_sub -h 127.0.0.1 -t 'doosan/#' -v
+mosquitto_sub -h 127.0.0.1 -t 'doosan/robot/req/#' -t 'erut/#' -v
 ```
 
 ---
@@ -120,8 +123,12 @@ print('작업영역(256) :', mb.read_holding_registers(256,4))
 **ROS 2가 소싱된 셸에서 실행해야** 자세 값이 UI에 들어온다. 소싱 안 된 셸에서 띄우면 UI는 뜨지만 로봇 값이 전부 `-`로 남는다.
 
 ```bash
-cd operator-ui && python -m smr_operator_ui
+./run_rcs.sh
 ```
+
+`run_rcs.sh` 는 ERUT 브로커가 닿는지 먼저 보고 `authbind --deep` 으로 RCS 를 띄운다. 그냥
+`python -m smr_operator_ui` 로 켜면 TPAC 서버 포트 502 를 못 열어 TPAC 와 안 붙는다(최초 설정은
+[rcs_update_guide.md](rcs_update_guide.md) 「처음 한 번」).
 
 PostgreSQL에 설정을 저장하려면 실행 전에 접속 정보를 준다(없어도 UI는 동작하고 저장만 안 된다).
 
@@ -129,47 +136,46 @@ PostgreSQL에 설정을 저장하려면 실행 전에 접속 정보를 준다(�
 export SMR_DATABASE_URL="postgresql://사용자:비밀번호@127.0.0.1:5432/데이터베이스"
 ```
 
-MQTT 브로커가 기본값(`127.0.0.1:1883`)이 아니면:
-
-```bash
-export SMR_MQTT_HOST=127.0.0.1
-export SMR_MQTT_PORT=1883
-```
+ERUT 브로커 주소·포트·계정은 RCS **연결 설정**의 「ERUT Broker 주소」·「ERUT 포트」·「ERUT 계정」에서 정한다(기본 `127.0.0.1:1883`, 저장하면 바로 다시 붙는다).
 
 WSL에서 창이 안 뜨면 WSLg가 동작하는지 확인한다. `echo $DISPLAY`가 비어 있으면 안 뜬다.
 
 ---
 
-## 터미널 4 — MQTT 작업 계획 시뮬레이터 (외부 MC 대역)
+## 터미널 4 — ERUT 시뮬레이터 (ERUT 쪽 PC 대역)
 
-실제 외부 장치가 아직 없으므로 이 도구가 MC 역할을 대신한다.
+협력사 ERUT 규격으로 RCS와 통신을 시험한다. 현장에서는 이 자리에 MQTT Explorer(나중에는 ERUT 쪽 PC)가 선다.
 
 ```bash
-python3 mqtt_test/mqtt_job_sim.py
+python3 mqtt_test/erut_sim.py
 ```
 
-창이 뜨면:
+**연결** 후 **▶ 시나리오 자동 진행**을 누르면 규격 탭3의 순서를 그대로 밟는다.
 
-1. **연결** 버튼으로 브로커에 붙는다 (기본 `127.0.0.1:1883`).
-2. 작업 값을 입력한다.
-3. **▶ 전체 작업 시작** 을 누르면 `doosan/robot/req/job_cmd`가 나가고, UI가 그걸 받아 작업을 시작한다.
-4. **⏸ 일시정지 / ⏵ 재개 / ■ 정지** 로 중간에 개입한다.
+```
+① 접속 확인   erut/status 발행 → req/query → res 200
+② 캘리브레이션 req/calibrate → res 202 → evt/complete
+③ 검사 준비   req/prepare  → res 202 → evt/ready
+④ 구간 검사   req/start    → res 202 → 3점 측정 → evt/contact(attached) → (ERUT 물 켬)
+                                     → 2초 뒤 적심(비비기) → ㄹ자 스캔 → evt/progress … → evt/complete
+⑤ 마킹        req/mark     → res 202 → evt/mark_ready ↔ req/mark_next → evt/complete
+```
 
-하단 로그에 **오가는 MQTT 를 전부** 보여준다 (`doosan/#`, `erut/#`, `3s/test/#`).
-tcp 는 초당 여러 번 오므로 한 줄로 접어서 보여주고, 체크를 끄면 감춘다 —
-안 그러면 정작 봐야 할 `res`·`evt/complete`·`evt/error` 가 묻힌다.
+각 단계의 응답을 기다렸다가 넘어가고, 못 받으면 그 자리에서 멈추며 무엇을 못 받았는지 로그에 남긴다. 개별 버튼(`pause`/`resume`/`abort`/`reset`)으로 중간에 끼어들 수도 있다.
 
-**작업 시작을 누르면 실제로 일어나는 일** (`JobSequencer`가 자동 진행):
+**구간 검사 흐름(ERUT 작업)** — 로봇이 3점 측정 뒤 시작점에 붙으면(290 = 7) RCS 가 `evt/contact`(attached)를 낸다. ERUT 는 그걸 보고 물을 뿌리기 시작하고, RCS 는 2초(`CONTACT_LEAD_MS`) 뒤 스캔 허가(267 = 1)를 써서 로봇이 적심(비비기) → ㄹ자 스캔으로 넘어간다.
+
+**RCS '검사 시작'(ERUT 없이)** — RCS 설정의 작업 영역·검사 대상으로 격자 전체를 돈다. 시작점에서는 기다려 줄 쪽이 없으므로 RCS 가 접촉 2초 뒤 스스로 풀어 준다.
 
 ```
 1A: AMR을 1구역으로 이동 (더미) → 리프트 0 mm (더미) → 로봇 play → 스캔 → 완료
 1B: 리프트 780 mm (더미) → 로봇 play → 스캔 → 완료
 …
 2A: AMR을 2구역으로 이동 → 리프트 0 mm → …
-12F까지 끝나면 전체 완료
+마지막 격자까지 끝나면 전체 완료
 ```
 
-셀마다 `doosan/robot/job_state`로 `waiting → executing → completed`가 나가고(`job_id`가 곧 격자 이름), 제로점 좌표는 격자 이름을 달고 `doosan/robot/tcp`로 나간다. 리프트/AMR은 실제 장비가 없어 더미가 잠시 뒤 "도착"을 돌려주는 방식이다.
+리프트/AMR은 실제 장비가 없어 더미가 잠시 뒤 "도착"을 돌려주는 방식이다(차량 모의기를 쓰면 그쪽이 움직인다 — 아래 「차량 모의기」).
 
 로봇이 실제로 스캔을 완료해야 다음 셀로 넘어간다(레지스터 `290==5 && 295==1`). 시뮬레이터는 스스로 태스크를 돌지 않으므로, 순회를 끝까지 보려면 Modbus로 그 값을 직접 넣어 줘야 한다:
 
@@ -194,7 +200,7 @@ python3 mqtt_test/alarm_sim.py
 ```
 
 **이 도구가 직접 evt/error 를 쏘는 게 아니다.** RCS 를 찔러서 **RCS 가 규격대로
-발행하게** 하므로, `mqtt_job_sim.py` 에 보이는 메시지는 실제 경로 그대로다.
+발행하게** 하므로, `erut_sim.py` 에 보이는 메시지는 실제 경로 그대로다.
 
 ```
 [alarm_sim] --3s/test/inject/error--> [RCS] --erut/robot1/evt/error--> [ERUT]
@@ -204,28 +210,6 @@ python3 mqtt_test/alarm_sim.py
 커플런트 부족과 각 해제)와 직접 입력이 있다. `level` 이 `stop`/`estop` 이면
 **진행 중 작업이 자동으로 일시정지**된다 — 장애 상황에서 헛검사를 막기 위해서다.
 `req/reset` 을 보내면 걸려 있던 장애가 해제된다.
-
-## ERUT 통신 시험 (스테이션 대역)
-
-협력사 ERUT 규격으로 RCS와 통신을 시험한다. 터미널 4 대신 이 도구를 띄운다.
-
-```bash
-python3 mqtt_test/erut_sim.py
-```
-
-**연결** 후 **▶ 시나리오 자동 진행**을 누르면 규격 탭3의 순서를 그대로 밟는다.
-
-```
-① 접속 확인   erut/status 발행 → req/query → res 200
-② 캘리브레이션 req/calibrate → res 202 → evt/complete      (시험용)
-③ 검사 준비   req/prepare  → res 202 → evt/ready           (시험용)
-④ 구간 검사   req/start    → res 202 → evt/progress … → evt/complete   ← 로봇 실제 동작
-⑤ 마킹        req/mark     → res 202 → evt/complete        (시험용)
-```
-
-각 단계의 응답을 기다렸다가 넘어가고, 못 받으면 그 자리에서 멈추며 무엇을 못 받았는지 로그에 남긴다. 개별 버튼(`pause`/`resume`/`abort`/`reset`)으로 중간에 끼어들 수도 있다.
-
-**지금은 로봇만 진짜다.** ④만 실제로 로봇이 움직이고 ②③⑤와 배터리·좌표는 시험용 응답이다.
 
 ## 한 번에 자동 검증하기
 
@@ -262,7 +246,7 @@ python3 mqtt_test/run_sim_test.py 3 2
 | UI에 자세 값이 전부 `-` | UI를 ROS 소싱 안 된 셸에서 띄웠다. 터미널 3에서 `ros2 topic list`가 되는지 확인 |
 | 노드가 계속 연결 경고만 냄 | VM이 꺼져 있거나 IP가 다르다. VM 펜던트에서 IP 확인 후 `robot_ip:=` 교체 |
 | 시뮬레이터를 쓰는데 Modbus만 안 붙음 | `modbus_port:=5502`를 빠뜨렸다. 시뮬레이터는 502가 아니라 5502를 쓴다 |
-| MQTT 발행은 되는데 UI가 반응 없음 | UI와 시뮬레이터가 같은 브로커를 보는지 확인. `mosquitto_sub -t 'doosan/#' -v`로 메시지가 실제로 오가는지 본다 |
+| ERUT 요청을 보냈는데 RCS 가 반응 없음 | RCS 연결 설정의 ERUT 브로커와 시뮬레이터(또는 MQTT Explorer)가 같은 브로커를 보는지 확인. `mosquitto_sub -t 'doosan/robot/req/#' -t 'erut/#' -v`로 메시지가 실제로 오가는지 본다. 시각이 10초 넘게 어긋나면 ERUT 가 버린다 |
 | UI 창이 안 뜸 | WSLg 문제. `echo $DISPLAY` 확인 |
 | 로봇이 안 움직임 | **① 원격 제어 모드인지 확인.** 로컬 제어면 `play`/`stop` 이 전부 거부된다. Modbus 레지스터 `71` 이 `2`(원격)여야 한다. `2`가 아니면 29999 로 `remoteControl -on`. ② 펜던트에서 태스크(`dusan_v1`)가 로드되어 있는지 확인 |
 | 첫 셀에서 안 넘어감 | 로봇이 완료(`290==5 && 295==1`)를 안 냈다. Modbus 로 `290~298` 과 `500`(1 실행중/3 중지됨)을 직접 읽어 확인한다 |
@@ -297,5 +281,6 @@ ros2 launch vehicle_sim vehicle_sim.launch.py
 ## 참고
 
 - 작업 모델과 격자 순회 설계: [`docs/grid_sequencer_design.md`](grid_sequencer_design.md)
-- MQTT 토픽 규격: [`docs/mqtt_topic_form.md`](mqtt_topic_form.md)
+- ERUT MQTT 규격: `mqtt_test/MQTT_인터페이스/ERUT_검사로봇_MQTT_표준인터페이스_if-0.8.xlsx`
+- 옛 사내 MC 토픽 규격(지금은 안 씀): [`docs/mqtt_topic_form.md`](mqtt_topic_form.md)
 - 시뮬레이터 도구 설명: [`mqtt_test/README.md`](../mqtt_test/README.md)

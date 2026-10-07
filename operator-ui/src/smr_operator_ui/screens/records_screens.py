@@ -5,7 +5,7 @@
   시스템 설정   : 데이터 저장 위치·로그 보존 기간을 **바꾸는 곳** (여기뿐)
   로그 파일     : 저장 위치 아래 네 가지 기록 파일을 보고 내보내거나 지운다
   오류 로그     : 지금 걸린 오류를 해제하고, 알람·이벤트 기록을 날짜별로 본다
-  운전 모드 저장 : 작업 조건 묶음(작업 영역·검사 대상·Cobot 속도·태스크·UT)을
+  운전 모드 저장 : 작업 조건 묶음(작업 영역·검사 대상·Cobot 속도·태스크)을
                   슬롯에 저장하고 불러온다. 연결·시스템 설정은 장비 고유값이라
                   넣지 않는다.
 
@@ -375,7 +375,7 @@ class ModeSlotsScreen(BaseScreen):
     def __init__(self) -> None:
         super().__init__(
             "운전 모드 저장",
-            "작업 영역·검사 대상·Cobot 속도·태스크·UT 조건을 슬롯에 묶어 저장하고 불러옵니다. "
+            "작업 영역·검사 대상·Cobot 속도·태스크 조건을 슬롯에 묶어 저장하고 불러옵니다. "
             "연결·시스템 설정은 장비마다 다른 값이라 넣지 않습니다.")
         self._slots: dict[str, dict] = {}
         # 시험에서 바꿔 끼운다.
@@ -513,9 +513,6 @@ def describe_mode(snap: dict[str, Any]) -> str:
     if task:
         lines.append(f"태스크: {task.get('task_version', '-')} · "
                      f"{'논센서판' if task.get('nosensor') else '센서판'}")
-    ut = snap.get("ut") or {}
-    if ut:
-        lines.append("UT: " + ", ".join(f"{k} {v}" for k, v in ut.items()))
     return "\n".join(lines)
 
 

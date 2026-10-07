@@ -23,7 +23,7 @@ def test_vehicle_moves_through_the_real_interfaces(qtbot, tmp_path, monkeypatch)
     ns = f"vt{int(time.time() * 1000) % 100000}"      # 다른 시험·모의기와 섞이지 않게
     monkeypatch.setenv("SMR_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("SMR_VEHICLE_NS", ns)
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.ros_status.start()
     sim = vehicle_sim_node.VehicleSim(parameter_overrides=[

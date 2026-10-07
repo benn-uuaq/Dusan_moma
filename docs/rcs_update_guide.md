@@ -6,8 +6,9 @@
 
 - 저장소: `benn-uuaq/Dusan_moma`
 - 브랜치: `main` 과 `feature/ros2-workspace-setup` 은 같은 내용으로 올린다. 그 PC 가 받던 브랜치를 그대로 쓰면 된다.
+- RCS 의 외부 통신은 **ERUT 브로커(MQTT) 하나**다. 사내 MC MQTT 와 UT 설정은 2026-10-07 판에서 뺐다 — 연결 설정에 「MQTT Broker 주소」·「MQTT 포트」 칸이 없어지고, 상단에 UT 표시와 설정 메뉴의 「UT 시스템 설정」이 없어진다. 예전 설정 파일에 남은 MQTT·UT 값은 읽지 않고 그냥 둔다.
 - 아래 명령은 모두 워크스페이스 폴더(저장소를 받은 곳, 예: `~/dusan_ws`)에서 실행한다.
-- **RCS 는 `./run_rcs.sh` 로 켠다.** 환경을 불러오고, MQTT 브로커가 닿는지 먼저 보고, `authbind` 로 RCS 를 띄운다. 그냥 `python3 -m smr_operator_ui` 로 켜면 TPAC(UT) 서버 포트 502 를 못 열어 TPAC 시뮬레이터·장비와 안 붙는다.
+- **RCS 는 `./run_rcs.sh` 로 켠다.** 환경을 불러오고, ERUT 브로커가 닿는지 먼저 보고, `authbind` 로 RCS 를 띄운다. 그냥 `python3 -m smr_operator_ui` 로 켜면 TPAC(초음파 장비) 서버 포트 502 를 못 열어 TPAC 시뮬레이터·장비와 안 붙는다.
 
 ---
 
@@ -26,7 +27,7 @@ sudo apt-get install -y authbind
 sudo touch /etc/authbind/byport/502 && sudo chmod 500 /etc/authbind/byport/502 && sudo chown "$(whoami)" /etc/authbind/byport/502
 ```
 
-**MQTT 브로커(mosquitto)** — 사내 MC 용 브로커를 이 PC 에서 띄우는 경우(연결 설정의 「MQTT Broker 주소」가 `127.0.0.1`).
+**MQTT 브로커(mosquitto)** — 이 PC 에서 ERUT 시뮬레이터(`mqtt_test/erut_sim.py`)로 로컬 시험을 할 때만 필요하다(연결 설정의 「ERUT Broker 주소」가 `127.0.0.1`). 현장처럼 ERUT 브로커에 바로 붙으면 설치하지 않아도 된다.
 
 ```bash
 sudo apt install -y mosquitto mosquitto-clients
@@ -107,7 +108,7 @@ pip install -e operator-ui
 ./run_rcs.sh
 ```
 
-켜기 전에 터미널에 `[확인] MQTT 브로커 … 에 닿습니다.` 가 나와야 한다. `[경고]` 가 나오면 아래 「MQTT 브로커에 안 붙을 때」를 본다.
+켜기 전에 터미널에 `[확인] ERUT 브로커 … 에 닿습니다.` 가 나와야 한다. `[경고]` 가 나오면 아래 「ERUT 브로커에 안 붙을 때」를 본다.
 스크립트 없이 켤 때는 반드시 `authbind --deep` 을 붙인다(5번 환경을 불러온 터미널에서):
 
 ```bash
@@ -163,13 +164,18 @@ git checkout <이전 커밋>
 git checkout main && git pull
 ```
 
-## MQTT 브로커에 안 붙을 때
+## ERUT 브로커에 안 붙을 때
 
-RCS 알림에 `MQTT Broker 연결 실패 <주소>:<포트> (n/10)` 가 뜨고, 10번 실패하면 `자동 재접속을 종료합니다` 가 뜬다.
-이 브로커는 **사내 MC 용**이다 — ERUT 브로커(`ERUT 브로커에 연결되었습니다`)와는 따로다. 사내 MC 를 쓰지 않으면 무시해도 된다.
+RCS 알림에 「ERUT 브로커에 연결되었습니다」가 안 뜨거나, `./run_rcs.sh` 가 `[경고] ERUT 브로커 … 에 닿지 않습니다` 를 낸다.
 
-1. 알림에 나온 **주소:포트** 가 맞는지 본다. 업데이트 뒤에는 연결 설정에 저장해 둔 「MQTT Broker 주소」·「MQTT 포트」로 붙는다(예전 판은 저장값 대신 기본값 `127.0.0.1` 로 붙던 때가 있다).
-2. 주소가 `127.0.0.1` 이면 이 PC 의 mosquitto 를 본다.
+1. **주소·포트·계정**이 ERUT 가 알려 준 값과 같은지 본다 — RCS 연결 설정의 「ERUT Broker 주소」·「ERUT 포트」·「ERUT 계정」·「ERUT 비밀번호」. 계정 값은 저장소에 없고 이 PC 의 설정 파일(`~/.config/smr-operator-ui/settings.json`)에만 있다.
+2. 그 주소까지 네트워크가 닿는지 본다(지금은 인터넷 너머 브로커, 나중에는 랜선으로 ERUT 쪽 PC). 주소·포트는 알림이나 `run_rcs.sh` 에 나온 값으로 바꿔 넣는다.
+
+   ```bash
+   timeout 2 bash -c 'exec 3<>/dev/tcp/<주소>/<포트>' && echo 닿음
+   ```
+
+3. 로컬 시험이라 주소가 `127.0.0.1` 이면 이 PC 의 mosquitto 를 본다.
 
    ```bash
    systemctl status mosquitto
@@ -181,36 +187,17 @@ RCS 알림에 `MQTT Broker 연결 실패 <주소>:<포트> (n/10)` 가 뜨고, 1
    sudo systemctl enable --now mosquitto
    ```
 
-   포트가 열려 있는지:
-
-   ```bash
-   ss -ltnp | grep 1883
-   ```
-
-3. 주소가 다른 PC 면, 그 PC 가 켜져 있고 그 PC 의 mosquitto 가 외부 접속을 받는지 본다. mosquitto 2.x 는 설정이 없으면 **자기 PC 에서 오는 접속만** 받는다 — 그 PC 의 `/etc/mosquitto/conf.d/` 에 아래를 넣고 다시 켠다.
-
-   ```
-   listener 1883 0.0.0.0
-   allow_anonymous true
-   ```
-
-4. 이 PC 에서 직접 붙어 본다(주소·포트는 알림에 나온 값).
-
-   ```bash
-   mosquitto_sub -h 127.0.0.1 -p 1883 -t 'doosan/#' -v
-   ```
-
-5. 고쳤으면 RCS 연결 설정을 **저장**한다 — 재접속을 포기한 뒤에도 저장하면 다시 붙는다. 붙으면 알림에 `MQTT Broker에 연결되었습니다.` 가 뜬다.
+4. 고쳤으면 RCS 연결 설정을 **저장**한다 — 저장하면 바로 다시 붙는다. 붙으면 알림에 「ERUT 브로커에 연결되었습니다」가 뜬다.
+5. 붙었는데 ERUT 요청이 안 먹으면 시각을 본다 — 10초 넘게 어긋난 메시지는 버려진다. 이 PC 를 인터넷 시간(NTP)에 맞춘다.
 
 ## 자주 나는 문제
 
 | 증상 | 원인 · 조치 |
 |---|---|
 | `git pull` 이 `Your local changes … would be overwritten` 으로 멈춤 | 그 PC 에서 고친 파일이 있다 — 2번으로 돌아가 정리한다 |
-| TPAC(UT) 시뮬레이터·장비와 안 붙음, 통신 로그에 `[Errno 13] Permission denied` | `authbind` 없이 켰다 — `./run_rcs.sh` 로 켠다. 처음이면 「처음 한 번」의 authbind 설정 |
-| MQTT 브로커에 안 붙었다는 알림 | 위 「MQTT 브로커에 안 붙을 때」 |
+| TPAC(초음파 장비) 시뮬레이터·장비와 안 붙음, 통신 로그에 `[Errno 13] Permission denied` | `authbind` 없이 켰다 — `./run_rcs.sh` 로 켠다. 처음이면 「처음 한 번」의 authbind 설정 |
 | `colcon build` 에서 `ros2`·`ament` 를 못 찾음 | `source /opt/ros/humble/setup.bash` 를 먼저 안 했다 |
 | RCS 가 「로봇 제어 노드를 찾지 못했습니다」 | `source install/setup.bash` 를 안 한 터미널에서 켰다 |
 | RCS 의 모든 로봇 버튼이 잠김 | 워크스페이스를 소싱하지 않아 레지스터 표를 못 읽었다 — 5번 다시 |
-| ERUT 브로커에 안 붙음 | 연결 설정의 ERUT 주소·포트·계정 확인(설정 파일은 업데이트로 바뀌지 않는다) · 그 PC 의 인터넷 연결 확인 |
+| ERUT 브로커에 안 붙음 | 위 「ERUT 브로커에 안 붙을 때」(설정 파일은 업데이트로 바뀌지 않는다) |
 | 로봇 펜던트에 「ARC IS ZERO」 | 캘리브레이션(모재 지름) 전에 로봇을 출발시켰다 — ERUT 에서 calibrate 후 다시 시작 |

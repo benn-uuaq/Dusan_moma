@@ -11,7 +11,7 @@ from smr_operator_ui.services import SequencerState
 
 
 def test_starting_a_cell_clears_the_scan_permission(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple[str, int]] = []
     commands: list[str] = []
@@ -27,7 +27,7 @@ def test_starting_a_cell_clears_the_scan_permission(qtbot) -> None:
 
 
 def test_releasing_the_gate_sends_one(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple[str, int]] = []
     window.ros_status.send_value = lambda name, value: sent.append((name, value)) or True
@@ -41,7 +41,7 @@ def test_releasing_the_gate_sends_one(qtbot) -> None:
 
 def test_zero_radius_is_refused_before_play(qtbot) -> None:
     """반지름(260)이 0 이면 로봇이 "ARC IS ZERO" 로 멈춘다 — 틀기 전에 막는다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     commands: list[str] = []
     errors: list[dict] = []
@@ -64,7 +64,7 @@ def test_zero_radius_is_refused_before_play(qtbot) -> None:
 
 # ---- 일시정지 = 29999 pause, 재개 = play ------------------------------------
 def _scanning_window(qtbot):
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     commands: list[str] = []
     window.ros_status.send_value = lambda name, value: True

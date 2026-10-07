@@ -30,7 +30,7 @@ ros2 launch elite_robot_controller elite_cs612.launch.py robot_ip:=192.168.227.1
 authbind --deep python -m smr_operator_ui
 ```
 
-현장 RCS PC 에서는 저장소 맨 위의 `./run_rcs.sh` 로 켭니다 — ROS·venv 환경을 불러오고, MQTT 브로커가 닿는지 먼저 보고, `authbind --deep` 으로 RCS 를 띄웁니다. 업데이트·문제 해결 순서는 `docs/rcs_update_guide.md`.
+현장 RCS PC 에서는 저장소 맨 위의 `./run_rcs.sh` 로 켭니다 — ROS·venv 환경을 불러오고, ERUT 브로커가 닿는지 먼저 보고, `authbind --deep` 으로 RCS 를 띄웁니다. 업데이트·문제 해결 순서는 `docs/rcs_update_guide.md`.
 
 **`authbind --deep`가 필요한 이유:** "TPAC 설정 / TCP 인코딩" 화면이 여는 외부 제공 서버는 기본 포트가 502인데, 1024 미만 포트는 리눅스에서 일반 사용자가 열 수 없습니다(`[Errno 13] Permission denied`). `sudo setcap cap_net_bind_service=+ep`를 `python3`에 직접 걸면 이 문제는 해결되지만, 리눅스 동적 로더가 capability 있는 실행 파일에서는 `LD_LIBRARY_PATH`를 무시해 버려서 **ROS 2가 라이브러리를 못 찾고 깨집니다**(`ImportError: librcl_action.so`). `python3`는 ROS도 같이 쓰는 공유 바이너리라 이 방법은 쓰면 안 됩니다.
 
@@ -89,7 +89,7 @@ operator-ui/
 구현을 시작할 때 `design.md`의 장비 통신 및 배포 관련 미확정 항목을 먼저 확인합니다.
 ## PostgreSQL 설정 저장소
 
-시스템, UT, Cobot 및 검사 대상 설정은 PostgreSQL의 `operator_settings` 테이블에 저장됩니다.
+시스템, Cobot 및 검사 대상 설정은 PostgreSQL의 `operator_settings` 테이블에 저장됩니다.
 테이블은 애플리케이션이 최초 연결할 때 자동으로 생성합니다. 접속 문자열은 소스 코드에
 저장하지 않고 `SMR_DATABASE_URL` 환경변수로 전달합니다.
 
@@ -117,10 +117,10 @@ $env:SMR_DATABASE_URL = "postgresql://사용자:비밀번호@서버:5432/데이�
 
 | 기록 | 형식 | 내용 |
 |---|---|---|
-| 작업기록 | xlsx | 날짜·시작·종료·소요, 출처(ERUT/MC/RCS), job_id, 구간, 결과(완료/중단), 비고(그 구간의 알람·장애), 호 길이·격자 높이·격자간 겹침·반지름·두께, 프로브, 태스크 판, 좌표 수, 스캔 좌표 파일. 마킹은 `구간=마킹` 한 줄 |
+| 작업기록 | xlsx | 날짜·시작·종료·소요, 출처(ERUT/RCS), job_id, 구간, 결과(완료/중단), 비고(그 구간의 알람·장애), 호 길이·격자 높이·격자간 겹침·반지름·두께, 프로브, 태스크 판, 좌표 수, 스캔 좌표 파일. 마킹은 `구간=마킹` 한 줄 |
 | 스캔좌표 | txt (탭 구분) | ㄹ자 스캔 중(로봇 상태 290 = 6)인 원점 기준 좌표. 시각·경과·구간·X·Y·Z[mm]·Rx·Ry·Rz[deg] (Rz +180° 좌표계) |
 | 알람이벤트 | txt (탭 구분) | 시각·구분(정보/알람/장애/해제/알림)·코드·수준·내용 |
-| 통신기록 | txt (탭 구분) | 시각·방향(수신/발신)·채널(ERUT/MC)·토픽·원문. 좌표 스트림(`doosan/robot/tcp`)과 하트비트는 제외 |
+| 통신기록 | txt (탭 구분) | 시각·방향(수신/발신)·채널(ERUT)·토픽·원문. 좌표 스트림(`doosan/robot/tcp`)과 하트비트는 제외 |
 
 - 텍스트 기록은 한 줄씩 바로 덧붙여, 프로그램이 도중에 꺼져도 그때까지는 남습니다.
   UTF-8(BOM) 이라 Windows 엑셀·메모장에서 한글이 깨지지 않습니다.

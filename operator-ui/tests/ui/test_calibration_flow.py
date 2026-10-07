@@ -13,7 +13,7 @@ from smr_operator_ui.services import calibration
 
 
 def _window(qtbot):
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window._work_area_extra = {"radius_mm": 0.0, "thickness_mm": 10.0,
                                "eoat_w_mm": 0.0, "eoat_h_mm": 0.0, "eoat_type": 0.0}
@@ -274,15 +274,6 @@ def test_section_taller_than_1200mm_is_refused_and_area_limit_carries_it(qtbot):
 def test_vehicle_drives_at_0_3_m_per_s(qtbot):
     window = _window(qtbot)
     assert window.VEHICLE_SPEED_MPS == 0.3
-    window.close()
-
-
-def test_mc_plan_taller_than_1200mm_is_refused(qtbot):
-    import pytest
-    window = _window(qtbot)
-    with pytest.raises(ValueError, match="1200"):
-        window._parse_mqtt_plan({"column_count": "1", "row_count": "1", "cell_width": "600",
-                                 "cell_height": "1300", "overlap": "20"})
     window.close()
 
 

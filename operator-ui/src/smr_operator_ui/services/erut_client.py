@@ -1,14 +1,10 @@
 """ERUT Robot Service(로봇 브릿지)와 주고받는 MQTT 전송 계층.
 
-규격은 `mqtt_test/ERUT_검사로봇_MQTT_표준인터페이스_if-0.5.xlsx` 다(탭1~5·8~10.
-탭6·7 은 ERUT 내부 규격이라 3S 와 무관하다). 기존 `MqttServer`가
-다루는 `doosan/robot/req/{mc_cmd,job_cmd,...}` 와는 **봉투 구조가 다르다.**
+규격은 `mqtt_test/MQTT_인터페이스/ERUT_검사로봇_MQTT_표준인터페이스_if-0.8.xlsx` 다
+(탭1~5·8~10. 탭6·7 은 ERUT 내부 규격이라 3S 와 무관하다). RCS 의 외부 통신은
+이 브로커 하나다 — 사내 MC MQTT(`MqttServer`)는 2026-10-07 에 뺐다.
 
     ERUT   : {"timestamp": 1786500000000, "content": {...}}   timestamp 는 숫자
-    doosan : {"timestamp": "1786500000000", ...}              timestamp 는 문자열
-
-같은 `doosan/robot/req/` 접두어를 쓰지만 동작명이 갈리고 규격도 달라서,
-둘을 한 클래스에 섞지 않고 접속부터 따로 둔다. 이쪽이 협력사로 나가는 규격이다.
 """
 
 from __future__ import annotations
@@ -30,8 +26,9 @@ ACTIONS = (
     "home", "mark_next",
 )
 
-#: 같은 `doosan/robot/req/` 아래에 오는 **사내 MC 규격** 토픽. ERUT 요청이
-#: 아니므로 여기서는 못 본 척한다(501 로 답하면 안 된다 — 남의 요청이다).
+#: 같은 `doosan/robot/req/` 아래에 오는 **옛 사내 MC 규격** 토픽. RCS 는 MC 를
+#: 뺐지만 같은 브로커에 남은 MC 도구가 보낼 수 있다 — ERUT 요청이 아니므로
+#: 못 본 척한다(501 로 답하면 안 된다 — 남의 요청이다).
 #: reset 은 두 규격이 같은 이름을 쓰는데, MC 쪽은 content 래퍼가 없어 걸러진다.
 MC_ACTIONS = frozenset({
     "mc_cmd", "job_cmd", "job_clear", "ems", "speed", "probe_ack", "mark_cmd",

@@ -4,7 +4,7 @@
 실제 장애 수집(PLC·로봇 알람)이 아직 붙어 있지 않아, 버튼으로 장애 상황을
 만들어 **RCS 가 규격대로 `erut/{장치ID}/evt/error` 를 발행하게** 한다.
 이 도구가 직접 evt/error 를 쏘는 게 아니라 RCS 를 찔러서 RCS 가 쏘게
-하는 것이라, `mqtt_job_sim.py` 에서 보이는 메시지는 실제 경로 그대로다.
+하는 것이라, `erut_sim.py` 에서 보이는 메시지는 실제 경로 그대로다.
 
     [이 도구] --3s/test/inject/error--> [RCS] --erut/robot1/evt/error--> [ERUT]
 
@@ -147,7 +147,7 @@ class AlarmSimApp:
         ttk.Label(
             log, foreground="#666",
             text="이 도구는 RCS 를 찌르기만 합니다. 실제 evt/error 메시지는 "
-                 "mqtt_job_sim.py 로그에서 확인하세요.",
+                 "erut_sim.py 로그에서 확인하세요.",
         ).grid(row=1, column=0, sticky=tk.W, pady=(6, 0))
 
     # ------------------------------------------------------------ 연결

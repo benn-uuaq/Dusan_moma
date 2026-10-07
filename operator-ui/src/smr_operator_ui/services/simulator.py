@@ -130,7 +130,7 @@ class InspectionSimulator(QObject):
     def set_segment_position(self, current_segment: int, total_segments: int) -> None:
         """AMR의 실제 원주 구역 위치를 반영한다.
 
-        MQTT job_cmd로 구역 위치가 들어오면 여기로 반영한다. 구간 수 자체가
+        작업(ERUT 구간·RCS 격자)이 구역을 옮기면 여기로 반영한다. 구간 수 자체가
         바뀔 수 있어 total_segments도 함께 받는다. 진행 단계(안전 순서)는
         건드리지 않고 위치 표시만 바꾼다.
         """

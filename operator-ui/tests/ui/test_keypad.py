@@ -193,7 +193,7 @@ def test_wheel_never_changes_input_values_but_still_scrolls_the_page(qtbot) -> N
 def test_speed_bar_is_not_changed_by_the_wheel(qtbot) -> None:
     """로봇 속도 슬라이더도 휠로 안 바뀐다 — 스크롤하다 속도가 바뀌면 위험하다."""
     from smr_operator_ui.app import OperatorWindow
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     slider = window.main_screen.speed_bar.slider
     slider.setValue(50)                  # 끝값이면 휠이 더 못 가 시험이 안 된다
@@ -208,7 +208,7 @@ def test_speed_bar_is_not_changed_by_the_wheel(qtbot) -> None:
 def test_data_folder_opens_a_folder_picker_not_the_keyboard(qtbot) -> None:
     from smr_operator_ui.app import OperatorWindow
     from smr_operator_ui.folder_picker import FolderPathEdit
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     field = window.screens["system"].field("데이터 저장 위치")
     assert isinstance(field, FolderPathEdit)

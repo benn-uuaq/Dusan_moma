@@ -1,5 +1,7 @@
 # MQTT Topic 정의 양식
 
+> **지금은 안 쓴다.** 사내 MC 규격(`doosan/robot/req/job_cmd`·`mc_cmd`·`probe_ack` 등)을 정리한 문서다. RCS 는 2026-10-07 에 사내 MC MQTT 를 뺐고, 외부 통신은 ERUT 표준 인터페이스(`mqtt_test/MQTT_인터페이스/ERUT_검사로봇_MQTT_표준인터페이스_if-0.8.xlsx`) 하나다. 기록용으로 남겨 둔다.
+
 이 문서는 SMR 비파괴 검사 시스템에서 사용하는 MQTT Topic을 정리하기 위한 작성 양식이다.
 
 Topic의 방향은 특정 프로그램의 관점에서 `송신/수신`으로 표현하지 않고, 실제 주체를 알 수 있도록 **발행자(Publisher)**와 **구독자(Subscriber)**로 기록한다.

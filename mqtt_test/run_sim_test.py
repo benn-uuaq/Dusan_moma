@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """장비 없이 전체 경로를 한 번에 확인한다.
 
-로봇 시뮬레이터 → ROS 노드 → 운영 UI → MQTT/TPAC 까지 실제 코드를 그대로
+로봇 시뮬레이터 → ROS 노드 → 운영 UI → ERUT MQTT/TPAC 까지 실제 코드를 그대로
 띄우고, 시나리오를 차례로 돌린다. 실물이 없는 동안 회귀를 잡아내는 그물이다.
 
-  mc     사내 MC 규격: job_cmd 로 1A 부터 마지막 셀까지 순회한다.
-         원점마다 프로브 확인(probe_ack)을 보내 스캔을 풀어 준다.
+  rcs    RCS 단독 작업('검사 시작'): 1A 부터 마지막 셀까지 순회한다.
+         원점마다 RCS 가 접촉 2초 뒤 스스로 스캔을 풀어 준다.
   erut   ERUT 표준(if-0.5): 자기소개 → calibrate(차량 한 바퀴) → prepare(차량만)
          → start(3점 → contact → 스캔, 줄 중간 pause/resume) → mark(mark_ready ↔ mark_next) → home
          → 비상정지 → reset.
@@ -14,7 +14,7 @@
 
 실행:
     python3 mqtt_test/run_sim_test.py                 # 전부 (2열 × 3행)
-    python3 mqtt_test/run_sim_test.py --only mc erut
+    python3 mqtt_test/run_sim_test.py --only rcs erut
     python3 mqtt_test/run_sim_test.py --columns 3 --rows 2
 
 ROS 2 워크스페이스를 소싱한 셸에서 실행해야 한다:
@@ -122,15 +122,8 @@ class Processes:
 class Harness:
     """운영 UI 한 벌과 시뮬레이터 레지스터를 함께 들고 있는 시험대."""
 
-    def __init__(self, window, app, modbus, published: list) -> None:
+    def __init__(self, window, app, modbus) -> None:
         self.window, self.app, self.modbus = window, app, modbus
-        self.published = published
-        #: 발행을 받아 볼 함수들. 브로커가 없으니 여기로 나눠 준다.
-        self.listeners: list = []
-
-    def on_publish(self, topic: str, payload) -> None:
-        for listener in list(self.listeners):
-            listener(topic, payload)
 
     def pump(self, seconds: float) -> None:
         end = time.time() + seconds
@@ -150,45 +143,41 @@ class Harness:
         values = self.modbus.read_holding_registers(address, count)
         return list(values or [])
 
-    def topics(self, suffix: str) -> list[dict]:
-        return [p for t, p in self.published if t.endswith(suffix)]
 
 
 # ---------------------------------------------------------------- 시나리오
-def scenario_mc(h: Harness, columns: int, rows: int) -> list[str]:
-    """사내 MC 규격: job_cmd 하나로 전체 격자를 돈다."""
-    from smr_operator_ui.services import MqttTopics
+def scenario_rcs(h: Harness, columns: int, rows: int) -> list[str]:
+    """RCS 단독 작업: '검사 시작'과 같은 격자 순회로 전체 격자를 돈다.
+
+    ERUT 작업이 아니므로 원점(290 = 7)에서 기다려 줄 쪽이 없다 — RCS 가 접촉
+    뒤 CONTACT_LEAD_MS 가 지나면 스스로 scan_go 를 써서 적심 → 스캔으로 넘긴다
+    (예전 사내 MC probe_ack 자리. 사내 MC 는 2026-10-07 에 뺐다).
+    """
+    from smr_operator_ui.services import GridPlan
 
     window = h.window
     visited: list[str] = []
     window.sequencer.cell_changed.connect(lambda c, r, label, n: visited.append(label))
 
-    # 로봇이 원점에서 프로브 확인을 기다리면 MC 대신 우리가 눌러 준다.
-    gates: list[bool] = []
+    # RCS 가 스스로 푼 횟수를 센다(원점 도착마다 한 번).
+    releases: list[int] = []
+    send_value = window.ros_status.send_value
 
-    def on_gate(topic: str, payload: dict) -> None:
-        if not topic.endswith("probe_gate"):
-            return
-        waiting = str(payload.get("state")) == "waiting"
-        gates.append(waiting)
-        if waiting:
-            window.mqtt_server.command_received.emit(
-                MqttTopics.PROBE_ACK, {"timestamp": "1", "pressed": True})
+    def counting_send(name, value):
+        if name == "scan_go" and int(value) == 1:
+            releases.append(1)
+        return send_value(name, value)
 
-    h.listeners.append(on_gate)
+    window.ros_status.send_value = counting_send
 
     total = columns * rows
-    log(f"\n[mc] 작업 계획 발행: {columns}열 × {rows}행 = {total}개 셀")
-    window.mqtt_server.command_received.emit(MqttTopics.JOB_COMMAND, {
-        "timestamp": "1", "job_id": "jb-sim",
-        "job_info": {"diameter": "2500", "height": "6000",
-                     "target_distance": "8560"},
-        "plan": {"column_count": str(columns), "row_count": str(rows),
-                 "cell_width": "600", "cell_height": "800", "overlap": "20"},
-    })
+    log(f"\n[rcs] RCS 격자 순회: {columns}열 × {rows}행 = {total}개 셀")
+    window._begin_grid_job(GridPlan(column_count=columns, row_count=rows,
+                                    cell_width=600.0, cell_height=800.0,
+                                    pitch_x=20.0, pitch_y=20.0), 800.0)
 
     seen = 0
-    deadline = time.time() + 40 + total * 12
+    deadline = time.time() + 40 + total * 15
     while time.time() < deadline:
         h.pump(0.2)
         if len(visited) > seen:
@@ -197,30 +186,25 @@ def scenario_mc(h: Harness, columns: int, rows: int) -> list[str]:
         if window.sequencer.state.name == "DONE":
             break
     h.pump(1.5)
+    window.ros_status.send_value = send_value
 
-    states = h.topics("job_state")
     work_area = h.register(256, 4)
     expected = [f"{c + 1}{chr(ord('A') + r)}" for c in range(columns) for r in range(rows)]
 
     log(f"  방문한 셀      : {' → '.join(visited)}")
-    log(f"  job_state 발행 : {len(states)}건 (셀당 3건 = {total * 3} 기대)")
-    log(f"  원점 대기 신호 : {len(gates)}건")
+    log(f"  원점 자동 해제 : {len(releases)}건")
     log(f"  레지스터 256~259: {work_area}")
 
     problems = []
     if visited != expected:
-        problems.append(f"[mc] 셀 순서가 다릅니다. 기대: {expected}, 실제: {visited}")
+        problems.append(f"[rcs] 셀 순서가 다릅니다. 기대: {expected}, 실제: {visited}")
     if window.sequencer.state.name != "DONE":
-        problems.append(f"[mc] 전체 완료 상태가 아닙니다: {window.sequencer.state.name}")
-    if len(states) != total * 3:
-        problems.append(f"[mc] job_state 발행 수가 다릅니다: {len(states)}")
+        problems.append(f"[rcs] 전체 완료 상태가 아닙니다: {window.sequencer.state.name}")
     # 258(스캐너 높이)은 현장 설정값이라 고정이 아니다 — 0.1mm 단위로 실려만 가면 된다.
     if work_area[:2] != [600, 800] or work_area[3] != 20 or work_area[2] <= 0:
-        problems.append(f"[mc] 작업 영역 레지스터가 다릅니다: {work_area}")
-    if gates.count(True) != total:
-        problems.append(f"[mc] 원점 대기가 셀마다 뜨지 않았습니다: {gates.count(True)}/{total}")
-    # ERUT 시나리오에는 MC 가 없다 — 대신 눌러 주던 것을 거둔다.
-    h.listeners.remove(on_gate)
+        problems.append(f"[rcs] 작업 영역 레지스터가 다릅니다: {work_area}")
+    if len(releases) != total:
+        problems.append(f"[rcs] 원점에서 셀마다 스스로 풀지 않았습니다: {len(releases)}/{total}")
     return problems
 
 
@@ -565,7 +549,7 @@ def scenario_tpac(h: Harness) -> list[str]:
     return problems
 
 
-SCENARIOS = ("mc", "erut", "io", "tpac")
+SCENARIOS = ("rcs", "erut", "io", "tpac")
 
 
 def main() -> int:
@@ -579,7 +563,7 @@ def main() -> int:
     from pyModbusTCP.client import ModbusClient
 
     from smr_operator_ui.app import OperatorWindow
-    from smr_operator_ui.services import MqttServer, RobotNodeSupervisor
+    from smr_operator_ui.services import RobotNodeSupervisor
 
     # 노드는 위에서 시뮬레이터 주소로 띄웠다. UI 가 기본값(실제 로봇 주소일 수
     # 있다)으로 노드를 하나 더 띄우지 못하게 막는다 — 노드 탐색이 늦으면
@@ -590,33 +574,22 @@ def main() -> int:
     procs.start()
 
     app = QApplication([])
-    mqtt = MqttServer()
-    window = OperatorWindow(mqtt_server=mqtt, start_mqtt=False, start_ros=True,
-                            start_erut=False)
+    window = OperatorWindow(start_ros=True, start_erut=False)
     modbus = ModbusClient(host="127.0.0.1", port=MODBUS_PORT, auto_open=True)
 
-    # 브로커 없이 돌리므로 발행 내용을 가로채 기록만 한다.
-    published: list[tuple[str, dict]] = []
-
-    harness = Harness(window, app, modbus, published)
+    # ERUT 로 나가는 것은 시나리오마다 ErutTap 이 가로챈다(브로커 없이).
+    harness = Harness(window, app, modbus)
     if os.environ.get("SIM_TEST_VERBOSE"):
         # RCS 진행 알림을 그대로 찍는다 — 시나리오가 어디서 멈췄는지 볼 때.
         window.main_screen.activity_shown.connect(lambda text: log(f"    · {text}"))
-
-    def capture(topic, payload, **kwargs):
-        published.append((topic, payload))
-        harness.on_publish(topic, payload)
-        return True
-
-    mqtt.publish = capture
 
     log("로봇 연결 대기...")
     harness.pump(3)
 
     problems: list[str] = []
     try:
-        if "mc" in args.only:
-            problems += scenario_mc(harness, args.columns, args.rows)
+        if "rcs" in args.only:
+            problems += scenario_rcs(harness, args.columns, args.rows)
         if "tpac" in args.only:
             # 스캔이 도는 동안을 봐야 하므로 erut 구간과 겹쳐 돌린다.
             pass

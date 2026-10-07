@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tk 시뮬레이터를 **Windows 파이썬**으로 띄운다.
 #
-#   mqtt_test/win_sim.sh mqtt_job_sim     (erut_sim, alarm_sim, tpac_encoder_sim 도 같다)
+#   mqtt_test/win_sim.sh erut_sim     (alarm_sim, tpac_encoder_sim 도 같다)
 #
 # 왜: WSLg(WSL 2.7 / WSLg 1.0.73)에서는 X11 창이 커서를 지정하면 Windows 쪽
 # 포인터가 숨겨진다 — Tk 는 X11 로만 뜨므로 시뮬레이터 위에서 마우스 포인터가
@@ -14,7 +14,7 @@
 # 필요: Windows 파이썬 + paho-mqtt (py -m pip install paho-mqtt)
 set -euo pipefail
 
-name="${1:?시뮬레이터 이름: mqtt_job_sim / erut_sim / alarm_sim}"
+name="${1:?시뮬레이터 이름: erut_sim / alarm_sim / tpac_encoder_sim}"
 shift
 here="$(cd "$(dirname "$0")" && pwd)"
 script="$here/${name%.py}.py"

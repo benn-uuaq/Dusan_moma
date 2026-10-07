@@ -17,7 +17,7 @@ from smr_operator_ui.services import data_recorder as dr
 @pytest.fixture
 def window(qtbot, tmp_path, monkeypatch):
     monkeypatch.setenv("SMR_DATA_DIR", str(tmp_path / "data"))
-    w = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    w = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(w)
     # 로봇 명령은 가로챈다(로봇 없이 알람이 쌓이지 않게).
     w.ros_status.call_command = lambda name: True
@@ -149,7 +149,7 @@ def test_mode_slot_saves_and_restores_job_conditions(window) -> None:
     assert snap["cobot"]["작업 속도"] == 90
     assert snap["robot_task"]["task_version"] == "dusan_v5"
     assert snap["work_area"]["width_mm"] == 700.0 and snap["work_area"]["overlap_mm"] == 15.0
-    assert "UT 주소" not in snap["ut"] and "통신 포트" not in snap["ut"], "장비 연결값은 넣지 않는다"
+    assert "ut" not in snap, "UT 설정은 뺐다 — 슬롯에 남으면 안 된다"
     assert "태스크 판" not in snap["cobot"]
 
     # 다른 값으로 바꿔 놓고 불러오면 슬롯 값으로 돌아온다.

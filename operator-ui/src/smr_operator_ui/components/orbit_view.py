@@ -31,7 +31,7 @@ class OrbitView(QWidget):
         # 지금 몇 번째 행(층)을 도는지. 열(구간)만으로는 알 수 없다.
         self._current_row = 1
         self._total_rows = 1
-        # 원주 위 실제 구간 배치(ERUT). None 이면 열 수로 똑같이 나눈다(사내 MC).
+        # 원주 위 실제 구간 배치(ERUT). None 이면 열 수로 똑같이 나눈다(RCS '검사 시작').
         #   (둘레, 구간 가로, 구간 간격, 지금 구간 번호(0부터), 끝낸 구간 번호들)
         self._sections: tuple[float, float, float, int, frozenset[int]] | None = None
         source = QPixmap(str(files("smr_operator_ui.resources").joinpath("amr-cobot2.png")))

@@ -1,27 +1,32 @@
 # mqtt_test
 
-Operator UI 없이 **MC(관제) 쪽을 흉내 내는** 독립 실행 MQTT 시뮬레이터다. Operator UI가 외부(MC)에서 실제로 받는 것은 다음 두 가지뿐이므로, 이 도구도 그 범위만 다룬다.
+RCS 를 장비 없이 시험하는 도구 모음이다. RCS 의 외부 통신은 **ERUT 브로커(MQTT) 하나**와
+TPAC(Modbus TCP 502)뿐이라, 도구도 그 둘을 흉내 낸다. (사내 MC MQTT 와 그 시뮬레이터
+`mqtt_job_sim.py` 는 2026-10-07 에 뺐다 — 지금은 MQTT Explorer, 나중에는 랜선으로 ERUT 쪽 PC 와 붙는다.)
 
-1. 전체 작업 시작 / 일시정지 / 정지
-2. 로봇이 ㄹ자를 그리기 위한 값 (검사 대상 치수 + 격자 분할 계획)
+| 도구 | 하는 일 |
+|---|---|
+| `erut_sim.py` | ERUT Robot Service(로봇 브릿지) 대역 — 규격 시나리오를 자동으로 밟는다 |
+| `alarm_sim.py` | RCS 를 찔러 `evt/error` 를 내게 하는 장애 조작판 |
+| `tpac_encoder_sim.py` | RCS TPAC 브리지에 붙어 동기 신호를 보는 모니터 |
+| `tpac_tcp_sim.py` | TPAC 쪽 Modbus TCP 서버 단독 모의기 |
+| `run_sim_test.py` | 로봇 시뮬레이터 + ROS 노드 + RCS 를 띄워 전체 경로 자동 검증 |
 
-원통이 너무 커서 AMR이 원주를 여러 구역(segment)으로 나눠 돌고, 각 구역 안에서는 Cobot이 세로로 격자를 나눠 ㄹ자로 스캔한다. **구역/격자를 하나씩 넘어가는 자동 진행은 MC가 아니라 Operator UI/로봇 쪽 책임**이라, 이 도구는 시작 시점에 필요한 값만 한 번 보내고 그 이후 진행은 관여하지 않는다. 자세한 필드 설명은 [`docs/mqtt_topic_form.md`](../docs/mqtt_topic_form.md)의 T-005를 참고한다.
+시뮬레이터용 브로커가 없으면 이 PC 에 mosquitto 를 띄운다(`mosquitto -p 1883`). RCS 연결 설정의
+「ERUT Broker 주소」를 `127.0.0.1` 로 두면 RCS 와 시뮬레이터가 같은 브로커로 붙는다.
 
-## 실행
+## 실행 환경
 
-```bash
-pip install paho-mqtt
-python3 mqtt_test/mqtt_job_sim.py
-```
+`tkinter`(표준 라이브러리)와 `paho-mqtt`만 있으면 되고(`pip install paho-mqtt`), ROS 나 RCS 코드(`smr_operator_ui`)에는 의존하지 않는다(`run_sim_test.py` 만 예외). Windows 에서도 그대로 실행할 수 있다.
 
 ### WSL 에서 마우스 포인터가 안 보일 때 — Windows 로 띄우기
 
 WSLg(WSL 2.7 / WSLg 1.0.73)에서는 X11 창이 커서를 지정하면 Windows 쪽 포인터가
-숨겨진다. Tk 는 X11 로만 뜨므로 Tk 시뮬레이터(`mqtt_job_sim`·`erut_sim`·`alarm_sim`)
+숨겨진다. Tk 는 X11 로만 뜨므로 Tk 시뮬레이터(`erut_sim`·`alarm_sim`·`tpac_encoder_sim`)
 위에서 포인터가 사라진다(RCS 는 Qt/Wayland 라 괜찮다). 이때는 Windows 파이썬으로 띄운다.
 
 ```bash
-mqtt_test/win_sim.sh mqtt_job_sim
+mqtt_test/win_sim.sh erut_sim
 ```
 
 - Windows 파이썬에 `paho-mqtt` 필요: `py -m pip install paho-mqtt`
@@ -29,8 +34,6 @@ mqtt_test/win_sim.sh mqtt_job_sim
   쓰고 있어서, WSL mosquitto 에 localhost 전용 1884 리스너를 더했다
   (`/etc/mosquitto/conf.d/windows_sims.conf`). Windows `localhost:1884` → WSL 브로커
   (RCS 가 쓰는 브로커)로 간다.
-
-`tkinter`(표준 라이브러리)와 `paho-mqtt`만 있으면 되고, ROS나 Operator UI 코드(`smr_operator_ui`)에는 의존하지 않는다. Windows에서도 그대로 실행할 수 있다.
 
 ## 장애·알람 조작판 (`alarm_sim.py`)
 
@@ -54,7 +57,7 @@ python3 mqtt_test/alarm_sim.py
 python3 mqtt_test/erut_sim.py
 ```
 
-`mqtt_job_sim.py`와 다른 점: 이쪽은 **협력사로 나가는 ERUT 규격**(`content` 래퍼, 숫자 timestamp, `erut/{장치ID}/…` 응답)이고, `mqtt_job_sim.py`는 사내 MC 규격(`doosan/robot/req/job_cmd` 등)이다. 두 규격이 같은 접두어를 쓰지만 봉투가 달라 RCS 쪽에서도 `ErutClient`와 `MqttServer`로 나눠 받는다.
+규격은 `content` 래퍼, 숫자 timestamp, `erut/{장치ID}/…` 응답이다. 현장에서는 이 자리에 MQTT Explorer(나중에는 ERUT 쪽 PC)가 선다.
 
 **▶ 시나리오 자동 진행**이 규격 탭3의 ①~④를 순서대로 밟는다. 각 단계의 응답을 기다렸다가 넘어가고, 못 받으면 멈추고 무엇을 못 받았는지 알린다.
 
@@ -156,12 +159,12 @@ mqtt_test\build_tpac_tcp_sim.ps1
 source /opt/ros/humble/setup.bash && source install/setup.bash
 python3 mqtt_test/run_sim_test.py               # 네 시나리오 전부 (2열 × 3행)
 python3 mqtt_test/run_sim_test.py 3 2           # 격자 크기를 바꿔서 (열, 행)
-python3 mqtt_test/run_sim_test.py --only mc io  # 고른 것만
+python3 mqtt_test/run_sim_test.py --only rcs io # 고른 것만
 ```
 
 | 시나리오 | 확인하는 것 |
 |---|---|
-| `mc` | 사내 MC 규격 `job_cmd` 하나로 `1A → 1B → … → 2A …` 를 빠짐없이 도는지. 셀마다 원점에서 프로브 확인(`probe_gate` → `probe_ack`)을 거치는지. `job_state` 가 셀마다 3건 나가는지. 작업 영역 레지스터(256~259)가 셀 치수로 실리는지 |
+| `rcs` | RCS 단독 작업('검사 시작'과 같은 격자 순회)이 `1A → 1B → … → 2A …` 를 빠짐없이 도는지. ERUT 가 없으므로 셀마다 원점에서 RCS 가 접촉 2초 뒤 스스로 `scan_go` 를 쓰는지. 작업 영역 레지스터(256~259)가 셀 치수로 실리는지 |
 | `erut` | ERUT 표준 if-0.8 한 바퀴 — 자기소개(`evt/info`) → `calibrate`(차량이 모재를 한 바퀴 — `total_length_mm` ≈ π·지름, 로봇은 움직이지 않고 query `home` 이 home) → `prepare`(차량·리프트만, activity preparing → `evt/ready`, 로봇은 홈) → `start`(로봇 3점 측정 → 시작점에서 `evt/contact` attached → 2초 뒤 스캔 · 정수 진행률 · `pos`/`location` 이 실린 `evt/complete`) → `mark`(점에서 로봇이 서서 `evt/mark_ready` ↔ `req/mark_next`) → `home`(`evt/complete action=home`) → 비상정지 → `reset`(`cleared=true`, idle 복귀) |
 | `io` | I/O 화면의 로봇 디지털 출력이 레지스터 2 의 그 비트만 바꾸는지, 화면 표시가 로봇 값을 따라오는지 |
 | `tpac` | 스캔 구간 신호 DO[0..2] 가 전진·후진·동결 순서대로 나가는지, 스캔 중에 리셋이 서지 않는지 |
@@ -172,28 +175,3 @@ python3 mqtt_test/run_sim_test.py --only mc io  # 고른 것만
 - `--max-rows 6` : ㄹ자 줄 수 상한. 순회를 보는 게 목적이라 줄을 다 그리지 않는다.
 
 실제 로봇 기구학을 재현하는 것은 아니다 — 경로와 시간은 흉내만 내고, 실장비에서는 그 부분을 로봇이 스스로 채운다.
-
-## 화면 구성
-
-- **MQTT Broker**: Host/Port/Client ID 입력 후 연결·연결 해제. 연결되면 로봇 상태(`robot_state`), 에러, TCP, Job 상태, 각 명령의 응답(`resp/*`) Topic을 모두 구독해 로그에 표시한다.
-- **전체 작업 시작 값**: 검사 대상 치수(`job_info`: 지름/높이/두께/이동거리)와 격자 분할 계획(`plan`: 열 수/행 수/셀 가로/셀 세로/겹침)을 입력한다.
-  - **▶ 전체 작업 시작**: `doosan/robot/req/job_cmd`에 `job_info` + `plan`을 실어 발행한다. 이 명령 자체가 전체 작업을 시작시킨다.
-  - **높이(`job_info.height`)는 원통 전체 높이**(예: 6000 mm)이고, **셀 세로(`plan.cell_height`)는 로봇이 한 번에 닿는 셀 하나의 높이**(예: 800 mm)다. 둘은 다른 값이다 — ㄹ자는 셀 하나에만 그린다.
-  - 스캐너 유효높이(`scan_h`)는 장비 고유값이라 여기서 보내지 않는다. RCS의 작업 영역 설정에 있는 값을 쓴다.
-  - **⏸ 일시정지 / ⏵ 재개**: `doosan/robot/req/mc_cmd`에 `amr`/`cobot`을 `"stop"`/`"run"`으로 실어 발행한다.
-  - **■ 정지**: `doosan/robot/req/job_clear`로 진행 중인 작업을 완전히 중단한다.
-  - **자동 반복**: 체크한 채로 **▶ 전체 작업 시작**을 누르면 켜진다. 원점 프로브 확인 버튼이 열리면 1초 뒤 스스로 **✔ 프로브 눌림 확인**을 보내고, 모든 격자(열 수 × 행 수)가 `job_state: completed` 로 오면 **끝나고 대기**(기본 10초 — 로봇이 홈으로 돌아갈 시간) 뒤 전체 작업 시작을 다시 보낸다. 옆에 회차와 완료 격자 수가 보인다. **■ 정지**나 체크 해제로 멈춘다.
-- **원점 프로브 확인**: 로봇은 3점 측정을 마치고 원점에 서면 **거기서 멈춘다**. 프로브가 벽에 제대로 눌렸는지는 로봇이 알 수 없어서 확인은 바깥이 한다.
-  - RCS가 `doosan/robot/probe_gate` 로 `state: waiting` 을 보내면 두 버튼이 열린다.
-  - **✔ 프로브 눌림 확인 — 스캔 시작**: `doosan/robot/req/probe_ack` 에 `pressed: true` 를 실어 보낸다. 로봇이 적심(비비기) 후 스캔으로 넘어간다.
-  - **✘ 눌림 불량 — 대기 유지**: `pressed: false` + `reason`. 로봇은 풀리지 않고 원점에서 계속 기다린다 — 프로브가 안 붙은 채로 훑으면 검사가 성립하지 않는다.
-  - ERUT 규격에서는 이 자리가 `evt/ready`(stage=at_origin) → `req/start` 다. 사내 MC 규격에는 대응하는 동작이 없어 통로를 따로 뒀다.
-- **마킹 명령 (격자 지정)**: 열·행과 **격자 안 좌표**(x: 원점(스캔 시작 끝)부터 호를 따라 0~셀 가로, y: 격자 아래 끝부터 위로 0~셀 세로, mm)를 넣고 **▶ 마킹 이동**을 누르면 `doosan/robot/req/mark_cmd` 가 나간다. 격자 크기·겹침·반지름은 위 '전체 작업 시작 값'을 그대로 싣는다. RCS 가 스캔 때와 같은 계산으로 차량(열)·리프트(행)를 옮기고 로봇이 그 좌표에 마킹한다. 진행은 `doosan/robot/mark_state`(진행 중 / 완료 / 실패 / 거절)로 패널 오른쪽에 보인다. 보낼 때마다 마킹 ID 가 m001 → m002 로 올라간다.
-- **로봇 동작 속도 (2~100 %)**: 슬라이더로 값을 맞추고 **속도 전송**을 누르면 `doosan/robot/req/speed`(T-010)가 나간다. `10 / 25 / 50 / 75 / 100 %` 프리셋 버튼은 맞추는 즉시 보낸다. **작업 중에도 바로 반영된다** — 노드가 29999 `speed -v` 로 전달한다.
-  - **Reset / EMS(비상정지)**: 각각 `doosan/robot/req/reset`, `doosan/robot/req/ems`를 발행한다.
-- **송수신 로그**: 발행한 명령과 수신한 상태/응답을 시간 순으로 보여준다.
-
-## 참고
-
-- `operator-ui/tests/unit/mqtt_test_ui.py`도 비슷한 목적의 도구지만 Operator UI 저장소 하위에 있어 그쪽 개발·테스트 환경(venv, PyQt6 관련 의존성)이 갖춰져야 실행하기 편하다. 이 도구는 **Operator UI와 완전히 분리된, MC 쪽 관점의 시뮬레이터**로 별도 위치에 둔다.
-- 실제 Broker가 없다면 `mosquitto`를 로컬에 띄워 테스트한다: `mosquitto -p 1883`.

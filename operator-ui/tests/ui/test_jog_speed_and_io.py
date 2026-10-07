@@ -7,7 +7,7 @@ from smr_operator_ui.screens import CobotSettingsScreen
 
 def test_mode_slot_buttons_are_not_clipped(qtbot) -> None:
     """세 줄짜리 슬롯 문구가 잘리지 않아야 한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.resize(1280, 720)
     window.navigate("modes")
@@ -25,7 +25,7 @@ def test_mode_slot_buttons_are_not_clipped(qtbot) -> None:
 
 def test_io_controls_are_outside_the_table(qtbot) -> None:
     """조작 버튼은 표 칸이 아니라 별도 출력 제어 영역에 둔다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["io"]
     table = screen.findChild(QTableWidget)
@@ -43,7 +43,7 @@ def test_io_controls_are_outside_the_table(qtbot) -> None:
 
 def test_io_screen_controls_only_outputs(qtbot) -> None:
     """입력 신호에는 조작 버튼을 두지 않는다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["io"]
 
@@ -55,7 +55,7 @@ def test_io_screen_controls_only_outputs(qtbot) -> None:
 
 
 def test_io_output_buttons_emit_address_and_state(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
     screen = window.screens["io"]
@@ -74,7 +74,7 @@ def test_io_output_buttons_emit_address_and_state(qtbot) -> None:
 
 
 def test_io_value_update_reaches_table_and_controls(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["io"]
 
@@ -86,7 +86,7 @@ def test_io_value_update_reaches_table_and_controls(qtbot) -> None:
 
 
 def test_cobot_settings_has_linear_speed(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["cobot"]
 
@@ -97,7 +97,7 @@ def test_cobot_settings_has_linear_speed(qtbot) -> None:
 
 def test_cobot_settings_has_no_task_picker(qtbot) -> None:
     """태스크는 로봇 쪽에서 고정이라 여기서 고르는 목록이 없어야 한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["cobot"]
 
@@ -108,7 +108,7 @@ def test_cobot_settings_has_no_task_picker(qtbot) -> None:
 
 def test_task_status_refresh_reaches_the_service_and_back(qtbot) -> None:
     """새로고침 버튼 → 29999 task_status 서비스 호출 → 응답이 라벨에 반영된다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["cobot"]
     calls: list[str] = []
@@ -128,7 +128,7 @@ def test_task_status_refresh_reaches_the_service_and_back(qtbot) -> None:
 
 def test_jog_screen_has_all_axes(qtbot) -> None:
     """관절 6축과 TCP 6축 각각에 + / - 버튼이 있어야 한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.cobot_jog_screen
 
@@ -142,7 +142,7 @@ def test_jog_screen_has_all_axes(qtbot) -> None:
 
 def test_jog_press_and_release_are_reported(qtbot) -> None:
     """조그는 누르는 동안 움직이므로 누름과 뗌을 모두 알려야 한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
     screen = window.cobot_jog_screen
@@ -163,7 +163,7 @@ def test_jog_press_and_release_are_reported(qtbot) -> None:
 
 def test_jog_is_disabled_until_address_is_known(qtbot) -> None:
     """조그는 로봇을 움직이므로 주소가 없으면 잠근다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.cobot_jog_screen
 
@@ -184,7 +184,7 @@ def test_jog_enables_on_robot_connection_not_register_address(qtbot) -> None:
     예전에는 그래서 `writable("jog_joint")`가 항상 False가 되어 실제
     연결과 무관하게 버튼이 영영 잠겨 있었다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.cobot_jog_screen
 
@@ -202,7 +202,7 @@ def test_jog_enables_on_robot_connection_not_register_address(qtbot) -> None:
 
 def test_axis_values_follow_topics(qtbot) -> None:
     """관절값과 TCP값이 각 축 이름 옆에 표시되어야 한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.cobot_jog_screen
 
@@ -223,7 +223,7 @@ def test_axis_values_follow_topics(qtbot) -> None:
 def test_saving_reference_poses(qtbot, tmp_path, monkeypatch) -> None:
     """홈은 관절값을, 시작 포즈는 TCP 값을 기록한다."""
     monkeypatch.setenv("SMR_ROBOT_CONFIG_DIR", str(tmp_path))
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.cobot_jog_screen
 
@@ -254,7 +254,7 @@ def test_saving_reference_poses(qtbot, tmp_path, monkeypatch) -> None:
 
 def test_jog_code_encodes_axis_and_direction(qtbot) -> None:
     """조그 코드는 부호가 방향, 절댓값이 축 번호(1~6)이며 0은 정지다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple[str, int, int]] = []
     window.ros_status.send_jog = lambda kind, axis, direction: sent.append(
@@ -271,7 +271,7 @@ def test_jog_code_encodes_axis_and_direction(qtbot) -> None:
 
 def test_speed_ratio_is_limited_to_robot_range(qtbot) -> None:
     """로봇 자체 속도 비율은 2~100 %만 허용한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["cobot"]
 
@@ -296,7 +296,7 @@ def test_saved_poses_are_shown_on_start(qtbot, tmp_path, monkeypatch) -> None:
         encoding="utf-8",
     )
 
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
 
     home = window.cobot_jog_screen.saved_labels["save_home_pose"].text()
@@ -318,7 +318,7 @@ def test_reconnect_rewrites_volatile_registers(qtbot, tmp_path, monkeypatch) -> 
         encoding="utf-8",
     )
 
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     poses: list[tuple[str, list]] = []
     values: list[tuple[str, int]] = []
@@ -346,7 +346,7 @@ def test_jog_sends_once_and_stops_only_on_release(qtbot) -> None:
     움직이는 건 speedj/speedl의 hold 시간이 맡고, 실제 정지는 뗄 때
     나가는 jog_released(→29999 stop) 하나로만 이뤄져야 한다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.cobot_jog_screen
     sent: list[tuple[str, int, int]] = []
@@ -369,7 +369,7 @@ def test_jog_sends_once_and_stops_only_on_release(qtbot) -> None:
 
 def test_robot_output_button_reaches_the_robot(qtbot) -> None:
     """로봇 DO 버튼은 제어 노드로 [번호, 값]이 나가야 한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["io"]
     sent: list[tuple[int, bool]] = []
@@ -385,7 +385,7 @@ def test_robot_output_button_reaches_the_robot(qtbot) -> None:
 
 def test_plc_output_button_says_it_is_not_wired_yet(qtbot) -> None:
     """차량 PLC 출력은 아직 경로가 없다 — 로봇으로 보내면 안 된다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["io"]
     sent: list[tuple[int, bool]] = []
@@ -400,7 +400,7 @@ def test_plc_output_button_says_it_is_not_wired_yet(qtbot) -> None:
 
 def test_robot_io_values_follow_the_bit_word(qtbot) -> None:
     """레지스터 한 개(16비트)가 DO/DI 표시를 한꺼번에 갱신한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["io"]
 
@@ -419,7 +419,7 @@ def test_robot_io_values_follow_the_bit_word(qtbot) -> None:
 
 
 def test_robot_output_failure_is_reported_on_screen(qtbot) -> None:
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["io"]
     window.ros_status.send_digital_out = lambda index, on: False

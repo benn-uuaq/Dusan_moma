@@ -77,7 +77,6 @@ class AppSnapshot:
     plc: EquipmentState
     amr: EquipmentState
     cobot: EquipmentState
-    ut: EquipmentState
 
 
 def initial_snapshot() -> AppSnapshot:
@@ -87,5 +86,4 @@ def initial_snapshot() -> AppSnapshot:
         plc=EquipmentState("PLC"),
         amr=EquipmentState("AMR"),
         cobot=EquipmentState("Cobot"),
-        ut=EquipmentState("UT"),
     )

@@ -366,7 +366,7 @@ class ErutSession(QObject):
         """탐촉자가 검사면에 붙었는가. 바뀌면 바로 알린다(탭2 12행).
 
         ERUT 가 시킨 구간(prepare·start) 안에서만 attached 로 알린다 — ERUT 는 이
-        신호로 물을 켠다. 캘리브레이션의 3점 측정이나 사내 MC 작업 중에 벽에
+        신호로 물을 켠다. 캘리브레이션의 3점 측정이나 RCS 단독 작업 중에 벽에
         닿는 것은 ERUT 의 검사가 아니다.
         """
         attached = bool(attached) and bool(self._prepare_req_id or self._start_req_id)
@@ -776,7 +776,7 @@ class ErutSession(QObject):
         ERUT 구간 검사(start) 중이면, 붙은 사실은 evt/contact(attached)로 이미
         나간다(app.py 가 로봇 상태로 알린다). ERUT 는 그걸 보고 물을 켜므로
         CONTACT_LEAD_MS 뒤에 대기를 풀어 적심 → ㄹ자 스캔으로 넘어간다.
-        ERUT 작업이 아니면 아무것도 안 한다(사내 MC 는 probe_ack 로 푼다).
+        ERUT 작업이 아니면 아무것도 안 한다(RCS 단독 작업은 app.py 가 스스로 푼다).
         """
         req_id = self._start_req_id
         if not req_id:

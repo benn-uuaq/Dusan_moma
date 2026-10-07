@@ -701,7 +701,7 @@ class RunScreen(BaseScreen):
         p.addWidget(QLabel("대상: Ø 2.0 m\n시작 구간: 01\n회전 방향: 시계 방향\n구간당 검사 폭: 설정값 사용"))
         row.addWidget(plan,1)
         checks,c=self.surface("사전 조건")
-        for text in ("비상정지 정상","AMR 정지","아웃트리거 접지","수평 허용 범위","Cobot 준비","UT 준비"):
+        for text in ("비상정지 정상","AMR 정지","아웃트리거 접지","수평 허용 범위","Cobot 준비"):
             cb=QCheckBox(text); cb.setChecked(True); cb.setEnabled(False); c.addWidget(cb)
         row.addWidget(checks,1)
         action,ac=self.surface("실행")
@@ -718,7 +718,7 @@ class SettingsMenuScreen(BaseScreen):
         super().__init__("설정 / 진단", "장비 설정과 운전 기록을 관리합니다.")
         self.setObjectName("SettingsScreen")
         grid=QGridLayout(); grid.setSpacing(14); self.body.addLayout(grid,1)
-        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","로봇·PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·MQTT IP"),("system","시스템 설정","장비·기록 위치·보존 기간"),("ut","UT 시스템 설정","검사 조건과 트리거"),("cobot","Cobot 설정","검사 작업 슬롯"),("tpac_bridge","TPAC 설정 / TCP 인코딩","로봇 값을 외부 Modbus로 중계"),("errors","오류 로그","활성 오류 해제·과거 기록"),("logs","로그 파일","기록 파일 보기·내보내기·삭제"),("modes","운전 모드 저장","작업 조건 묶음 저장·불러오기"))
+        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","로봇·PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·ERUT 브로커"),("system","시스템 설정","장비·기록 위치·보존 기간"),("cobot","Cobot 설정","검사 작업 슬롯"),("tpac_bridge","TPAC 설정 / TCP 인코딩","로봇 값을 외부 Modbus로 중계"),("errors","오류 로그","활성 오류 해제·과거 기록"),("logs","로그 파일","기록 파일 보기·내보내기·삭제"),("modes","운전 모드 저장","작업 조건 묶음 저장·불러오기"))
         for i,(key,title,desc) in enumerate(items):
             # key를 기본 인자로 고정한다. 그렇지 않으면 모든 lambda가
             # 반복문의 마지막 key만 참조하게 된다.
@@ -1052,12 +1052,6 @@ class SystemSettingsScreen(FormScreen):
         lang=TouchComboBox(); lang.addItems(["한국어","English"])
         super().__init__("system","시스템 설정","운영 환경과 기록 정책을 설정합니다. 데이터 저장 위치·로그 보존 기간은 로그 파일·오류 로그 화면이 따릅니다.",[("장비 이름",line("SMR Operator Console")),("언어",lang),("상태 갱신 주기",spin(200,50,5000)),("로그 보존 기간",spin(365,1,3650)),("데이터 저장 위치",FolderPathEdit("D:/SMR/Data", title="데이터 저장 위치 선택")),("안전 설정",QLabel("PLC 관리 · 읽기 전용"))])
 
-class UTSettingsScreen(FormScreen):
-    """초음파 검사 장비의 연결 및 수집 조건 설정 화면."""
-
-    def __init__(self):
-        super().__init__("ut","UT 시스템 설정","검사 중에는 품질 관련 설정이 잠깁니다.",[("UT 주소",line("192.168.0.50")),("통신 포트",spin(5000)),("검사 조건",line("SMR_SHELL_A")),("주사 속도",dspin(150," mm/s")),("게인",dspin(26," dB")),("마킹 트리거",QCheckBox("기준 초과 시 출력"))])
-
 class CobotSettingsScreen(FormScreen):
     """협동로봇 작업 슬롯을 설정하는 화면.
 
@@ -1171,7 +1165,7 @@ class ConnectionSettingsScreen(FormScreen):
     #: 차량이 안 움직이는 이유를 알기 어렵다(실제로 그렇게 헤맸다).
     vehicle_mode_changed = pyqtSignal(str)
 
-    """협동로봇, 차량용 PLC, MQTT Broker의 유선 연결 정보를 한 화면에서 설정한다.
+    """협동로봇, 차량용 PLC, ERUT 브로커의 연결 정보를 한 화면에서 설정한다.
 
     로봇 연결/연결 해제도 **이 화면에서만** 한다. 예전에는 Cobot 수동 제어와
     TPAC 설정이 각자 연결 버튼을 갖고 있어서, 어느 화면에서 무엇에 붙어
@@ -1186,16 +1180,11 @@ class ConnectionSettingsScreen(FormScreen):
         "Primary 포트": "Primary", "Modbus 포트": "Modbus",
         "PLC IP": "IP", "PLC 포트": "포트",
         "PLC 프로토콜": "프로토콜", "PLC 국번": "국번",
-        "MQTT Broker 주소": "주소", "MQTT 포트": "포트",
-        "MQTT Client ID": "Client ID",
-        "MQTT Keep Alive": "Keep Alive", "MQTT TLS 사용": "TLS 사용",
         "ERUT Broker 주소": "주소", "ERUT 포트": "포트",
         "ERUT 장치 ID": "장치 ID", "ERUT 계정": "계정", "ERUT 비밀번호": "비밀번호",
     }
 
-    #: 값이 바뀌면 바로 알려야 하는 MQTT 항목(브로커를 다시 잡는다).
-    MQTT_FIELDS = ("MQTT Broker 주소", "MQTT 포트", "MQTT Client ID",
-                   "MQTT Keep Alive", "MQTT TLS 사용")
+    #: 값이 바뀌면 브로커를 다시 잡는 ERUT 항목.
     ERUT_FIELDS = ("ERUT Broker 주소", "ERUT 포트", "ERUT 장치 ID",
                    "ERUT 계정", "ERUT 비밀번호")
 
@@ -1226,18 +1215,9 @@ class ConnectionSettingsScreen(FormScreen):
                 ("PLC 포트",spin(5000,1,65535)),
                 ("PLC 프로토콜",plc_protocol),
                 ("PLC 국번",spin(1,0,255)),
-                ("MQTT Broker",None),
-                ("MQTT Broker 주소",line("127.0.0.1")),
-                ("MQTT 포트",spin(1883,1,65535)),
-                ("MQTT Client ID",line("smr-operator-ui")),
-                # 한 열에 6개를 몰면 세로가 모자라 스크롤해야 보였다. 열마다
-                # 최대 4줄이 되도록 MQTT를 둘로 나눠 4열로 편다.
-                ("MQTT 옵션",None),
-                ("MQTT Keep Alive",spin(60,10,3600)),
-                ("MQTT TLS 사용",QCheckBox()),
-                # ERUT(UT 시스템)는 봉투가 달라 접속을 따로 둔다. 현장에서는
-                # 같은 브로커일 수도, 허브 건너편의 다른 브로커일 수도 있다.
-                ("ERUT (UT 시스템)",None),
+                # 외부 통신은 ERUT 브로커 하나다(사내 MC MQTT 는 2026-10-07 에 뺐다).
+                # 지금은 ERUT 시험 브로커, 나중에는 랜선으로 ERUT 쪽 PC 에 붙는다.
+                ("ERUT 브로커",None),
                 ("ERUT Broker 주소",line("127.0.0.1")),
                 ("ERUT 포트",spin(1883,1,65535)),
                 ("ERUT 장치 ID",line("robot1")),
@@ -1245,7 +1225,7 @@ class ConnectionSettingsScreen(FormScreen):
                 ("ERUT 계정",line("")),
                 ("ERUT 비밀번호",_password_line()),
             ],
-            columns=5,
+            columns=3,
         )
         self._build_connection_controls()
 
@@ -1264,19 +1244,8 @@ class ConnectionSettingsScreen(FormScreen):
             self._action_row.insertWidget(index, widget)
         self._action_row.insertSpacing(1, 12)   # 상태 글자와 버튼이 붙지 않게
 
-    def mqtt_endpoint(self) -> dict:
-        """운영(MC) 브로커 접속 값."""
-        values = self.values()
-        return {
-            "host": str(values.get("MQTT Broker 주소", "")).strip(),
-            "port": int(values.get("MQTT 포트") or 1883),
-            "client_id": str(values.get("MQTT Client ID", "")).strip(),
-            "keep_alive": int(values.get("MQTT Keep Alive") or 60),
-            "tls": bool(values.get("MQTT TLS 사용")),
-        }
-
     def erut_endpoint(self) -> dict:
-        """ERUT(UT 시스템) 브로커 접속 값."""
+        """ERUT 브로커 접속 값."""
         values = self.values()
         return {
             "host": str(values.get("ERUT Broker 주소", "")).strip(),

@@ -45,7 +45,7 @@ def test_pose_with_wrong_length_is_rejected(qtbot):
 
 def test_window_shows_received_poses(qtbot):
     """두 토픽 값이 각각 TCP 현재값과 제로점 기준 카드에 들어가야 한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.cobot_manual_screen
 
@@ -69,7 +69,7 @@ def test_zero_relative_y_maps_straight_to_horizontal_position(qtbot):
     Y-에서 Y+로 움직인다 — cur-zero(rel_y)가 이미 오른쪽(+)과 같은 방향이라
     부호를 뒤집으면 위치 점이 반대로(왼쪽/음수 쪽으로) 움직이는 것처럼 보인다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
 
     # 위치 점은 스캔 중(state=6)에만 그린다 — 먼저 스캔 중임을 알린다.
@@ -124,7 +124,7 @@ def test_blank_alarm_is_ignored(qtbot):
 
 
 def test_window_shows_status_and_alarms(qtbot):
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.cobot_manual_screen
 
@@ -147,7 +147,7 @@ def test_window_shows_status_and_alarms(qtbot):
 
 def test_alarm_list_is_capped(qtbot):
     """알람이 계속 쌓여도 표시 개수를 넘지 않아야 한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.cobot_manual_screen
 
@@ -192,7 +192,7 @@ def test_dashboard_commands_are_mapped_to_services():
 
 
 def test_connection_state_reaches_the_screen(qtbot):
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.cobot_manual_screen
 
@@ -206,7 +206,7 @@ def test_connection_state_reaches_the_screen(qtbot):
 
 def test_command_without_ros_reports_clearly(qtbot):
     """ROS에 붙지 않은 상태에서 눌러도 조용히 실패하지 않아야 한다."""
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
 
     window.cobot_manual_screen.command_requested.emit("power_on")
@@ -246,7 +246,7 @@ def test_saved_settings_are_not_resent_every_cycle(qtbot, monkeypatch):
     되풀이하면 속도 바로 40 % 를 보내도 100 ms 안에 저장값(100 %)으로
     덮어써져 "바꿨다가 바로 100 으로 되돌아가는" 증상이 된다.
     """
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     sent: list[tuple[str, int]] = []
     monkeypatch.setattr(
@@ -349,7 +349,7 @@ def test_silent_node_is_shown_as_disconnected(qtbot, monkeypatch):
 
 
 def test_unexpected_link_loss_is_announced_but_manual_disconnect_is_not(qtbot):
-    window = OperatorWindow(start_mqtt=False, start_ros=False, start_erut=False)
+    window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     conn = window.screens["connection"]
     window.ros_status.call_command = lambda name: True
