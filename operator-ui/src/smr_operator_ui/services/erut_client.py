@@ -52,6 +52,26 @@ CLOCK_SKEW_WARN_S = 5.0
 # 실제 장애 수집(PLC·로봇 알람)이 붙으면 이 토픽은 빼도 된다.
 TEST_INJECT = "3s/test/inject/error"
 
+#: MQTT 3.1.1 CONNACK 거부 코드 → 뜻과 확인할 것. 화면 알림과 점검 도구
+#: (`python3 -m smr_operator_ui.erut_check`)가 같이 쓴다.
+#: ERUT 시험 브로커는 mosquitto 다(2026-10-07 `$SYS/broker/version` 2.1.2).
+#: mosquitto 는 계정 오류에 5 를 보내고 3 은 보내지 않는다(실측·소스 확인) —
+#: 3 이 오면 거의 늘 **다른 브로커**에 붙은 것이다.
+CONNACK_HINTS = {
+    1: "MQTT 3.1.1 을 받지 않는 브로커입니다 — 주소·포트가 ERUT 브로커가 맞는지 확인하세요",
+    2: "클라이언트 ID 를 거부했습니다 — 연결 설정의 「ERUT 장치 ID」를 확인하세요",
+    3: ("브로커가 '서버 사용 불가'로 거절했습니다. ERUT 브로커(mosquitto)는 이 값을 "
+        "보내지 않습니다 — 주소·포트가 ERUT 브로커가 아닌 다른 브로커를 가리키는지 "
+        "연결 설정의 「ERUT Broker 주소」·「ERUT 포트」를 확인하세요"),
+    4: "계정 이름·비밀번호 형식이 틀렸습니다 — 「ERUT 계정」·「ERUT 비밀번호」를 확인하세요",
+    5: "권한이 없습니다 — 「ERUT 계정」·「ERUT 비밀번호」가 ERUT 가 알려 준 값과 같은지 확인하세요",
+}
+
+
+def connack_hint(rc: int) -> str:
+    """CONNACK 거부 코드의 뜻. 모르는 값이면 코드만 적는다."""
+    return CONNACK_HINTS.get(int(rc), f"알 수 없는 거부 코드 {rc}")
+
 
 def utc_ms() -> int:
     """ERUT 규격의 timestamp — UTC 밀리초 **숫자**."""
@@ -102,6 +122,8 @@ class ErutClient(QObject):
         self._erut_online: bool | None = None
         # 마지막으로 erut/status 를 받은 때. 20초 넘게 조용하면 offline 으로 본다.
         self._erut_seen = 0.0
+        # 마지막으로 알린 접속 거부 코드. 같은 거부를 재접속마다 되풀이하지 않는다.
+        self._refused_rc: int | None = None
         self._silence_timer = QTimer(self)
         self._silence_timer.setInterval(1000)
         self._silence_timer.timeout.connect(self._check_erut_silence)
@@ -125,6 +147,7 @@ class ErutClient(QObject):
     def start(self) -> None:
         if self._client is not None:
             return
+        self._refused_rc = None
         try:
             import paho.mqtt.client as mqtt
         except ImportError as exc:
@@ -324,8 +347,14 @@ class ErutClient(QObject):
     # ------------------------------------------------------------ 콜백
     def _on_connect(self, client, _userdata, _flags, rc) -> None:  # noqa: ANN001
         if rc != 0:
-            self.error_occurred.emit(f"ERUT 브로커 연결 거부 (rc={rc})")
+            # paho 는 거절당해도 계속 다시 붙어 본다 — 같은 거절은 한 번만 알린다.
+            if rc != self._refused_rc:
+                self._refused_rc = rc
+                self.error_occurred.emit(
+                    f"ERUT 브로커 {self.config.host}:{self.config.port} 연결 거부 "
+                    f"(rc={rc}) — {connack_hint(rc)}.")
             return
+        self._refused_rc = None
         # 한 줄로 받는다(탭2 17행) — 모르는 동작에도 501 로 답해야 해서다.
         # 아는 것만 구독하면 모르는 동작은 아예 안 들어와 브릿지가 세 번
         # 다시 보낸 뒤 통신 오류로 본다.

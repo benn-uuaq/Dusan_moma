@@ -108,6 +108,8 @@ def robot_task_paths(version: str, nosensor: bool) -> tuple[str, str]:
     return f"{folder}/{version}.task", f"{folder}/{version}_mark.task"
 # abort 뒤 홈을 보내기까지 [ms]. 정지·태스크 교체가 먼저 처리되게 둔다.
 ABORT_HOME_DELAY_MS = 500
+# 저장된 연결 설정이 끝내 안 오면 이만큼 기다린 뒤 기본값으로 ERUT 에 붙는다 [ms].
+ERUT_START_FALLBACK_MS = 5000
 
 # 시퀀서 상태를 화면의 "안전 순서" 5단계에 대응시킨다.
 # 5단계는 **구간(열)마다** 반복된다: 정지·고정 → 수평 보정 → Cobot 검사
@@ -694,9 +696,22 @@ class OperatorWindow(QMainWindow):
         self.sequencer.cell_changed.connect(self.erut_session.on_cell_changed)
         self.sequencer.job_complete.connect(self.erut_session.on_job_complete)
 
+        # 저장된 연결 설정을 읽은 **뒤에** 붙는다(_apply_stored_settings ·
+        # _show_settings_error). 설정 읽기는 비동기라, 여기서 바로 붙으면 기본값
+        # 127.0.0.1:1883 에 먼저 붙었다가 다시 붙는다 — 그 PC 의 1883 에 다른
+        # 브로커가 있으면 엉뚱한 접속 거부가 뜨고(2026-10-07 리눅스 PC rc=3),
+        # 있으면 거기에 online 을 흘린다. 설정 읽기가 끝내 안 오면 기본값으로 붙는다.
+        self._erut_start_pending = bool(start)
         if start:
-            self.erut.start()
-            self.erut_session.start()
+            _call_later(self, ERUT_START_FALLBACK_MS, self._start_erut_link)
+
+    def _start_erut_link(self) -> None:
+        """ERUT 브로커 접속을 한 번만 연다(연결 설정을 읽은 뒤)."""
+        if not getattr(self, "_erut_start_pending", False):
+            return
+        self._erut_start_pending = False
+        self.erut.start()
+        self.erut_session.start()
 
     def _scan_band_mm(self, plan) -> float:
         """한 줄이 덮는 세로 밴드 높이 [mm].
@@ -2122,6 +2137,7 @@ class OperatorWindow(QMainWindow):
             self._sync_cobot_endpoint()
             self._apply_vehicle_mode()
             self._sync_broker_endpoints()
+            self._start_erut_link()
 
     def _connect_robot(self) -> None:
         """"연결 설정" 화면의 주소로 로봇에 붙는다.
@@ -2223,6 +2239,9 @@ class OperatorWindow(QMainWindow):
 
     def _show_settings_error(self, scope: str, message: str) -> None:
         """Python 스택 추적을 노출하지 않고 저장소 오류를 표시한다."""
+        if scope == "connection":
+            # 저장된 주소를 못 읽었으면 화면의 기본값으로라도 붙는다.
+            self._start_erut_link()
         screen = self._settings_screens.get(scope)
         if screen is not None:
             screen.show_storage_error(message)

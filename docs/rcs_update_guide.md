@@ -108,7 +108,25 @@ pip install -e operator-ui
 ./run_rcs.sh
 ```
 
-켜기 전에 터미널에 `[확인] ERUT 브로커 … 에 닿습니다.` 가 나와야 한다. `[경고]` 가 나오면 아래 「ERUT 브로커에 안 붙을 때」를 본다.
+`bash: ./run_rcs.sh: Permission denied` 가 나오면 실행 권한이 빠진 것이다(10/7 첫 판은 저장소에 실행 권한 없이 올라갔다 — 이번 판에서 고쳤다). 받은 뒤에도 그러면 권한을 주거나 `bash` 로 켠다.
+
+```bash
+chmod +x run_rcs.sh
+```
+
+```bash
+bash run_rcs.sh
+```
+
+켜기 전에 스크립트가 **저장된 연결 설정으로 ERUT 브로커에 실제로 붙어 보고** 결과를 찍는다. 정상이면 이렇게 나온다.
+
+```
+[ERUT] 설정 /home/<사용자>/.config/smr-operator-ui/settings.json
+       브로커 <ERUT 주소>:<포트> · 장치 ID robot1 · 계정 <ERUT 계정> · 비밀번호 있음
+[확인] ERUT 브로커 <ERUT 주소>:<포트> 에 붙었습니다 · mosquitto version 2.1.2.
+```
+
+`[경고]` 가 나오면 아래 「ERUT 브로커에 안 붙을 때」를 본다(RCS 는 그대로 켜진다).
 스크립트 없이 켤 때는 반드시 `authbind --deep` 을 붙인다(5번 환경을 불러온 터미널에서):
 
 ```bash
@@ -166,16 +184,27 @@ git checkout main && git pull
 
 ## ERUT 브로커에 안 붙을 때
 
-RCS 알림에 「ERUT 브로커에 연결되었습니다」가 안 뜨거나, `./run_rcs.sh` 가 `[경고] ERUT 브로커 … 에 닿지 않습니다` 를 낸다.
+RCS 알림에 「ERUT 브로커에 연결되었습니다」가 안 뜨거나 「ERUT 브로커 … 연결 거부 (rc=…)」가 뜬다. 또는 `./run_rcs.sh` 가 `[경고]` 를 낸다.
 
-1. **주소·포트·계정**이 ERUT 가 알려 준 값과 같은지 본다 — RCS 연결 설정의 「ERUT Broker 주소」·「ERUT 포트」·「ERUT 계정」·「ERUT 비밀번호」. 계정 값은 저장소에 없고 이 PC 의 설정 파일(`~/.config/smr-operator-ui/settings.json`)에만 있다.
-2. 그 주소까지 네트워크가 닿는지 본다(지금은 인터넷 너머 브로커, 나중에는 랜선으로 ERUT 쪽 PC). 주소·포트는 알림이나 `run_rcs.sh` 에 나온 값으로 바꿔 넣는다.
+1. **점검 도구를 돌린다.** RCS 가 쓸 설정(어느 파일에서 읽었는지, 주소·포트·장치 ID·계정 — 비밀번호는 있는지만)을 찍고, RCS 와 같은 방식(MQTT 3.1.1·같은 계정)으로 실제로 붙어 본 뒤 브로커의 답을 알려 준다. 접속 ID 는 `3s-robot1-check` 라 돌고 있는 RCS 를 끊지 않는다.
 
    ```bash
-   timeout 2 bash -c 'exec 3<>/dev/tcp/<주소>/<포트>' && echo 닿음
+   source .venv/bin/activate && python3 -m smr_operator_ui.erut_check
    ```
 
-3. 로컬 시험이라 주소가 `127.0.0.1` 이면 이 PC 의 mosquitto 를 본다.
+2. 결과에 따라 고친다.
+
+   | 결과 | 뜻 · 조치 |
+   |---|---|
+   | `저장된 ERUT 브로커 주소가 없어 기본값으로 붙습니다` | 이 PC 에 ERUT 접속 정보가 저장된 적이 없다 — RCS 연결 설정에 ERUT 주소·포트·계정·비밀번호를 넣고 **저장**한다. 접속 정보는 저장소에 없고 PC 마다 설정 파일(`~/.config/smr-operator-ui/settings.json`)에만 있으므로, 새 PC 는 따로 넣어야 한다 |
+   | `닿지 않습니다` | 그 주소·포트까지 네트워크가 안 닿는다 — 랜선·인터넷, 주소·포트 오타. 주소가 `127.0.0.1` 이면 이 PC 의 mosquitto 가 꺼져 있다(로컬 시험용) |
+   | `rc=3` (서버 사용 불가) | **ERUT 브로커가 아닌 다른 브로커에 붙었다.** ERUT 브로커는 mosquitto 라 이 값을 보내지 않는다(계정이 틀리면 5). 주소·포트를 ERUT 가 알려 준 값으로 고친다. 주소가 `127.0.0.1` 이면 도구가 찍는 「이 PC 의 1883 포트」 줄로 그 포트를 쓰는 프로그램을 확인한다 |
+   | `rc=5` (권한 없음) · `rc=4` | ERUT 계정·비밀번호가 틀렸다 |
+   | `rc=2` | 클라이언트 ID 거부 — 「ERUT 장치 ID」 확인 |
+   | `rc=1` | MQTT 3.1.1 을 안 받는 곳 — 주소·포트가 ERUT 브로커인지 확인 |
+   | `[확인] … 붙었습니다 · mosquitto version …` 인데 RCS 에서만 안 붙음 | RCS 를 다시 켠다. 예전 판은 설정을 읽기 전에 기본값 `127.0.0.1:1883` 에 먼저 붙어 보다가 그 자리의 다른 브로커에 거절당하는 일이 있었다(10/7 두 번째 판에서 고쳤다) |
+
+3. 로컬 시험(주소 `127.0.0.1`)이면 이 PC 의 mosquitto 를 본다.
 
    ```bash
    systemctl status mosquitto
@@ -187,7 +216,7 @@ RCS 알림에 「ERUT 브로커에 연결되었습니다」가 안 뜨거나, `.
    sudo systemctl enable --now mosquitto
    ```
 
-4. 고쳤으면 RCS 연결 설정을 **저장**한다 — 저장하면 바로 다시 붙는다. 붙으면 알림에 「ERUT 브로커에 연결되었습니다」가 뜬다.
+4. 고쳤으면 RCS 연결 설정을 **저장**한다 — 저장하면 바로 다시 붙는다. 붙으면 알림에 「ERUT 브로커에 연결되었습니다」가 뜬다. 점검 도구를 다시 돌려 `[확인]` 을 본다.
 5. 붙었는데 ERUT 요청이 안 먹으면 시각을 본다 — 10초 넘게 어긋난 메시지는 버려진다. 이 PC 를 인터넷 시간(NTP)에 맞춘다.
 
 ## 자주 나는 문제
@@ -195,6 +224,8 @@ RCS 알림에 「ERUT 브로커에 연결되었습니다」가 안 뜨거나, `.
 | 증상 | 원인 · 조치 |
 |---|---|
 | `git pull` 이 `Your local changes … would be overwritten` 으로 멈춤 | 그 PC 에서 고친 파일이 있다 — 2번으로 돌아가 정리한다 |
+| `./run_rcs.sh: Permission denied` | 실행 권한이 없다 — `chmod +x run_rcs.sh` 또는 `bash run_rcs.sh` (6번) |
+| 「ERUT 브로커 … 연결 거부 (rc=3)」 | ERUT 브로커가 아닌 곳에 붙었다 — 「ERUT 브로커에 안 붙을 때」의 점검 도구 |
 | TPAC(초음파 장비) 시뮬레이터·장비와 안 붙음, 통신 로그에 `[Errno 13] Permission denied` | `authbind` 없이 켰다 — `./run_rcs.sh` 로 켠다. 처음이면 「처음 한 번」의 authbind 설정 |
 | `colcon build` 에서 `ros2`·`ament` 를 못 찾음 | `source /opt/ros/humble/setup.bash` 를 먼저 안 했다 |
 | RCS 가 「로봇 제어 노드를 찾지 못했습니다」 | `source install/setup.bash` 를 안 한 터미널에서 켰다 |

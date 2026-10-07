@@ -8,9 +8,11 @@
 #   README 「실행」) authbind 로 이 프로세스에만 권한을 준다. 그냥
 #   `python3 -m smr_operator_ui` 로 켜면 TPAC 시뮬레이터·장비와 안 붙는다.
 # * ERUT 브로커: RCS 의 외부 통신은 ERUT 브로커(MQTT) 하나다 — 사내 MC MQTT 는
-#   2026-10-07 에 뺐다. 연결 설정의 「ERUT Broker 주소」·「ERUT 포트」(기본
-#   127.0.0.1:1883)에 닿는지 켜기 전에 본다. 안 닿으면 무엇을 볼지 알려 주고 그대로
-#   켠다(RCS 가 켜진 뒤에도 계속 다시 붙어 본다).
+#   2026-10-07 에 뺐다. 저장된 연결 설정(「ERUT Broker 주소」·「ERUT 포트」·계정)으로
+#   켜기 전에 실제로 붙어 보고, 안 되면 무엇을 볼지 알려 준 뒤 그대로 켠다(RCS 가
+#   켜진 뒤에도 계속 다시 붙어 본다). 따로 볼 때: python3 -m smr_operator_ui.erut_check
+# * 실행 권한이 없다고(Permission denied) 나오면: bash run_rcs.sh 로 켜거나
+#   chmod +x run_rcs.sh
 # 자세한 순서·문제 해결: docs/rcs_update_guide.md
 
 cd "$(dirname "$(readlink -f "$0")")" || exit 1
@@ -35,33 +37,11 @@ if [ -f .venv/bin/activate ]; then
 fi
 
 # ---- ERUT 브로커 확인 ----------------------------------------------------------
-settings="${SMR_SETTINGS_FILE:-$HOME/.config/smr-operator-ui/settings.json}"
-read -r erut_host erut_port < <(python3 - "$settings" <<'EOF2'
-import json, sys
-host, port = "127.0.0.1", 1883
-try:
-    conn = json.load(open(sys.argv[1], encoding="utf-8")).get("connection", {})
-    host = str(conn.get("ERUT Broker 주소") or host).strip() or host
-    port = int(conn.get("ERUT 포트") or port)
-except Exception:
-    pass
-print(host, port)
-EOF2
-)
-if timeout 2 bash -c "exec 3<>/dev/tcp/${erut_host}/${erut_port}" 2>/dev/null; then
-    echo "[확인] ERUT 브로커 ${erut_host}:${erut_port} 에 닿습니다."
-else
-    echo "[경고] ERUT 브로커 ${erut_host}:${erut_port} 에 닿지 않습니다. RCS 는 그대로 켭니다."
-    if [ "$erut_host" = "127.0.0.1" ] || [ "$erut_host" = "localhost" ]; then
-        echo "        이 PC 의 mosquitto(로컬 시험용 브로커)를 확인하세요:"
-        echo "          systemctl status mosquitto"
-        echo "          sudo systemctl enable --now mosquitto     (꺼져 있으면)"
-        echo "          sudo apt install -y mosquitto mosquitto-clients   (없으면)"
-    else
-        echo "        브로커(${erut_host})까지 네트워크가 닿는지(랜선·인터넷), 주소·포트가"
-        echo "        ERUT 가 알려 준 값과 같은지 확인하세요."
-    fi
-    echo "        주소가 틀렸으면 RCS 연결 설정의 「ERUT Broker 주소」·「ERUT 포트」를 고쳐 저장하세요."
+# 포트만 보지 않고 RCS 와 같은 계정·판으로 실제 MQTT 접속을 해 본다
+# (operator-ui/src/smr_operator_ui/erut_check.py). 계정이 틀렸거나 엉뚱한 브로커면
+# 브로커의 거절 코드(rc)와 뜻을 알려 준다. 결과와 상관없이 RCS 는 켠다.
+if ! timeout 20 python3 -m smr_operator_ui.erut_check; then
+    echo "        RCS 는 그대로 켭니다. 문제 해결: docs/rcs_update_guide.md 「ERUT 브로커에 안 붙을 때」"
 fi
 
 # ---- RCS 실행 ---------------------------------------------------------------

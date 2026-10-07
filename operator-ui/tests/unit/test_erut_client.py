@@ -192,3 +192,36 @@ def test_retained_requests_are_dropped(qtbot):
 
     assert got == []
     assert warnings and "retain" in warnings[-1]
+
+
+def test_refusal_names_the_broker_and_what_to_check(qtbot):
+    """거절 코드만 보여 주면 현장에서 무엇을 고칠지 모른다(2026-10-07 리눅스 PC rc=3).
+
+    어느 주소·포트가 거절했는지와 그 코드의 뜻을 같이 알린다. paho 는 거절당해도
+    계속 다시 붙어 보므로 같은 거절은 한 번만 알린다.
+    """
+    client = ErutClient(ErutConfig(host="10.1.2.3", port=1883, device_id="robot1"))
+    told: list[str] = []
+    client.error_occurred.connect(told.append)
+
+    client._on_connect(FakePaho(), None, None, 3)
+    client._on_connect(FakePaho(), None, None, 3)
+
+    assert len(told) == 1, "같은 거절을 재접속마다 되풀이했다"
+    assert "10.1.2.3:1883" in told[0] and "rc=3" in told[0]
+    assert "다른 브로커" in told[0]
+
+    client._on_connect(FakePaho(), None, None, 5)
+    assert len(told) == 2 and "ERUT 계정" in told[1]
+
+
+def test_refusal_is_told_again_after_a_successful_connect(qtbot):
+    client = ErutClient(ErutConfig(device_id="robot1"))
+    told: list[str] = []
+    client.error_occurred.connect(told.append)
+
+    client._on_connect(FakePaho(), None, None, 5)
+    client._on_connect(FakePaho(), None, None, 0)
+    client._on_connect(FakePaho(), None, None, 5)
+
+    assert len(told) == 2

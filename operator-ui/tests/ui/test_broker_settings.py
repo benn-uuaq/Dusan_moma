@@ -78,3 +78,58 @@ def test_erut_password_is_masked_on_screen(qtbot) -> None:
 
     assert field.echoMode() == field.EchoMode.Password
     window.close()
+
+
+def test_erut_connects_only_after_the_saved_settings_are_read(qtbot, monkeypatch) -> None:
+    """설정을 읽기 전에 붙으면 기본값 127.0.0.1:1883 에 먼저 붙는다.
+
+    그 PC 의 1883 에 다른 브로커가 있으면 엉뚱한 접속 거부가 뜬다(2026-10-07
+    리눅스 PC rc=3). 저장된 연결 설정이 반영된 뒤 한 번만 붙어야 한다.
+    """
+    from smr_operator_ui.services import ErutClient, ErutSession
+
+    hosts: list[str] = []
+    monkeypatch.setattr(ErutClient, "start", lambda self: hosts.append(self.config.host))
+    monkeypatch.setattr(ErutSession, "start", lambda self: None)
+    window = OperatorWindow(start_ros=False, start_erut=True)
+    qtbot.addWidget(window)
+    window._erut_start_pending = True      # 비동기 설정 읽기가 먼저 끝났을 수 있다
+    hosts.clear()
+
+    window._apply_stored_settings("connection", {
+        "ERUT Broker 주소": "10.20.30.41", "ERUT 포트": 18884,
+    })
+    window._apply_stored_settings("connection", {"ERUT Broker 주소": "10.20.30.41"})
+
+    assert hosts == ["10.20.30.41"], "설정 전 기본값으로 붙었거나 두 번 붙었다"
+    window.close()
+
+
+def test_erut_still_connects_when_the_settings_cannot_be_read(qtbot, monkeypatch) -> None:
+    from smr_operator_ui.services import ErutClient, ErutSession
+
+    hosts: list[str] = []
+    monkeypatch.setattr(ErutClient, "start", lambda self: hosts.append(self.config.host))
+    monkeypatch.setattr(ErutSession, "start", lambda self: None)
+    window = OperatorWindow(start_ros=False, start_erut=True)
+    qtbot.addWidget(window)
+    window._erut_start_pending = True
+    hosts.clear()
+
+    window._show_settings_error("connection", "설정 파일을 읽을 수 없습니다")
+
+    assert hosts == ["127.0.0.1"]
+    window.close()
+
+
+def test_erut_is_not_started_from_the_constructor(qtbot, monkeypatch) -> None:
+    from smr_operator_ui.services import ErutClient, ErutSession
+
+    hosts: list[str] = []
+    monkeypatch.setattr(ErutClient, "start", lambda self: hosts.append(self.config.host))
+    monkeypatch.setattr(ErutSession, "start", lambda self: None)
+    window = OperatorWindow(start_ros=False, start_erut=True)
+    qtbot.addWidget(window)
+
+    assert hosts == [], "설정을 읽기 전에 ERUT 에 붙었다"
+    window.close()

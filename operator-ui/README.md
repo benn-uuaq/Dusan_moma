@@ -30,7 +30,7 @@ ros2 launch elite_robot_controller elite_cs612.launch.py robot_ip:=192.168.227.1
 authbind --deep python -m smr_operator_ui
 ```
 
-현장 RCS PC 에서는 저장소 맨 위의 `./run_rcs.sh` 로 켭니다 — ROS·venv 환경을 불러오고, ERUT 브로커가 닿는지 먼저 보고, `authbind --deep` 으로 RCS 를 띄웁니다. 업데이트·문제 해결 순서는 `docs/rcs_update_guide.md`.
+현장 RCS PC 에서는 저장소 맨 위의 `./run_rcs.sh` 로 켭니다 — ROS·venv 환경을 불러오고, 저장된 연결 설정으로 ERUT 브로커에 실제로 붙어 본 뒤(`python3 -m smr_operator_ui.erut_check`), `authbind --deep` 으로 RCS 를 띄웁니다. 업데이트·문제 해결 순서는 `docs/rcs_update_guide.md`.
 
 **`authbind --deep`가 필요한 이유:** "TPAC 설정 / TCP 인코딩" 화면이 여는 외부 제공 서버는 기본 포트가 502인데, 1024 미만 포트는 리눅스에서 일반 사용자가 열 수 없습니다(`[Errno 13] Permission denied`). `sudo setcap cap_net_bind_service=+ep`를 `python3`에 직접 걸면 이 문제는 해결되지만, 리눅스 동적 로더가 capability 있는 실행 파일에서는 `LD_LIBRARY_PATH`를 무시해 버려서 **ROS 2가 라이브러리를 못 찾고 깨집니다**(`ImportError: librcl_action.so`). `python3`는 ROS도 같이 쓰는 공유 바이너리라 이 방법은 쓰면 안 됩니다.
 
