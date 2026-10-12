@@ -2,7 +2,7 @@
 """ERUT Robot Service(로봇 브릿지) 역할을 대신하는 시뮬레이터.
 
 실제 ERUT 가 아직 없으므로 이 도구가 그 자리에서 요청을 보내고 응답을 받는다.
-규격은 `ERUT_검사로봇_MQTT_표준인터페이스_if-0.5.xlsx` 탭3(정상 시나리오)이다.
+규격은 `MQTT_인터페이스/ERUT_검사로봇_MQTT_표준인터페이스_if-0.9.xlsx` 탭3(정상 시나리오)이다.
 
     ① 접속 확인   erut/status 발행(5초마다) → req/query → res 확인
     ② 캘리브레이션 req/calibrate → res 202 → evt/complete
@@ -56,7 +56,7 @@ def utc_ms() -> int:
 class ErutSimApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        root.title("ERUT 시뮬레이터 (Robot Service 대역 · if-0.5)")
+        root.title("ERUT 시뮬레이터 (Robot Service 대역 · if-0.9)")
         root.geometry("1000x760")
         root.minsize(900, 680)
 
@@ -431,10 +431,17 @@ class ErutSimApp:
                 req_id, point_id = content.get("req_id", ""), content.get("point_id", "")
                 self._log(f"  마커 발사 — 점 {point_id} (1초 뒤 mark_next)")
                 self.root.after(1000, lambda: self._fire_marker(req_id, point_id))
+            # if-0.9: 결과는 맨 바깥 status_code, 까닭은 content.error{code, name, detail}.
+            status = payload.get("status_code")
+            error = content.get("error") or {}
+            if isinstance(status, int) and status >= 300:
+                self._log(f"  → {status} {error.get('code', '')} {error.get('name', '')}"
+                          f" {error.get('detail', '')}".rstrip())
             # 거절 사유 문장이 오면(예: 동작 중 홈 요청) ERUT 화면처럼 띄운다.
-            if content.get("detail"):
-                messagebox.showwarning(f"RCS 응답 — {action}", str(content["detail"]),
-                                       parent=self.root)
+            if tail == "res" and error.get("detail"):
+                messagebox.showwarning(
+                    f"RCS 응답 — {action} {status} {error.get('name', '')}",
+                    str(error["detail"]), parent=self.root)
 
     def _heartbeat(self) -> None:
         """브릿지 생존 신호 — 5초마다(탭1 14행). 끊기면 RCS 가 20초 뒤 멈춘다."""

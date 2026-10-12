@@ -87,6 +87,10 @@ MAX_AREA_HEIGHT_MM = 1200
 # 로봇 태스크를 stop 한 뒤 play 하기까지 두는 간격. 컨트롤러가 태스크를
 # 정리할 시간을 주지 않으면 play 가 거부된다.
 ROBOT_RESTART_DELAY_MS = 1200
+#: 스캔을 틀고 이만큼 지나도 로봇 태스크가 실행(500 = 1)으로 안 바뀌면 출발 실패로
+#: 본다 [ms]. play 가 거부됐거나(태스크 파일 없음 · 로컬 제어) 로봇이 안 붙었을 때다.
+#: 그대로 두면 ERUT 는 running · 진행률 0 으로 완료를 끝없이 기다린다(Q-29).
+ROBOT_START_TIMEOUT_MS = 20_000
 
 #: 기본 태스크 버전. Cobot 설정의 '태스크 선택'으로 바꾼다(dusan_v4 / dusan_v5).
 DEFAULT_TASK_VERSION = "dusan_v5"
@@ -765,6 +769,8 @@ class OperatorWindow(QMainWindow):
         측정부터 한다. prepare 없이 온 start 면 처음부터 끝까지 한 번에 간다.
         """
         plan = self._fill_from_local_setup(plan)
+        # 검사면 x → 차량 주행 거리(캘리브레이션 한 바퀴로 잰 배율).
+        plan = replace(plan, vehicle_scale=getattr(self, "_vehicle_lap_scale", 1.0))
         scan_h_mm = self._scan_band_mm(plan)
         self.simulator.begin_external(plan.column_count)
         # 구간 하나 = job 하나. prepare 가 오면 차량을 구간 x 로, 리프트를
@@ -868,9 +874,8 @@ class OperatorWindow(QMainWindow):
         """열 번호를 이동 거리로 바꿔 AMR 더미에 넘긴다."""
         plan = self.sequencer.plan
         pitch = plan.column_pitch if plan is not None else 0.0
-        # ERUT 구간이면 area 원점을 구간 번호로 바꿔 번호 × (가로 - 겹침) 만큼
-        # 간다 — area.start.x 그대로 가면 옆 구간과 겹치지 않는다. 그 뒤로는
-        # 열 간격(가로 - 겹침)만큼 더 간다.
+        # ERUT 구간이면 area.start.x(× 차량 궤적 배율)로 간다 — 겹침은 ERUT 가
+        # 좌표에 넣어 보낸다. RCS 격자는 원점 0 에서 열 간격(가로 - 겹침)씩 간다.
         offset = plan.vehicle_offset_mm if plan is not None else 0.0
         distance = offset + max(0, int(column) - 1) * pitch
         label = f"{column}구역 ({distance:.0f} mm)"
@@ -1316,7 +1321,7 @@ class OperatorWindow(QMainWindow):
             for motion in (self.amr, self.lift):
                 motion.cancel()
             self.erut_session.raise_error({
-                "code": "E9303", "message": "ROBOT_LEFT_HOME_WHILE_MOVING",
+                "code": "E9303", "name": "ROBOT_LEFT_HOME_WHILE_MOVING",
                 "level": "stop", "recovery": "manual",
                 "detail": "차량·리프트가 움직이는 중에 로봇이 홈을 벗어나 이동을 멈췄습니다",
             })
@@ -1368,6 +1373,38 @@ class OperatorWindow(QMainWindow):
         self.ros_status.call_command("remote_control_on")
         self.ros_status.call_command("stop")
         self._schedule_play()
+        self._last_scan_command_failure = ""
+        # 다시 틀면(재개 · 다음 셀) 앞서 건 확인은 버린다 — 번호로 가린다.
+        self._start_watch_id = getattr(self, "_start_watch_id", 0) + 1
+        watch_id = self._start_watch_id
+        _call_later(self, ROBOT_RESTART_DELAY_MS + ROBOT_START_TIMEOUT_MS,
+                    lambda: self._check_robot_started(watch_id))
+
+    def _check_robot_started(self, watch_id: int) -> None:
+        """스캔을 틀었는데 로봇 태스크가 끝내 돌지 않았으면 장애로 끝낸다(Q-29).
+
+        play 응답으로 성공을 가리지 않는다 — 로봇이 레지스터 500 에 실행(1)을
+        써야 출발한 것이다. 출발 전에 일시정지·정지됐으면(순회가 스캔 중이
+        아니면) 따지지 않는다. 장애(E9203)로 올리면 ERUT 작업은 evt/complete
+        500 으로 끝나고 브릿지가 작업자에게 알린다.
+        """
+        if (watch_id != getattr(self, "_start_watch_id", 0)
+                or self.sequencer.state is not SequencerState.SCANNING
+                or getattr(self, "_scan_task_seen_running", False)):
+            return
+        failure = getattr(self, "_last_scan_command_failure", "")
+        cause = f" — {failure}" if failure else (
+            " — 로봇이 연결돼 있는지, 펜던트에 태스크 파일이 있는지, 원격 제어 모드인지 확인하세요")
+        text = (f"로봇 태스크가 {ROBOT_START_TIMEOUT_MS // 1000}초 안에 시작되지 않았습니다"
+                f"{cause}")
+        self.main_screen.show_activity(text)
+        self.cobot_manual_screen.add_alarm(text)
+        self.erut_session.raise_error({
+            "code": "E9203", "name": "ROBOT_START_FAILED", "detail": text,
+            "level": "stop", "recovery": "reset_required",
+        })
+        if self.sequencer.state is SequencerState.SCANNING:
+            self.sequencer.stop()
 
     def _work_area_ready_for_scan(self) -> bool:
         """호 길이(256)·반지름(260)이 0 이면 스캔 태스크를 틀지 않는다.
@@ -1390,7 +1427,7 @@ class OperatorWindow(QMainWindow):
         self.main_screen.show_activity(text)
         self.cobot_manual_screen.add_alarm(text)
         self.erut_session.raise_error({
-            "code": "E9304", "message": "WORK_AREA_NOT_SET", "level": "stop",
+            "code": "E9304", "name": "WORK_AREA_NOT_SET", "level": "stop",
             "recovery": "manual", "detail": text,
         })
         self.sequencer.stop()
@@ -1765,7 +1802,7 @@ class OperatorWindow(QMainWindow):
         self.main_screen.show_activity(f"E2002 HOME_FAILED — {detail}")
         self.cobot_manual_screen.add_alarm(f"홈 거두기 실패 — {detail}")
         self.erut_session.raise_error({
-            "code": "E2002", "message": "HOME_FAILED", "level": "stop",
+            "code": "E2002", "name": "HOME_FAILED", "level": "stop",
             "recovery": "reset_required", "detail": detail,
         })
 
@@ -2611,6 +2648,8 @@ class OperatorWindow(QMainWindow):
             if not success:
                 self.main_screen.show_activity(f"로봇 {name} 실패: {message}")
                 self.cobot_manual_screen.add_alarm(f"로봇 {name} 실패: {message}")
+                # 출발 확인(_check_robot_started)이 까닭으로 싣는다.
+                self._last_scan_command_failure = f"로봇 {name} 실패: {message}"
         elif name == "task_status":
             # _execute_dash_cmd가 "[task -s] Result: ..." 로 감싸 보내므로
             # 표시용으로는 결과값만 뽑아 보여준다.
@@ -2646,20 +2685,21 @@ class OperatorWindow(QMainWindow):
     # 벽 접촉을 못 찾고 halt() 하기 직전에 남긴다(config/modbus_registers.json
     # 참고). 0=정상, 그 외는 실패 코드.
     _PROBE_ERROR_INDEX = 9
-    #: 299 값 → (ERUT 장애 code, message, 화면 문구). code 는 표준 형식 Exxxx 의
-    #: **제조사 전용 대역 E9xxx** 다(if-0.4 탭5 장애 코드 체계 — 공통 대역
-    #: E1~E5 는 ERUT 가 매긴다). message 는 영문 상수, 문구는 detail 로 싣는다.
+    #: 299 값 → (ERUT 장애 code, name, 화면 문구, error 에 더 싣는 칸).
+    #: 탐촉자가 벽에 안 닿는 것은 어느 장비에나 생기므로 공통 번호 E3001
+    #: PROBE_CONTACT_FAILED 에 어느 탐촉자인지(probe)를 싣는다(if-0.9 탭11 Q-26 —
+    #: ERUT 제안). 나머지는 3S 제조사 대역 E9xxx 다. 문구는 detail 로 싣는다.
     _PROBE_ERROR_MESSAGES = {
-        1: ("E9101", "PROBE_C_CONTACT_FAILED", "센터 프로브 벽 접촉 실패"),
-        2: ("E9102", "PROBE_L_CONTACT_FAILED", "좌측(원점) 프로브 벽 접촉 실패"),
-        3: ("E9103", "PROBE_R_CONTACT_FAILED", "우측 프로브 벽 접촉 실패"),
-        4: ("E9104", "ARC_ZERO", "호 길이/반지름이 0 — 작업 영역 값을 확인하세요"),
-        5: ("E9105", "MARK_CONTACT_FAILED", "마킹 자리에서 벽 접촉을 찾지 못했습니다"),
+        1: ("E3001", "PROBE_CONTACT_FAILED", "센터 프로브 벽 접촉 실패", {"probe": "center"}),
+        2: ("E3001", "PROBE_CONTACT_FAILED", "좌측(원점) 프로브 벽 접촉 실패", {"probe": "left"}),
+        3: ("E3001", "PROBE_CONTACT_FAILED", "우측 프로브 벽 접촉 실패", {"probe": "right"}),
+        4: ("E9104", "ARC_ZERO", "호 길이/반지름이 0 — 작업 영역 값을 확인하세요", {}),
+        5: ("E9105", "MARK_CONTACT_FAILED", "마킹 자리에서 벽 접촉을 찾지 못했습니다", {}),
         # v5 (servoj 스캔) — 호를 도는 동안 눌림을 계속 확인한다.
-        6: ("E9106", "SCAN_PRESS_LOST", "스캔 중 접촉(눌림)을 유지하지 못해 멈췄습니다 — 보정 한계(press_max) 초과"),
-        7: ("E9107", "SCAN_IK_FAILED", "스캔 호 경로에 역기구학 해가 없어 멈췄습니다 — 로봇 위치·자세를 확인하세요"),
+        6: ("E9106", "SCAN_PRESS_LOST", "스캔 중 접촉(눌림)을 유지하지 못해 멈췄습니다 — 보정 한계(press_max) 초과", {}),
+        7: ("E9107", "SCAN_IK_FAILED", "스캔 호 경로에 역기구학 해가 없어 멈췄습니다 — 로봇 위치·자세를 확인하세요", {}),
         # v5 인터락 — 차량 고정 확인(레지스터 309)을 기다리다 시간이 넘었다.
-        8: ("E9108", "VEHICLE_HOLD_TIMEOUT", "차량 고정 확인을 못 받아 로봇이 멈췄습니다 — 아웃트리거 고정·차량 정지를 확인하세요"),
+        8: ("E9108", "VEHICLE_HOLD_TIMEOUT", "차량 고정 확인을 못 받아 로봇이 멈췄습니다 — 아웃트리거 고정·차량 정지를 확인하세요", {}),
     }
 
     def _handle_probe_error(self, values: list) -> None:
@@ -2682,20 +2722,20 @@ class OperatorWindow(QMainWindow):
 
         if code == 0:
             if prev_code in self._PROBE_ERROR_MESSAGES:
-                err_code, err_name, _text = self._PROBE_ERROR_MESSAGES[prev_code]
+                err_code, err_name, _text, _fields = self._PROBE_ERROR_MESSAGES[prev_code]
                 # 발생 때와 같은 code 에 cleared=true (if-0.3 부터).
                 self.erut_session.raise_error({
-                    "code": err_code, "message": err_name, "cleared": True,
+                    "code": err_code, "name": err_name, "cleared": True,
                 })
             return
 
-        err_code, err_name, text = self._PROBE_ERROR_MESSAGES.get(
-            code, (f"E91{code:02d}", "ROBOT_TASK_STOPPED", "로봇 태스크가 멈췄습니다"))
+        err_code, err_name, text, fields = self._PROBE_ERROR_MESSAGES.get(
+            code, (f"E91{code:02d}", "ROBOT_TASK_STOPPED", "로봇 태스크가 멈췄습니다", {}))
         self.main_screen.show_activity(f"{text} (레지스터 299={code})")
         self.cobot_manual_screen.add_alarm(text)
         self.erut_session.raise_error({
-            "code": err_code, "message": err_name,
-            "level": "stop", "recovery": "manual", "detail": text,
+            "code": err_code, "name": err_name,
+            "level": "stop", "recovery": "manual", "detail": text, **fields,
         })
 
     # 스캔 진행 상태(290)에서 "원점 도착, 시작 신호 대기"를 뜻하는 값.
@@ -2800,6 +2840,11 @@ class OperatorWindow(QMainWindow):
         error = abs(measured - lap["planned"])
         self._calibration_lap = None
         self.amr.reset(0.0)
+        # ERUT 의 x 는 검사면 둘레(π × 지름) 위의 거리다. 차량은 모재에서 떨어진
+        # 바깥 궤적을 돌아 한 바퀴가 그보다 길 수 있다 — 같은 각도에 서도록 그
+        # 비율을 차량 이동에 곱한다(2026-10-12). 지금 더미는 둘레만큼만 달려 1 이다.
+        self._vehicle_lap_scale = (measured / lap["planned"]
+                                   if lap["planned"] > 0 and measured > 0 else 1.0)
         self._finish_calibration(
             True, f"차량 한 바퀴 {measured:.0f} mm (계획 {lap['planned']:.0f} mm)",
             error, total_length_mm=measured)
@@ -2933,7 +2978,7 @@ class OperatorWindow(QMainWindow):
         # 태스크를 멈추게 한 알람이면 E9202 가 따로 stop 으로 나간다.
         self._last_robot_alarm = (time.monotonic(), str(text))
         self.erut_session.raise_error({
-            "code": "E9201", "message": "ROBOT_ALARM", "detail": text,
+            "code": "E9201", "name": "ROBOT_ALARM", "detail": text,
             "level": "warning", "recovery": "auto",
         })
         timer = getattr(self, "_robot_alarm_clear_timer", None)
@@ -2981,7 +3026,7 @@ class OperatorWindow(QMainWindow):
         self.main_screen.show_activity(text)
         self.cobot_manual_screen.add_alarm(text)
         self.erut_session.raise_error({
-            "code": "E9202", "message": "ROBOT_TASK_STOPPED", "detail": text,
+            "code": "E9202", "name": "ROBOT_TASK_STOPPED", "detail": text,
             "level": "stop", "recovery": "reset_required",
         })
         if self.sequencer.state is SequencerState.SCANNING:
@@ -3250,9 +3295,13 @@ class OperatorWindow(QMainWindow):
         self.screens["manual"].set_interlock(bool(reason), reason)
 
     def _on_vehicle_problem(self, message: str) -> None:
-        """차량이 도착을 못 냈다 — 장애로 올린다(작업을 멈추고 로봇도 세운다)."""
+        """차량이 도착을 못 냈다 — 장애로 올린다(작업을 멈추고 로봇도 세운다).
+
+        차량 · 리프트 · 아웃트리거가 움직이지 못한 것은 표준 E2001 DRIVE_ERROR 다
+        (구동 · 이동 대역 — if-0.9 탭5 119행). 예전 3S 코드는 E9301 이었다.
+        """
         self.erut_session.raise_error({
-            "code": "E9301", "message": "VEHICLE_ERROR", "level": "stop",
+            "code": "E2001", "name": "DRIVE_ERROR", "level": "stop",
             "recovery": "manual", "detail": f"차량 동작 실패 — {message}",
         })
         self.cobot_manual_screen.add_alarm(f"차량: {message}")

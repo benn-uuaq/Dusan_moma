@@ -457,13 +457,31 @@ def _area(x0: float, y0: float) -> GridPlan:
                     pitch_x=20.0, pitch_y=20.0, origin_x=x0, origin_y=y0)
 
 
-def test_area_origin_maps_to_section_number_and_overlapped_position() -> None:
-    """area 0·600·1200 은 1·2·3번 구간 — 차량은 0·580·1160 으로 간다."""
-    assert [_area(x, 0).section_column for x in (0, 600, 1200)] == [0, 1, 2]
-    assert [_area(x, 0).vehicle_offset_mm for x in (0, 600, 1200)] == [0.0, 580.0, 1160.0]
-    # 세로도 같다: 800 은 2층 — 리프트는 780.
-    assert _area(0, 800).section_row == 1
-    assert _area(0, 800).lift_offset_mm == 780.0
+def test_area_origin_is_used_as_is_for_the_vehicle_and_lift() -> None:
+    """ERUT 좌표 그대로 간다 — 겹침은 ERUT 가 좌표에 넣어 보낸다(2026-10-12 결정).
+
+    예전에는 area 0·600·1200 을 구간 번호로 바꿔 0·580·1160 으로 덜 갔다. 그러면
+    이음매를 넘는 구역(x 5159)처럼 구간 길이의 정수배가 아닌 자리는 엉뚱한 곳에
+    섰다. 구간 번호는 화면·기록 이름용으로 (길이 - 겹침) 간격으로 센다.
+    """
+    assert [_area(x, 0).vehicle_offset_mm for x in (0, 580, 1160, 5159)] == [
+        0.0, 580.0, 1160.0, 5159.0]
+    assert [_area(x, 0).section_column for x in (0, 580, 1160)] == [0, 1, 2]
+    assert _area(0, 780).lift_offset_mm == 780.0
+    assert _area(0, 780).section_row == 1
+
+
+def test_vehicle_scale_turns_surface_x_into_vehicle_travel() -> None:
+    """차량은 모재에서 떨어진 바깥 궤적을 돌아 같은 각도에 더 달린다.
+
+    캘리브레이션 한 바퀴의 실측 거리 ÷ 검사면 둘레가 그 배율이다. 리프트(y)는
+    그대로다.
+    """
+    from dataclasses import replace
+
+    plan = replace(_area(1000, 400), vehicle_scale=1.1)
+    assert plan.vehicle_offset_mm == pytest.approx(1100.0)
+    assert plan.lift_offset_mm == 400.0
 
 
 def test_area_already_shifted_by_the_overlap_maps_to_the_same_section() -> None:

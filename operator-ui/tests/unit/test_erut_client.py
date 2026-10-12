@@ -92,15 +92,46 @@ def test_status_is_flat_and_drops_empty_fields(qtbot):
     assert "job_id" not in payload and "battery" not in payload
 
 
-def test_error_carries_cleared_inside_content(qtbot):
+def test_error_is_an_error_object_inside_content(qtbot):
+    """if-0.9: 맨 바깥은 timestamp 뿐 — code · message 는 없어졌다(탭2 10행)."""
     client, paho = _client(qtbot)
-    client.publish_error("E2001", "DRIVE_ERROR", "stop", "manual", cleared=True,
-                         job_id="jb1")
+    client.publish_error({"code": "E2001", "name": "DRIVE_ERROR", "level": "stop",
+                          "recovery": "manual", "cleared": True}, job_id="jb1")
 
     _topic, payload, _qos, _retain = paho.published[-1]
-    assert payload["code"] == "E2001" and payload["message"] == "DRIVE_ERROR"
-    assert payload["content"] == {"level": "stop", "recovery": "manual",
-                                  "cleared": True, "job_id": "jb1"}
+    assert set(payload) == {"timestamp", "content"}
+    assert payload["content"] == {"job_id": "jb1", "error": {
+        "code": "E2001", "name": "DRIVE_ERROR", "level": "stop",
+        "recovery": "manual", "cleared": True}}
+
+
+def test_answers_carry_status_code_and_error_only_when_refused(qtbot):
+    """결과는 맨 바깥 status_code, 문제는 content.error — 없으면 칸을 뺀다(탭0 10행)."""
+    client, paho = _client(qtbot)
+    client.publish_res("r1", "start", 202)
+    client.publish_res("r2", "start", 409, {"code": "E6101", "name": "BUSY"})
+    client.publish_event("complete", "r1", "start", job_id="jb1")
+
+    accepted, refused, done = (p for _t, p, _q, _r in paho.published[-3:])
+    assert accepted["status_code"] == 202 and "error" not in accepted["content"]
+    assert "code" not in accepted and "message" not in accepted
+    assert refused["status_code"] == 409
+    assert refused["content"]["error"] == {"code": "E6101", "name": "BUSY"}
+    assert done["status_code"] == 200 and done["content"]["job_id"] == "jb1"
+
+
+def test_request_carries_the_time_it_was_sent(qtbot):
+    """늦게 온 일 요청(E6005)을 가리려고 보낸 시각을 세션까지 넘긴다."""
+    client, _paho = _client(qtbot)
+    got: list[tuple] = []
+    client.request_received.connect(lambda a, c, t: got.append((a, c["req_id"], t)))
+
+    client._on_message(None, None, Msg("doosan/robot/req/start", {
+        "timestamp": 1786500000000, "content": {"req_id": "r1"}}))
+    client._on_message(None, None, Msg("doosan/robot/req/query", {
+        "content": {"req_id": "r2"}}))
+
+    assert got == [("start", "r1", 1786500000000), ("query", "r2", None)]
 
 
 def test_contact_and_info_are_retained(qtbot):

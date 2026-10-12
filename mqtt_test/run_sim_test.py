@@ -221,12 +221,15 @@ class ErutTap:
         self.info: list[dict] = []
         self.home: list[str] = []
         erut = window.erut
-        erut.publish_event = lambda name, req, action, code=200, message="OK", **kw: (
-            self.events.append((name, {"req_id": req, "action": action, "code": code,
-                                       "message": message, **kw})) or True)
-        erut.publish_res = lambda req, action, code, message, **kw: (
-            self.responses.append({"req_id": req, "action": action, "code": code,
-                                   "message": message, **kw}) or True)
+        # if-0.9: 결과는 status_code, 까닭은 error 객체. 예전 이름(code)으로도 읽게 둔다.
+        erut.publish_event = lambda name, req, action, status_code=200, error=None, **kw: (
+            self.events.append((name, {"req_id": req, "action": action,
+                                       "code": status_code, "status_code": status_code,
+                                       "error": error, **kw})) or True)
+        erut.publish_res = lambda req, action, status_code, error=None, **kw: (
+            self.responses.append({"req_id": req, "action": action,
+                                   "code": status_code, "status_code": status_code,
+                                   "error": error, **kw}) or True)
         erut.publish_progress = lambda req, action, **kw: (
             self.progress.append({"req_id": req, "action": action, **kw}) or True)
         erut.publish_status = lambda state="online", **kw: (
@@ -235,8 +238,9 @@ class ErutTap:
             self.contact.append({"state": state, "job_id": job_id}) or True)
         erut.publish_info = lambda content: self.info.append(content) or True
         erut.publish_home = lambda state: self.home.append(state) or True
-        erut.publish_error = lambda code, message, level, recovery, cleared=False, **kw: (
-            self.errors.append({"code": code, "level": level, "cleared": cleared}) or True)
+        erut.publish_error = lambda error, job_id="": (
+            self.errors.append({"code": error["code"], "level": error["level"],
+                                "cleared": error["cleared"]}) or True)
         erut.publish_message = lambda *a, **kw: True
 
     def event(self, name: str, action: str) -> dict | None:
@@ -265,7 +269,7 @@ def scenario_erut(h: Harness) -> list[str]:
     session.publish_info()
     info = tap.info[-1]
     log(f"\n[erut] 자기소개: 판 {info['interface_version']} · {', '.join(info['capabilities'])}")
-    if info["interface_version"] != "0.8" or "home" not in info["capabilities"]:
+    if info["interface_version"] != "0.9" or "home" not in info["capabilities"]:
         problems.append(f"[erut] 자기소개가 이상합니다: {info}")
 
     log("[erut] calibrate — 차량(AGV)이 모재를 따라 한 바퀴 돌며 좌표계를 잡는다")
@@ -473,7 +477,7 @@ def scenario_erut(h: Harness) -> list[str]:
                                      "scan": {"pitch": 20, "speed": 100}})
     if not h.wait_until(lambda: h.register(STATE_REG)[0] == 6, timeout=180, poll=0.02):
         return problems + ["[erut] 세 번째 구간이 스캔에 들어가지 않았습니다"]
-    session.raise_error({"code": "E1002", "message": "E_STOP", "level": "estop",
+    session.raise_error({"code": "E1002", "name": "E_STOP", "level": "estop",
                          "recovery": "reset_required"})
     h.wait_until(lambda: h.register(TASK_REG)[0] == 3, timeout=10)
     h.pump(0.5)

@@ -33,20 +33,22 @@ INJECT_TOPIC = "3s/test/inject/error"
 # level  : warning=화면 표시만 / stop=구간 중단 / estop=전체 중단
 # recovery: auto=스스로 복구 / manual=작업자 조치 / reset_required=req/reset 필요
 PRESETS = (
-    # (버튼 문구, code, message, level, recovery, detail)
+    # (버튼 문구, code, name, level, recovery, detail)
+    # code · name 은 if-0.9 탭5 표준 번호(E1~E6)를 따르고, 표준에 없는 것은
+    # 3S 제조사 대역(E9xxx)이다. 같은 번호는 늘 같은 이름이다.
     ("주행부 과부하", "E2001", "DRIVE_ERROR", "stop", "manual",
      "주행부 모터 과부하"),
-    ("주행부 해제", "E2001-CLEAR", "DRIVE_ERROR_CLEARED", "warning", "auto", ""),
+    ("주행부 해제", "E2001-CLEAR", "DRIVE_ERROR", "warning", "auto", ""),
     ("비상정지", "E1002", "E_STOP", "estop", "reset_required",
      "물리 E-Stop 눌림"),
-    ("비상정지 해제", "E1002-CLEAR", "E_STOP_CLEARED", "warning", "auto", ""),
-    ("배터리 부족", "E3001", "LOW_BATTERY", "stop", "manual",
+    ("비상정지 해제", "E1002-CLEAR", "E_STOP", "warning", "auto", ""),
+    ("배터리 부족", "E5001", "LOW_BATTERY", "stop", "manual",
      "배터리 잔량 15 % 미만"),
-    ("스캐너 통신 끊김", "E4001", "SCANNER_COMM_LOST", "stop", "manual",
+    ("스캐너 통신 끊김", "E9501", "SCANNER_COMM_LOST", "stop", "manual",
      "UT 스캐너 응답 없음"),
-    ("리프트 이상", "E2101", "LIFT_ERROR", "stop", "manual",
+    ("리프트 이상", "E2001", "DRIVE_ERROR", "stop", "manual",
      "리프트 목표 높이 도달 실패"),
-    ("커플런트 부족", "E5001", "COUPLANT_LOW", "warning", "auto",
+    ("커플런트 부족", "E9502", "COUPLANT_LOW", "warning", "auto",
      "물탱크 잔량 경고"),
 )
 
@@ -120,7 +122,7 @@ class AlarmSimApp:
         custom.columnconfigure(1, weight=1)
         custom.columnconfigure(3, weight=1)
         fields = (
-            ("code", self.code_var), ("message", self.msg_var),
+            ("code", self.code_var), ("name", self.msg_var),
             ("detail", self.detail_var),
         )
         for i, (label, var) in enumerate(fields):
@@ -189,7 +191,7 @@ class AlarmSimApp:
         if self.client is None or not self.connected:
             self._log("[경고] 먼저 브로커에 연결하세요.")
             return
-        payload = {"timestamp": utc_ms(), "code": code, "message": message,
+        payload = {"timestamp": utc_ms(), "code": code, "name": message,
                    "level": level, "recovery": recovery}
         # 해제는 발생 때와 **같은 code** 에 cleared=true 다(ERUT if-0.3 부터).
         # 버튼은 알아보기 쉽게 "-CLEAR" 로 적어 두고 보낼 때 바꾼다.

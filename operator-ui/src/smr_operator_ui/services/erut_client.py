@@ -1,10 +1,12 @@
 """ERUT Robot Service(로봇 브릿지)와 주고받는 MQTT 전송 계층.
 
-규격은 `mqtt_test/MQTT_인터페이스/ERUT_검사로봇_MQTT_표준인터페이스_if-0.8.xlsx` 다
+규격은 `mqtt_test/MQTT_인터페이스/ERUT_검사로봇_MQTT_표준인터페이스_if-0.9.xlsx` 다
 (탭1~5·8~10. 탭6·7 은 ERUT 내부 규격이라 3S 와 무관하다). RCS 의 외부 통신은
 이 브로커 하나다 — 사내 MC MQTT(`MqttServer`)는 2026-10-07 에 뺐다.
 
-    ERUT   : {"timestamp": 1786500000000, "content": {...}}   timestamp 는 숫자
+    요청         : {"timestamp": 1786500000000, "content": {...}}   timestamp 는 숫자
+    답(res 등)   : {"timestamp": …, "status_code": 202, "content": {…, "error": {…}}}
+    evt/error    : {"timestamp": …, "content": {"job_id": …, "error": {…, "cleared": false}}}
 """
 
 from __future__ import annotations
@@ -101,8 +103,9 @@ class ErutConfig:
 class ErutClient(QObject):
     """ERUT Topic 송수신. 프로토콜 판단은 하지 않고 봉투만 씌우고 벗긴다."""
 
-    # (action, content) — 받은 요청. 판단은 ErutSession 이 한다.
-    request_received = pyqtSignal(str, object)
+    # (action, content, timestamp) — 받은 요청과 브릿지가 보낸 시각(UTC ms, 없으면
+    # None). 판단은 ErutSession 이 한다 — 늦게 온 일 요청은 E6005 로 거절한다.
+    request_received = pyqtSignal(str, object, object)
     # ERUT 자신의 생존 상태 (erut/status). offline 이면 진행 중 작업을 멈춰야 한다.
     erut_online_changed = pyqtSignal(bool)
     # 브릿지 시각 - 우리 시각 [s]. erut/status 를 받을 때마다 잰다.
@@ -249,25 +252,34 @@ class ErutClient(QObject):
             return False
         return True
 
-    def publish_res(self, req_id: str, action: str, code: int,
-                    message: str, **extra) -> bool:
-        """요청 응답. 1초 이내에 보내야 한다."""
-        content = {"req_id": req_id, "action": action}
+    @staticmethod
+    def _answer_payload(req_id: str, action: str, status_code: int,
+                        error: dict | None, extra: dict) -> dict:
+        """요청의 답(res · evt/ready · evt/complete · evt/mark_ready) 봉투 (if-0.9).
+
+        결과는 맨 바깥 `status_code`(HTTP 원래 뜻) 하나다 — if-0.8 의 맨 바깥
+        code · message 는 없어졌다. 2xx 가 아니면 content.error{code, name,
+        detail} 가 반드시 있고, 문제가 없으면 칸을 뺀다(null 을 쓰지 않는다).
+        """
+        content: dict[str, Any] = {"req_id": req_id, "action": action}
         content.update(extra)
-        return self._publish(self.res_topic(), {
-            "timestamp": utc_ms(), "code": code,
-            "message": message, "content": content,
-        })
+        if error:
+            content["error"] = dict(error)
+        return {"timestamp": utc_ms(), "status_code": int(status_code),
+                "content": content}
+
+    def publish_res(self, req_id: str, action: str, status_code: int,
+                    error: dict | None = None, **extra) -> bool:
+        """요청 응답. 1초 이내에 보내야 한다."""
+        return self._publish(self.res_topic(), self._answer_payload(
+            req_id, action, status_code, error, extra))
 
     def publish_event(self, name: str, req_id: str, action: str,
-                      code: int = 200, message: str = "OK", **extra) -> bool:
-        """ready / complete / error 처럼 code 를 갖는 이벤트."""
-        content = {"req_id": req_id, "action": action}
-        content.update(extra)
-        return self._publish(self.evt_topic(name), {
-            "timestamp": utc_ms(), "code": code,
-            "message": message, "content": content,
-        })
+                      status_code: int = 200, error: dict | None = None,
+                      **extra) -> bool:
+        """ready / complete / mark_ready — 요청의 끝을 알리는 이벤트."""
+        return self._publish(self.evt_topic(name), self._answer_payload(
+            req_id, action, status_code, error, extra))
 
     def publish_progress(self, req_id: str, action: str, **extra) -> bool:
         """진행률. QoS 0 이라 유실돼도 검사 판정에 영향이 없다."""
@@ -312,37 +324,34 @@ class ErutClient(QObject):
                              {"timestamp": utc_ms(), "content": dict(content)},
                              qos=1, retain=True)
 
-    def publish_message(self, code: str, message: str, text: str,
+    def publish_message(self, code: str, name: str, text: str,
                         **extra) -> bool:
-        """안내 알림 (규격 20260914 evt/message). 장애가 아니다.
+        """안내 알림 evt/message (3S 확장 — 표준에 없고 ERUT 는 읽지 않는다, Q-09).
 
-        evt/error 와 달리 발생·해제 쌍이 없고 ERUT 동작을 바꾸지 않는다 —
-        text 를 표시·기록만 한다. 봉투는 evt/error 와 같게 `code`(Mxxxx)·
-        `message` 가 최상위, 보여 줄 문장 `text` 는 content 안이다.
-        요청 때문에 낸 알림이면 extra 로 req_id·action 을 싣는다.
+        장애가 아니다 — 발생·해제 쌍이 없고 ERUT 동작을 바꾸지 않는다. if-0.9
+        의 다른 메시지처럼 맨 바깥에는 timestamp 뿐이고 code(Mxxxx) · name ·
+        보여 줄 문장 text 는 content 안이다. 요청 때문에 낸 알림이면 extra 로
+        req_id·action 을 싣는다.
         """
-        content = {"text": text}
+        content = {"code": code, "name": name, "text": text}
         content.update(extra)
-        return self._publish(self.evt_topic("message"), {
-            "timestamp": utc_ms(), "code": code,
-            "message": message, "content": content,
-        })
+        return self._publish(self.evt_topic("message"),
+                             {"timestamp": utc_ms(), "content": content})
 
-    def publish_error(self, code: str, message: str, level: str,
-                      recovery: str, cleared: bool = False, **extra) -> bool:
-        """장애·위험 통보. 요청 실패는 res 로 보내고 여기 쓰지 않는다.
+    def publish_error(self, error: dict, job_id: str = "") -> bool:
+        """장애·위험 통보 evt/error (if-0.9 탭2 10행). 요청 실패는 res 로 낸다.
 
-        봉투가 res/complete 와 같다 — `code`·`message` 는 **최상위**이고
-        `level`·`recovery`·`cleared`·`detail` 은 content 안이다 (탭2 10행).
-        해제는 발생 때와 **같은 code** 에 `cleared=true` 다(if-0.3 부터). code
-        끝에 `-CLEAR` 를 붙이던 방식은 받는 쪽이 새 장애로 읽는다.
+        맨 바깥은 timestamp 뿐이고 content 안에 job_id(해당 시)와
+        error{code, name, level, recovery, cleared, detail(선택)} 가 있다 —
+        if-0.8 의 맨 바깥 code · message 는 없어졌다. 해제는 발생 때와 **같은
+        error.code** 에 cleared=true 다(code 끝에 -CLEAR 를 붙이지 않는다).
         """
-        content = {"level": level, "recovery": recovery, "cleared": bool(cleared)}
-        content.update(extra)
-        return self._publish(self.evt_topic("error"), {
-            "timestamp": utc_ms(), "code": code,
-            "message": message, "content": content,
-        })
+        content: dict[str, Any] = {}
+        if job_id:
+            content["job_id"] = job_id
+        content["error"] = dict(error)
+        return self._publish(self.evt_topic("error"),
+                             {"timestamp": utc_ms(), "content": content})
 
     # ------------------------------------------------------------ 콜백
     def _on_connect(self, client, _userdata, _flags, rc) -> None:  # noqa: ANN001
@@ -409,7 +418,10 @@ class ErutClient(QObject):
         if not isinstance(content, dict):
             self.error_occurred.emit(f"ERUT 요청에 content 가 없습니다: {action}")
             return
-        self.request_received.emit(action, content)
+        timestamp = payload.get("timestamp")
+        if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
+            timestamp = None
+        self.request_received.emit(action, content, timestamp)
 
     def _note_skew(self, timestamp: Any) -> None:
         """브릿지가 붙인 timestamp 와 우리 시각의 차이를 잰다.

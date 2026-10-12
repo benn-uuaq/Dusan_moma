@@ -115,6 +115,10 @@ class GridPlan:
     # RCS '검사 시작'처럼 격자를 우리가 도는 경우는 0 이다.
     origin_x: float = 0.0
     origin_y: float = 0.0
+    # 검사면 x(둘레 위 거리) → 차량 주행 거리 배율. 차량은 모재에서 떨어진 바깥
+    # 궤적을 돌아 같은 각도라도 더 달린다 — 캘리브레이션 한 바퀴의 실측 거리 ÷
+    # 검사면 둘레(π × 지름)다. 한 바퀴를 재기 전에는 1.
+    vehicle_scale: float = 1.0
 
     @property
     def eoat_size(self) -> tuple[float, float]:
@@ -140,35 +144,36 @@ class GridPlan:
         """
         return max(self.cell_height - self.pitch_y, 1.0)
 
-    # ---- ERUT area → 전체 격자에서의 자리 --------------------------------
-    # ERUT 는 area 를 구간 가로(x)·세로(y) 길이 단위로 놓는다(0, 600, 1200 …).
-    # 차량·리프트는 그만큼이 아니라 **겹침만큼 덜** 움직인다 — 그래야 옆·위
-    # 구간과 scan.pitch 만큼 겹친다. 그래서 area 원점을 먼저 구간 번호로 바꾸고,
-    # 번호 × (길이 - 겹침) 으로 차량·리프트 위치를 정한다. RCS '검사 시작'처럼
-    # 원점이 0 이면 둘 다 0 이다.
+    # ---- ERUT area → 차량 · 리프트 자리 ----------------------------------
+    # ERUT 의 area 는 검사면 좌표 그대로다 — 노트북이 구역끼리의 겹침을 이미
+    # 넣어 놓는다(마지막 구역은 겹침만큼 이음매 너머까지, if-0.8 탭5 77행).
+    # 그래서 장비는 좌표를 고쳐 쓰지 않고(탭8 46행) 차량은 start.x, 리프트는
+    # start.y 로 간다(2026-10-12 결정 — 예전에는 구역 번호 × (길이 - 겹침)으로
+    # 덜 갔다). 차량 쪽만 궤적 배율(vehicle_scale)을 곱한다.
+    # RCS '검사 시작'처럼 원점이 0 이면 둘 다 0 이다.
     @property
     def section_column(self) -> int:
-        """area 원점이 전체 격자의 몇 번째 열인가(0 부터)."""
+        """area 원점이 전체 격자의 몇 번째 열인가(0 부터) — 화면 · 기록 이름용."""
         if self.cell_width <= 0:
             return 0
-        return max(0, int(round(self.origin_x / self.cell_width)))
+        return max(0, int(round(self.origin_x / self.column_pitch)))
 
     @property
     def section_row(self) -> int:
-        """area 원점이 전체 격자의 몇 번째 행인가(0 부터)."""
+        """area 원점이 전체 격자의 몇 번째 행인가(0 부터) — 화면 · 기록 이름용."""
         if self.cell_height <= 0:
             return 0
-        return max(0, int(round(self.origin_y / self.cell_height)))
+        return max(0, int(round(self.origin_y / self.lift_pitch)))
 
     @property
     def vehicle_offset_mm(self) -> float:
         """이 구간에 서려면 차량이 원점(캘리브레이션 0)에서 갈 거리 [mm]."""
-        return self.section_column * self.column_pitch
+        return self.origin_x * self.vehicle_scale
 
     @property
     def lift_offset_mm(self) -> float:
         """이 구간에 서려면 리프트가 올라갈 높이 [mm]."""
-        return self.section_row * self.lift_pitch
+        return self.origin_y
 
     @property
     def column_pitch(self) -> float:

@@ -268,8 +268,9 @@ def test_robot_alarm_warning_clears_itself(qtbot) -> None:
     window, _commands = _scanning_window(qtbot)
     window.ROBOT_ALARM_CLEAR_MS = 50
     published: list[tuple] = []
-    window.erut.publish_error = lambda code, msg, level, recovery, cleared=False, **kw: (
-        published.append((code, level, recovery, cleared)) or True)
+    window.erut.publish_error = lambda error, job_id="": (
+        published.append((error["code"], error["level"], error["recovery"],
+                          error["cleared"])) or True)
 
     window._handle_robot_alarm("inv_kin_singularity")
     assert published[-1] == ("E9201", "warning", "auto", False)
@@ -334,8 +335,9 @@ def test_fold_not_finished_in_time_raises_e2002_and_clears_when_home(qtbot) -> N
     window.HOME_SETTLE_S = 0.05
     window.HOME_WITHIN_MS_AT_FULL_SPEED = 300
     published: list[tuple] = []
-    window.erut.publish_error = lambda code, msg, level, recovery, cleared=False, **kw: (
-        published.append((code, msg, level, cleared)) or True)
+    window.erut.publish_error = lambda error, job_id="": (
+        published.append((error["code"], error["name"], error["level"],
+                          error["cleared"])) or True)
     window._on_robot_task_state(3)
     window._on_robot_at_home(False)
 
@@ -383,4 +385,45 @@ def test_reset_folds_a_deployed_arm_even_without_faults(qtbot) -> None:
     window.erut_session.handle_request("reset", {"req_id": "r-out"})
     assert responses[-1] == 202
     assert "home" in commands
+    window.close()
+
+
+def test_robot_that_never_starts_ends_the_job_with_e9203(qtbot, monkeypatch) -> None:
+    """Q-29: play 가 거부되거나 로봇이 안 붙어 태스크가 끝내 안 돌면 장애로 끝낸다.
+
+    그대로 두면 ERUT 는 running · 진행률 0 으로 완료를 끝없이 기다린다.
+    """
+    import smr_operator_ui.app as app_module
+
+    monkeypatch.setattr(app_module, "ROBOT_RESTART_DELAY_MS", 10)
+    monkeypatch.setattr(app_module, "ROBOT_START_TIMEOUT_MS", 50)
+    window, _commands = _scanning_window(qtbot)
+    raised: list[dict] = []
+    window.erut_session.raise_error = raised.append
+    window.sequencer._set_state(SequencerState.SCANNING)
+
+    window._start_robot_scan()
+    window._show_command_result("play", False, "Failed to execute: play")
+    qtbot.waitUntil(lambda: bool(raised), timeout=2000)
+
+    assert raised[0]["code"] == "E9203" and raised[0]["level"] == "stop"
+    assert "play" in raised[0]["detail"]
+    window.close()
+
+
+def test_robot_that_starts_is_left_alone(qtbot, monkeypatch) -> None:
+    import smr_operator_ui.app as app_module
+
+    monkeypatch.setattr(app_module, "ROBOT_RESTART_DELAY_MS", 10)
+    monkeypatch.setattr(app_module, "ROBOT_START_TIMEOUT_MS", 50)
+    window, _commands = _scanning_window(qtbot)
+    raised: list[dict] = []
+    window.erut_session.raise_error = raised.append
+    window.sequencer._set_state(SequencerState.SCANNING)
+
+    window._start_robot_scan()
+    window._on_robot_task_state(1)               # 태스크가 돌기 시작했다
+    qtbot.wait(200)
+
+    assert raised == []
     window.close()

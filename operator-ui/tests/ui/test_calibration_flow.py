@@ -8,6 +8,8 @@
 
 import math
 
+import pytest
+
 from smr_operator_ui.app import OperatorWindow
 from smr_operator_ui.services import calibration
 
@@ -41,8 +43,9 @@ def _scan_state(state, zero_ok=1, probe_error=0):
 
 def _tap(window):
     events: list[tuple] = []
-    window.erut.publish_event = lambda name, req, action, **kw: (
-        events.append((name, action, kw)) or True)
+    window.erut.publish_event = lambda name, req, action, status_code=200, error=None, **kw: (
+        events.append((name, action, {"status_code": status_code,
+                                      **({"error": error} if error else {}), **kw})) or True)
     window.erut.publish_res = lambda *a, **kw: True
     window._push_work_area_to_robot = lambda *values: None
     return events
@@ -152,7 +155,11 @@ def test_three_point_fit_is_logged_when_the_robot_reaches_the_start(qtbot):
 
 
 def test_prepared_area_is_placed_on_the_whole_circumference(qtbot):
-    """ERUT area 는 모재 둘레를 가로 길이로 자른 자리에 그리고, 차량은 겹침만큼 덜 간다."""
+    """ERUT area 는 좌표 그대로 — 차량은 area.start.x 로 간다(2026-10-12 결정).
+
+    겹침은 ERUT 가 좌표에 넣어 보낸다(구역 시작 0 · 580 · 1160 …). 원주 표시는
+    (가로 - 겹침) 간격으로 센 구간 번호로 그린다.
+    """
     window = _window(qtbot)
     _tap(window)
     window.erut_session._calibrated = True
@@ -162,15 +169,38 @@ def test_prepared_area_is_placed_on_the_whole_circumference(qtbot):
 
     window.erut_session.handle_request("prepare", {
         "req_id": "prep-3", "job_id": "jb-3", "surface": "outer",
-        "area": {"start": {"x": 1200, "y": 0}, "end": {"x": 1800, "y": 800}},
+        "area": {"start": {"x": 1160, "y": 0}, "end": {"x": 1760, "y": 800}},
         "scan": {"pitch": 20, "speed": 100}})
 
-    assert targets == [1160.0], "3번 구간 = 2 × (600 - 20)"
+    assert targets == [1160.0], "area.start.x 그대로"
     view = window.main_screen.orbit_view
     # π × 1690 = 5309 mm 를 580 mm 간격으로 덮으려면 10 구간.
     assert view.section_count() == 10
     assert view._sections[3] == 2              # 지금 3번 구간(0 부터 2)
     assert window.main_screen.segment_label.text() == "03"
+    window.close()
+
+
+def test_vehicle_goes_to_the_same_angle_on_its_own_track(qtbot):
+    """차량은 모재에서 떨어진 바깥 궤적을 돈다 — x 에 한 바퀴 배율을 곱한다.
+
+    ERUT 의 x 는 검사면 둘레(π × 지름) 위 거리다. 캘리브레이션 한 바퀴를 실제로
+    5840 mm 달렸으면(검사면 5309 mm 의 1.1 배) x 1000 은 차량 1100 mm 다.
+    """
+    window = _window(qtbot)
+    _tap(window)
+    window.erut_session._calibrated = True
+    window.main_screen.orbit_view.set_target_dimensions(1.69, 6.0)
+    window._vehicle_lap_scale = 1.1
+    targets: list[float] = []
+    window.amr.move_to = lambda distance, unit="", label=None: targets.append(distance)
+
+    window.erut_session.handle_request("prepare", {
+        "req_id": "prep-scale", "job_id": "jb-s", "surface": "outer",
+        "area": {"start": {"x": 1000, "y": 0}, "end": {"x": 1600, "y": 800}},
+        "scan": {"pitch": 20, "speed": 100}})
+
+    assert targets == [pytest.approx(1100.0)]
     window.close()
 
 
@@ -219,7 +249,7 @@ def test_next_column_lowers_the_lift_and_frees_the_outrigger_before_driving(qtbo
     window.amr.reset(0.0)
     moves = _record_moves(window)
 
-    _prepare_area(window, "p-next-col", 600, 0)
+    _prepare_area(window, "p-next-col", 580, 0)
     qtbot.waitUntil(lambda: window.sequencer.state.name == "READY", timeout=10000)
 
     assert moves == [("lift", 0.0), ("outrigger", 0.0), ("amr", 580.0),
@@ -228,7 +258,7 @@ def test_next_column_lowers_the_lift_and_frees_the_outrigger_before_driving(qtbo
 
 
 def test_next_band_up_in_the_same_column_only_moves_the_lift(qtbot):
-    """같은 세로 줄의 위 구간: 차량은 그대로, 리프트만 780 으로(겹침 20)."""
+    """같은 세로 줄의 위 구간(y 780 — ERUT 가 겹침 20 을 넣었다): 리프트만 780 으로."""
     window = _window(qtbot)
     _tap(window)
     window.erut_session._calibrated = True
@@ -238,7 +268,7 @@ def test_next_band_up_in_the_same_column_only_moves_the_lift(qtbot):
     window.amr.reset(0.0)
     moves = _record_moves(window)
 
-    _prepare_area(window, "p-next-band", 0, 800)
+    _prepare_area(window, "p-next-band", 0, 780)
     qtbot.waitUntil(lambda: window.sequencer.state.name == "READY", timeout=10000)
 
     assert ("outrigger", 0.0) not in moves
@@ -247,12 +277,12 @@ def test_next_band_up_in_the_same_column_only_moves_the_lift(qtbot):
 
 
 def test_section_taller_than_1200mm_is_refused_and_area_limit_carries_it(qtbot):
-    """한 구간 세로 최대 1200 mm — ERUT 는 400 area_height, 자기소개에도 싣는다."""
+    """한 구간 세로 최대 1200 mm — 400 + E6003 AREA_HEIGHT, 자기소개에도 싣는다."""
     window = _window(qtbot)
     events = _tap(window)
     responses: list[dict] = []
-    window.erut_session.client.publish_res = lambda req, action, code, message, **kw: (
-        responses.append({"code": code, **kw}) or True)
+    window.erut_session.client.publish_res = lambda req, action, status, error=None, **kw: (
+        responses.append({"status_code": status, "error": error, **kw}) or True)
     infos: list[dict] = []
     window.erut_session.client.publish_info = lambda content: infos.append(content) or True
     window.erut_session._calibrated = True
@@ -263,7 +293,9 @@ def test_section_taller_than_1200mm_is_refused_and_area_limit_carries_it(qtbot):
         "area": {"start": {"x": 0, "y": 0}, "end": {"x": 600, "y": 1300}},
         "scan": {"pitch": 20, "speed": 100}})
 
-    assert responses[-1] == {"code": 400, "reason": "area_height", "max_height": 1200}
+    assert responses[-1]["status_code"] == 400
+    assert (responses[-1]["error"]["code"], responses[-1]["error"]["max_height"]) == (
+        "E6003", 1200)
     window.erut_session.publish_info()
     assert infos[-1]["area_limit"]["max_height"] == 1200
     assert infos[-1]["area_limit"]["diameter"] == 1690

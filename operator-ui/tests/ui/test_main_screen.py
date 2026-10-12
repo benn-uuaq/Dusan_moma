@@ -38,7 +38,8 @@ def test_probe_error_reaches_alarm_and_erut(qtbot) -> None:
     10번째 값)를 알람 목록 + ERUT evt/error(erut_session.raise_error)로
     내보내야 한다. 같은 코드가 반복되면 다시 안 나가고, 0으로 돌아오면
     같은 code 에 cleared=true 로 해제를 한 번 내보낸다(if-0.3 부터).
-    code 는 표준 형식의 제조사 전용 대역(E9xxx)이다.
+    탐촉자 접촉 실패는 공통 번호 E3001 에 어느 탐촉자인지(probe)를 싣는다
+    (if-0.9 탭11 Q-26 — 예전 3S 코드 E9101~E9103).
     """
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
@@ -49,8 +50,9 @@ def test_probe_error_reaches_alarm_and_erut(qtbot) -> None:
     window.ros_status.scan_state_changed.emit(base + [2])  # probe_l 접촉 실패
 
     assert len(raised) == 1
-    assert raised[0]["code"] == "E9102"
-    assert raised[0]["message"] == "PROBE_L_CONTACT_FAILED"
+    assert raised[0]["code"] == "E3001"
+    assert raised[0]["name"] == "PROBE_CONTACT_FAILED"
+    assert raised[0]["probe"] == "left"
     assert raised[0]["level"] == "stop"
     alarms = [window.cobot_manual_screen.alarm_list.item(i).text()
               for i in range(window.cobot_manual_screen.alarm_list.count())]
@@ -63,7 +65,7 @@ def test_probe_error_reaches_alarm_and_erut(qtbot) -> None:
     # 0으로 되돌아오면(dus_init 재실행) 해제 통보를 한 번 내보낸다.
     window.ros_status.scan_state_changed.emit(base + [0])
     assert len(raised) == 2
-    assert raised[-1]["code"] == "E9102"
+    assert raised[-1]["code"] == "E3001"
     assert raised[-1]["cleared"] is True
     window.close()
 
@@ -84,7 +86,7 @@ def test_robot_alarm_reaches_alarm_list_and_erut(qtbot) -> None:
 
     assert len(raised) == 1
     assert raised[0]["code"] == "E9201"
-    assert raised[0]["message"] == "ROBOT_ALARM"
+    assert raised[0]["name"] == "ROBOT_ALARM"
     assert raised[0]["detail"] == "[ALARM MSG] PROBE_R: NO IK SOLUTION"
     alarms = [window.cobot_manual_screen.alarm_list.item(i).text()
               for i in range(window.cobot_manual_screen.alarm_list.count())]

@@ -1,8 +1,11 @@
-"""ERUT 표준 인터페이스(if-0.5)의 검사로봇 쪽을 구현하는 프로토콜 계층.
+"""ERUT 표준 인터페이스(if-0.9)의 검사로봇 쪽을 구현하는 프로토콜 계층.
 
-규격은 `mqtt_test/ERUT_검사로봇_MQTT_표준인터페이스_if-0.5.xlsx` 다. 3S 가 구현할
-것은 탭1~5·8~10 이고, 탭6·7 은 ERUT 내부(클라이언트↔브릿지) 규격이라 무관하다.
-상대는 ERUT 의 Robot Service(로봇 브릿지)다.
+규격은 `mqtt_test/MQTT_인터페이스/ERUT_검사로봇_MQTT_표준인터페이스_if-0.9.xlsx` 다.
+3S 가 구현할 것은 탭1~5·8~10 이고, 탭6·7 은 ERUT 내부(클라이언트↔브릿지) 규격이라
+무관하다. 상대는 ERUT 의 Robot Service(로봇 브릿지)다.
+
+답(res · evt/ready · evt/complete)의 결과는 맨 바깥 status_code(HTTP 원래 뜻) 하나,
+문제는 content.error{code, name, detail} 다(if-0.9 — 번호는 erut_errors.py).
 
     query     → res 200 (activity·resumable·calibrated·errors[]·last_job …)
     calibrate → res 202 → evt/complete (origin, calibration_error_mm, total_length_mm)
@@ -15,7 +18,7 @@
     resume    → res 202 (완료는 처음 요청의 req_id 로)
     mark      → res 202 → [evt/mark_ready → req/mark_next] × 점 → evt/complete
     home      → res 202 → evt/complete (action=home)        ※ 3S 확장 (명령은 표준에 없다)
-    그 밖     → res 501 NOT_IMPLEMENTED
+    그 밖     → res 501 + error E6501 NOT_IMPLEMENTED
 
 상시 발행: evt/status(5초 + 바뀌면 바로) · evt/contact(2초 + 바뀌면 바로) ·
 evt/home(접속 시 + 바뀔 때만) · evt/info(접속 시) · evt/progress(작업 중 2초).
@@ -28,16 +31,19 @@ evt/home(접속 시 + 바뀔 때만) · evt/info(접속 시) · evt/progress(작
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Any, Callable
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
+from smr_operator_ui.services import erut_errors as E
 from smr_operator_ui.services.erut_client import ErutClient
+from smr_operator_ui.services.erut_errors import make_error
 from smr_operator_ui.services.job_sequencer import GridPlan, SequencerState, cell_label
 
 # ---- 자기소개 (탭8 evt/info) ------------------------------------------------
-INTERFACE_VERSION = "0.8"
+INTERFACE_VERSION = "0.9"
 VENDOR = "3S"
 MODEL = "SMR-UT-CS612"
 DEVICE_TYPE = "articulated_arm"
@@ -62,6 +68,15 @@ HOME_TIMEOUT_MS = 120_000      # 홈 도착을 기다리는 한도
 #: 시작점에 붙어 evt/contact(attached)를 낸 뒤 적심을 시작하기까지 [ms].
 #: ERUT 는 attached 를 받으면 물을 켠다 — 물이 나오기 전에 비비면 마른 채로 문지른다.
 CONTACT_LEAD_MS = 2_000
+#: pause · abort 를 받고 장비(팔·차량·리프트)가 다 서기까지 가장 오래 걸릴 때 [ms]
+#: (evt/info timings.stop_latency_ms — 탭8 51행 · Q-30). 팔은 29999 pause/stop 로
+#: 1초 안에 서고, 차량(0.3 m/s)·리프트도 감속해 서는 데 1~2초다. 상태 확인 주기와
+#: 통신 지연을 더해 넉넉히 잡았다.
+STOP_LATENCY_MS = 5_000
+#: 일을 시키는 요청이 보낸 시각보다 이만큼 늦게 오면 실행하지 않는다 [s]
+#: (탭2 34행 · 400 E6005 REQUEST_EXPIRED). 세우는 명령은 늦어도 실행한다.
+REQUEST_EXPIRY_S = 10.0
+_WORK_ACTIONS = frozenset({"calibrate", "prepare", "start", "resume", "mark"})
 
 # 시퀀서 상태 → activity (탭5 8값). 준비·원점 대기·장애는 세션이 따로 가린다.
 _ACTIVITY_MAP = {
@@ -89,6 +104,12 @@ MSG_AREA_APPLY_PENDING = ("M2002", "AREA_APPLY_PENDING")
 
 #: 좌표계가 무효가 되는 순간 내는 장애 (탭2 10행).
 E_CALIBRATION_LOST = ("E1003", "CALIBRATION_LOST")
+
+#: 3S 제조사 코드(E9xxx) 가운데 세션이 쓰는 것 — 완료(evt/complete)를 실패로
+#: 끝낼 때 까닭으로 싣는다. 장애(evt/error)로 끝났으면 그 장애의 번호를 쓴다.
+E_OPERATOR_STOPPED = ("E9401", "STOPPED_BY_OPERATOR")
+E_CALIBRATION_FAILED = ("E9402", "CALIBRATION_FAILED")
+E_MARK_FAILED = ("E9403", "MARK_FAILED")
 
 
 def _mm(value: Any) -> float:
@@ -140,9 +161,9 @@ class ErutSession(QObject):
     # 캘리브레이션 주행을 멈추라 / 이어 가라(일시정지·재개).
     calibration_stop_requested = pyqtSignal()
     calibration_resume_requested = pyqtSignal()
-    # evt/error 를 냈다 (코드, 메시지, level).
+    # evt/error 를 냈다 (코드, 이름, level).
     error_published = pyqtSignal(str, str, str)
-    # 장애가 풀렸다고 evt/error(cleared=true)를 냈다 (코드, 메시지).
+    # 장애가 풀렸다고 evt/error(cleared=true)를 냈다 (코드, 이름).
     error_cleared = pyqtSignal(str, str)
     # evt/message 를 냈다 (코드, 문장).
     message_published = pyqtSignal(str, str)
@@ -170,7 +191,7 @@ class ErutSession(QObject):
         self._at_origin = False
         # 시퀀서가 아닌 일(캘리브레이션)을 일시정지해 둔 것.
         self._paused_work = ""
-        # 걸려 있는 장애: code → {code, level, recovery, message}
+        # 걸려 있는 장애: code → error{code, name, level, recovery, detail…}
         self._errors: dict[str, dict] = {}
         self._last_job: dict | None = None
         self._progress = 0
@@ -210,8 +231,8 @@ class ErutSession(QObject):
         self.total_length_mm: Callable[[], float | None] = lambda: None
 
         # 같은 req_id 를 다시 받으면 재실행하지 않고 이전 응답을 되돌려준다(탭2 22행).
-        #: 받아들인 요청 — 키 → (code, message, extra, 내용, 받은 시각). 재전송 판정용.
-        self._handled: dict[str, tuple[int, str, dict, str, float]] = {}
+        #: 받아들인 요청 — 키 → (status_code, error, extra, 내용, 받은 시각). 재전송 판정용.
+        self._handled: dict[str, tuple[int, dict | None, dict, str, float]] = {}
         self._request_body = ""
         self._pending: dict[int, QTimer] = {}
 
@@ -275,6 +296,7 @@ class ErutSession(QObject):
             "capabilities": list(CAPABILITIES),
             "timings": {
                 "progress_interval_ms": PROGRESS_PERIOD_MS,
+                "stop_latency_ms": STOP_LATENCY_MS,
                 "scan_speed_max_mm_s": SCAN_SPEED_MAX,
             },
         }
@@ -441,11 +463,14 @@ class ErutSession(QObject):
         return self.pause_settled() and self.pause_holds_position()
 
     # ------------------------------------------------------------ 요청 처리
-    def handle_request(self, action: str, content: dict) -> None:
+    def handle_request(self, action: str, content: dict,
+                       timestamp: float | None = None) -> None:
+        """요청 하나를 처리한다. timestamp 는 브릿지가 보낸 시각(UTC ms, 없으면 None)."""
         req_id = str(content.get("req_id", "")).strip()
         if not req_id:
             self.activity.emit(f"ERUT {action}: req_id 가 없어 거절했습니다.")
-            self.client.publish_res("", action, 400, "BAD_REQUEST")
+            self.client.publish_res("", action, 400,
+                                    make_error(E.BAD_REQUEST, detail="req_id 가 없습니다"))
             return
 
         # 재전송이면 다시 실행하지 않고 이전 응답만 되풀이한다(브릿지는 응답이
@@ -456,8 +481,8 @@ class ErutSession(QObject):
             key = f"{key}#{content.get('point_id', '')}"
         body = json.dumps(content, sort_keys=True, ensure_ascii=False, default=str)
         if self._is_retransmission(key, req_id, body):
-            code, message, extra, _body, _at = self._handled[key]
-            self.client.publish_res(req_id, action, code, message, **extra)
+            status, error, extra, _body, _at = self._handled[key]
+            self.client.publish_res(req_id, action, status, error, **extra)
             self.activity.emit(f"ERUT {action}: 재전송({req_id}) — 이전 응답 재발행")
             return
         if self._handled.pop(key, None) is not None:
@@ -470,10 +495,32 @@ class ErutSession(QObject):
         if handler is None:
             # 모르는 동작은 못 본 척하지 말고 거절한다 — 무시하면 브릿지가 세 번
             # 다시 보낸 뒤 통신 오류로 본다. 501 은 다시 보내지 않는다(탭5).
-            self._reply(key, req_id, action, 501, "NOT_IMPLEMENTED")
+            self._refuse(req_id, action, E.NOT_IMPLEMENTED, f"모르는 동작: {action}",
+                         key=key)
+            return
+        if self._expired(req_id, action, timestamp):
             return
         handler(req_id, content)
         self.refresh_status()
+
+    def _expired(self, req_id: str, action: str, timestamp: float | None) -> bool:
+        """일 요청이 보낸 시각보다 10초 넘게 늦게 왔으면 400 E6005 로 거절한다.
+
+        브릿지는 1초 간격으로 세 번 보내 보고 포기하므로 10초 넘게 늦은 요청은
+        아무도 기다리지 않는다 — 실행하면 기록에 없는 검사가 된다(탭2 34행).
+        세우는 명령(pause · abort · reset · query)은 늦어도 실행한다. 보낸 시각이
+        없는 요청은 받는다 — 현장에서 MQTT Explorer 로 손으로 보내 시험한다.
+        """
+        if action not in _WORK_ACTIONS or timestamp is None:
+            return False
+        late_s = time.time() - float(timestamp) / 1000.0
+        if late_s <= REQUEST_EXPIRY_S:
+            return False
+        self.activity.emit(
+            f"ERUT {action}: 보낸 지 {late_s:.0f}초 지난 요청이라 실행하지 않습니다(E6005).")
+        self._refuse(req_id, action, E.REQUEST_EXPIRED,
+                     f"보낸 지 {late_s:.1f}초 지나 도착했습니다(한도 {REQUEST_EXPIRY_S:g}초)")
+        return True
 
     #: 같은 req_id·같은 내용이 이 시간 안에 다시 오면 재전송으로 본다 [s].
     RETRANSMIT_WINDOW_S = 30.0
@@ -501,43 +548,50 @@ class ErutSession(QObject):
             getattr(self, "_start_req_id", ""), getattr(self, "_mark_req_id", ""),
             getattr(self, "_home_req_id", "")) if r}
 
-    def _reply(self, key: str, req_id: str, action: str, code: int, message: str,
-               **extra) -> None:
-        if code < 300:
-            self._handled[key] = (code, message, extra, self._request_body,
+    def _reply(self, key: str, req_id: str, action: str, status: int,
+               error: dict | None = None, **extra) -> None:
+        if status < 300:
+            self._handled[key] = (status, error, extra, self._request_body,
                                   time.monotonic())
-        self.client.publish_res(req_id, action, code, message, **extra)
+        self.client.publish_res(req_id, action, status, error, **extra)
 
-    def _answer(self, req_id: str, action: str, code: int, message: str,
-                **extra) -> None:
-        self._reply(f"{action}:{req_id}", req_id, action, code, message, **extra)
+    def _answer(self, req_id: str, action: str, status: int,
+                error: dict | None = None, **extra) -> None:
+        self._reply(f"{action}:{req_id}", req_id, action, status, error, **extra)
+
+    def _refuse(self, req_id: str, action: str, code: str, detail: str = "",
+                key: str = "", **fields) -> None:
+        """표준 번호로 거절한다 — status_code 는 번호가 정한다(탭5 145행~)."""
+        self._reply(key or f"{action}:{req_id}", req_id, action, E.STATUS[code],
+                    make_error(code, detail=detail or None, **fields))
 
     def _refuse_by_state(self, req_id: str, action: str) -> bool:
         """지금 상태로 받을 수 없는 일이면 거절하고 True (탭9).
 
-        받는 때는 idle · ready 뿐이다. 장애가 걸려 있으면 423, 다른 일을 하는
-        중이면 409 — 하던 일을 스스로 그만두지 않는다.
+        받는 때는 idle · ready 뿐이다. 장애가 걸려 있으면 409 E6103, 다른 일을
+        하는 중이면 409 E6101 — 하던 일을 스스로 그만두지 않는다.
         """
         activity = self.activity_state()
         if activity in ("error", "estop"):
-            self._answer(req_id, action, 423, "FAULT_ACTIVE")
+            self._refuse(req_id, action, E.FAULT_ACTIVE,
+                         f"걸린 장애: {', '.join(self._errors) or activity}")
             return True
         if activity not in ("idle", "ready"):
-            self._answer(req_id, action, 409, "BUSY")
+            self._refuse(req_id, action, E.BUSY, f"지금 {activity}")
             return True
         if activity == "idle" and self.robot_busy():
             # 펜던트에서 직접 튼 태스크 등 — RCS 가 모르는 동작 중이다.
-            self._answer(req_id, action, 409, "BUSY")
+            self._refuse(req_id, action, E.BUSY, "로봇이 다른 동작 중입니다")
             return True
         return False
 
     def _needs_calibration(self, req_id: str, action: str) -> bool:
-        """좌표계가 무효면 428 로 거절하고 True (탭4 D-4)."""
+        """좌표계가 무효면 409 E6104 로 거절하고 True (탭4 D-4)."""
         if self._calibrated:
             return False
-        self._answer(req_id, action, 428, "CALIBRATION_REQUIRED")
+        self._refuse(req_id, action, E.CALIBRATION_REQUIRED, "원점을 먼저 잡아야 합니다")
         self.activity.emit(
-            f"ERUT {action} 거절 — 캘리브레이션이 무효합니다(428). 재캘리브레이션이 필요합니다.")
+            f"ERUT {action} 거절 — 캘리브레이션이 무효합니다(E6104). 재캘리브레이션이 필요합니다.")
         return True
 
     def _drop_prepared(self) -> None:
@@ -562,8 +616,8 @@ class ErutSession(QObject):
         self._calibrated = False
         note = f" — {reason}" if reason else ""
         self.activity.emit(f"캘리브레이션을 무효로 표시했습니다{note}.")
-        code, message = E_CALIBRATION_LOST
-        self.raise_error({"code": code, "message": message, "level": "stop",
+        code, name = E_CALIBRATION_LOST
+        self.raise_error({"code": code, "name": name, "level": "stop",
                           "recovery": "reset_required", "detail": reason or None})
         self.refresh_info()          # 지름이 무효 — area_limit 을 뺀다
 
@@ -580,12 +634,13 @@ class ErutSession(QObject):
             extra["job_id"] = self._job_id
             extra["progress"] = self._progress
         if self._errors:
+            # 항목은 evt/error 의 error 와 같은 칸이다 — cleared 만 없다(탭5 72행).
             extra["errors"] = [dict(e) for e in self._errors.values()]
         if self._last_job:
             extra["last_job"] = dict(self._last_job)
         # battery·charging: 차량 자료가 오면 넣는다(TODO — docs/todo.md).
         # query 는 재실행 금지 대상이 아니라 기록하지 않는다(늘 지금 상태로 답한다).
-        self.client.publish_res(req_id, "query", 200, "OK", **extra)
+        self.client.publish_res(req_id, "query", 200, **extra)
 
     # ---- calibrate ----------------------------------------------------------
     def _do_calibrate(self, req_id: str, content: dict) -> None:
@@ -599,7 +654,7 @@ class ErutSession(QObject):
         diameter = _mm(content.get("diameter"))
         height = _mm(content.get("height"))
         if diameter <= 0:
-            self._answer(req_id, "calibrate", 400, "BAD_REQUEST")
+            self._refuse(req_id, "calibrate", E.BAD_REQUEST, "diameter 가 없거나 0 입니다")
             return
         if self._refuse_by_state(req_id, "calibrate"):
             return
@@ -607,7 +662,7 @@ class ErutSession(QObject):
         self._calibrate_req_id = req_id
         self._calibrate_target = (diameter, height)
         self._calibrated = False
-        self._answer(req_id, "calibrate", 202, "ACCEPTED")
+        self._answer(req_id, "calibrate", 202)
         self.activity.emit(
             f"ERUT 캘리브레이션 — 모재 지름 {diameter:g} mm, 높이 {height:g} mm "
             "— 차량이 외벽을 따라 한 바퀴 돌며 좌표계를 잡습니다.")
@@ -624,9 +679,10 @@ class ErutSession(QObject):
         if not req_id:
             return
         if not ok:
+            code, name = E_CALIBRATION_FAILED
             self.client.publish_event(
-                "complete", req_id, "calibrate", code=500,
-                message="CALIBRATION_FAILED", detail=detail)
+                "complete", req_id, "calibrate", 500,
+                self._fault_error() or make_error(code, name, detail))
             self._record_last(req_id, "calibrate", 500)
             self.activity.emit(f"ERUT 캘리브레이션 실패를 알렸습니다 — {detail}")
             self.refresh_status()
@@ -668,7 +724,7 @@ class ErutSession(QObject):
         self._begin_job(content, plan)
         self._prepare_req_id = req_id
         self._ready_sent = False
-        self._answer(req_id, "prepare", 202, "ACCEPTED")
+        self._answer(req_id, "prepare", 202)
         self.activity.emit(
             f"ERUT 검사 준비 ({self._job_id}) — 차량·리프트를 구간 자리에 세웁니다.")
         self.job_requested.emit(plan, True)
@@ -684,7 +740,7 @@ class ErutSession(QObject):
         job_id = str(content.get("job_id", "")).strip()
         if self._is_ready() and (not job_id or job_id == self._job_id):
             self._at_origin = False
-            self._answer(req_id, "start", 202, "ACCEPTED")
+            self._answer(req_id, "start", 202)
             self._start_req_id = req_id
             self._started_at = time.time()
             self._progress = 0
@@ -706,7 +762,7 @@ class ErutSession(QObject):
         self._begin_job(content, plan)
         self._start_req_id = req_id
         self._started_at = time.time()
-        self._answer(req_id, "start", 202, "ACCEPTED")
+        self._answer(req_id, "start", 202)
         self.activity.emit(f"ERUT 구간 검사 시작 ({self._job_id}) — 차량 정렬부터")
         self.job_requested.emit(plan, False)
 
@@ -719,10 +775,22 @@ class ErutSession(QObject):
         self._apply_speed(content)
 
     def _validated_plan(self, req_id: str, action: str, content: dict) -> GridPlan | None:
-        """area·surface·speed 를 확인한다. 안 맞으면 400 으로 답하고 None."""
+        """area·surface·speed 를 확인한다. 안 맞으면 400 + error 로 답하고 None."""
         plan = self._read_plan(content)
         if plan is None:
-            self._answer(req_id, action, 400, "BAD_REQUEST", reason="area")
+            self._refuse(req_id, action, E.BAD_REQUEST,
+                         "area.start/end 의 x·y 가 없거나 구역 크기가 0 입니다")
+            return None
+        # 원통 이음매 (if-0.8 탭5 77행 · Q-25): start.x 는 0 이상 둘레 미만, 구역
+        # 가로는 둘레 이하. end.x 는 둘레를 넘어도 된다 — 이음매를 지나 0 부터 감긴
+        # 자리로 이어 훑는다(차량은 start.x 에 서고 팔이 이음매를 넘어 훑는다).
+        circumference = self._circumference()
+        if circumference > 0 and not (0 <= plan.origin_x < circumference
+                                      and plan.cell_width <= circumference):
+            self._refuse(req_id, action, E.BAD_REQUEST,
+                         f"구역 x {plan.origin_x:.0f}~{plan.origin_x + plan.cell_width:.0f} mm"
+                         f" — start.x 는 0 이상 둘레({circumference:.0f} mm) 미만,"
+                         " 가로는 둘레 이하여야 합니다")
             return None
         # 로봇은 좌우 현 700 mm 넘게 못 움직인다(호 1000 mm 를 받아 왼쪽 끝 자세의
         # 역기구학이 안 풀려 멈춘 일이 있다 — 2026-10-02). 줄여서 하면 구간 일부를
@@ -732,7 +800,8 @@ class ErutSession(QObject):
             self.activity.emit(
                 f"ERUT {action}: 구간 세로 {plan.cell_height:.0f} mm 는 한 구간 최대"
                 f" {height_limit:.0f} mm 를 넘어 거절합니다.")
-            self._answer(req_id, action, 400, "BAD_REQUEST", reason="area_height",
+            self._refuse(req_id, action, E.AREA_HEIGHT,
+                         f"구역 세로 {plan.cell_height:.0f} mm > 최대 {height_limit:.0f} mm",
                          max_height=int(height_limit))
             return None
         limit = float(self.max_area_width() or 0.0)
@@ -740,16 +809,19 @@ class ErutSession(QObject):
             self.activity.emit(
                 f"ERUT {action}: 구간 가로 {plan.cell_width:.0f} mm 는 로봇이 한 번에 훑을 수"
                 f" 있는 최대 {limit:.0f} mm 를 넘어 거절합니다.")
-            self._answer(req_id, action, 400, "BAD_REQUEST", reason="area_width",
+            self._refuse(req_id, action, E.AREA_WIDTH,
+                         f"구역 가로 {plan.cell_width:.0f} mm > 최대 {limit:.0f} mm",
                          max_width=int(limit))
             return None
         surface = str(content.get("surface", "")).strip()
         if surface and surface not in SURFACES:
-            self._answer(req_id, action, 400, "BAD_REQUEST", reason="surface")
+            self._refuse(req_id, action, E.BAD_REQUEST,
+                         f"합의하지 않은 surface: {surface} (지원: {', '.join(SURFACES)})")
             return None
         speed = (content.get("scan") or {}).get("speed")
         if speed is not None and _mm(speed) > SCAN_SPEED_MAX:
-            self._answer(req_id, action, 400, "BAD_REQUEST", reason="speed",
+            self._refuse(req_id, action, E.BAD_REQUEST,
+                         f"scan.speed {_mm(speed):g} mm/s > 최고 {SCAN_SPEED_MAX} mm/s",
                          max_speed=SCAN_SPEED_MAX)
             return None
         return plan
@@ -812,7 +884,12 @@ class ErutSession(QObject):
         row = float(robot.get("row_mm") or 0.0)
         plan = self._plan
         ox, oy = (plan.origin_x, plan.origin_y) if plan else (0.0, 0.0)
-        pos = {"x": int(round(ox + arc)), "y": int(round(oy + row))}
+        x = ox + arc
+        circumference = self._circumference()
+        if circumference > 0:
+            # 이음매를 넘은 자리는 감긴 자리(0 이상 둘레 미만)로 낸다(탭10 32번).
+            x %= circumference
+        pos = {"x": int(round(x)), "y": int(round(oy + row))}
         location = {
             "cell": self._cell_label(),
             "vehicle_mm": int(round(float(motion.get("moved") or 0.0))),
@@ -884,9 +961,12 @@ class ErutSession(QObject):
 
     def _record_last(self, req_id: str, action: str, code: int,
                      job_id: str = "") -> None:
-        """query 의 last_job (탭5 초안 A안: action 을 함께 싣는다)."""
+        """query 의 last_job {job_id, status_code, progress} (탭5 73행 · if-0.9).
+
+        탭5 초안 A안대로 action 을 함께 싣는다 — 무엇의 결과인지 가를 수 있게.
+        """
         self._last_job = {"job_id": job_id or req_id, "action": action,
-                          "code": code, "progress": self._progress
+                          "status_code": code, "progress": self._progress
                           if action == "start" else (100 if code < 300 else 0)}
 
     # ---- pause / resume / abort ---------------------------------------------
@@ -895,7 +975,7 @@ class ErutSession(QObject):
 
         200 은 「받았다」다. 섰다는 것은 evt/status 의 activity=paused 로 알린다.
         """
-        self._answer(req_id, "pause", 200, "OK")
+        self._answer(req_id, "pause", 200)
         if self._calibrate_req_id and not self._paused_work:
             self._paused_work = "calibrate"
             self.calibration_stop_requested.emit()
@@ -916,50 +996,52 @@ class ErutSession(QObject):
         """멈춘 자리에서 이어 간다. 완료는 처음 요청의 req_id 로 낸다."""
         if self._paused_work == "mark":
             if not self.pause_settled():
-                self._answer(req_id, "resume", 409, "BUSY")      # 아직 서는 중
+                self._refuse(req_id, "resume", E.BUSY, "아직 서는 중입니다")
                 return
             if not self.pause_holds_position():
-                self._answer(req_id, "resume", 412, "NOT_RESUMABLE")
+                self._refuse(req_id, "resume", E.NOT_RESUMABLE, "멈춘 자리를 지키지 못했습니다")
                 return
             self._paused_work = ""
-            self._answer(req_id, "resume", 202, "ACCEPTED")
+            self._answer(req_id, "resume", 202)
             self.mark_resume_requested.emit()
             return
         if self._paused_work == "calibrate":
             if not self.pause_settled():
-                self._answer(req_id, "resume", 409, "BUSY")      # 차량이 아직 서는 중
+                self._refuse(req_id, "resume", E.BUSY, "차량이 아직 서는 중입니다")
                 return
             self._paused_work = ""
-            self._answer(req_id, "resume", 202, "ACCEPTED")
+            self._answer(req_id, "resume", 202)
             self.calibration_resume_requested.emit()
             return
         if self.sequencer.state is SequencerState.PAUSED:
             if not self.pause_settled():
-                # 아직 서는 중이다(activity 는 running) — 탭9: running 에 resume 은 409.
-                self._answer(req_id, "resume", 409, "BUSY")
+                # 아직 서는 중이다(activity 는 running) — 탭9: running 에 resume 은 409 E6101.
+                self._refuse(req_id, "resume", E.BUSY, "아직 서는 중입니다")
                 return
             if not self.pause_holds_position():
                 # 자리를 못 지켰다 — 이어 가지 않는다. abort 뒤 처음부터(탭9·탭7 S-3 4b).
-                self._answer(req_id, "resume", 412, "NOT_RESUMABLE")
-                self.activity.emit("ERUT 재개 거절(412) — 멈춘 자리를 지키지 못했습니다."
+                self._refuse(req_id, "resume", E.NOT_RESUMABLE, "멈춘 자리를 지키지 못했습니다")
+                self.activity.emit("ERUT 재개 거절(E6102) — 멈춘 자리를 지키지 못했습니다."
                                    " 구간을 처음부터 다시 해야 합니다.")
                 return
-            self._answer(req_id, "resume", 202, "ACCEPTED")
+            self._answer(req_id, "resume", 202)
             self.resume_requested.emit()
             return
         activity = self.activity_state()
         if activity in ("error", "estop"):
-            self._answer(req_id, "resume", 423, "FAULT_ACTIVE")
+            self._refuse(req_id, "resume", E.FAULT_ACTIVE, "장애를 먼저 풀어야 합니다")
+        elif activity in ("idle", "ready"):
+            # 멈춰 둔 작업이 없다 (탭9 — idle · ready 의 resume 은 409 E6102).
+            self._refuse(req_id, "resume", E.NOT_RESUMABLE, "멈춘 작업이 없습니다")
         else:
-            # 멈춰 둔 작업이 없다 (탭9 — idle·ready·busy 는 409).
-            self._answer(req_id, "resume", 409, "BUSY")
+            self._refuse(req_id, "resume", E.BUSY, f"지금 {activity}")
 
     def _do_abort(self, req_id: str, content: dict) -> None:
         """작업자 종료 (탭4 D-3). job_id 없이 와도 지금 하는 일을 멈춘다.
 
         abort 된 작업은 완료를 내지 않는다. 캘리브레이션·마킹·홈 중이어도 같다.
         """
-        self._answer(req_id, "abort", 200, "OK")
+        self._answer(req_id, "abort", 200)
         self._forget_work()
         self.robot_stop_requested.emit()
         self.abort_requested.emit()
@@ -981,11 +1063,11 @@ class ErutSession(QObject):
         남겨 둔다 — 표준의 작업 요청 모양(202 → complete)을 따른다.
         """
         if self.activity_state() not in ("idle",) or self.robot_busy():
-            self._answer(req_id, "home", 409, "BUSY")
+            self._refuse(req_id, "home", E.BUSY, HOME_BUSY_TEXT)
             self.notify(*MSG_HOME_NOT_ALLOWED, HOME_BUSY_TEXT,
                         req_id=req_id, action="home")
             return
-        self._answer(req_id, "home", 202, "ACCEPTED")
+        self._answer(req_id, "home", 202)
         self._home_req_id = req_id
         self._home_timer.start()
         self.activity.emit("ERUT 요청으로 로봇을 홈으로 보냅니다.")
@@ -1008,8 +1090,8 @@ class ErutSession(QObject):
             self._record_last(req_id, "home", 200)
             self.activity.emit("ERUT 에 홈 도착을 알렸습니다.")
         else:
-            self.client.publish_event("complete", req_id, "home", code=500,
-                                      message="INTERNAL_ERROR", detail=reason)
+            self.client.publish_event("complete", req_id, "home", 500,
+                                      make_error("E2002", detail=reason))
             self._record_last(req_id, "home", 500)
             self.activity.emit(f"ERUT 홈 이동 실패를 알렸습니다 — {reason}")
         self.refresh_status()
@@ -1027,10 +1109,10 @@ class ErutSession(QObject):
         # (if-0.8 탭5 47행). 돌거나 멈춰 둔 작업이 있으면 거두지 않는다(탭9).
         fold = self.home_state() != "home" and bool(self.can_fold())
         if not self._errors and not fold:
-            self._answer(req_id, "reset", 200, "OK")
+            self._answer(req_id, "reset", 200)
             self.activity.emit("ERUT 리셋 요청 (해제할 장애 없음 · 이미 home)")
             return
-        self._answer(req_id, "reset", 202, "ACCEPTED")
+        self._answer(req_id, "reset", 202)
         cleared = self.clear_errors()          # 풀리면 앱이 팔을 거둔다(errors_cleared)
         if cleared:
             self.activity.emit(f"ERUT 리셋 — 장애 해제: {', '.join(cleared)}")
@@ -1049,7 +1131,7 @@ class ErutSession(QObject):
         """
         points = content.get("points")
         if not isinstance(points, list) or not points:
-            self._answer(req_id, "mark", 400, "BAD_REQUEST", reason="points")
+            self._refuse(req_id, "mark", E.BAD_REQUEST, "points 가 없습니다")
             return
         clean = []
         for pt in points:
@@ -1057,21 +1139,22 @@ class ErutSession(QObject):
                 clean.append({"id": str(pt["id"]), "x": float(pt["x"]),
                               "y": float(pt["y"])})
             except (KeyError, TypeError, ValueError):
-                self._answer(req_id, "mark", 400, "BAD_REQUEST", reason="points")
+                self._refuse(req_id, "mark", E.BAD_REQUEST, "points 의 id·x·y 를 읽지 못했습니다")
                 return
         # marker 가 없거나 device 면 장비가 찍는 마킹(①)이다 — 3S 는 마커가
         # ERUT 것이라(mark_positioning ②) ① 은 없다 → 501 (if-0.7 탭2 44행 ①).
         marker = str(content.get("marker", "") or "device").strip().lower()
         if marker != "erut":
             # 장비가 가진 마커로 찍는 방식(marking)은 지원하지 않는다.
-            self._answer(req_id, "mark", 501, "NOT_IMPLEMENTED")
+            self._refuse(req_id, "mark", E.NOT_IMPLEMENTED,
+                         "장비 마커로 찍는 마킹(marking)은 없습니다 — marker=erut 만")
             return
         if self._refuse_by_state(req_id, "mark"):
             return
         if self._needs_calibration(req_id, "mark"):
             return
         self._drop_prepared()
-        self._answer(req_id, "mark", 202, "ACCEPTED")
+        self._answer(req_id, "mark", 202)
         self._mark_req_id = req_id
         self._mark_ids = [p["id"] for p in clean]
         self.activity.emit(f"ERUT 마킹 요청 {len(clean)}점 — 차례로 이동합니다.")
@@ -1089,43 +1172,53 @@ class ErutSession(QObject):
         """ERUT 가 점 하나를 찍었다(또는 못 찍었다) — 다음 점으로."""
         point_id = str(content.get("point_id", "")).strip()
         key = f"mark_next:{req_id}#{point_id}"
+        waiting = str(self.mark_waiting_point() or "") if self._mark_req_id else ""
         if not self._mark_req_id or req_id != self._mark_req_id or not point_id:
-            self._reply(key, req_id, "mark_next", 409, "NOT_AT_POINT")
+            # 이 마킹에서 기다리는 점이 아니다(없는 마킹 · 다른 req_id 포함).
+            self._refuse(req_id, "mark_next", E.WRONG_POINT, "기다리는 점이 아닙니다",
+                         key=key, waiting_point_id=waiting or None)
             return
         if self._paused_work == "mark":
-            # 멈춰 있다 — 재개해 mark_ready 를 다시 낸 뒤에 받는다.
-            self._reply(key, req_id, "mark_next", 409, "BUSY")
+            # 멈춰 있다 — 재개해 mark_ready 를 다시 낸 뒤에 받는다(⑥).
+            self._refuse(req_id, "mark_next", E.BUSY, "일시정지 중입니다", key=key)
             return
-        waiting = str(self.mark_waiting_point() or "")
         if point_id != waiting:
             # 기다리는 점이 아니다 — 거절하고 그 자리에 그대로 선다(if-0.7 ④).
-            self._reply(key, req_id, "mark_next", 400, "BAD_REQUEST",
-                        reason="point_id", waiting_point_id=waiting)
+            self._refuse(req_id, "mark_next", E.WRONG_POINT,
+                         f"기다리는 점은 {waiting or '(없음)'} 입니다",
+                         key=key, waiting_point_id=waiting or None)
             return
         marked = content.get("marked", True)
         if isinstance(marked, str):
             marked = marked.strip().lower() in ("true", "1", "yes", "ok")
-        self._reply(key, req_id, "mark_next", 200, "OK")
+        self._reply(key, req_id, "mark_next", 200)
         self.mark_next_requested.emit(point_id, bool(marked))
 
     def finish_mark(self, marked: list, failed: list, code: int | None = None) -> None:
-        """마킹을 다 돌았다 (탭3 19번). 일부 실패도 200 — 전부 실패면 5xx."""
+        """마킹을 다 돌았다 (탭3 19번). 일부 실패도 200 — 전부 실패면 5xx.
+
+        장애로 접었으면(code=500) 그때까지의 marked[] · failed[] 를 싣고 까닭은
+        걸린 장애의 번호다(마킹 ② ⑩).
+        """
         req_id, self._mark_req_id = self._mark_req_id, ""
         if not req_id:
             return
         if code is None:
             code = 500 if failed and not marked else 200
-        message = "OK" if code < 300 else "INTERNAL_ERROR"
-        self.client.publish_event("complete", req_id, "mark", code=code,
-                                  message=message, marked=list(marked),
-                                  failed=list(failed))
+        error = None
+        if code >= 300:
+            name_code, name = E_MARK_FAILED
+            error = self._fault_error() or make_error(
+                name_code, name, f"찍은 점 {len(marked)} · 못 찍은 점 {len(failed)}")
+        self.client.publish_event("complete", req_id, "mark", code, error,
+                                  marked=list(marked), failed=list(failed))
         self._record_last(req_id, "mark", code)
         self.activity.emit(
             f"ERUT 마킹 완료를 발행했습니다 (성공 {len(marked)}, 실패 {len(failed)}).")
         self.refresh_status()
 
     # ---- 우리 쪽에서 끊었을 때 ------------------------------------------------
-    def interrupt_active_job(self, code: int = 500, reason: str = "") -> None:
+    def interrupt_active_job(self, code: int = 500, error: dict | None = None) -> None:
         """ERUT 가 시킨 일을 **우리 쪽에서** 끊었다(작업자 정지·장애·홈 이동).
 
         ERUT 가 모르는 사이에 끊겼으므로 반드시 알린다 — 안 오면 브릿지가 계속
@@ -1135,33 +1228,35 @@ class ErutSession(QObject):
           calibrate  → evt/complete(action=calibrate) 5xx
           mark       → evt/complete(action=mark)    5xx {marked, failed}
           home       → evt/complete(action=home)    5xx
+        까닭(error)은 걸린 장애의 번호다 — 장애가 아니라 RCS 화면에서 작업자가
+        멈췄으면 E9401 STOPPED_BY_OPERATOR.
         """
-        extra = {"detail": reason} if reason else {}
+        if error is None:
+            op_code, op_name = E_OPERATOR_STOPPED
+            error = self._fault_error() or make_error(
+                op_code, op_name, "RCS 에서 작업을 정지했습니다")
         if self._start_req_id:
             self.client.publish_event(
-                "complete", self._start_req_id, "start", code=code,
-                message="INTERNAL_ERROR", job_id=self._job_id, **extra)
+                "complete", self._start_req_id, "start", code, error,
+                job_id=self._job_id)
             self._record_last(self._start_req_id, "start", code, job_id=self._job_id)
         elif self._prepare_req_id and not self._ready_sent:
             self.client.publish_event(
-                "complete", self._prepare_req_id, "prepare", code=code,
-                message="INTERNAL_ERROR", job_id=self._job_id, **extra)
+                "complete", self._prepare_req_id, "prepare", code, error,
+                job_id=self._job_id)
             self._record_last(self._prepare_req_id, "prepare", code, job_id=self._job_id)
         if self._calibrate_req_id:
             self.client.publish_event(
-                "complete", self._calibrate_req_id, "calibrate", code=code,
-                message="INTERNAL_ERROR", **extra)
+                "complete", self._calibrate_req_id, "calibrate", code, error)
             self._record_last(self._calibrate_req_id, "calibrate", code)
         if self._mark_req_id:
             self.client.publish_event(
-                "complete", self._mark_req_id, "mark", code=code,
-                message="INTERNAL_ERROR", marked=[], failed=list(self._mark_ids),
-                **extra)
+                "complete", self._mark_req_id, "mark", code, error,
+                marked=[], failed=list(self._mark_ids))
             self._record_last(self._mark_req_id, "mark", code)
         if self._home_req_id:
             self.client.publish_event(
-                "complete", self._home_req_id, "home", code=code,
-                message="INTERNAL_ERROR", **extra)
+                "complete", self._home_req_id, "home", code, error)
         had_job = bool(self._start_req_id or self._prepare_req_id
                        or self._calibrate_req_id or self._mark_req_id or self._home_req_id)
         self._forget_work()
@@ -1170,9 +1265,9 @@ class ErutSession(QObject):
         self.refresh_status()
 
     # ------------------------------------------------------------ 알림
-    def notify(self, code: str, message: str, text: str, **extra) -> None:
+    def notify(self, code: str, name: str, text: str, **extra) -> None:
         """장애가 아닌 안내를 evt/message 로 알린다 (3S 확장 — 표준에 없다)."""
-        self.client.publish_message(code, message, text, **extra)
+        self.client.publish_message(code, name, text, **extra)
         self.message_published.emit(code, text)
         self.activity.emit(f"ERUT 알림: {code} {text}")
 
@@ -1183,33 +1278,38 @@ class ErutSession(QObject):
         해제는 발생 때와 **같은 code** 에 `cleared: true` 로 낸다(level·recovery 는
         발생 때 값 그대로). 옛 시험 도구가 보내는 `-CLEAR` 접미사도 해제로 읽는다.
 
+        fields: code · name(옛 이름 message 도 읽는다) · level · recovery · detail ·
+        cleared. 그 밖의 칸(예: E3001 의 probe)은 error 객체 안에 그대로 싣는다.
+
         level 이 stop·estop 이면 로봇을 세우고, **하던 일을 실패로 끝낸다** —
         evt/error 와 따로 evt/complete 에 5xx 를 낸다(탭4 B-2). 비상정지 때 하던
         구간은 끝난 것으로 보고 이어 가지 않는다(if-0.4). 풀린 뒤에는 브릿지가
         처음 순서(query → calibrate → prepare → start)로 새로 보낸다.
         """
         code = str(fields.get("code", "E9999")).strip()
-        message = str(fields.get("message", "UNKNOWN")).strip()
+        name = str(fields.get("name") or fields.get("message")
+                   or E.NAMES.get(code, "UNKNOWN")).strip()
         cleared = bool(fields.get("cleared", False))
         if code.endswith("-CLEAR"):
             code, cleared = code[: -len("-CLEAR")], True
         if cleared:
-            self._clear(code, message)
+            self._clear(code)
             return
 
         level = str(fields.get("level", "warning")).strip()
         recovery = str(fields.get("recovery", "manual")).strip()
-        extra: dict[str, Any] = {}
         detail = fields.get("detail")
+        error: dict[str, Any] = {"code": code, "name": name, "level": level,
+                                 "recovery": recovery}
         if detail:
-            extra["detail"] = str(detail)
-        if self._job_id and self._job_active() and level != "warning":
-            extra["job_id"] = self._job_id
-        self._errors[code] = {"code": code, "level": level,
-                              "recovery": recovery, "message": message}
-        self.client.publish_error(code, message, level, recovery, cleared=False, **extra)
-        self.error_published.emit(code, message, level)
-        self.activity.emit(f"장애 통보: {code} {message} ({level})")
+            error["detail"] = str(detail)
+        known = {"code", "name", "message", "level", "recovery", "detail", "cleared"}
+        error.update({k: v for k, v in fields.items() if k not in known and v is not None})
+        job_id = self._job_id if self._job_id and self._job_active() and level != "warning" else ""
+        self._errors[code] = error
+        self.client.publish_error({**error, "cleared": False}, job_id)
+        self.error_published.emit(code, name, level)
+        self.activity.emit(f"장애 통보: {code} {name} ({level})")
 
         if level in ("stop", "estop"):
             # 장애는 로봇 자신이 아니라 차량·리프트 쪽에서도 난다 — 그때 팔이
@@ -1217,19 +1317,19 @@ class ErutSession(QObject):
             self.robot_stop_requested.emit()
             if self._mark_req_id:
                 self.mark_stop_requested.emit()
-            self.interrupt_active_job(500, f"{code} {message}")
+            # 완료의 까닭은 이 장애의 번호 · 이름이다(탭2 8행).
+            self.interrupt_active_job(500, make_error(code, name, detail or None))
             if self.sequencer.state not in _SEQ_IDLE:
                 self.job_dropped.emit()
         self.refresh_status()
 
-    def _clear(self, code: str, message: str = "") -> bool:
+    def _clear(self, code: str) -> bool:
         entry = self._errors.pop(code, None)
         if entry is None:
             return False
-        extra = {"job_id": self._job_id} if self._job_id and self._job_active() else {}
-        self.client.publish_error(code, message or entry["message"], entry["level"],
-                                  entry["recovery"], cleared=True, **extra)
-        self.error_cleared.emit(code, message or entry["message"])
+        job_id = self._job_id if self._job_id and self._job_active() else ""
+        self.client.publish_error({**entry, "cleared": True}, job_id)
+        self.error_cleared.emit(code, entry["name"])
         self.activity.emit(f"장애 해제 통보: {code}")
         self.refresh_status()
         return True
@@ -1254,6 +1354,24 @@ class ErutSession(QObject):
     def error_codes(self) -> list[str]:
         """지금 걸려 있는 장애 코드 목록."""
         return list(self._errors)
+
+    def _fault_error(self) -> dict | None:
+        """작업을 멈추게 한 장애(stop · estop) — 완료의 까닭으로 싣는다. 없으면 None."""
+        for entry in reversed(list(self._errors.values())):
+            if entry.get("level") in ("stop", "estop"):
+                return make_error(entry["code"], entry["name"], entry.get("detail"))
+        return None
+
+    def _circumference(self) -> float:
+        """검사면 둘레 [mm] = π × 모재 지름. 좌표계가 서서 지름을 알 때만, 모르면 0.
+
+        ERUT 의 x 는 이 둘레 위의 거리다(탭5 77행) — 이음매(둘레)를 넘는 x 는
+        감긴 자리(x − 둘레)로 읽는다.
+        """
+        diameter = float(self.area_diameter() or 0.0)
+        if not self._calibrated or diameter <= 0:
+            return 0.0
+        return math.pi * diameter
 
     # ------------------------------------------------------------ 도우미
     def _read_plan(self, content: dict) -> GridPlan | None:

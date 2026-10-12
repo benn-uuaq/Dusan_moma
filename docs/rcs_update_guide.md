@@ -139,7 +139,7 @@ authbind --deep python3 -m smr_operator_ui
 |---|---|---|
 | 로봇 연결 | RCS 상단 Cobot 표시 | 연결됨 |
 | ERUT 브로커 연결 | RCS 알림 | 「ERUT 브로커에 연결되었습니다」 · 「ERUT 브릿지가 온라인입니다」 |
-| 규격 판 번호 | MQTT Explorer `erut/robot1/evt/info` | `interface_version` 이 지금 규격 판(예: `"0.8"`) |
+| 규격 판 번호 | MQTT Explorer `erut/robot1/evt/info` | `interface_version` 이 지금 규격 판(예: `"0.9"`) |
 | 시각 | RCS 알림 | 「ERUT 브릿지와 시각이 … 어긋납니다」 경고가 없을 것(10초 넘게 어긋나면 ERUT 가 메시지를 버린다) |
 | 홈 상태 | MQTT Explorer `erut/robot1/evt/home` | 팔이 접혀 있으면 `home` |
 

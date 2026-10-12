@@ -34,14 +34,16 @@ class FakeClient:
     connected_changed = _Sig()
     test_error_injected = _Sig()
 
-    def publish_res(self, req_id, action, code, message, **extra):
+    def publish_res(self, req_id, action, status_code, error=None, **extra):
         self.res.append({"req_id": req_id, "action": action,
-                         "code": code, "message": message, **extra})
+                         "status_code": status_code,
+                         **({"error": error} if error else {}), **extra})
         return True
 
-    def publish_event(self, name, req_id, action, code=200, message="OK", **extra):
+    def publish_event(self, name, req_id, action, status_code=200, error=None, **extra):
         self.events.append((name, {"req_id": req_id, "action": action,
-                                   "code": code, "message": message, **extra}))
+                                   "status_code": status_code,
+                                   **({"error": error} if error else {}), **extra}))
         return True
 
     def publish_progress(self, req_id, action, **extra):
@@ -65,13 +67,12 @@ class FakeClient:
         self.home.append(state)
         return True
 
-    def publish_message(self, code, message, text, **extra):
-        self.messages.append({"code": code, "message": message, "text": text, **extra})
+    def publish_message(self, code, name, text, **extra):
+        self.messages.append({"code": code, "name": name, "text": text, **extra})
         return True
 
-    def publish_error(self, code, message, level, recovery, cleared=False, **extra):
-        self.errors.append({"code": code, "message": message, "level": level,
-                            "recovery": recovery, "cleared": cleared, **extra})
+    def publish_error(self, error, job_id=""):
+        self.errors.append({**error, **({"job_id": job_id} if job_id else {})})
         return True
 
 
@@ -105,7 +106,7 @@ def _start(s, req_id="s1", job_id="jb1", area=AREA, scan=SCAN):
 
 
 def _codes(client, action):
-    return [r["code"] for r in client.res if r["action"] == action]
+    return [r["status_code"] for r in client.res if r["action"] == action]
 
 
 # ---- query (탭5 61~73행) ------------------------------------------------------
@@ -115,7 +116,7 @@ def test_query_answers_with_activity_not_state(session):
     s.handle_request(*_req("query"))
 
     r = client.res[0]
-    assert (r["code"], r["action"]) == (200, "query")
+    assert (r["status_code"], r["action"]) == (200, "query")
     assert r["activity"] == "idle"
     assert "state" not in r
     assert r["calibrated"] is True
@@ -133,14 +134,14 @@ def test_query_has_no_battery_until_the_vehicle_gives_it(session):
 
 def test_query_lists_active_errors_as_objects(session):
     s, client, _seq = session
-    s.raise_error({"code": "E2001", "message": "DRIVE_ERROR",
+    s.raise_error({"code": "E2001", "name": "DRIVE_ERROR",
                    "level": "stop", "recovery": "manual"})
     s.handle_request(*_req("query"))
 
     r = client.res[-1]
     assert r["activity"] == "error"
-    assert r["errors"] == [{"code": "E2001", "level": "stop",
-                            "recovery": "manual", "message": "DRIVE_ERROR"}]
+    assert r["errors"] == [{"code": "E2001", "name": "DRIVE_ERROR", "level": "stop",
+                            "recovery": "manual"}]
 
 
 def test_query_reports_the_last_job(session):
@@ -151,7 +152,7 @@ def test_query_reports_the_last_job(session):
     s.handle_request(*_req("query", req_id="q9"))
 
     last = client.res[-1]["last_job"]
-    assert (last["job_id"], last["action"], last["code"]) == ("jb9", "start", 200)
+    assert (last["job_id"], last["action"], last["status_code"]) == ("jb9", "start", 200)
     assert last["progress"] == 100
 
 
@@ -173,14 +174,14 @@ def test_unknown_action_is_501(session):
     s, client, _seq = session
     s.handle_request("teleport", {"req_id": "x1"})
 
-    assert (client.res[-1]["code"], client.res[-1]["message"]) == (501, "NOT_IMPLEMENTED")
+    assert (client.res[-1]["status_code"], client.res[-1]["error"]["code"]) == (501, "E6501")
 
 
 def test_request_without_req_id_is_400(session):
     s, client, _seq = session
     s.handle_request("query", {})
 
-    assert client.res[-1]["code"] == 400
+    assert client.res[-1]["status_code"] == 400
 
 
 def test_unknown_surface_is_400(session):
@@ -188,7 +189,7 @@ def test_unknown_surface_is_400(session):
     s, client, seq = session
     _prepare(s, surface="inner")
 
-    assert client.res[-1]["code"] == 400
+    assert client.res[-1]["status_code"] == 400
     assert seq.state is SequencerState.IDLE
 
 
@@ -196,7 +197,7 @@ def test_zero_size_area_is_400(session):
     s, client, _seq = session
     _prepare(s, area={"start": {"x": 0, "y": 0}, "end": {"x": 0, "y": 800}})
 
-    assert client.res[-1]["code"] == 400
+    assert client.res[-1]["status_code"] == 400
 
 
 def test_speed_above_the_robot_limit_is_refused(session):
@@ -204,7 +205,7 @@ def test_speed_above_the_robot_limit_is_refused(session):
     s, client, _seq = session
     _start(s, scan={"pitch": 20, "speed": 150})
 
-    assert client.res[-1]["code"] == 400
+    assert client.res[-1]["status_code"] == 400
 
 
 def test_scan_speed_becomes_the_robot_speed_ratio(session):
@@ -222,7 +223,7 @@ def test_unknown_fields_are_ignored(session):
     s, client, _seq = session
     _prepare(s, extra_field={"anything": 1})
 
-    assert client.res[-1]["code"] == 202
+    assert client.res[-1]["status_code"] == 202
 
 
 # ---- 같은 req_id (탭2 22행) -----------------------------------------------------
@@ -277,14 +278,14 @@ def test_same_req_id_with_new_content_is_a_new_request(session):
 
 
 def test_a_refused_request_is_judged_again_when_resent(session):
-    """캘리브레이션 전에 428 을 받은 prepare 를 캘리브레이션 뒤 그대로 다시 보내면 받는다."""
+    """캘리브레이션 전에 409 E6104 를 받은 prepare 를 캘리브레이션 뒤 그대로 다시 보내면 받는다."""
     s, client, _seq = session
     s._calibrated = False
     _prepare(s, req_id="prep-001")
     s._calibrated = True
     _prepare(s, req_id="prep-001")
 
-    assert _codes(client, "prepare") == [428, 202]
+    assert _codes(client, "prepare") == [409, 202]
 
 
 def test_retransmission_while_the_work_runs_is_not_run_again(session, monkeypatch):
@@ -308,7 +309,7 @@ def test_calibrate_accepts_then_completes(session):
     s.calibration_requested.connect(lambda d, h: asked.append((d, h)))
     s.handle_request(*_req("calibrate", diameter=2500, height=6000))
 
-    assert client.res[0]["code"] == 202
+    assert client.res[0]["status_code"] == 202
     assert asked == [(2500.0, 6000.0)]
     assert client.events == []
     assert s.activity_state() == "calibrating"
@@ -338,7 +339,7 @@ def test_calibrate_needs_the_target_size(session):
     s, client, _seq = session
     s.handle_request(*_req("calibrate", height=6000))
 
-    assert client.res[-1]["code"] == 400
+    assert client.res[-1]["status_code"] == 400
 
 
 def test_failed_calibration_still_publishes_complete(session):
@@ -347,7 +348,7 @@ def test_failed_calibration_still_publishes_complete(session):
     s.finish_calibration(False, 0.0, "벽 접촉이 2번뿐입니다")
 
     name, evt = client.events[-1]
-    assert (name, evt["action"], evt["code"]) == ("complete", "calibrate", 500)
+    assert (name, evt["action"], evt["status_code"]) == ("complete", "calibrate", 500)
     s.handle_request(*_req("query", req_id="q3"))
     assert client.res[-1]["calibrated"] is False
 
@@ -357,7 +358,7 @@ def test_calibrate_is_refused_while_the_robot_works(session):
     s.robot_busy = lambda: True
     s.handle_request(*_req("calibrate", diameter=2500, height=6000))
 
-    assert client.res[-1]["code"] == 409
+    assert client.res[-1]["status_code"] == 409
 
 
 def test_pause_during_calibration_stops_the_lap_and_resume_continues_it(session):
@@ -370,13 +371,13 @@ def test_pause_during_calibration_stops_the_lap_and_resume_continues_it(session)
     s.handle_request(*_req("calibrate", req_id="c1", diameter=2500, height=6000))
 
     s.handle_request(*_req("pause", req_id="pz"))
-    assert client.res[-1]["code"] == 200
+    assert client.res[-1]["status_code"] == 200
     assert stops == [1] and s.activity_state() == "paused"
     s.handle_request(*_req("query", req_id="q1"))
     assert client.res[-1]["resumable"] is True
 
     s.handle_request(*_req("resume", req_id="rz"))
-    assert client.res[-1]["code"] == 202
+    assert client.res[-1]["status_code"] == 202
     assert resumes == [1]
     assert s.activity_state() == "calibrating"
     # 완료는 처음 calibrate 의 번호로 나간다.
@@ -395,7 +396,7 @@ def test_losing_the_frame_raises_calibration_lost(session):
     s.handle_request(*_req("reset", req_id="rs"))
     # 장애는 풀려도 좌표계는 다시 잡아야 한다.
     _prepare(s, req_id="p9")
-    assert client.res[-1]["code"] == 428
+    assert (client.res[-1]["status_code"], client.res[-1]["error"]["code"]) == (409, "E6104")
 
 
 # ---- prepare · start (탭3 ③④) -------------------------------------------------
@@ -411,7 +412,7 @@ def test_prepare_moves_only_the_vehicle_then_reports_ready(session):
     jobs: list[tuple] = []
     s.job_requested.connect(lambda plan, prepare_only: jobs.append(prepare_only))
     _prepare(s)
-    assert client.res[-1]["code"] == 202
+    assert client.res[-1]["status_code"] == 202
     assert jobs == [True], "준비만 — 로봇은 시작하지 않는다"
     assert s.activity_state() == "preparing"
     assert client.status[-1]["activity"] == "preparing"
@@ -446,7 +447,7 @@ def test_start_for_the_prepared_job_starts_the_robot(session, qtbot):
 
     _start(s)
 
-    assert client.res[-1]["code"] == 202
+    assert client.res[-1]["status_code"] == 202
     assert proceeds == [1]
     assert gates == []
     # 3점 측정을 마치고 시작점에 붙었다 — 물이 나올 틈을 두고 대기를 푼다.
@@ -491,7 +492,7 @@ def test_start_for_another_job_drops_the_prepared_one(session):
     _start(s, req_id="s2", job_id="jb2",
            area={"start": {"x": 580, "y": 0}, "end": {"x": 1180, "y": 800}})
 
-    assert client.res[-1]["code"] == 202
+    assert client.res[-1]["status_code"] == 202
     assert proceeds == [] and drops == [1]
     assert jobs[-1][0].origin_x == 580 and jobs[-1][1] is False
     assert s.job_id == "jb2"
@@ -540,8 +541,9 @@ def test_prepare_and_start_need_calibration(session):
     _prepare(s)
     _start(s)
 
-    assert _codes(client, "prepare") == [428]
-    assert _codes(client, "start") == [428]
+    assert _codes(client, "prepare") == [409]
+    assert _codes(client, "start") == [409]
+    assert {r["error"]["code"] for r in client.res} == {"E6104"}
 
 
 def test_area_origin_and_overlap_make_the_grid_position(session):
@@ -703,7 +705,7 @@ def test_info_introduces_the_device(session):
     s.publish_info()
 
     info = client.info[-1]
-    assert info["interface_version"] == INTERFACE_VERSION == "0.8"
+    assert info["interface_version"] == INTERFACE_VERSION == "0.9"
     assert info["vendor"] == "3S" and info["device_type"] == "articulated_arm"
     assert "probe_contact" in info["capabilities"]
     assert "mark_positioning" in info["capabilities"]
@@ -750,7 +752,7 @@ def test_stop_commands_are_always_accepted(session):
     _prepare(s)
     for action in ("pause", "reset", "query", "abort"):
         s.handle_request(*_req(action, req_id=f"{action}-x"))
-    codes = [r["code"] for r in client.res if r["action"] != "prepare"]
+    codes = [r["status_code"] for r in client.res if r["action"] != "prepare"]
 
     assert all(200 <= c < 300 for c in codes), codes
 
@@ -769,7 +771,7 @@ def test_pause_and_resume_of_a_running_section(session):
     assert client.res[-1]["resumable"] is True
 
     s.handle_request(*_req("resume", req_id="rz"))
-    assert client.res[-1]["code"] == 202
+    assert client.res[-1]["status_code"] == 202
     # 완료는 처음 start 의 req_id 로(resume 의 번호가 아니라).
     s.on_job_complete()
     assert client.events[-1][1]["req_id"] == "s1"
@@ -795,7 +797,7 @@ def test_paused_is_reported_only_after_the_equipment_stopped(session):
     s.handle_request(*_req("query", req_id="q1"))
     assert client.res[-1]["resumable"] is False
     s.handle_request(*_req("resume", req_id="r1"))
-    assert client.res[-1]["code"] == 409, "아직 서는 중이면 running 과 같다(탭9)"
+    assert client.res[-1]["status_code"] == 409, "아직 서는 중이면 running 과 같다(탭9)"
 
     settled["v"] = True
     assert s.activity_state() == "paused"
@@ -814,7 +816,7 @@ def test_resume_after_losing_the_spot_is_412(session):
     s.handle_request(*_req("query", req_id="q"))
     assert client.res[-1]["resumable"] is False
     s.handle_request(*_req("resume", req_id="r"))
-    assert (client.res[-1]["code"], client.res[-1]["message"]) == (412, "NOT_RESUMABLE")
+    assert (client.res[-1]["status_code"], client.res[-1]["error"]["code"]) == (409, "E6102")
     assert resumed == []
     assert s.activity_state() == "paused"
 
@@ -835,7 +837,7 @@ def test_resume_with_nothing_paused_is_409(session):
     s, client, _seq = session
     s.handle_request(*_req("resume"))
 
-    assert client.res[-1]["code"] == 409
+    assert client.res[-1]["status_code"] == 409
 
 
 def test_abort_without_job_id_stops_whatever_is_running(session):
@@ -846,7 +848,7 @@ def test_abort_without_job_id_stops_whatever_is_running(session):
 
     s.handle_request(*_req("abort", req_id="ab"))
 
-    assert client.res[-1]["code"] == 200
+    assert client.res[-1]["status_code"] == 200
     assert aborted == [1]
     assert s.activity_state() == "idle"
     # abort 된 일은 완료를 내지 않는다.
@@ -867,7 +869,7 @@ def test_bridge_offline_pauses_the_section(session):
 # ---- 장애 (탭2 10행 · 탭4 B-2 · D-2) ---------------------------------------------
 def test_error_is_published_with_cleared_false(session):
     s, client, _seq = session
-    s.raise_error({"code": "E2001", "message": "DRIVE_ERROR",
+    s.raise_error({"code": "E2001", "name": "DRIVE_ERROR",
                    "level": "warning", "recovery": "auto"})
 
     err = client.errors[-1]
@@ -877,9 +879,9 @@ def test_error_is_published_with_cleared_false(session):
 def test_clearing_uses_the_same_code_with_cleared_true(session):
     """code 끝에 -CLEAR 를 붙이지 않는다. level·recovery 는 발생 때 그대로."""
     s, client, _seq = session
-    s.raise_error({"code": "E2001", "message": "DRIVE_ERROR",
+    s.raise_error({"code": "E2001", "name": "DRIVE_ERROR",
                    "level": "stop", "recovery": "manual"})
-    s.raise_error({"code": "E2001", "message": "DRIVE_ERROR", "cleared": True})
+    s.raise_error({"code": "E2001", "name": "DRIVE_ERROR", "cleared": True})
 
     err = client.errors[-1]
     assert (err["code"], err["cleared"], err["level"], err["recovery"]) == (
@@ -889,7 +891,7 @@ def test_clearing_uses_the_same_code_with_cleared_true(session):
 
 def test_legacy_clear_suffix_is_read_as_a_clear(session):
     s, client, _seq = session
-    s.raise_error({"code": "E1002", "message": "E_STOP", "level": "estop",
+    s.raise_error({"code": "E1002", "name": "E_STOP", "level": "estop",
                    "recovery": "reset_required"})
     s.raise_error({"code": "E1002-CLEAR", "message": "E_STOP_CLEARED"})
 
@@ -902,7 +904,7 @@ def test_warning_does_not_stop_the_work(session):
     stops: list[int] = []
     s.robot_stop_requested.connect(lambda: stops.append(1))
     _prepare(s)
-    s.raise_error({"code": "E5001", "message": "COUPLANT_LOW",
+    s.raise_error({"code": "E5001", "name": "COUPLANT_LOW",
                    "level": "warning", "recovery": "auto"})
 
     assert stops == []
@@ -919,13 +921,15 @@ def test_stop_level_fault_fails_the_section_with_5xx(session):
     _start(s)
     seq._set_state(SequencerState.SCANNING)
 
-    s.raise_error({"code": "E2001", "message": "DRIVE_ERROR",
+    s.raise_error({"code": "E2001", "name": "DRIVE_ERROR",
                    "level": "stop", "recovery": "manual"})
 
     assert client.errors[-1]["job_id"] == "jb1"
     name, evt = client.events[-1]
-    assert (name, evt["action"], evt["code"], evt["job_id"]) == (
+    assert (name, evt["action"], evt["status_code"], evt["job_id"]) == (
         "complete", "start", 500, "jb1")
+    # 장애로 끝난 완료의 까닭은 그 장애의 번호 · 이름이다(if-0.9 Q-28 ②).
+    assert evt["error"] == {"code": "E2001", "name": "DRIVE_ERROR"}
     assert stops and drops
     assert s.activity_state() == "error"
     s.handle_request(*_req("query", req_id="q"))
@@ -936,18 +940,18 @@ def test_estop_ends_the_section_and_reset_returns_to_idle(session):
     """if-0.4: 비상정지 때 하던 구간은 끝난 것으로 보고 이어 가지 않는다."""
     s, client, _seq = session
     _prepare(s)
-    s.raise_error({"code": "E1002", "message": "E_STOP", "level": "estop",
+    s.raise_error({"code": "E1002", "name": "E_STOP", "level": "estop",
                    "recovery": "reset_required"})
     assert s.activity_state() == "estop"
     # 준비 실패는 evt/ready 가 아니라 evt/complete(action=prepare) 5xx 다.
     name, evt = client.events[-1]
-    assert (name, evt["action"], evt["code"]) == ("complete", "prepare", 500)
+    assert (name, evt["action"], evt["status_code"]) == ("complete", "prepare", 500)
 
     _prepare(s, req_id="p2")
-    assert client.res[-1]["code"] == 423
+    assert (client.res[-1]["status_code"], client.res[-1]["error"]["code"]) == (409, "E6103")
 
     s.handle_request(*_req("reset", req_id="rs"))
-    assert client.res[-1]["code"] == 202
+    assert client.res[-1]["status_code"] == 202
     assert client.errors[-1]["cleared"] is True
     assert s.activity_state() == "idle"
 
@@ -956,14 +960,14 @@ def test_reset_without_faults_is_200_and_does_nothing(session):
     s, client, _seq = session
     s.handle_request(*_req("reset"))
 
-    assert client.res[-1]["code"] == 200
+    assert client.res[-1]["status_code"] == 200
     assert client.errors == []
 
 
 def test_operator_clear_tells_erut(session):
     """작업자가 화면에서 풀어도 cleared=true 를 낸다 — 조치 끝은 장치가 알린다."""
     s, client, _seq = session
-    s.raise_error({"code": "E2001", "message": "DRIVE_ERROR",
+    s.raise_error({"code": "E2001", "name": "DRIVE_ERROR",
                    "level": "warning", "recovery": "manual"})
     assert s.clear_error("E2001") is True
 
@@ -979,7 +983,7 @@ def test_mark_hands_the_points_over(session):
     s.handle_request(*_req("mark", method="paint", marker="erut",
                            points=[{"id": "p1", "x": 350, "y": 1200}]))
 
-    assert client.res[-1]["code"] == 202
+    assert client.res[-1]["status_code"] == 202
     assert points == [[{"id": "p1", "x": 350.0, "y": 1200.0}]]
     # if-0.8: 마킹 중은 running 이 아니라 marking(구역 검사로 잘못 읽지 않게).
     assert s.activity_state() == "marking"
@@ -999,7 +1003,7 @@ def test_mark_point_handshake(session):
     assert (name, evt["req_id"], evt["action"], evt["point_id"]) == ("mark_ready", "m1", "mark", "p1")
 
     s.handle_request("mark_next", {"req_id": "m1", "point_id": "p1", "marked": True})
-    assert client.res[-1]["code"] == 200
+    assert client.res[-1]["status_code"] == 200
     assert nexts == [("p1", True)]
     # 다시 보내도(같은 번호·같은 점) 두 번 움직이지 않는다.
     s.handle_request("mark_next", {"req_id": "m1", "point_id": "p1", "marked": True})
@@ -1010,7 +1014,8 @@ def test_mark_next_for_another_job_is_refused(session):
     s, client, _seq = session
     s.handle_request("mark_next", {"req_id": "zz", "point_id": "p1"})
 
-    assert client.res[-1]["code"] == 409
+    # 기다리는 점이 아니다 — 400 E6004 WRONG_POINT (if-0.9, 예전 409 NOT_AT_POINT).
+    assert (client.res[-1]["status_code"], client.res[-1]["error"]["code"]) == (400, "E6004")
 
 
 def test_mark_complete_is_200_even_with_some_failures(session):
@@ -1021,12 +1026,12 @@ def test_mark_complete_is_200_even_with_some_failures(session):
     s.finish_mark(["p1"], ["p2"])
 
     evt = client.events[-1][1]
-    assert (evt["code"], evt["marked"], evt["failed"]) == (200, ["p1"], ["p2"])
+    assert (evt["status_code"], evt["marked"], evt["failed"]) == (200, ["p1"], ["p2"])
 
     s.handle_request(*_req("mark", req_id="m2", marker="erut",
                            points=[{"id": "p3", "x": 3, "y": 3}]))
     s.finish_mark([], ["p3"])
-    assert client.events[-1][1]["code"] == 500
+    assert client.events[-1][1]["status_code"] == 500
 
 
 def test_mark_with_the_device_marker_is_not_implemented(session):
@@ -1034,14 +1039,14 @@ def test_mark_with_the_device_marker_is_not_implemented(session):
     s.handle_request(*_req("mark", marker="device",
                            points=[{"id": "p1", "x": 1, "y": 1}]))
 
-    assert client.res[-1]["code"] == 501
+    assert client.res[-1]["status_code"] == 501
 
 
 def test_mark_with_broken_points_is_400(session):
     s, client, _seq = session
     s.handle_request(*_req("mark", points=[{"id": "p1", "x": "far"}]))
 
-    assert client.res[-1]["code"] == 400
+    assert client.res[-1]["status_code"] == 400
 
 
 def test_pause_during_marking_holds_in_place_and_resume_continues(session):
@@ -1062,10 +1067,10 @@ def test_pause_during_marking_holds_in_place_and_resume_continues(session):
     assert s.activity_state() == "paused"
     # 멈춘 동안의 mark_next 는 받지 않는다(재개해 mark_ready 를 다시 낸 뒤에).
     s.handle_request("mark_next", {"req_id": "m1", "point_id": "p1", "marked": True})
-    assert client.res[-1]["code"] == 409
+    assert client.res[-1]["status_code"] == 409
 
     s.handle_request(*_req("resume", req_id="rz"))
-    assert client.res[-1]["code"] == 202
+    assert client.res[-1]["status_code"] == 202
     assert resumes == [1]
     assert not [e for e in client.events if e[0] == "complete"]
 
@@ -1075,7 +1080,7 @@ def test_mark_without_marker_is_the_device_marker_and_not_implemented(session):
     s, client, _seq = session
     s.handle_request(*_req("mark", points=[{"id": "p1", "x": 1, "y": 1}]))
 
-    assert client.res[-1]["code"] == 501
+    assert client.res[-1]["status_code"] == 501
 
 
 def test_mark_next_for_a_point_not_waiting_is_400(session):
@@ -1090,7 +1095,8 @@ def test_mark_next_for_a_point_not_waiting_is_400(session):
     s.handle_request("mark_next", {"req_id": "m1", "point_id": "p2", "marked": True})
 
     res = client.res[-1]
-    assert (res["code"], res["action"], res["waiting_point_id"]) == (400, "mark_next", "p1")
+    assert (res["status_code"], res["action"], res["error"]["code"], res["error"]["waiting_point_id"]) == (
+        400, "mark_next", "E6004", "p1")
     assert nexts == []
 
 
@@ -1101,7 +1107,7 @@ def test_local_stop_of_a_started_section_tells_erut(session):
     s.interrupt_active_job()
 
     name, evt = client.events[-1]
-    assert (name, evt["action"], evt["code"]) == ("complete", "start", 500)
+    assert (name, evt["action"], evt["status_code"]) == ("complete", "start", 500)
 
 
 def test_local_stop_before_ready_fails_the_prepare_in_complete(session):
@@ -1111,7 +1117,7 @@ def test_local_stop_before_ready_fails_the_prepare_in_complete(session):
     s.interrupt_active_job()
 
     name, evt = client.events[-1]
-    assert (name, evt["action"], evt["code"]) == ("complete", "prepare", 500)
+    assert (name, evt["action"], evt["status_code"]) == ("complete", "prepare", 500)
 
 
 def test_local_stop_without_an_erut_job_says_nothing(session):
@@ -1135,13 +1141,13 @@ def test_home_is_accepted_and_completes_when_the_robot_arrives(session):
     s.home_requested.connect(lambda: homes.append(1))
     s.handle_request(*_req("home", req_id="h1"))
 
-    assert client.res[-1]["code"] == 202
+    assert client.res[-1]["status_code"] == 202
     assert homes == [1]
     assert s.activity_state() == "running"
 
     s.home_arrived()
     name, evt = client.events[-1]
-    assert (name, evt["req_id"], evt["action"], evt["code"]) == ("complete", "h1", "home", 200)
+    assert (name, evt["req_id"], evt["action"], evt["status_code"]) == ("complete", "h1", "home", 200)
     assert s.activity_state() == "idle"
 
 
@@ -1150,7 +1156,7 @@ def test_home_is_refused_while_the_robot_works(session):
     s.robot_busy = lambda: True
     s.handle_request(*_req("home"))
 
-    assert client.res[-1]["code"] == 409
+    assert client.res[-1]["status_code"] == 409
     assert client.messages[-1]["code"] == "M1001"
 
 
@@ -1160,7 +1166,7 @@ def test_home_timeout_fails_in_complete(session):
     s.finish_home(False, "HOME_TIMEOUT")
 
     evt = client.events[-1][1]
-    assert (evt["action"], evt["code"]) == ("home", 500)
+    assert (evt["action"], evt["status_code"]) == ("home", 500)
 
 
 def test_contact_outside_an_erut_section_is_detached(session):
@@ -1189,9 +1195,10 @@ def test_area_wider_than_the_robot_can_reach_is_refused(session):
     _start(s, req_id="s-wide", area=wide)
 
     assert jobs == []
-    refused = [r for r in client.res if r["code"] == 400]
+    refused = [r for r in client.res if r["status_code"] == 400]
     assert [r["action"] for r in refused] == ["prepare", "start"]
-    assert refused[0]["reason"] == "area_width" and refused[0]["max_width"] == 721
+    assert refused[0]["error"]["code"] == "E6002" and refused[0]["error"]["max_width"] == 721
+    assert "reason" not in refused[0], "if-0.9 에서 거절 응답의 reason 칸은 없앴다"
 
     _prepare(s, req_id="p-ok")             # 600 mm 는 된다
     assert len(jobs) == 1
@@ -1232,7 +1239,7 @@ def test_area_limit_goes_into_info_once_the_diameter_is_known(session):
     s.finish_calibration(True, 0.0)
 
     assert infos[-1]["area_limit"] == {"diameter": 1690, "max_width": 721}
-    assert infos[-1]["interface_version"] == "0.8"
+    assert infos[-1]["interface_version"] == "0.9"
 
 
 def test_area_taller_than_the_limit_is_refused_with_area_height(session):
@@ -1241,4 +1248,117 @@ def test_area_taller_than_the_limit_is_refused_with_area_height(session):
     _prepare(s, req_id="p-tall")
 
     res = client.res[-1]
-    assert (res["code"], res["reason"], res["max_height"]) == (400, "area_height", 600)
+    assert (res["status_code"], res["error"]["code"], res["error"]["max_height"]) == (400, "E6003", 600)
+
+
+# ---- if-0.9: status_code · error 객체 · 표준 번호 ------------------------------
+def test_late_work_request_is_refused_as_expired(session):
+    """보낸 지 10초 넘은 일 요청은 실행하지 않는다 — 400 E6005 (탭2 34행).
+
+    세우는 명령은 늦어도 받는다. 보낸 시각이 없는 요청은 받는다(MQTT Explorer 시험).
+    """
+    import time as _time
+
+    s, client, _seq = session
+    jobs: list = []
+    s.job_requested.connect(lambda plan, prepare_only: jobs.append(plan))
+    old = (_time.time() - 30) * 1000
+    action, content = _req("prepare", req_id="late", job_id="jb1", surface="outer",
+                           area=AREA, scan=SCAN)
+    s.handle_request(action, content, old)
+    assert (client.res[-1]["status_code"], client.res[-1]["error"]["code"]) == (400, "E6005")
+    assert jobs == []
+
+    s.handle_request("pause", {"req_id": "pz"}, old)
+    assert client.res[-1]["status_code"] == 200
+
+    _prepare(s, req_id="no-time")                   # 시각 없음 — 받는다
+    assert client.res[-1]["status_code"] == 202 and len(jobs) == 1
+
+
+def test_resume_without_paused_work_is_not_resumable(session):
+    """idle 의 resume 은 409 E6102 — 예전에는 409 BUSY 였다(탭9)."""
+    s, client, _seq = session
+    s.handle_request(*_req("resume", job_id="jb1"))
+
+    assert client.res[-1]["status_code"] == 409
+    assert client.res[-1]["error"] == {"code": "E6102", "name": "NOT_RESUMABLE",
+                                       "detail": "멈춘 작업이 없습니다"}
+
+
+def test_unknown_action_and_device_marker_are_e6501(session):
+    s, client, _seq = session
+    s.handle_request(*_req("teleport"))
+    s.handle_request(*_req("mark", points=[{"id": "p1", "x": 1, "y": 2}]))
+
+    assert [(r["status_code"], r["error"]["code"]) for r in client.res] == [
+        (501, "E6501"), (501, "E6501")]
+
+
+def test_seam_crossing_area_is_accepted_and_reported_wrapped(session):
+    """이음매를 넘는 구역(end.x > 둘레)은 거절하지 않는다 (if-0.8 탭5 77행 · Q-25).
+
+    지름 1690 → 둘레 약 5309. 마지막 구역 5159~5359 를 받아 검사하고, 이음매를
+    넘은 자리는 감긴 자리(x − 둘레)로 알린다.
+    """
+    s, client, _seq = session
+    jobs: list = []
+    s.job_requested.connect(lambda plan, prepare_only: jobs.append(plan))
+    s.area_diameter = lambda: 1690.0
+    seam = {"start": {"x": 5159, "y": 0}, "end": {"x": 5359, "y": 600}}
+
+    _prepare(s, req_id="p-seam", job_id="jb-F25", area=seam)
+
+    assert client.res[-1]["status_code"] == 202
+    plan = jobs[-1]
+    assert (plan.origin_x, plan.cell_width) == (5159.0, 200.0)
+    s.position_state = lambda: {"arc_mm": 180.0, "row_mm": 0.0}
+    pos, _location = s._position()
+    assert pos["x"] == round((5159 + 180) - 3.141592653589793 * 1690)
+
+
+def test_area_starting_past_the_seam_is_a_bad_request(session):
+    """start.x 는 0 이상 둘레 미만이어야 한다 — 넘으면 400 E6001."""
+    s, client, _seq = session
+    s.area_diameter = lambda: 1690.0
+    _prepare(s, req_id="p-out", area={"start": {"x": 5400, "y": 0},
+                                      "end": {"x": 5600, "y": 600}})
+
+    assert (client.res[-1]["status_code"], client.res[-1]["error"]["code"]) == (400, "E6001")
+
+
+def test_operator_stop_ends_the_job_with_a_reason(session):
+    """RCS 화면에서 멈춘 작업도 완료를 낸다 — 까닭은 E9401 STOPPED_BY_OPERATOR."""
+    s, client, seq = session
+    _start(s)
+    seq._set_state(SequencerState.SCANNING)
+
+    s.interrupt_active_job()
+
+    name, evt = client.events[-1]
+    assert (name, evt["status_code"], evt["error"]["code"]) == ("complete", 500, "E9401")
+    s.handle_request(*_req("query", req_id="q-last"))
+    assert client.res[-1]["last_job"]["status_code"] == 500
+
+
+def test_info_tells_how_long_stopping_takes(session):
+    """pause · abort 뒤 서기까지 가장 오래 걸리는 시간(Q-30 ②)."""
+    s, client, _seq = session
+    s.publish_info()
+
+    assert client.info[-1]["timings"]["stop_latency_ms"] > 0
+
+
+def test_error_extra_fields_ride_inside_the_error(session):
+    """E3001 의 probe 처럼 번호에 딸린 칸은 error 안에 싣는다(Q-26)."""
+    s, client, _seq = session
+    s.raise_error({"code": "E3001", "name": "PROBE_CONTACT_FAILED", "probe": "center",
+                   "level": "stop", "recovery": "manual", "detail": "센터 프로브"})
+
+    assert client.errors[-1] == {"code": "E3001", "name": "PROBE_CONTACT_FAILED",
+                                 "level": "stop", "recovery": "manual",
+                                 "detail": "센터 프로브", "probe": "center",
+                                 "cleared": False}
+    s.handle_request(*_req("query", req_id="q-err"))
+    assert client.res[-1]["errors"][0]["probe"] == "center"
+
