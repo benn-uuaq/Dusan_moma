@@ -107,6 +107,19 @@ def sr_servo_arc(end_pose):
   # 속도가 v_scan 보다 한참 느려진다. 컨트롤러 시각(controller_timestamp)
   # 으로 한 바퀴 걸린 시간을 재서 쓴다. 값이 이상하면(0 이하·50 ms 초과)
   # 예전처럼 sv_dt 를 쓴다.
+  # 속도 비율(307, %)은 **이 호에만 여기서 건다.** movel·movej 는 컨트롤러가
+  # 비율(펜던트 슬라이더 = RCS 의 29999 'speed -v N')로 줄여 주지만, servoj 는
+  # 매 주기 위치를 우리가 직접 찍어 보내는 것이라 비율이 걸리지 않는다 — 그래서
+  # 비율 15 % 에서 다른 동작은 15 mm/s 인데 스캔 좌우만 100 mm/s 로 돌았다
+  # (2026-10-14). RCS 는 비율을 바꿀 때 307 에도 같이 써 둔다.
+  # 전역 v_scan 에 곱하지 않고 이 호의 지역값(sv_vmax)만 쓴다 — 셀마다 다시
+  # 곱해져 계속 줄어들던 예전 문제(dus5_init ※)를 되풀이하지 않게.
+  # 307 이 비었거나(0) 2~100 밖이면 100 % 로 본다.
+  sv_ratio = read_port_register(307, True)
+  if (sv_ratio < 2 or sv_ratio > 100):
+    sv_ratio = 100
+  end
+  sv_vmax = v_scan * sv_ratio / 100.0
   sv_tp = controller_timestamp()
   while (sv_set < sv_nset):
     sv_tn = controller_timestamp()
@@ -116,11 +129,11 @@ def sr_servo_arc(end_pose):
       sv_h = sv_dt
     end
     sv_stp = press_rate * 0.001 * sv_h
-    # 1) 진행 — 사다리꼴 속도(a_scan, v_scan). 남은 거리로 감속한다.
+    # 1) 진행 — 사다리꼴 속도(a_scan, sv_vmax). 남은 거리로 감속한다.
     if (sv_s < sv_tot):
       v_top = sqrt(2.0 * a_scan * (sv_tot - sv_s))
-      if (v_top > v_scan):
-        v_top = v_scan
+      if (v_top > sv_vmax):
+        v_top = sv_vmax
       end
       if (v_top < 0.002):
         v_top = 0.002

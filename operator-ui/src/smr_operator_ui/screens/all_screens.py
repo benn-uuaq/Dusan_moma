@@ -718,7 +718,7 @@ class SettingsMenuScreen(BaseScreen):
         super().__init__("설정 / 진단", "장비 설정과 운전 기록을 관리합니다.")
         self.setObjectName("SettingsScreen")
         grid=QGridLayout(); grid.setSpacing(14); self.body.addLayout(grid,1)
-        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","로봇·PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·ERUT 브로커"),("system","시스템 설정","장비·기록 위치·보존 기간"),("cobot","Cobot 설정","검사 작업 슬롯"),("tpac_bridge","TPAC 설정 / TCP 인코딩","로봇 값을 외부 Modbus로 중계"),("errors","오류 로그","활성 오류 해제·과거 기록"),("logs","로그 파일","기록 파일 보기·내보내기·삭제"),("modes","운전 모드 저장","작업 조건 묶음 저장·불러오기"))
+        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","로봇·PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·ERUT"),("system","시스템 설정","장비·기록 위치·보존 기간"),("cobot","Cobot 설정","검사 작업 슬롯"),("tpac_bridge","TPAC 설정 / TCP 인코딩","로봇 값을 외부 Modbus로 중계"),("errors","오류 로그","활성 오류 해제·과거 기록"),("logs","로그 파일","기록 파일 보기·내보내기·삭제"),("modes","운전 모드 저장","작업 조건 묶음 저장·불러오기"))
         for i,(key,title,desc) in enumerate(items):
             # key를 기본 인자로 고정한다. 그렇지 않으면 모든 lambda가
             # 반복문의 마지막 key만 참조하게 된다.
@@ -1064,8 +1064,19 @@ class CobotSettingsScreen(FormScreen):
     # 값을 꺼낼 때도 이 이름을 쓴다.
     SPEED_FIELD = "작업 속도"
     RATIO_FIELD = "속도 비율"
+    #: 스캔 상승 높이 제한 — ㄹ자 한 줄을 끝내고 위로 올라가는 최대 높이 [mm].
+    #: 프로브의 유효 세로 커버라 EOAT 종류마다 다르다. 작업을 시작할 때 로봇
+    #: 레지스터 263(태스크 변수 scan_h)으로 간다.
+    SCAN_RISE_FIELDS = {5: "스캔 상승 높이 제한 5축", 8: "스캔 상승 높이 제한 8축"}
+    #: 처음 값 — services/job_sequencer.PROBE_COVERAGE_MM 의 세로값과 같다.
+    SCAN_RISE_DEFAULTS = {5: 30.0, 8: 167.5}
+    #: 장착 EOAT(검사장비) 종류 — (로봇 eoat_type 값, 화면 문구). 로봇 레지스터 264 로
+    #: 간다. 0 이면 오프셋 없이 툴 플랜지 그대로 돈다.
+    EOAT_CHOICES = ((0, "없음 (툴 플랜지)"), (5, "5축 십자형"), (8, "8축 직사각"))
 
     task_refresh_requested = pyqtSignal()
+    #: 장착 EOAT 를 목록에서 골랐다(0 · 5 · 8). 고르는 즉시 나간다.
+    eoat_changed = pyqtSignal(int)
     # 논센서 태스크를 쓸지. 센서 없이 시험할 때만 켠다(기본은 센서판).
     nosensor_changed = pyqtSignal(bool)
     # 불러올 태스크 버전(로봇 폴더 이름). 사용자가 목록에서 고를 때만 나간다.
@@ -1103,16 +1114,39 @@ class CobotSettingsScreen(FormScreen):
         version_layout = QHBoxLayout(version_row)
         version_layout.setContentsMargins(0, 0, 0, 0)
         version_layout.addWidget(self.task_version_combo, 1)
+        # 장착 EOAT. 값은 작업 영역 설정(work_area.eoat_type)에 하나만 둔다 — 폼
+        # 필드로 두면 cobot 설정에도 따로 저장돼 두 곳이 어긋난다(태스크 선택과 같은
+        # 까닭으로 줄 위젯으로 감싼다). 그래서 '저장'이 아니라 고르는 즉시 적용된다.
+        self.eoat_combo = TouchComboBox()
+        for _probes, text in self.EOAT_CHOICES:
+            self.eoat_combo.addItem(text)
+        eoat_row = QWidget()
+        eoat_layout = QHBoxLayout(eoat_row)
+        eoat_layout.setContentsMargins(0, 0, 0, 0)
+        eoat_layout.addWidget(self.eoat_combo, 1)
+        rise_fields = []
+        for probes, label in self.SCAN_RISE_FIELDS.items():
+            box = TouchDoubleSpinBox()
+            box.setRange(1.0, 500.0)
+            box.setDecimals(1)
+            box.setSuffix(" mm")
+            box.setValue(self.SCAN_RISE_DEFAULTS[probes])
+            rise_fields.append((label, box))
         super().__init__(
             "cobot","Cobot 설정",
             "작업 슬롯과 속도를 관리합니다. 작업 속도는 movel 속도로 안전 기준상 "
-            "최대 100 mm/s(가속도 400 mm/s²)이고, 속도 비율은 로봇 전체 속도에 곱해집니다(2~100 %).",
+            "최대 100 mm/s(가속도 400 mm/s²)이고, 속도 비율은 로봇 전체 속도에 곱해집니다(2~100 %). "
+            "스캔 상승 높이 제한은 ㄹ자 한 줄을 끝내고 위로 올라가는 최대 높이(프로브 유효 "
+            "세로 커버)로, 장착한 EOAT 의 값이 작업을 시작할 때 로봇에 갑니다. "
+            "장착 EOAT 는 고르는 즉시 로봇에 갑니다(작업 중에는 바꿀 수 없습니다).",
             [
                 ("현재 태스크",task_row),
                 ("태스크 선택",version_row),
                 ("태스크 판",self.nosensor_check),
                 (self.SPEED_FIELD,spin(100,1,100)),
                 (self.RATIO_FIELD,spin(100,2,100)),
+                ("장착 EOAT",eoat_row),
+                *rise_fields,
                 ("연결 상태",QLabel("● 연결됨")),
                 ("마지막 응답",QLabel("12 ms")),
             ],
@@ -1121,6 +1155,34 @@ class CobotSettingsScreen(FormScreen):
         self.nosensor_check.toggled.connect(self.nosensor_changed)
         self.task_version_combo.activated.connect(
             lambda index: self.task_version_changed.emit(self.task_version_combo.itemText(index)))
+        self.eoat_combo.activated.connect(
+            lambda index: self.eoat_changed.emit(self.EOAT_CHOICES[index][0]))
+
+    def eoat_type(self) -> int:
+        """지금 고른 장착 EOAT (0 = 없음, 5 = 5축 십자형, 8 = 8축 직사각)."""
+        return self.EOAT_CHOICES[max(self.eoat_combo.currentIndex(), 0)][0]
+
+    def set_eoat_type(self, probes) -> None:
+        """저장된 값으로 목록을 맞춘다. 신호는 내지 않는다(불러오기용).
+
+        모르는 값이면 '없음'으로 둔다 — 로봇도 5 · 8 이 아니면 오프셋을 안 쓴다.
+        """
+        try:
+            probes = int(float(probes or 0))
+        except (TypeError, ValueError):
+            probes = 0
+        index = next((i for i, (value, _text) in enumerate(self.EOAT_CHOICES)
+                      if value == probes), 0)
+        self.eoat_combo.blockSignals(True)
+        self.eoat_combo.setCurrentIndex(index)
+        self.eoat_combo.blockSignals(False)
+
+    def scan_rise_mm(self, probes: int) -> float:
+        """EOAT 종류(5 · 8축)의 스캔 상승 높이 제한 [mm]. 모르는 종류면 0."""
+        label = self.SCAN_RISE_FIELDS.get(int(probes))
+        if label is None:
+            return 0.0
+        return float(self.values().get(label) or 0.0)
 
     def task_version(self) -> str:
         """지금 고른 태스크 버전 (예: "dusan_v4")."""
@@ -1165,7 +1227,7 @@ class ConnectionSettingsScreen(FormScreen):
     #: 차량이 안 움직이는 이유를 알기 어렵다(실제로 그렇게 헤맸다).
     vehicle_mode_changed = pyqtSignal(str)
 
-    """협동로봇, 차량용 PLC, ERUT 브로커의 연결 정보를 한 화면에서 설정한다.
+    """협동로봇, 차량용 PLC, ERUT 의 연결 정보를 한 화면에서 설정한다.
 
     로봇 연결/연결 해제도 **이 화면에서만** 한다. 예전에는 Cobot 수동 제어와
     TPAC 설정이 각자 연결 버튼을 갖고 있어서, 어느 화면에서 무엇에 붙어
@@ -1184,7 +1246,8 @@ class ConnectionSettingsScreen(FormScreen):
         "ERUT 장치 ID": "장치 ID", "ERUT 계정": "계정", "ERUT 비밀번호": "비밀번호",
     }
 
-    #: 값이 바뀌면 브로커를 다시 잡는 ERUT 항목.
+    #: 값이 바뀌면 ERUT 에 다시 붙는 항목. 비워 둘 수 있다 — 주소나 장치 ID 가
+    #: 비어 있으면 ERUT 에 붙지 않는다(RCS 단독).
     ERUT_FIELDS = ("ERUT Broker 주소", "ERUT 포트", "ERUT 장치 ID",
                    "ERUT 계정", "ERUT 비밀번호")
 
@@ -1215,12 +1278,13 @@ class ConnectionSettingsScreen(FormScreen):
                 ("PLC 포트",spin(5000,1,65535)),
                 ("PLC 프로토콜",plc_protocol),
                 ("PLC 국번",spin(1,0,255)),
-                # 외부 통신은 ERUT 브로커 하나다(사내 MC MQTT 는 2026-10-07 에 뺐다).
-                # 지금은 ERUT 시험 브로커, 나중에는 랜선으로 ERUT 쪽 PC 에 붙는다.
-                ("ERUT 브로커",None),
-                ("ERUT Broker 주소",line("127.0.0.1")),
+                # 외부 통신은 ERUT MQTT 하나다(사내 MC MQTT 는 2026-10-07 에 뺐다).
+                # 접속 정보는 ERUT 가 알려 준다(나중에는 랜선으로 ERUT 쪽 PC). 비어
+                # 있으면 붙지 않는다 — 예전에는 127.0.0.1 로 붙었다(2026-10-14).
+                ("ERUT 접속",None),
+                ("ERUT Broker 주소",line("")),
                 ("ERUT 포트",spin(1883,1,65535)),
-                ("ERUT 장치 ID",line("robot1")),
+                ("ERUT 장치 ID",line("")),
                 # 계정은 ERUT 가 정해 알려 준다. 비밀번호는 화면에 보이지 않게.
                 ("ERUT 계정",line("")),
                 ("ERUT 비밀번호",_password_line()),
@@ -1245,12 +1309,12 @@ class ConnectionSettingsScreen(FormScreen):
         self._action_row.insertSpacing(1, 12)   # 상태 글자와 버튼이 붙지 않게
 
     def erut_endpoint(self) -> dict:
-        """ERUT 브로커 접속 값."""
+        """ERUT 접속 값. 주소 · 장치 ID 는 비어 있을 수 있다(그러면 붙지 않는다)."""
         values = self.values()
         return {
             "host": str(values.get("ERUT Broker 주소", "")).strip(),
             "port": int(values.get("ERUT 포트") or 1883),
-            "device_id": str(values.get("ERUT 장치 ID", "")).strip() or "robot1",
+            "device_id": str(values.get("ERUT 장치 ID", "")).strip(),
             "username": str(values.get("ERUT 계정", "")).strip(),
             "password": str(values.get("ERUT 비밀번호", "")),
         }

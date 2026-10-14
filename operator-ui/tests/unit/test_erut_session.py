@@ -100,9 +100,9 @@ def _prepare(s, req_id="p1", job_id="jb1", area=AREA, scan=SCAN, surface="outer"
                            surface=surface, area=area, scan=scan, **extra))
 
 
-def _start(s, req_id="s1", job_id="jb1", area=AREA, scan=SCAN):
+def _start(s, req_id="s1", job_id="jb1", area=AREA, scan=SCAN, **extra):
     s.handle_request(*_req("start", req_id=req_id, job_id=job_id,
-                           surface="outer", area=area, scan=scan))
+                           surface="outer", area=area, scan=scan, **extra))
 
 
 def _codes(client, action):
@@ -231,11 +231,11 @@ def test_same_req_id_is_not_run_twice(session):
     s, client, _seq = session
     jobs: list = []
     s.job_requested.connect(jobs.append)
-    _prepare(s, req_id="dup")
-    _prepare(s, req_id="dup")
+    _start(s, req_id="dup")
+    _start(s, req_id="dup")
 
     assert len(jobs) == 1
-    assert _codes(client, "prepare") == [202, 202]
+    assert _codes(client, "start") == [202, 202]
 
 
 def _calibrate(s, req_id="cal-001", diameter=1690):
@@ -400,56 +400,48 @@ def test_losing_the_frame_raises_calibration_lost(session):
 
 
 # ---- prepare · start (탭3 ③④) -------------------------------------------------
-def _ready(s, seq):
-    """시퀀서가 차량·리프트를 구간 자리에 세웠다(READY)."""
-    seq._set_state(SequencerState.READY)
-    s.notify_prepared()
-
-
-def test_prepare_moves_only_the_vehicle_then_reports_ready(session):
-    """prepare 는 차량·리프트만 세운다 — 로봇 3점 측정은 start 에서 한다."""
-    s, client, seq = session
-    jobs: list[tuple] = []
-    s.job_requested.connect(lambda plan, prepare_only: jobs.append(prepare_only))
+# prepare 는 작업 값만 확인해 두고 바로 evt/ready, start 가 차량 이동 → 아웃트리거
+# 고정 → 리프트 → 로봇을 한 번에 한다(2026-10-14).
+def test_prepare_only_checks_the_values_then_reports_ready(session):
+    """prepare 는 아무것도 움직이지 않는다 — 값을 확인해 두고 바로 준비 완료."""
+    s, client, _seq = session
+    jobs: list = []
+    s.job_requested.connect(lambda plan, prepare_only: jobs.append(plan))
     _prepare(s)
+
     assert client.res[-1]["status_code"] == 202
-    assert jobs == [True], "준비만 — 로봇은 시작하지 않는다"
-    assert s.activity_state() == "preparing"
-    assert client.status[-1]["activity"] == "preparing"
-    assert client.events == []
-
-    _ready(s, seq)
-
+    assert jobs == [], "prepare 에서 차량·리프트를 움직였다"
     name, evt = client.events[-1]
     assert (name, evt["req_id"], evt["action"], evt["job_id"]) == (
         "ready", "p1", "prepare", "jb1")
     assert s.activity_state() == "ready"
     assert client.status[-1]["activity"] == "ready"
 
+
 def test_ready_is_sent_once_per_prepare(session):
-    """준비 중 멈췄다 이어 가도 ready 는 처음 prepare 의 번호로 한 번만."""
-    s, client, seq = session
+    """같은 prepare 가 다시 와도(재전송) ready 는 한 번만."""
+    s, client, _seq = session
     _prepare(s)
-    _ready(s, seq)
-    s.notify_prepared()
+    _prepare(s)
 
     assert len([e for e in client.events if e[0] == "ready"]) == 1
 
-def test_start_for_the_prepared_job_starts_the_robot(session, qtbot):
-    """준비된 구간의 start → 로봇 3점 측정 → 시작점에 붙으면 잠시 뒤 스캔으로."""
+
+def test_start_for_the_prepared_job_runs_the_whole_sequence(session, qtbot):
+    """준비된 구간의 start → 차량부터 로봇까지 한 번에 → 시작점에 붙으면 잠시 뒤 스캔."""
     s, client, seq = session
-    proceeds: list[int] = []
+    jobs: list = []
     gates: list[int] = []
-    s.proceed_requested.connect(lambda: proceeds.append(1))
+    s.job_requested.connect(lambda plan, prepare_only: jobs.append((plan, prepare_only)))
     s.scan_go_requested.connect(lambda: gates.append(1))
     _prepare(s)
-    _ready(s, seq)
 
     _start(s)
 
     assert client.res[-1]["status_code"] == 202
-    assert proceeds == [1]
-    assert gates == []
+    assert len(jobs) == 1 and jobs[0][1] is False, "start 가 차량부터 돌리지 않았다"
+    assert jobs[0][0].cell_width == 600
+    assert s.job_id == "jb1"
     # 3점 측정을 마치고 시작점에 붙었다 — 물이 나올 틈을 두고 대기를 푼다.
     seq._set_state(SequencerState.SCANNING)
     s.notify_at_origin()
@@ -462,6 +454,7 @@ def test_start_for_the_prepared_job_starts_the_robot(session, qtbot):
         "complete", "s1", "start", "jb1")
     assert "scanned_distance_mm" in evt and "scanned_distance" not in evt
     assert "battery" not in evt
+    assert s._prepared is False and s.job_id == "jb1"
 
 
 def test_abort_before_the_contact_lead_keeps_the_robot_at_the_start(session, qtbot):
@@ -478,22 +471,18 @@ def test_abort_before_the_contact_lead_keeps_the_robot_at_the_start(session, qtb
 
 def test_start_for_another_job_drops_the_prepared_one(session):
     """앞 구역 완료를 못 받은 채 다음 구역이 오면 준비를 버리고 새로 돈다."""
-    s, client, seq = session
-    proceeds: list[int] = []
+    s, client, _seq = session
     drops: list[int] = []
     jobs: list = []
-    s.proceed_requested.connect(lambda: proceeds.append(1))
     s.job_dropped.connect(lambda: drops.append(1))
     s.job_requested.connect(lambda plan, prepare_only: jobs.append((plan, prepare_only)))
     _prepare(s)
-    _ready(s, seq)
-    s.job_dropped.connect(lambda: seq._set_state(SequencerState.STOPPED))
 
     _start(s, req_id="s2", job_id="jb2",
            area={"start": {"x": 580, "y": 0}, "end": {"x": 1180, "y": 800}})
 
     assert client.res[-1]["status_code"] == 202
-    assert proceeds == [] and drops == [1]
+    assert drops == [1]
     assert jobs[-1][0].origin_x == 580 and jobs[-1][1] is False
     assert s.job_id == "jb2"
 
@@ -513,11 +502,12 @@ def test_start_without_prepare_goes_all_the_way(session, qtbot):
     assert not [e for e in client.events if e[0] == "ready"]
 
 def test_prepare_is_refused_while_a_section_is_running(session):
-    s, client, _seq = session
-    _prepare(s, req_id="p1")
+    s, client, seq = session
+    _start(s, req_id="s1")
+    seq._set_state(SequencerState.SCANNING)
     _prepare(s, req_id="p2", job_id="jb2")
 
-    assert _codes(client, "prepare") == [202, 409]
+    assert (client.res[-1]["status_code"], client.res[-1]["error"]["code"]) == (409, "E6101")
 
 
 def test_prepare_in_ready_replaces_the_prepared_job(session):
@@ -527,13 +517,12 @@ def test_prepare_in_ready_replaces_the_prepared_job(session):
     s.job_dropped.connect(lambda: drops.append(1))
     s.job_dropped.connect(lambda: seq._set_state(SequencerState.STOPPED))
     _prepare(s, req_id="p1")
-    _ready(s, seq)
 
     _prepare(s, req_id="p2", job_id="jb2")
 
     assert _codes(client, "prepare") == [202, 202]
     assert drops == [1]
-    assert s.activity_state() == "preparing"
+    assert s.activity_state() == "ready" and s.job_id == "jb2"
 
 def test_prepare_and_start_need_calibration(session):
     s, client, _seq = session
@@ -551,8 +540,8 @@ def test_area_origin_and_overlap_make_the_grid_position(session):
     s, _client, _seq = session
     jobs: list = []
     s.job_requested.connect(jobs.append)
-    _prepare(s, area={"start": {"x": 1160, "y": 780}, "end": {"x": 1760, "y": 1580}},
-             scan={"pitch": 20, "speed": 100})
+    _start(s, area={"start": {"x": 1160, "y": 780}, "end": {"x": 1760, "y": 1580}},
+           scan={"pitch": 20, "speed": 100})
 
     plan = jobs[0]
     assert (plan.origin_x, plan.origin_y) == (1160, 780)
@@ -568,7 +557,7 @@ def test_old_plan_block_is_ignored(session):
     s, _client, _seq = session
     jobs: list = []
     s.job_requested.connect(jobs.append)
-    _prepare(s, plan={"cell_width": 999, "cell_height": 999, "columns": 12})
+    _start(s, plan={"cell_width": 999, "cell_height": 999, "columns": 12})
 
     assert (jobs[0].cell_width, jobs[0].cell_height) == (600, 800)
     assert (jobs[0].column_count, jobs[0].row_count) == (1, 1)
@@ -639,7 +628,7 @@ def test_status_goes_out_at_once_when_activity_changes(session):
     _prepare(s)
 
     assert len(client.status) == before + 1
-    assert client.status[-1]["activity"] == "preparing"
+    assert client.status[-1]["activity"] == "ready"
     assert client.status[-1]["job_id"] == "jb1"
 
 
@@ -904,11 +893,11 @@ def test_warning_does_not_stop_the_work(session):
     stops: list[int] = []
     s.robot_stop_requested.connect(lambda: stops.append(1))
     _prepare(s)
-    s.raise_error({"code": "E5001", "name": "COUPLANT_LOW",
+    s.raise_error({"code": "E9502", "name": "COUPLANT_LOW",
                    "level": "warning", "recovery": "auto"})
 
     assert stops == []
-    assert s.activity_state() == "preparing"
+    assert s.activity_state() == "ready"
 
 
 def test_stop_level_fault_fails_the_section_with_5xx(session):
@@ -939,13 +928,14 @@ def test_stop_level_fault_fails_the_section_with_5xx(session):
 def test_estop_ends_the_section_and_reset_returns_to_idle(session):
     """if-0.4: 비상정지 때 하던 구간은 끝난 것으로 보고 이어 가지 않는다."""
     s, client, _seq = session
-    _prepare(s)
+    _start(s)
     s.raise_error({"code": "E1002", "name": "E_STOP", "level": "estop",
                    "recovery": "reset_required"})
     assert s.activity_state() == "estop"
-    # 준비 실패는 evt/ready 가 아니라 evt/complete(action=prepare) 5xx 다.
+    # 하던 구역은 실패로 끝낸다 — 까닭은 비상정지다.
     name, evt = client.events[-1]
-    assert (name, evt["action"], evt["status_code"]) == ("complete", "prepare", 500)
+    assert (name, evt["action"], evt["status_code"]) == ("complete", "start", 500)
+    assert evt["error"]["code"] == "E1002"
 
     _prepare(s, req_id="p2")
     assert (client.res[-1]["status_code"], client.res[-1]["error"]["code"]) == (409, "E6103")
@@ -1110,14 +1100,14 @@ def test_local_stop_of_a_started_section_tells_erut(session):
     assert (name, evt["action"], evt["status_code"]) == ("complete", "start", 500)
 
 
-def test_local_stop_before_ready_fails_the_prepare_in_complete(session):
-    """evt/ready 는 성공 전용이다 — 준비 실패는 evt/complete(action=prepare)."""
+def test_local_stop_after_prepare_drops_the_values_quietly(session):
+    """prepare 는 이미 evt/ready 로 끝났다 — RCS 에서 멈추면 값만 버리고 idle."""
     s, client, _seq = session
     _prepare(s)
     s.interrupt_active_job()
 
-    name, evt = client.events[-1]
-    assert (name, evt["action"], evt["status_code"]) == ("complete", "prepare", 500)
+    assert [e[0] for e in client.events] == ["ready"]
+    assert s.activity_state() == "idle"
 
 
 def test_local_stop_without_an_erut_job_says_nothing(session):
@@ -1200,7 +1190,7 @@ def test_area_wider_than_the_robot_can_reach_is_refused(session):
     assert refused[0]["error"]["code"] == "E6002" and refused[0]["error"]["max_width"] == 721
     assert "reason" not in refused[0], "if-0.9 에서 거절 응답의 reason 칸은 없앴다"
 
-    _prepare(s, req_id="p-ok")             # 600 mm 는 된다
+    _start(s, req_id="s-ok")               # 600 mm 는 된다
     assert len(jobs) == 1
 
 
@@ -1273,7 +1263,8 @@ def test_late_work_request_is_refused_as_expired(session):
     assert client.res[-1]["status_code"] == 200
 
     _prepare(s, req_id="no-time")                   # 시각 없음 — 받는다
-    assert client.res[-1]["status_code"] == 202 and len(jobs) == 1
+    assert client.res[-1]["status_code"] == 202
+    assert s.activity_state() == "ready"
 
 
 def test_resume_without_paused_work_is_not_resumable(session):
@@ -1307,7 +1298,7 @@ def test_seam_crossing_area_is_accepted_and_reported_wrapped(session):
     s.area_diameter = lambda: 1690.0
     seam = {"start": {"x": 5159, "y": 0}, "end": {"x": 5359, "y": 600}}
 
-    _prepare(s, req_id="p-seam", job_id="jb-F25", area=seam)
+    _start(s, req_id="s-seam", job_id="jb-F25", area=seam)
 
     assert client.res[-1]["status_code"] == 202
     plan = jobs[-1]

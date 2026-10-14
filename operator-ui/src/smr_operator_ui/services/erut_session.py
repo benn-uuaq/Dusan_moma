@@ -10,10 +10,10 @@
     query     → res 200 (activity·resumable·calibrated·errors[]·last_job …)
     calibrate → res 202 → evt/complete (origin, calibration_error_mm, total_length_mm)
                 **차량(AGV) 캘리브레이션**: 모재 외벽을 따라 한 바퀴 돌며 좌표계(맵)를 잡는다
-    prepare   → res 202 → evt/ready  (차량·리프트를 구간 자리에 세움. 로봇은 홈 그대로)
-                (실패는 evt/complete action=prepare 5xx)
-    start     → res 202 → 로봇 3점 측정 → 시작점에 붙음 → evt/contact attached →
-                적심 → ㄹ자 스캔 → evt/progress … → evt/complete
+    prepare   → res 202 → evt/ready  (작업 값만 확인해 둔다 — 아무것도 움직이지 않는다)
+    start     → res 202 → 차량 이동 → 아웃트리거 고정 → 리프트 → 로봇 3점 측정 →
+                시작점에 붙음 → evt/contact attached → 적심 → ㄹ자 스캔 →
+                evt/progress … → evt/complete
     pause · abort · reset → res 2xx (「받았다」 — 섰는지는 evt/status 의 activity 로)
     resume    → res 202 (완료는 처음 요청의 req_id 로)
     mark      → res 202 → [evt/mark_ready → req/mark_next] × 점 → evt/complete
@@ -124,11 +124,10 @@ class ErutSession(QObject):
     """ERUT 요청을 받아 로봇·차량을 움직이고 표준대로 답한다."""
 
     activity = pyqtSignal(str)
-    # 작업 계획이 확정되어 순회를 시작해 달라는 요청 (app.py 가 시퀀서에 넘긴다)
-    # (GridPlan, 준비만 하는가) — prepare 면 차량·리프트만 세우고 로봇은 start 를 기다린다.
+    # 구역 검사를 시작해 달라는 요청 (app.py 가 시퀀서에 넘긴다) — start 를 받았을 때.
+    # (GridPlan, 준비만 하는가) — 지금은 늘 False 다: prepare 는 아무것도 움직이지
+    # 않고(2026-10-14), start 가 차량 → 아웃트리거 → 리프트 → 로봇을 한 번에 한다.
     job_requested = pyqtSignal(object, bool)
-    # 준비해 둔 구간에서 로봇을 시작해 달라는 요청(start). 3점 측정부터 한다.
-    proceed_requested = pyqtSignal()
     # 장애가 풀렸다(ERUT req/reset 또는 화면 알람 리셋). 푼 코드 목록.
     # 앱은 이걸 받아 쉬는 팔을 홈으로 거둔다(쉬는 동안 home — if-0.5/0.6).
     errors_cleared = pyqtSignal(list)
@@ -180,6 +179,8 @@ class ErutSession(QObject):
         # 번호로 낸다(resume 의 번호가 아니라 — 탭2 7·8행).
         self._prepare_req_id = ""
         self._ready_sent = False
+        # prepare 로 받은 작업 값을 확인해 두고 start 를 기다리는 중인가(activity ready).
+        self._prepared = False
         self._start_req_id = ""
         self._started_at = 0.0
         self._calibrate_req_id = ""
@@ -439,7 +440,7 @@ class ErutSession(QObject):
 
     def _is_ready(self) -> bool:
         """준비가 끝나 start 를 기다리는가 (activity = ready)."""
-        return self._at_origin or self.sequencer.state is SequencerState.READY
+        return self._prepared or self._at_origin
 
     def has_work(self) -> bool:
         """ERUT 가 시킨 일(캘리브레이션·준비·구간·마킹)이 걸려 있는가."""
@@ -596,9 +597,10 @@ class ErutSession(QObject):
 
     def _drop_prepared(self) -> None:
         """준비해 둔 구간을 버린다(ready 에서 새 요청이 왔을 때 — 탭9)."""
-        if not (self._at_origin or self._prepare_req_id):
+        if not (self._at_origin or self._prepare_req_id or self._prepared):
             return
         self._at_origin = False
+        self._prepared = False
         self._prepare_req_id = ""
         self._ready_sent = False
         self.activity.emit("준비해 둔 구간을 버리고 새 요청을 받습니다.")
@@ -707,11 +709,12 @@ class ErutSession(QObject):
 
     # ---- prepare ------------------------------------------------------------
     def _do_prepare(self, req_id: str, content: dict) -> None:
-        """구간 검사 준비 (탭1 7행): 차량·리프트를 구간 자리로 옮겨 세운다.
+        """구간 검사 준비 (탭1 7행) — **작업 값을 확인해 두기만 한다**(2026-10-14).
 
-        로봇은 홈에 그대로 있다 — 3점 측정은 start 에서 한다. 차량이 서고
-        아웃트리거가 고정되고 리프트가 높이에 서면(시퀀서 READY) `evt/ready`
-        를 낸다. 준비 중엔 activity 가 preparing 이다.
+        캘리브레이션을 마친 장비는 QR 영점에 서 있다. prepare 에서는 아무것도
+        움직이지 않는다 — area · scan 값과 좌표계 · 크기 한계를 확인해 보관하고
+        바로 evt/ready 를 낸다(activity ready). start 를 받으면 그때 차량 이동 →
+        아웃트리거 고정 → 리프트 → 로봇 순으로 간다.
         """
         plan = self._validated_plan(req_id, "prepare", content)
         if plan is None:
@@ -723,47 +726,50 @@ class ErutSession(QObject):
         self._drop_prepared()
         self._begin_job(content, plan)
         self._prepare_req_id = req_id
-        self._ready_sent = False
+        self._prepared = True
         self._answer(req_id, "prepare", 202)
+        self.client.publish_event("ready", req_id, "prepare", job_id=self._job_id)
+        self._ready_sent = True
         self.activity.emit(
-            f"ERUT 검사 준비 ({self._job_id}) — 차량·리프트를 구간 자리에 세웁니다.")
-        self.job_requested.emit(plan, True)
+            f"ERUT 검사 준비 ({self._job_id}) — 구역 x {plan.origin_x:.0f}~"
+            f"{plan.origin_x + plan.cell_width:.0f} · y {plan.origin_y:.0f}~"
+            f"{plan.origin_y + plan.cell_height:.0f} mm 를 확인했습니다. start 를 받으면 차량부터 움직입니다.")
 
     # ---- start --------------------------------------------------------------
     def _do_start(self, req_id: str, content: dict) -> None:
         """구간 검사 실행 (탭1 8행). 매번 그 구간의 좌표·스캔 값 전체가 온다.
 
-        준비해 둔 **같은 구간**이면 원점 대기를 풀어 바로 스캔한다. 다른 구간이면
-        (앞 구역 완료를 못 받은 채 다음 구역이 온 경우 등) 준비를 버리고 새로
-        돈다 — 엉뚱한 자리에서 다른 구역 이름으로 검사하지 않게.
+        차량 이동 → 아웃트리거 고정 → 리프트 → 로봇(3점 측정 → 적심 → 스캔)을
+        한 번에 한다. 준비해 둔 **같은 구간**이면 start 의 값으로 이어 가고(값이
+        없으면 준비해 둔 값), 다른 구간이면(앞 구역 완료를 못 받은 채 다음 구역이
+        온 경우 등) 준비를 버리고 새로 돈다 — 다른 구역 이름으로 검사하지 않게.
+        prepare 없이 온 start 도 같다(「prepare 가 없으면 query 다음에 바로 start」).
         """
         job_id = str(content.get("job_id", "")).strip()
-        if self._is_ready() and (not job_id or job_id == self._job_id):
-            self._at_origin = False
-            self._answer(req_id, "start", 202)
-            self._start_req_id = req_id
-            self._started_at = time.time()
-            self._progress = 0
-            self._moved_mm = 0
-            self.activity.emit("ERUT 구간 검사 시작 — 로봇 3점 측정부터 합니다.")
-            self.proceed_requested.emit()
-            return
-
-        plan = self._validated_plan(req_id, "start", content)
-        if plan is None:
-            return
+        same = self._prepared and (not job_id or job_id == self._job_id)
+        if same and not content.get("area"):
+            plan = self._plan
+        else:
+            plan = self._validated_plan(req_id, "start", content)
+            if plan is None:
+                return
         if self._refuse_by_state(req_id, "start"):
             return
         if self._needs_calibration(req_id, "start"):
             return
-        self._drop_prepared()
-        # prepare 없이 온 start — 표준상 「prepare 가 없으면 query 다음에 바로
-        # start」다. 차량 정렬부터 3점 측정·스캔까지 한 번에 간다.
-        self._begin_job(content, plan)
+        if same:
+            self._plan = plan
+            self._apply_speed(content)
+            self._prepared = False
+        else:
+            self._drop_prepared()
+            self._begin_job(content, plan)
         self._start_req_id = req_id
         self._started_at = time.time()
+        self._progress = 0
+        self._moved_mm = 0
         self._answer(req_id, "start", 202)
-        self.activity.emit(f"ERUT 구간 검사 시작 ({self._job_id}) — 차량 정렬부터")
+        self.activity.emit(f"ERUT 구간 검사 시작 ({self._job_id}) — 차량 이동부터")
         self.job_requested.emit(plan, False)
 
     def _begin_job(self, content: dict, plan: GridPlan) -> None:
@@ -827,21 +833,6 @@ class ErutSession(QObject):
         return plan
 
     # ---- 원점 도착 ------------------------------------------------------------
-    def notify_prepared(self) -> None:
-        """차량·리프트가 구간 자리에 섰다(시퀀서 READY). prepare 의 완료 통보.
-
-        evt/ready 는 처음 받은 prepare 의 req_id 로 한 번만 낸다(준비 중 멈췄다
-        이어 간 경우도 같은 번호 — 탭2 7행).
-        """
-        if not self._prepare_req_id or self._start_req_id:
-            return
-        if not self._ready_sent:
-            self.client.publish_event("ready", self._prepare_req_id, "prepare",
-                                      job_id=self._job_id)
-            self._ready_sent = True
-            self.activity.emit("ERUT 에 준비 완료(evt/ready)를 알렸습니다 — start 대기.")
-        self.refresh_status()
-
     def notify_at_origin(self) -> None:
         """로봇이 3점 측정을 마치고 시작점에 붙어 섰다(레지스터 290 = 7).
 
@@ -956,6 +947,7 @@ class ErutSession(QObject):
         self._record_last(req_id, "start", 200, job_id=self._job_id)
         self._prepare_req_id = ""
         self._ready_sent = False
+        self._prepared = False
         self.activity.emit("ERUT 구간 검사 완료를 발행했습니다.")
         self.refresh_status()
 
@@ -1050,6 +1042,7 @@ class ErutSession(QObject):
         self._prepare_req_id = self._start_req_id = ""
         self._calibrate_req_id = self._mark_req_id = self._home_req_id = ""
         self._ready_sent = False
+        self._prepared = False
         self._at_origin = False
         self._paused_work = ""
         self._home_timer.stop()

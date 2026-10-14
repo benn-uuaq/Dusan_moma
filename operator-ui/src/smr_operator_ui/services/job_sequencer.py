@@ -115,10 +115,10 @@ class GridPlan:
     # RCS '검사 시작'처럼 격자를 우리가 도는 경우는 0 이다.
     origin_x: float = 0.0
     origin_y: float = 0.0
-    # 검사면 x(둘레 위 거리) → 차량 주행 거리 배율. 차량은 모재에서 떨어진 바깥
-    # 궤적을 돌아 같은 각도라도 더 달린다 — 캘리브레이션 한 바퀴의 실측 거리 ÷
-    # 검사면 둘레(π × 지름)다. 한 바퀴를 재기 전에는 1.
-    vehicle_scale: float = 1.0
+    # 스캔 상승 높이 제한 [mm] — ㄹ자 한 줄을 끝내고 위로 올라가는 최대 높이
+    # (= 프로브 유효 세로 커버, 로봇 scan_h). RCS Cobot 설정에서 EOAT 종류별로
+    # 넣는다(2026-10-12). 0 이면 PROBE_COVERAGE_MM 의 기본값을 쓴다.
+    scan_rise_mm: float = 0.0
 
     @property
     def eoat_size(self) -> tuple[float, float]:
@@ -126,8 +126,12 @@ class GridPlan:
 
         가로는 호 방향, 세로는 리프트 방향이다. 세로값이 곧 ㄹ자 up 동작의
         **최대 상승량**이다 — 자세한 건 PROBE_COVERAGE_MM 주석 참고.
+        Cobot 설정의 스캔 상승 높이 제한(scan_rise_mm)이 있으면 세로값은 그 값이다.
         """
-        return PROBE_COVERAGE_MM.get(int(self.eoat_probes), (0.0, 0.0))
+        width, height = PROBE_COVERAGE_MM.get(int(self.eoat_probes), (0.0, 0.0))
+        if height > 0 and self.scan_rise_mm > 0:
+            height = float(self.scan_rise_mm)
+        return width, height
 
     @property
     def total_cells(self) -> int:
@@ -147,10 +151,12 @@ class GridPlan:
     # ---- ERUT area → 차량 · 리프트 자리 ----------------------------------
     # ERUT 의 area 는 검사면 좌표 그대로다 — 노트북이 구역끼리의 겹침을 이미
     # 넣어 놓는다(마지막 구역은 겹침만큼 이음매 너머까지, if-0.8 탭5 77행).
-    # 그래서 장비는 좌표를 고쳐 쓰지 않고(탭8 46행) 차량은 start.x, 리프트는
-    # start.y 로 간다(2026-10-12 결정 — 예전에는 구역 번호 × (길이 - 겹침)으로
-    # 덜 갔다). 차량 쪽만 궤적 배율(vehicle_scale)을 곱한다.
-    # RCS '검사 시작'처럼 원점이 0 이면 둘 다 0 이다.
+    # 그래서 장비는 좌표를 고쳐 쓰지 않는다(탭8 46행 · 2026-10-12 결정).
+    #   차량 = 로봇 중심(호 가운데)의 x. QR 영점에서 0 이다. 로봇은 중심에서
+    #          좌우로 가로/2 씩 훑으므로 차량은 **구역 가운데**(section_center_x)
+    #          로 간다(2026-10-13 — 0~150 구역이면 75). 궤적 배율 · 이음매 감기는
+    #          app.py `_vehicle_x` 가 한다.
+    #   리프트 = start.y. 로봇은 그 높이에서 위로 훑는다.
     @property
     def section_column(self) -> int:
         """area 원점이 전체 격자의 몇 번째 열인가(0 부터) — 화면 · 기록 이름용."""
@@ -166,9 +172,9 @@ class GridPlan:
         return max(0, int(round(self.origin_y / self.lift_pitch)))
 
     @property
-    def vehicle_offset_mm(self) -> float:
-        """이 구간에 서려면 차량이 원점(캘리브레이션 0)에서 갈 거리 [mm]."""
-        return self.origin_x * self.vehicle_scale
+    def section_center_x(self) -> float:
+        """구역 가운데의 검사면 x [mm] — 로봇 중심이 여기 오게 차량을 세운다."""
+        return self.origin_x + self.cell_width / 2.0
 
     @property
     def lift_offset_mm(self) -> float:

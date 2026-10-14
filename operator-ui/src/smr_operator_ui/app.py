@@ -61,7 +61,7 @@ from smr_operator_ui.services.vehicle_adapters import (
     VehicleAmrAdapter, VehicleLiftAdapter, VehicleOutriggerAdapter,
 )
 from smr_operator_ui.services.vehicle_client import VehicleClient
-from smr_operator_ui.services.job_sequencer import CellStatus
+from smr_operator_ui.services.job_sequencer import PROBE_COVERAGE_MM, CellStatus
 from smr_operator_ui.services.erut_session import (
     CONTACT_LEAD_MS,
     HOME_BUSY_TEXT,
@@ -217,7 +217,8 @@ class TopBar(QFrame):
         # PLC 는 아직 실제 연결 신호가 붙어 있지 않은 자리표시자라 항상
         # "연결됨"으로 둔다(placeholder — 차량 제어 노드가 PLC 와 붙으면 잇는다).
         # AMR 은 차량 상태(online)를 받는다. UT 표시는 실제 통신이 없어 뺐다
-        # (2026-10-07 — 초음파 장비와는 TPAC 로 붙는다). Cobot은 ros_status의
+        # (2026-10-07 — 초음파 장비와는 TPAC 로 붙는다). ERUT 는 맨 끝에 둔다.
+        # Cobot은 ros_status의
         # connected_changed 신호로 실제 상태를 받으므로 TPAC과 마찬가지로
         # "연결 안 됨"에서 시작해, 실제 연결이 확인돼야 초록으로 바뀐다
         # (버그 리포트: "Cobot 실제로 연결 안되어 있는데 연결됨으로 뜸").
@@ -233,6 +234,10 @@ class TopBar(QFrame):
         tpac_badge = ConnectionBadge("TPAC", initial_connected=False)
         self.badges["TPAC"] = tpac_badge
         layout.addWidget(tpac_badge)
+        # ERUT — RCS 가 ERUT MQTT 에 붙어 있는가(외부 통신은 이것 하나다).
+        erut_badge = ConnectionBadge("ERUT", initial_connected=False)
+        self.badges["ERUT"] = erut_badge
+        layout.addWidget(erut_badge)
         for badge in self.badges.values():
             for label in badge.findChildren(QLabel):
                 self._register_scalable(label, 20)
@@ -541,6 +546,8 @@ class OperatorWindow(QMainWindow):
         self.cobot_jog_screen.command_requested.connect(self._save_reference_pose)
         self.cobot_manual_screen.command_requested.connect(self._handle_cobot_command)
         self.screens["cobot"].save_requested.connect(self._send_linear_speed)
+        self.screens["cobot"].save_requested.connect(self._apply_scan_rise_setting)
+        self.screens["cobot"].eoat_changed.connect(self._apply_eoat_choice)
         self.screens["cobot"].task_refresh_requested.connect(
             lambda: self.ros_status.call_command("task_status")
         )
@@ -548,6 +555,7 @@ class OperatorWindow(QMainWindow):
         # 연결될 때 한 번 자동으로 물어 채워 둔다.
         self.robot_node = RobotNodeSupervisor(self)
         self.robot_node.activity.connect(self.main_screen.show_activity)
+        self.robot_node.duplicate_nodes.connect(self.cobot_manual_screen.add_alarm)
         self.ros_status.connected_changed.connect(
             lambda connected: self.ros_status.call_command("task_status") if connected else None
         )
@@ -624,6 +632,11 @@ class OperatorWindow(QMainWindow):
         self.erut_session.activity.connect(self.main_screen.show_activity)
         self.erut.activity.connect(self.main_screen.show_activity)
         self.erut.error_occurred.connect(self.main_screen.show_activity)
+        # 상단 ERUT 표시 — ERUT MQTT 에 붙었는가(접속 ID 충돌이면 그 사유).
+        self.erut.connected_changed.connect(self._show_erut_link)
+        self.erut.link_halted.connect(self._show_erut_link)
+        self.erut.link_halted.connect(self.cobot_manual_screen.add_alarm)
+        self._show_erut_link()
 
         # ERUT 요청 → 로봇 (진짜)
         self.erut_session.job_requested.connect(self._start_erut_job)
@@ -659,8 +672,6 @@ class OperatorWindow(QMainWindow):
         self.erut_session.calibration_requested.connect(self._run_calibration)
         self.erut_session.calibration_stop_requested.connect(self._pause_calibration_lap)
         self.erut_session.calibration_resume_requested.connect(self._resume_calibration_lap)
-        self.erut_session.proceed_requested.connect(self.sequencer.proceed)
-        self.sequencer.ready_reached.connect(self.erut_session.notify_prepared)
         self.ros_status.probe_result_changed.connect(self._on_probe_result)
         self.ros_status.probe_poses_changed.connect(self._on_probe_poses)
         # 원점에서 멈춰 선 로봇을 ERUT 의 "작업 시작"으로 풀어 준다.
@@ -675,6 +686,8 @@ class OperatorWindow(QMainWindow):
             release_hold=lambda: self.ros_status.send_value("mark_go", 1),
             parent=self,
         )
+        # 점이 로봇 중심(호 가운데)에 오게 차량을 세운다 — 구역과 같은 환산.
+        self.mark_runner.vehicle_x = self._vehicle_x
         self.mark_runner.activity.connect(self.main_screen.show_activity)
         self.mark_runner.finished.connect(self.erut_session.finish_mark)
         # 마커는 ERUT 것이다: 자리에 붙으면 evt/mark_ready, mark_next 가 오면 다음 점.
@@ -708,6 +721,21 @@ class OperatorWindow(QMainWindow):
         self._erut_start_pending = bool(start)
         if start:
             _call_later(self, ERUT_START_FALLBACK_MS, self._start_erut_link)
+
+    def _show_erut_link(self, *_args) -> None:
+        """상단 ERUT 표시를 지금 접속 상태로 맞춘다(2026-10-14 — 두 가지만).
+
+          연결됨      ERUT MQTT 에 붙었다
+          연결 안 됨  붙지 않았다(접속 정보 비어 있음 · 주소 · 계정 · 네트워크)
+          ID 중복     같은 장치 ID 의 다른 RCS 와 번갈아 끊겨 다시 붙기를 멈췄다
+        """
+        badge = self.top_bar.badges.get("ERUT")
+        if badge is None:
+            return
+        if self.erut.halted:
+            badge.set_state("ID 중복", "StatusDanger")
+        else:
+            badge.set_connected(self.erut.is_connected)
 
     def _start_erut_link(self) -> None:
         """ERUT 브로커 접속을 한 번만 연다(연결 설정을 읽은 뒤)."""
@@ -759,18 +787,21 @@ class OperatorWindow(QMainWindow):
             changes["thickness"] = float(extra["thickness_mm"])
         if plan.eoat_probes <= 0 and float(extra.get("eoat_type", 0) or 0) > 0:
             changes["eoat_probes"] = int(float(extra["eoat_type"]))
+        # 스캔 상승 높이 제한은 Cobot 설정에서 EOAT 종류별로 넣은 값이다(2026-10-12).
+        probes = int(changes.get("eoat_probes", plan.eoat_probes) or 0)
+        rise = self.screens["cobot"].scan_rise_mm(probes)
+        if plan.scan_rise_mm <= 0 and rise > 0:
+            changes["scan_rise_mm"] = rise
         return replace(plan, **changes) if changes else plan
 
     def _start_erut_job(self, plan, prepare_only: bool = False) -> None:
-        """ERUT 가 준 계획으로 구간을 시작한다.
+        """ERUT start 로 구간을 시작한다 — 차량 이동 → 아웃트리거 고정 → 리프트 → 로봇.
 
-        prepare 면(`prepare_only`) 차량·리프트를 구간 자리에 세우고 로봇은 홈에
-        둔 채 기다린다(시퀀서 READY → evt/ready). start 가 오면 그때 로봇이 3점
-        측정부터 한다. prepare 없이 온 start 면 처음부터 끝까지 한 번에 간다.
+        prepare 는 값만 확인하고 아무것도 움직이지 않으므로(2026-10-14) ERUT 는
+        늘 `prepare_only=False` 로 부른다. 시퀀서의 READY 대기(hold_before_scan)는
+        쓰지 않는다.
         """
         plan = self._fill_from_local_setup(plan)
-        # 검사면 x → 차량 주행 거리(캘리브레이션 한 바퀴로 잰 배율).
-        plan = replace(plan, vehicle_scale=getattr(self, "_vehicle_lap_scale", 1.0))
         scan_h_mm = self._scan_band_mm(plan)
         self.simulator.begin_external(plan.column_count)
         # 구간 하나 = job 하나. prepare 가 오면 차량을 구간 x 로, 리프트를
@@ -874,10 +905,13 @@ class OperatorWindow(QMainWindow):
         """열 번호를 이동 거리로 바꿔 AMR 더미에 넘긴다."""
         plan = self.sequencer.plan
         pitch = plan.column_pitch if plan is not None else 0.0
-        # ERUT 구간이면 area.start.x(× 차량 궤적 배율)로 간다 — 겹침은 ERUT 가
-        # 좌표에 넣어 보낸다. RCS 격자는 원점 0 에서 열 간격(가로 - 겹침)씩 간다.
-        offset = plan.vehicle_offset_mm if plan is not None else 0.0
-        distance = offset + max(0, int(column) - 1) * pitch
+        if plan is not None and plan is getattr(self, "_erut_layout_plan", None):
+            # ERUT 구역: 로봇 중심이 구역 가운데에 오게 선다 — 로봇이 거기서 좌우로
+            # 가로/2 씩 훑어 start.x ~ end.x 를 덮는다(0~150 구역이면 차량 75).
+            distance = self._vehicle_x(plan.section_center_x)
+        else:
+            # RCS 격자: 1구역(지금 자리 0)에서 열 간격(가로 - 겹침)씩 간다.
+            distance = max(0, int(column) - 1) * pitch
         label = f"{column}구역 ({distance:.0f} mm)"
         if abs(distance - self.amr.position) <= self.DRIVE_TOLERANCE_MM:
             # 같은 세로 줄(바로 위·아래 구간) — 차량은 그대로 두고 리프트만 옮긴다.
@@ -889,6 +923,20 @@ class OperatorWindow(QMainWindow):
 
     #: 이보다 가까우면 차량은 안 움직인다고 본다 [mm].
     DRIVE_TOLERANCE_MM = 1.0
+
+    def _vehicle_x(self, surface_x: float) -> float:
+        """검사면 x [mm] → 차량 주행 거리 [mm] (캘리브레이션 QR 영점에서).
+
+        차량 위치는 로봇 중심(호 가운데)의 x 다. 둘레를 넘은 x 는 이음매를 지나
+        감긴 자리로 접고(한 바퀴를 더 돌지 않는다), 캘리브레이션 한 바퀴로 잰
+        궤적 배율을 곱한다 — 차량은 모재에서 떨어진 바깥 궤적을 돌아 같은 각도라도
+        더 달린다(한 바퀴 실측 ÷ π × 지름, 재기 전에는 1).
+        """
+        x = float(surface_x)
+        circumference = math.pi * self.main_screen.orbit_view.target_dimensions()[0] * 1000.0
+        if circumference > 0:
+            x %= circumference
+        return x * getattr(self, "_vehicle_lap_scale", 1.0)
 
     def _prepare_to_drive(self, drive, guard=None) -> None:
         """차량이 달리기 전에 리프트를 내리고 아웃트리거를 푼 뒤 drive() 한다.
@@ -1025,6 +1073,7 @@ class OperatorWindow(QMainWindow):
             "eoat_w_mm": eoat_w_mm, "eoat_h_mm": eoat_h_mm,
             "eoat_type": eoat_type,
         }
+        self._show_eoat_choice(eoat_type)
         width_mm = self._clamp_work_width(width_mm, radius_mm, thickness_mm, eoat_w_mm)
         self.main_screen.set_work_area(width_mm, height_mm, scan_h_mm, overlap_mm,
                                        eoat_w_mm, radius_mm, thickness_mm)
@@ -2153,6 +2202,7 @@ class OperatorWindow(QMainWindow):
                     "eoat_h_mm": float(values.get("eoat_h_mm") or 0.0),
                     "eoat_type": float(values.get("eoat_type") or 0.0),
                 }
+                self._show_eoat_choice(values.get("eoat_type"))
                 self._push_work_area_to_robot(
                     float(values["width_mm"]), float(values["height_mm"]),
                     float(values["scan_h_mm"]), float(values["overlap_mm"]),
@@ -2240,27 +2290,31 @@ class OperatorWindow(QMainWindow):
         self.screens["tpac_bridge"].set_robot_endpoint(ip, port)
 
     def _sync_broker_endpoints(self) -> None:
-        """연결 설정의 ERUT 브로커 주소를 실제 접속에 반영한다.
+        """연결 설정의 ERUT 접속 정보를 실제 접속에 반영한다.
 
-        현장에서는 RCS 가 내부망이 아니라 허브 건너편 브로커에 붙는다 —
-        주소를 코드나 환경변수가 아니라 화면에서 정할 수 있어야 한다.
-        접속 중이면 끊고 새 주소로 다시 붙는다(값이 그대로면 그냥 둔다).
-        저장된 값이 있으면 그 값이 환경변수보다 우선한다.
+        주소를 코드나 환경변수가 아니라 화면에서 정할 수 있어야 한다. 접속 중이면
+        끊고 새 값으로 다시 붙는다(값이 그대로면 그냥 둔다). 주소나 장치 ID 를
+        비우면 끊고 붙지 않는다 — 비워 두는 것도 허용한다(RCS 단독, 2026-10-14).
         """
-        conn = self.screens["connection"]
-        erut = conn.erut_endpoint()
-        if erut["host"]:
-            # client_id 는 접속마다 새로 만들지 않고 그대로 둔다 — 새로
-            # 만들면 값이 같아도 매번 다시 붙는다.
-            config = replace(
-                self.erut.config,
-                host=erut["host"], port=erut["port"], device_id=erut["device_id"],
-                username=erut["username"], password=erut["password"],
-            )
-            if self.erut.apply_config(config):
-                self.main_screen.show_activity(
-                    f"ERUT 브로커를 {erut['host']}:{erut['port']} "
-                    f"(장치 {erut['device_id']}) 로 바꿨습니다.")
+        erut = self.screens["connection"].erut_endpoint()
+        # 접속 ID 는 장치 ID 로 정한다(3s-<장치 ID>) — 장치 ID 를 바꾸면 같이 바뀐다.
+        config = replace(
+            self.erut.config, client_id="",
+            host=erut["host"], port=erut["port"], device_id=erut["device_id"],
+            username=erut["username"], password=erut["password"],
+        )
+        was_halted = self.erut.halted
+        if not self.erut.apply_config(config):
+            return
+        if not (erut["host"] and erut["device_id"]):
+            self.main_screen.show_activity(
+                "ERUT 접속 주소 · 장치 ID 가 비어 있어 ERUT 에 붙지 않습니다.")
+        else:
+            self.main_screen.show_activity(
+                f"ERUT({erut['host']}:{erut['port']}, 장치 {erut['device_id']}) 에 "
+                + ("다시 붙어 봅니다." if was_halted and config == self.erut.config
+                   else "접속하도록 바꿨습니다."))
+        self._show_erut_link()
 
     def _mark_settings_saved(self, scope: str) -> None:
         """저장 완료 후 해당 화면의 상태를 갱신한다."""
@@ -2619,6 +2673,71 @@ class OperatorWindow(QMainWindow):
         ratio = values.get(CobotSettingsScreen.RATIO_FIELD)
         if ratio is not None:
             self._apply_speed_ratio(ratio, source="설정")
+
+    def _show_eoat_choice(self, eoat_type) -> None:
+        """Cobot 설정의 「장착 EOAT」 목록을 지금 값에 맞춘다(신호 없이)."""
+        cobot = getattr(self, "screens", {}).get("cobot")
+        if cobot is not None:
+            cobot.set_eoat_type(eoat_type)
+
+    def _apply_eoat_choice(self, probes: int) -> None:
+        """Cobot 설정에서 장착 EOAT(0 · 5 · 8)를 골랐다 — 저장하고 로봇에 바로 보낸다.
+
+        ERUT 규격에는 EOAT 종류 칸이 없다(if-0.9). 예전에는 MC 시험 도구가 보냈는데
+        MC 를 빼면서 고를 곳이 없어져, 저장된 0 이 그대로 로봇 264 로 가 RCS 로 돌리면
+        EOAT 오프셋(eoat5_offset 등)이 안 걸렸다(2026-10-14). 그래서 RCS 설정에서 고른다.
+
+        값은 작업 영역 설정(work_area.eoat_type)에 둔다 — 작업을 시작할 때
+        _fill_from_local_setup 이 여기서 채운다. 유효 커버(eoat_w/h)와 스캐너 밴드(258)도
+        같이 바꾼다(세로 = Cobot 설정의 스캔 상승 높이 제한). 작업 중이면 지금 구간의
+        로봇 값이 중간에 바뀌므로 받지 않고 목록을 되돌린다.
+        """
+        current = int(float(self._work_area_extra.get("eoat_type") or 0))
+        names = dict(CobotSettingsScreen.EOAT_CHOICES)
+        probes = int(probes)
+        if probes == current:
+            return
+        if self._job_running() or self._robot_task_running():
+            self._show_eoat_choice(current)
+            message = "작업 중에는 장착 EOAT 를 바꿀 수 없습니다 — 작업을 마친 뒤 바꾸세요."
+            self.main_screen.show_activity(message)
+            self.cobot_manual_screen.add_alarm(message)
+            return
+        extra = dict(self._work_area_extra)
+        extra["eoat_type"] = float(probes)
+        width, height, scan_h, overlap = self.main_screen.rect_view.work_area()
+        if probes in PROBE_COVERAGE_MM:
+            cover_w, cover_h = PROBE_COVERAGE_MM[probes]
+            rise = self.screens["cobot"].scan_rise_mm(probes)
+            extra["eoat_w_mm"] = cover_w
+            extra["eoat_h_mm"] = rise if rise > 0 else cover_h
+            # EOAT 를 골랐으면 스캐너 밴드(258)도 그 세로 커버다(_scan_band_mm).
+            scan_h = extra["eoat_h_mm"]
+        else:
+            extra["eoat_w_mm"] = 0.0
+            extra["eoat_h_mm"] = 0.0
+        self._send_work_area(width, height, scan_h, overlap, **extra)
+        self.main_screen.show_activity(
+            f"장착 EOAT 를 {names.get(probes, probes)}(으)로 바꿨습니다 — 로봇 264 = {probes}.")
+
+    def _apply_scan_rise_setting(self, scope: str, _values: dict) -> None:
+        """스캔 상승 높이 제한을 저장하면 장착한 EOAT 의 값을 로봇에 바로 보낸다.
+
+        작업을 시작할 때도 이 값으로 보내지만(_fill_from_local_setup), 쉬고 있을
+        때 바로 맞춰 둬야 화면의 줄 수 · 밴드와 펜던트에서 직접 튼 태스크도 같은
+        값으로 돈다. 작업 중이면 지금 구간은 그대로 두고 다음 작업부터 쓴다.
+        """
+        if scope != "cobot" or self._job_running():
+            return
+        extra = dict(self._work_area_extra)
+        rise = self.screens["cobot"].scan_rise_mm(int(float(extra.get("eoat_type") or 0)))
+        if rise <= 0 or abs(rise - float(extra.get("eoat_h_mm") or 0.0)) < 0.05:
+            return
+        extra["eoat_h_mm"] = rise
+        width, height, _scan_h, overlap = self.main_screen.rect_view.work_area()
+        # EOAT 를 골랐으면 스캐너 밴드(258)도 그 세로 커버다(_scan_band_mm).
+        self._send_work_area(width, height, rise, overlap, **extra)
+        self.main_screen.show_activity(f"스캔 상승 높이 제한 {rise:g} mm 를 로봇에 보냈습니다.")
 
     # 위치 저장은 조그 화면에서, 나머지는 수동 제어 화면에서 요청한다.
     _JOG_COMMANDS = ("save_home_pose", "save_start_pose")

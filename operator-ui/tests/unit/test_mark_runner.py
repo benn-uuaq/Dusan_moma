@@ -60,8 +60,9 @@ def test_one_point_runs_the_full_order(qtbot):
     retractor.arrived.emit()
 
     assert log == ["차량", "고정", "리프트", "목표", "로봇", "복귀"]
-    # 점이 격자 가운데·원점 높이에 오도록 둔다 -> 로봇 목표 (W/2, 0)
-    assert amr.targets == [1000.0 - 721.0 / 2]
+    # 차량 위치 = 로봇 중심(호 가운데)의 x — 점이 그 아래·원점 높이에 오게 둔다
+    # -> 로봇 목표 (W/2, 0) = 호 가운데 (2026-10-13, 예전엔 x - W/2)
+    assert amr.targets == [1000.0]
     assert lift.targets == [1200.0]
     assert calls["target"] == [(721.0 / 2, 0.0)]
     assert done == [(["p1"], [])]

@@ -126,7 +126,7 @@ print('작업영역(256) :', mb.read_holding_registers(256,4))
 ./run_rcs.sh
 ```
 
-`run_rcs.sh` 는 ERUT 브로커가 닿는지 먼저 보고 `authbind --deep` 으로 RCS 를 띄운다. 그냥
+`run_rcs.sh` 는 ERUT 에 붙는지 먼저 보고 `authbind --deep` 으로 RCS 를 띄운다. 그냥
 `python -m smr_operator_ui` 로 켜면 TPAC 서버 포트 502 를 못 열어 TPAC 와 안 붙는다(최초 설정은
 [rcs_update_guide.md](rcs_update_guide.md) 「처음 한 번」).
 
@@ -136,7 +136,7 @@ PostgreSQL에 설정을 저장하려면 실행 전에 접속 정보를 준다(�
 export SMR_DATABASE_URL="postgresql://사용자:비밀번호@127.0.0.1:5432/데이터베이스"
 ```
 
-ERUT 브로커 주소·포트·계정은 RCS **연결 설정**의 「ERUT Broker 주소」·「ERUT 포트」·「ERUT 계정」에서 정한다(기본 `127.0.0.1:1883`, 저장하면 바로 다시 붙는다).
+ERUT 접속 주소·포트·장치 ID·계정은 RCS **연결 설정**의 「ERUT Broker 주소」·「ERUT 포트」·「ERUT 계정」에서 정한다(기본 `127.0.0.1:1883`, 저장하면 바로 다시 붙는다).
 
 WSL에서 창이 안 뜨면 WSLg가 동작하는지 확인한다. `echo $DISPLAY`가 비어 있으면 안 뜬다.
 

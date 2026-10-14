@@ -105,6 +105,21 @@ def mk_press():
 end
 
 
+def mk_tip_movel(target, blend):
+  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
+  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
+  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
+  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
+  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
+  # 앞 노드(dus5_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
+  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
+  if (pose_dist(get_tcp_offset(), eoat_ofs) > 0.000001):
+    set_tcp(eoat_ofs)
+  end
+  movel(pose_trans(target, eoat_ofs), a = a_l, v = v_l, r = blend)
+end
+
+
 # ------------------------------------------------------------------ 본문
 write_port_register(290, 10)
 mk_u = read_port_register(268, True)
@@ -125,7 +140,9 @@ mk_tgt[2] = zero_pose[2] + mk_v * 0.001
 
 # 물러난 자세로 먼저 간다(곡면을 가로지르지 않게 probe 들과 같은 방식).
 mk_stand = pose_trans(mk_tgt, [0, 0, -probe_dist * 0.001, 0, 0, 0])
-movel(mk_stand, a = a_l, v = v_l)
+mk_tip_movel(mk_stand, 0)
+# 다음 계산(get_actual_tcp_pose · 접촉 탐색)은 플랜지 기준이다 — 선 뒤에 되돌린다.
+set_tcp([0, 0, 0, 0, 0, 0])
 mk_press()
 
 # ---- 마킹 자리에 붙음 : 마킹이 끝날 때까지 선다 --------------------------------

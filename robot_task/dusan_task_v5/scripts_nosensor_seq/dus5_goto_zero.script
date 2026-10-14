@@ -59,6 +59,21 @@ def gz_w6(a, p):
 end
 
 
+def gz_tip_movel(target, blend):
+  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
+  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
+  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
+  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
+  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
+  # 앞 노드(dus5_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
+  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
+  if (pose_dist(get_tcp_offset(), eoat_ofs) > 0.000001):
+    set_tcp(eoat_ofs)
+  end
+  movel(pose_trans(target, eoat_ofs), a = a_l, v = v_l, r = blend)
+end
+
+
 write_port_register(290, 3)
 
 # 현재 TCP 자세를 기준으로 가면 안 된다 — 직전 지점(p_r_pose)의 회전이
@@ -72,7 +87,9 @@ write_port_register(290, 3)
 # movej(get_inverse_kin(...))로 바꿨었는데, 좌우 이동은 movel(직선)로
 # 가도록 되돌린다.
 z_stand = pose_trans(zero_pose, [0, 0, -probe_dist * 0.001, 0, 0, 0])
-movel(z_stand, a = a_l, v = v_l)
+gz_tip_movel(z_stand, 0)
+# 다음 계산(get_actual_tcp_pose · 접촉 탐색)은 플랜지 기준이다 — 선 뒤에 되돌린다.
+set_tcp([0, 0, 0, 0, 0, 0])
 # z_stand -> zero_pose 도 probe_dist 만큼밖에 안 되는 짧은 이동이지만,
 # 막 큰 자세 변화(movej)를 거친 직후라 그 근처는 여전히 movel 의 직선
 # 경로 역기구학이 빡빡할 수 있다(dus5_probe_r.script 에서 실제로 발생).

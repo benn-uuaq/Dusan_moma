@@ -460,34 +460,21 @@ def _area(x0: float, y0: float) -> GridPlan:
 def test_area_origin_is_used_as_is_for_the_vehicle_and_lift() -> None:
     """ERUT 좌표 그대로 간다 — 겹침은 ERUT 가 좌표에 넣어 보낸다(2026-10-12 결정).
 
-    예전에는 area 0·600·1200 을 구간 번호로 바꿔 0·580·1160 으로 덜 갔다. 그러면
-    이음매를 넘는 구역(x 5159)처럼 구간 길이의 정수배가 아닌 자리는 엉뚱한 곳에
-    섰다. 구간 번호는 화면·기록 이름용으로 (길이 - 겹침) 간격으로 센다.
+    차량 위치는 로봇 중심(호 가운데)의 x 라 차량은 **구역 가운데**로 간다 —
+    로봇이 거기서 좌우로 가로/2 씩 훑는다(2026-10-13). 리프트는 start.y.
+    구간 번호는 화면·기록 이름용으로 (길이 - 겹침) 간격으로 센다.
     """
-    assert [_area(x, 0).vehicle_offset_mm for x in (0, 580, 1160, 5159)] == [
-        0.0, 580.0, 1160.0, 5159.0]
+    assert [_area(x, 0).section_center_x for x in (0, 580, 1160, 5159)] == [
+        300.0, 880.0, 1460.0, 5459.0]
     assert [_area(x, 0).section_column for x in (0, 580, 1160)] == [0, 1, 2]
     assert _area(0, 780).lift_offset_mm == 780.0
     assert _area(0, 780).section_row == 1
 
 
-def test_vehicle_scale_turns_surface_x_into_vehicle_travel() -> None:
-    """차량은 모재에서 떨어진 바깥 궤적을 돌아 같은 각도에 더 달린다.
-
-    캘리브레이션 한 바퀴의 실측 거리 ÷ 검사면 둘레가 그 배율이다. 리프트(y)는
-    그대로다.
-    """
-    from dataclasses import replace
-
-    plan = replace(_area(1000, 400), vehicle_scale=1.1)
-    assert plan.vehicle_offset_mm == pytest.approx(1100.0)
-    assert plan.lift_offset_mm == 400.0
-
-
 def test_area_already_shifted_by_the_overlap_maps_to_the_same_section() -> None:
-    """ERUT 가 겹침을 빼서 보내도(580) 같은 2번 구간·같은 자리다."""
+    """ERUT 가 겹침을 빼서 보내도(580) 같은 2번 구간이다 — 차량은 그 가운데(880)."""
     assert _area(580, 0).section_column == 1
-    assert _area(580, 0).vehicle_offset_mm == 580.0
+    assert _area(580, 0).section_center_x == 880.0
 
 
 def test_arrival_during_pause_is_taken_on_resume(qtbot) -> None:
@@ -502,3 +489,15 @@ def test_arrival_during_pause_is_taken_on_resume(qtbot) -> None:
 
     h.seq.resume()
     assert h.seq.state is SequencerState.SCANNING
+
+
+def test_scan_rise_setting_replaces_the_probe_cover_height() -> None:
+    """Cobot 설정의 스캔 상승 높이 제한이 있으면 그 값이 세로 커버(= 상승량)다."""
+    from dataclasses import replace
+
+    plan = GridPlan(column_count=1, row_count=1, cell_width=600.0, cell_height=800.0,
+                    eoat_probes=8)
+    assert plan.eoat_size == (75.0, 167.5)                 # 설정이 없으면 기본값
+    assert replace(plan, scan_rise_mm=120.0).eoat_size == (75.0, 120.0)
+    # EOAT 를 안 골랐으면(0) 커버도 없다 — 설정값을 붙이지 않는다.
+    assert replace(plan, eoat_probes=0, scan_rise_mm=120.0).eoat_size == (0.0, 0.0)

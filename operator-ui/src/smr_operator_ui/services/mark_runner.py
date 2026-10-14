@@ -3,7 +3,7 @@
 ERUT 는 결함 자리를 검사면 좌표(x = 원주 전개, y = 높이 — area 와 같은 기준)
 로 준다. 점 하나마다 이렇게 한다.
 
-  1. 차량을 x - W/2 로 옮긴다      점이 격자 **가운데**(호 중앙)에 오게
+  1. 차량을 x 로 옮긴다            점이 로봇 중심 = 격자 **가운데**(호 중앙)에 오게
   2. 아웃트리거 고정
   3. 리프트를 y 로 올린다          점이 로봇 원점 **높이**에 오게
   4. 로봇: 마킹 태스크를 틀어 프로브 3점 -> 마킹 자리 -> 홈 (290 == 12)
@@ -86,6 +86,9 @@ class MarkRunner(QObject):
         #: 차량을 다른 자리로 옮기기 전 준비(리프트 내리기·아웃트리거 풀기)를
         #: 하고 나서 넘긴 함수를 부르는 훅. 앱이 넣는다. 없으면 바로 옮긴다.
         self.prepare_drive: Callable[[Callable[[], object]], object] | None = None
+        # 검사면 x → 차량 주행 거리. 차량 위치는 로봇 중심(호 가운데)의 x 다.
+        # app.py 가 궤적 배율 · 이음매 감기를 넣은 환산을 물려 준다.
+        self.vehicle_x: Callable[[float], float] = float
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._on_timeout)
@@ -217,7 +220,9 @@ class MarkRunner(QObject):
         if "amr_mm" in pt:
             x0 = float(pt["amr_mm"])
         else:
-            x0 = float(pt["x"]) - self._cell_w / 2.0
+            # 차량 위치 = 로봇 중심(호 가운데)의 x — 점을 그 아래에 둔다. 로봇
+            # 목표는 (W/2, 0) = 호 가운데라 프로브가 닿아 본 자리 그대로다.
+            x0 = self.vehicle_x(float(pt["x"]))
         self._step = "amr"
         self._timer.start(self.POINT_TIMEOUT_MS)
         self.activity.emit(

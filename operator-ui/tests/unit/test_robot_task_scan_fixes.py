@@ -3,6 +3,7 @@
   1. 스캔이 100 mm/s 가 아니라 10 mm/s 이하로 느려짐
      - 속도에 비율을 스크립트에서 곱해 셀마다 누적됐다 -> 기준값에서 매번 새로 정한다
      - v5 servoj 호는 실제로 흐른 시간으로 전진한다
+     - v5 servoj 호에는 컨트롤러 비율이 안 걸려 307 을 읽어 그 호에만 곱한다
   2. 1A 뒤 1B 에서 좌우 프로브 회전이 커져 특이점
      - 발행 스레드가 260~265(RCS 입력 칸)에 TCP 를 덮어써, 다음 셀이 그 좌표를
        반지름·두께로 읽었다 -> 그 자리에 쓰지 않는다
@@ -11,6 +12,8 @@
 """
 
 from pathlib import Path
+
+import re
 
 import pytest
 
@@ -54,6 +57,22 @@ def test_v5_servo_arc_advances_by_real_elapsed_time(folder, side) -> None:
     assert "controller_timestamp()" in code
     assert "sv_s = sv_s + sv_v * sv_h" in code and "sv_v = sv_v + a_scan * sv_h" in code
     assert "* sv_dt\n" not in code.split("while (sv_set < sv_nset):")[1].split("servoj(")[0]
+
+
+@pytest.mark.parametrize("folder", INIT_FOLDERS)
+@pytest.mark.parametrize("side", ("pass_r", "pass_l"))
+def test_v5_servo_arc_follows_the_speed_ratio_locally(folder, side) -> None:
+    """servoj 에는 컨트롤러 비율(29999 speed -v)이 안 걸린다 — 15 % 에서도 스캔만
+    100 mm/s 였다. 호 함수가 307 을 읽어 지역값으로만 줄인다(전역 v_scan 은 그대로)."""
+    code = _code(_script("dusan_task_v5", folder, side))
+    arc = code.split("_servo_arc(end_pose):")[1].split("\nend\n")[0]
+    assert "read_port_register(307, True)" in arc
+    assert "sv_vmax = v_scan * sv_ratio / 100.0" in arc
+    assert "if (v_top > sv_vmax):" in arc and "v_top = sv_vmax" in arc
+    assert "v_top > v_scan" not in arc
+    assert "v_scan = " not in code, "전역 v_scan 에 곱하면 셀마다 누적된다"
+    # 비어 있거나(0) 범위 밖이면 100 % 로 본다.
+    assert "if (sv_ratio < 2 or sv_ratio > 100):" in arc
 
 
 # ---- 2. 입력 칸을 덮어쓰지 않는다 ---------------------------------------------------
@@ -114,8 +133,11 @@ def test_start_pose_and_home_do_not_use_the_offset(version) -> None:
         if "start_pose = " in code:
             line = code.split("start_pose = ")[1].splitlines()[0]
             assert "eoat" not in line, path.name
-        if path.stem.endswith(("_home", "_move_start", "_move_start_waypoint")):
+        if path.stem.endswith("_home"):
             assert "eoat_ofs" not in code, path.name
+        if path.stem.endswith(("_move_start", "_move_start_waypoint")) and "_tip_movel" in code:
+            # 끝점 TCP 로 옮겨 가도 목표는 티칭한 start_pose(플랜지) 그대로다.
+            assert "_tip_movel(start_pose," in code, path.name
 
 
 def test_offset_geometry_makes_wall_arc_equal_cscan() -> None:
@@ -212,7 +234,8 @@ def test_new_variables_are_declared(version) -> None:
     for name in ("eoat5_offset", "eoat8_offset", "eoat_ofs", "push_offset",
                  "v_l_set", "v_j_set", "v_scan_set"):
         assert f'name="{name}"' in text, name
-    assert 'name="eoat5_offset" value="[0, 0, 0]"' in text
+    # 값은 현장에서 펜던트로 넣는다(5축 [0, 0, 245] 등) — 꼴만 본다.
+    assert re.search(r'name="eoat5_offset" value="\[[-0-9., ]+\]"', text)
     assert 'name="v_scan_set" value="0.1"' in text
     assert "eoat5_offset_x" not in text, "옛 스칼라 오프셋(m)은 뺐다"
 
@@ -253,3 +276,44 @@ def test_linear_motion_is_capped_at_100_mm_s_and_400_mm_s2(version, folder) -> N
     text = _variables(version)
     assert 'name="v_l_set" value="0.1"' in text and 'name="a_l" value="0.4"' in text
     assert 'name="v_scan_set" value="0.1"' in text and 'name="a_scan" value="0.4"' in text
+
+
+# ---- 프로브 사이 이동은 EOAT 끝점 기준 (2026-10-12) ----------------------------------
+# 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 245mm 앞의 끝점이 휘둘렸다.
+# 이동하는 동안만 set_tcp(eoat_ofs) 로 끝점을 TCP 로 잡는다.
+_TIP_MOVES = {
+    "scripts": {"probe_l": "l_stand", "probe_r": "r_stand", "goto_zero": "z_stand",
+                "mark_point": "mk_stand", "move_start": "start_pose"},
+    "scripts_nosensor": {"probe_l": "l_stand", "probe_r": "r_stand", "goto_zero": "z_stand",
+                         "mark_point": "mk_stand", "move_start": "start_pose"},
+    "scripts_nosensor_seq": {"goto_zero": "z_stand"},
+}
+
+
+@pytest.mark.parametrize("folder,stem,target",
+                         [(f, s, t) for f, m in _TIP_MOVES.items() for s, t in m.items()])
+def test_moves_between_probes_turn_about_the_probe_tip(folder, stem, target) -> None:
+    code = _code(_script("dusan_task_v5", folder, stem))
+    lines = [l.strip() for l in code.splitlines() if l.strip()]
+    call = next(i for i, l in enumerate(lines) if l.endswith(f"_tip_movel({target}, 0)"))
+    # 선 뒤에 플랜지 TCP 로 되돌린다 — 접촉 탐색 · 다음 계산은 플랜지 기준이다.
+    assert lines[call + 1] == "set_tcp([0, 0, 0, 0, 0, 0])"
+    assert f"movel({target}, a = a_l, v = v_l)" not in lines[:call], "끝점 TCP 로 바꾸기 전에 플랜지로 갔다"
+    assert "set_tcp(eoat_ofs)" in code and "movel(pose_trans(target, eoat_ofs)" in code
+
+
+@pytest.mark.parametrize("folder", ("scripts", "scripts_nosensor"))
+def test_waypoint_keeps_the_tip_tcp_through_the_blend(folder) -> None:
+    """블렌드로 지나가는 동안 TCP 를 바꾸지 않는다 — 다음 노드가 선 뒤 되돌린다."""
+    code = _code(_script("dusan_task_v5", folder, "move_start_waypoint"))
+    assert "mw_tip_movel(start_pose, r_l)" in code
+    assert "set_tcp([0, 0, 0, 0, 0, 0])" not in code
+
+
+@pytest.mark.parametrize("folder", ("scripts", "scripts_nosensor"))
+def test_init_starts_on_the_flange_and_publishes_flange_poses(folder) -> None:
+    code = _code(_script("dusan_task_v5", folder, "init"))
+    assert "set_tcp([0, 0, 0, 0, 0, 0])" in code
+    assert "cur_pose = get_actual_tool_flange_pose()" in code
+    assert "hm_p = get_actual_tool_flange_pose()" in code
+

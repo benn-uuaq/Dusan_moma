@@ -155,10 +155,11 @@ def test_three_point_fit_is_logged_when_the_robot_reaches_the_start(qtbot):
 
 
 def test_prepared_area_is_placed_on_the_whole_circumference(qtbot):
-    """ERUT area 는 좌표 그대로 — 차량은 area.start.x 로 간다(2026-10-12 결정).
+    """ERUT area 는 좌표 그대로 — 차량은 구역 가운데로 간다(2026-10-13).
 
-    겹침은 ERUT 가 좌표에 넣어 보낸다(구역 시작 0 · 580 · 1160 …). 원주 표시는
-    (가로 - 겹침) 간격으로 센 구간 번호로 그린다.
+    차량 위치는 로봇 중심의 x 라, 1160~1760 구역이면 1460 에 서야 로봇이 좌우로
+    300 씩 훑어 구역을 덮는다. 겹침은 ERUT 가 좌표에 넣어 보낸다(구역 시작
+    0 · 580 · 1160 …). 원주 표시는 (가로 - 겹침) 간격으로 센 구간 번호로 그린다.
     """
     window = _window(qtbot)
     _tap(window)
@@ -167,12 +168,12 @@ def test_prepared_area_is_placed_on_the_whole_circumference(qtbot):
     targets: list[float] = []
     window.amr.move_to = lambda distance, unit="", label=None: targets.append(distance)
 
-    window.erut_session.handle_request("prepare", {
+    window.erut_session.handle_request("start", {
         "req_id": "prep-3", "job_id": "jb-3", "surface": "outer",
         "area": {"start": {"x": 1160, "y": 0}, "end": {"x": 1760, "y": 800}},
         "scan": {"pitch": 20, "speed": 100}})
 
-    assert targets == [1160.0], "area.start.x 그대로"
+    assert targets == [1460.0], "구역 가운데(start.x + 가로/2)"
     view = window.main_screen.orbit_view
     # π × 1690 = 5309 mm 를 580 mm 간격으로 덮으려면 10 구간.
     assert view.section_count() == 10
@@ -185,7 +186,8 @@ def test_vehicle_goes_to_the_same_angle_on_its_own_track(qtbot):
     """차량은 모재에서 떨어진 바깥 궤적을 돈다 — x 에 한 바퀴 배율을 곱한다.
 
     ERUT 의 x 는 검사면 둘레(π × 지름) 위 거리다. 캘리브레이션 한 바퀴를 실제로
-    5840 mm 달렸으면(검사면 5309 mm 의 1.1 배) x 1000 은 차량 1100 mm 다.
+    5840 mm 달렸으면(검사면 5309 mm 의 1.1 배) 구역 1000~1600 의 가운데 1300 은
+    차량 1430 mm 다.
     """
     window = _window(qtbot)
     _tap(window)
@@ -195,12 +197,41 @@ def test_vehicle_goes_to_the_same_angle_on_its_own_track(qtbot):
     targets: list[float] = []
     window.amr.move_to = lambda distance, unit="", label=None: targets.append(distance)
 
-    window.erut_session.handle_request("prepare", {
+    window.erut_session.handle_request("start", {
         "req_id": "prep-scale", "job_id": "jb-s", "surface": "outer",
         "area": {"start": {"x": 1000, "y": 0}, "end": {"x": 1600, "y": 800}},
         "scan": {"pitch": 20, "speed": 100}})
 
-    assert targets == [pytest.approx(1100.0)]
+    assert targets == [pytest.approx(1430.0)]
+    window.close()
+
+
+def test_vehicle_puts_the_robot_centre_on_the_section_centre(qtbot):
+    """QR 영점에서 0~150 구역이면 차량은 75 — 로봇이 중심에서 좌우로 75 씩 훑는다.
+
+    이음매를 넘어 가운데가 둘레 밖이면(5250~5450, 둘레 약 5309) 감긴 자리로 간다 —
+    한 바퀴를 더 돌지 않는다.
+    """
+    window = _window(qtbot)
+    _tap(window)
+    window.erut_session._calibrated = True
+    window.main_screen.orbit_view.set_target_dimensions(1.69, 6.0)
+    targets: list[float] = []
+    window.amr.move_to = lambda distance, unit="", label=None: targets.append(distance)
+
+    window.erut_session.handle_request("start", {
+        "req_id": "p-150", "job_id": "jb-150", "surface": "outer",
+        "area": {"start": {"x": 0, "y": 0}, "end": {"x": 150, "y": 140}},
+        "scan": {"pitch": 20, "speed": 100}})
+    assert targets == [75.0]
+
+    window.sequencer.stop()
+    window.erut_session._forget_work()
+    window.erut_session.handle_request("start", {
+        "req_id": "p-seam", "job_id": "jb-seam", "surface": "outer",
+        "area": {"start": {"x": 5250, "y": 0}, "end": {"x": 5450, "y": 140}},
+        "scan": {"pitch": 20, "speed": 100}})
+    assert targets[-1] == pytest.approx(5350.0 - 3.141592653589793 * 1690.0)
     window.close()
 
 
@@ -231,8 +262,9 @@ def _record_moves(window) -> list[tuple]:
     return moves
 
 
-def _prepare_area(window, req_id, x0, y0):
-    window.erut_session.handle_request("prepare", {
+def _start_area(window, req_id, x0, y0):
+    """ERUT start — 차량 이동 → 아웃트리거 고정 → 리프트 → 로봇(prepare 는 값만 본다)."""
+    window.erut_session.handle_request("start", {
         "req_id": req_id, "job_id": req_id, "surface": "outer",
         "area": {"start": {"x": x0, "y": y0}, "end": {"x": x0 + 600, "y": y0 + 800}},
         "scan": {"pitch": 20, "speed": 100}})
@@ -249,10 +281,10 @@ def test_next_column_lowers_the_lift_and_frees_the_outrigger_before_driving(qtbo
     window.amr.reset(0.0)
     moves = _record_moves(window)
 
-    _prepare_area(window, "p-next-col", 580, 0)
-    qtbot.waitUntil(lambda: window.sequencer.state.name == "READY", timeout=10000)
+    _start_area(window, "s-next-col", 580, 0)
+    qtbot.waitUntil(lambda: window.sequencer.state.name == "SCANNING", timeout=10000)
 
-    assert moves == [("lift", 0.0), ("outrigger", 0.0), ("amr", 580.0),
+    assert moves == [("lift", 0.0), ("outrigger", 0.0), ("amr", 880.0),
                      ("outrigger", 1.0), ("lift", 0.0)]
     window.close()
 
@@ -265,11 +297,11 @@ def test_next_band_up_in_the_same_column_only_moves_the_lift(qtbot):
     window.main_screen.orbit_view.set_target_dimensions(1.69, 6.0)
     window.lift.reset(0.0)
     window.outrigger.reset(1)
-    window.amr.reset(0.0)
+    window.amr.reset(300.0)                   # 아래 구간(0~600)을 끝내고 가운데에 서 있다
     moves = _record_moves(window)
 
-    _prepare_area(window, "p-next-band", 0, 780)
-    qtbot.waitUntil(lambda: window.sequencer.state.name == "READY", timeout=10000)
+    _start_area(window, "s-next-band", 0, 780)
+    qtbot.waitUntil(lambda: window.sequencer.state.name == "SCANNING", timeout=10000)
 
     assert ("outrigger", 0.0) not in moves
     assert moves[-1] == ("lift", 780.0)
@@ -320,4 +352,131 @@ def test_home_within_ms_follows_the_speed_ratio(qtbot):
 
     assert window._home_within_ms() == 50_000
     assert infos[-1]["timings"]["home_within_ms"] == 50_000
+    window.close()
+
+
+def test_scan_rise_limit_per_eoat_comes_from_cobot_settings(qtbot):
+    """스캔 상승 높이 제한(5축 · 8축)은 Cobot 설정에서 넣고, 작업에 그대로 쓴다."""
+    from smr_operator_ui.services import GridPlan
+
+    window = _window(qtbot)
+    cobot = window.screens["cobot"]
+    assert cobot.scan_rise_mm(5) == 30.0 and cobot.scan_rise_mm(8) == 167.5
+    cobot.field("스캔 상승 높이 제한 8축").setValue(120.0)
+    window._work_area_extra = {"radius_mm": 845.0, "thickness_mm": 10.0,
+                               "eoat_w_mm": 75.0, "eoat_h_mm": 167.5, "eoat_type": 8.0}
+
+    plan = window._fill_from_local_setup(GridPlan(column_count=1, row_count=1,
+                                                  cell_width=600.0, cell_height=800.0))
+
+    assert plan.eoat_probes == 8 and plan.eoat_size[1] == 120.0
+    assert window._scan_band_mm(plan) == 120.0             # 로봇 258 · 263 으로 가는 값
+    window.close()
+
+
+def test_saving_the_scan_rise_limit_sends_it_to_the_robot_when_idle(qtbot):
+    window = _window(qtbot)
+    pushed: list[tuple] = []
+    window._push_work_area_to_robot = lambda *values: pushed.append(values)
+    window._work_area_extra = {"radius_mm": 845.0, "thickness_mm": 10.0,
+                               "eoat_w_mm": 30.0, "eoat_h_mm": 30.0, "eoat_type": 5.0}
+    cobot = window.screens["cobot"]
+    cobot.field("스캔 상승 높이 제한 5축").setValue(28.0)
+
+    cobot.save_requested.emit("cobot", cobot.values())
+
+    assert pushed, "저장했는데 로봇에 보내지 않았다"
+    # (가로, 세로, 스캐너 밴드, 겹침, 반지름, 두께, eoat_w, eoat_h, eoat_type)
+    assert pushed[-1][2] == 28.0 and pushed[-1][7] == 28.0
+    window.close()
+
+
+def test_eoat_choice_in_cobot_settings_reaches_the_robot(qtbot):
+    """장착 EOAT(5축 · 8축)는 Cobot 설정에서 고른다 — ERUT 규격에는 칸이 없다.
+
+    고르면 바로 로봇 264 와 유효 커버(262 · 263)·스캐너 밴드(258)로 가고, 다음 작업도
+    그 값으로 채운다(_fill_from_local_setup).
+    """
+    from smr_operator_ui.services import GridPlan
+
+    window = _window(qtbot)
+    pushed: list[tuple] = []
+    window._push_work_area_to_robot = lambda *values: pushed.append(values)
+    cobot = window.screens["cobot"]
+    assert cobot.eoat_type() == 0
+
+    cobot.eoat_combo.setCurrentIndex(2)
+    cobot.eoat_combo.activated.emit(2)                     # 8축 직사각
+
+    assert window._work_area_extra["eoat_type"] == 8.0
+    # (가로, 세로, 스캐너 밴드, 겹침, 반지름, 두께, eoat_w, eoat_h, eoat_type)
+    assert pushed and pushed[-1][8] == 8.0
+    assert pushed[-1][6] == 75.0 and pushed[-1][7] == 167.5 and pushed[-1][2] == 167.5
+    plan = window._fill_from_local_setup(GridPlan(column_count=1, row_count=1,
+                                                  cell_width=600.0, cell_height=800.0))
+    assert plan.eoat_probes == 8
+
+    cobot.eoat_combo.setCurrentIndex(1)
+    cobot.eoat_combo.activated.emit(1)                     # 5축 십자형 — 상승 제한 30
+    assert pushed[-1][8] == 5.0 and pushed[-1][7] == 30.0
+    window.close()
+
+
+def test_eoat_choice_is_refused_while_a_job_runs(qtbot):
+    window = _window(qtbot)
+    pushed: list[tuple] = []
+    window._push_work_area_to_robot = lambda *values: pushed.append(values)
+    window._job_running = lambda: True
+    cobot = window.screens["cobot"]
+
+    cobot.eoat_combo.setCurrentIndex(1)
+    cobot.eoat_combo.activated.emit(1)
+
+    assert not pushed and window._work_area_extra["eoat_type"] == 0.0
+    assert cobot.eoat_type() == 0, "받지 않았으면 목록도 되돌린다"
+    window.close()
+
+
+def test_saved_eoat_type_shows_in_cobot_settings(qtbot):
+    window = _window(qtbot)
+    window._push_work_area_to_robot = lambda *values: None
+    window._send_work_area(600.0, 800.0, 30.0, 20.0, radius_mm=845.0,
+                           eoat_w_mm=30.0, eoat_h_mm=30.0, eoat_type=5.0)
+    assert window.screens["cobot"].eoat_type() == 5
+    window.close()
+
+
+def test_prepare_moves_nothing_and_start_runs_vehicle_outrigger_lift_robot(qtbot):
+    """2026-10-14: 캘리브레이션 뒤 prepare 는 값만 확인한다 — 차량 · 아웃트리거 ·
+    리프트 · 로봇 모두 그대로다. start 를 받으면 그때 차량 이동 → 아웃트리거 고정
+    → 리프트 → 로봇 순으로 간다.
+    """
+    window = _window(qtbot)
+    events = _tap(window)
+    window.erut_session._calibrated = True
+    window.main_screen.orbit_view.set_target_dimensions(1.69, 6.0)
+    window.lift.reset(0.0)
+    window.outrigger.reset(0)                 # 캘리브레이션 뒤 영점 — 아웃트리거는 풀려 있다
+    window.amr.reset(0.0)
+    moves = _record_moves(window)
+
+    window.erut_session.handle_request("prepare", {
+        "req_id": "p-150", "job_id": "jb-150", "surface": "outer",
+        "area": {"start": {"x": 0, "y": 0}, "end": {"x": 150, "y": 140}},
+        "scan": {"pitch": 20, "speed": 100}})
+    qtbot.wait(300)
+
+    assert moves == [], "prepare 에서 장비가 움직였다"
+    assert window.sequencer.state.name == "IDLE", "prepare 에서 순회를 시작했다"
+    assert [e[0] for e in events] == ["ready"]
+    assert window.erut_session.activity_state() == "ready"
+
+    window.erut_session.handle_request("start", {
+        "req_id": "s-150", "job_id": "jb-150", "surface": "outer",
+        "area": {"start": {"x": 0, "y": 0}, "end": {"x": 150, "y": 140}},
+        "scan": {"pitch": 20, "speed": 100}})
+    # 로봇 단계(스캔)까지 간다.
+    qtbot.waitUntil(lambda: window.sequencer.state.name == "SCANNING", timeout=10000)
+
+    assert moves == [("amr", 75.0), ("outrigger", 1.0), ("lift", 0.0)]
     window.close()

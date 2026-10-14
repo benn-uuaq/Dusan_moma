@@ -45,6 +45,12 @@ ERUT_STATUS = "erut/status"
 #: 브릿지가 5초마다 내는 erut/status 가 이만큼 끊기면 없는 것으로 본다(탭2 18행).
 #: 브릿지 프로그램이 멈춰 있으면(꺼지지는 않아) 유언이 안 뜨기 때문이다.
 ERUT_SILENCE_S = 20.0
+#: 붙은 지 이 시간 안에 끊기기를 CONFLICT_FLAPS 번 연달아 겪으면, 같은 접속 ID 로
+#: 다른 RCS(다른 PC)가 붙어 서로 밀어내는 것으로 본다 [s]. 브로커는 같은 ID 가 새로
+#: 붙으면 먼저 붙은 쪽을 끊고, 끊긴 쪽은 곧 다시 붙어 상대를 끊는다 — 2026-10-12
+#: 이 PC 와 리눅스 PC 의 RCS 가 둘 다 robot1 로 붙어 1초마다 번갈아 끊겼다.
+SHORT_SESSION_S = 5.0
+CONFLICT_FLAPS = 3
 #: 시각차 경고 기준 [s]. ERUT 는 timestamp 가 10초 넘게 어긋난 메시지를 버린다 —
 #: 그 절반에서 미리 알린다(장비 시각을 NTP 에 맞춰야 한다).
 CLOCK_SKEW_WARN_S = 5.0
@@ -60,13 +66,13 @@ TEST_INJECT = "3s/test/inject/error"
 #: mosquitto 는 계정 오류에 5 를 보내고 3 은 보내지 않는다(실측·소스 확인) —
 #: 3 이 오면 거의 늘 **다른 브로커**에 붙은 것이다.
 CONNACK_HINTS = {
-    1: "MQTT 3.1.1 을 받지 않는 브로커입니다 — 주소·포트가 ERUT 브로커가 맞는지 확인하세요",
-    2: "클라이언트 ID 를 거부했습니다 — 연결 설정의 「ERUT 장치 ID」를 확인하세요",
-    3: ("브로커가 '서버 사용 불가'로 거절했습니다. ERUT 브로커(mosquitto)는 이 값을 "
-        "보내지 않습니다 — 주소·포트가 ERUT 브로커가 아닌 다른 브로커를 가리키는지 "
-        "연결 설정의 「ERUT Broker 주소」·「ERUT 포트」를 확인하세요"),
-    4: "계정 이름·비밀번호 형식이 틀렸습니다 — 「ERUT 계정」·「ERUT 비밀번호」를 확인하세요",
-    5: "권한이 없습니다 — 「ERUT 계정」·「ERUT 비밀번호」가 ERUT 가 알려 준 값과 같은지 확인하세요",
+    1: "MQTT 3.1.1 을 받지 않는 곳입니다 — 연결 설정의 ERUT 주소·포트가 맞는지 확인하세요",
+    2: "클라이언트 ID 를 거부했습니다 — 연결 설정의 ERUT 장치 ID 를 확인하세요",
+    3: ("'서버 사용 불가'로 거절됐습니다. ERUT(mosquitto)는 이 값을 보내지 않습니다 — "
+        "주소·포트가 ERUT 가 아닌 다른 MQTT 서버를 가리키는지 연결 설정의 ERUT 주소·포트를 "
+        "확인하세요"),
+    4: "계정 이름·비밀번호 형식이 틀렸습니다 — 연결 설정의 ERUT 계정·비밀번호를 확인하세요",
+    5: "권한이 없습니다 — 연결 설정의 ERUT 계정·비밀번호가 ERUT 가 알려 준 값과 같은지 확인하세요",
 }
 
 
@@ -85,9 +91,10 @@ class ErutConfig:
     """브로커 접속 정보. 탭2 초안 「접속」: MQTT 3.1.1 · 클라이언트 ID 는 로봇마다
     하나로 고정 · keepalive 10~20초 · cleanSession=true."""
 
-    host: str = "127.0.0.1"
+    # 비어 있으면 ERUT 에 붙지 않는다(RCS 단독) — 접속 정보는 ERUT 가 알려 준다.
+    host: str = ""
     port: int = 1883
-    device_id: str = "robot1"
+    device_id: str = ""
     keep_alive: int = 15
     client_id: str = ""
     # 브로커 계정. ERUT 가 정해 알려 준다(탭0 초안 「브로커 접속 정보」). 비워 두면 익명.
@@ -113,6 +120,10 @@ class ErutClient(QObject):
     # 시험 도구가 넣어 준 장애. RCS 가 이걸 받아 evt/error 를 발행한다.
     test_error_injected = pyqtSignal(object)
     connected_changed = pyqtSignal(bool)
+    # 같은 접속 ID 충돌로 다시 붙기를 멈췄다 (사람이 읽을 사유). 화면 배지가 쓴다.
+    link_halted = pyqtSignal(str)
+    # paho 스레드에서 충돌을 알아채면 Qt 스레드에서 멈추도록 넘기는 내부 신호.
+    _conflict_seen = pyqtSignal()
     error_occurred = pyqtSignal(str)
     activity = pyqtSignal(str)
 
@@ -127,6 +138,14 @@ class ErutClient(QObject):
         self._erut_seen = 0.0
         # 마지막으로 알린 접속 거부 코드. 같은 거부를 재접속마다 되풀이하지 않는다.
         self._refused_rc: int | None = None
+        # 같은 접속 ID 충돌 감지 — 붙은 시각, 짧게 끊긴 횟수, 멈췄는가.
+        self._connected_at = 0.0
+        self._short_sessions = 0
+        self._halted = False
+        # 앱이 ERUT 에 붙으라고 했는가(start). 접속 정보가 비어 있으면 붙지 않고
+        # 기다리다가, 값이 들어오면(apply_config) 그때 붙는다.
+        self._enabled = False
+        self._conflict_seen.connect(self._halt_for_conflict)
         self._silence_timer = QTimer(self)
         self._silence_timer.setInterval(1000)
         self._silence_timer.timeout.connect(self._check_erut_silence)
@@ -146,11 +165,31 @@ class ErutClient(QObject):
     def is_connected(self) -> bool:
         return self._connected
 
+    @property
+    def erut_online(self) -> bool:
+        """ERUT 브릿지가 살아 있는가(erut/status online 을 받고 20초 안)."""
+        return bool(self._erut_online)
+
+    @property
+    def halted(self) -> bool:
+        """같은 접속 ID 충돌로 다시 붙기를 멈춘 상태인가."""
+        return self._halted
+
     # ------------------------------------------------------------ 연결
     def start(self) -> None:
+        self._enabled = True
         if self._client is not None:
             return
+        if not self.config.host or not self.config.device_id:
+            # 접속 정보가 비어 있다 — RCS 단독으로 돈다(2026-10-14). 값이 들어오면
+            # apply_config 가 다시 부른다.
+            self._set_connected(False)
+            self.activity.emit("ERUT 접속 주소 · 장치 ID 가 비어 있어 ERUT 에 붙지 않습니다.")
+            return
         self._refused_rc = None
+        self._halted = False
+        self._short_sessions = 0
+        self._connected_at = 0.0
         try:
             import paho.mqtt.client as mqtt
         except ImportError as exc:
@@ -186,7 +225,7 @@ class ErutClient(QObject):
                                  self.config.keep_alive)
             client.loop_start()
         except Exception as exc:  # noqa: BLE001
-            self.error_occurred.emit(f"ERUT 브로커 연결 실패: {exc}")
+            self.error_occurred.emit(f"ERUT 접속 실패: {exc}")
             return
         self._client = client
         self._silence_timer.start()
@@ -197,26 +236,35 @@ class ErutClient(QObject):
         같은 값이면 아무것도 하지 않는다 — 다시 붙을 때마다 evt/status 를
         새로 내보내게 되고, ERUT 쪽에서는 RCS 가 껐다 켜진 것으로 보인다.
         """
-        if config == self.config:
+        if config == self.config and not self._halted:
             return False
-        running = self._client is not None
-        if running:
-            self.stop()
+        # 충돌로 멈춰 있었으면 값이 같아도 다시 붙는다(설정 저장 = 다시 시도).
+        if self._client is not None:
+            self._shutdown()
         self.config = config
-        if running:
+        if self._enabled:
             self.start()
         return True
 
-    def stop(self) -> None:
+    def stop(self, announce_offline: bool = True) -> None:
+        """ERUT 연결을 끊고 다시 붙지 않는다(창을 닫을 때)."""
+        self._enabled = False
+        self._shutdown(announce_offline)
+
+    def _shutdown(self, announce_offline: bool = True) -> None:
+        """지금 연결만 끊는다 — 접속 정보를 바꿀 때 · 충돌로 물러날 때."""
         self._silence_timer.stop()
         client, self._client = self._client, None
         if client is None:
             return
-        # 정상 종료는 offline 을 직접 발행한다 (LWT 는 비정상 종료용).
+        # 정상 종료는 offline 을 직접 발행한다 (LWT 는 비정상 종료용). 충돌로
+        # 물러날 때는 내지 않는다 — 같은 토픽에 붙어 있는 상대 RCS 의 online 을
+        # 덮어쓴다.
         try:
-            self._publish(self.evt_topic("status"),
-                          {"timestamp": utc_ms(), "state": "offline"}, retain=True,
-                          client=client)
+            if announce_offline:
+                self._publish(self.evt_topic("status"),
+                              {"timestamp": utc_ms(), "state": "offline"}, retain=True,
+                              client=client)
             client.disconnect()
             client.loop_stop()
         except Exception as exc:  # noqa: BLE001
@@ -360,7 +408,7 @@ class ErutClient(QObject):
             if rc != self._refused_rc:
                 self._refused_rc = rc
                 self.error_occurred.emit(
-                    f"ERUT 브로커 {self.config.host}:{self.config.port} 연결 거부 "
+                    f"ERUT({self.config.host}:{self.config.port}) 접속 거부 "
                     f"(rc={rc}) — {connack_hint(rc)}.")
             return
         self._refused_rc = None
@@ -370,10 +418,38 @@ class ErutClient(QObject):
         client.subscribe(f"{REQ_PREFIX}#", qos=1)
         client.subscribe(ERUT_STATUS, qos=1)
         client.subscribe(TEST_INJECT, qos=1)
+        self._connected_at = time.monotonic()
         self._set_connected(True)
 
-    def _on_disconnect(self, _client, _userdata, rc) -> None:  # noqa: ANN001
+    def _on_disconnect(self, client, _userdata, rc) -> None:  # noqa: ANN001
         self._set_connected(False)
+        if rc == 0 or client is not self._client:
+            return                      # 우리가 끊었다(stop · 설정 변경)
+        lived = time.monotonic() - self._connected_at if self._connected_at else None
+        self._connected_at = 0.0
+        if lived is not None and lived < SHORT_SESSION_S:
+            self._short_sessions += 1
+        else:
+            self._short_sessions = 0
+        if self._short_sessions >= CONFLICT_FLAPS:
+            self._conflict_seen.emit()   # Qt 스레드에서 멈춘다
+
+    def _halt_for_conflict(self) -> None:
+        """같은 접속 ID 로 붙은 다른 RCS 와 번갈아 끊기고 있다 — 다시 붙기를 멈춘다.
+
+        둘 다 계속 다시 붙으면 ERUT 는 1~2초마다 offline/online 을 받고 요청이
+        어느 쪽에 갈지 모른다. 이쪽이 물러나면 상대는 붙은 채로 남는다. 연결
+        설정을 저장하면(apply_config) 다시 붙어 본다.
+        """
+        if self._client is None or self._halted:
+            return
+        self._shutdown(announce_offline=False)
+        self._halted = True
+        reason = (f"같은 장치 ID({self.config.device_id})로 다른 RCS 가 ERUT 에 붙어 있어 "
+                  "서로 연결을 끊고 있습니다. 이 RCS 는 다시 붙지 않습니다 — 다른 PC 의 RCS 를 "
+                  "끄거나 장치 ID 를 바꾼 뒤, 연결 설정을 저장하면 다시 붙습니다.")
+        self.error_occurred.emit(reason)
+        self.link_halted.emit(reason)
 
     def _on_message(self, _client, _userdata, msg) -> None:  # noqa: ANN001
         self._note_traffic("수신", msg.topic, msg.payload)
@@ -407,7 +483,7 @@ class ErutClient(QObject):
             # 들어왔다). 규격도 요청은 retain 하지 않고, retain 으로 온 요청은
             # 버린다(if-0.6 탭6).
             self.error_occurred.emit(
-                f"ERUT 브로커에 남아 있던(retain) 요청을 버렸습니다: {msg.topic}"
+                f"ERUT 에 남아 있던(retain) 요청을 버렸습니다: {msg.topic}"
                 " — 요청은 retain 없이 보내야 합니다.")
             return
         action = msg.topic[len(REQ_PREFIX):]
@@ -462,5 +538,5 @@ class ErutClient(QObject):
         self._connected = connected
         self.connected_changed.emit(connected)
         self.activity.emit(
-            "ERUT 브로커에 연결되었습니다." if connected else "ERUT 브로커 연결이 끊겼습니다."
+            "ERUT 에 연결되었습니다." if connected else "ERUT 연결이 끊겼습니다."
         )

@@ -19,6 +19,12 @@ class FakePaho:
     def subscribe(self, topic, qos=1):
         self.subscribed.append(topic)
 
+    def disconnect(self):
+        self.disconnected = True
+
+    def loop_stop(self):
+        pass
+
 
 class Msg:
     def __init__(self, topic, payload):
@@ -240,7 +246,7 @@ def test_refusal_names_the_broker_and_what_to_check(qtbot):
 
     assert len(told) == 1, "같은 거절을 재접속마다 되풀이했다"
     assert "10.1.2.3:1883" in told[0] and "rc=3" in told[0]
-    assert "다른 브로커" in told[0]
+    assert "다른 MQTT 서버" in told[0]
 
     client._on_connect(FakePaho(), None, None, 5)
     assert len(told) == 2 and "ERUT 계정" in told[1]
@@ -256,3 +262,52 @@ def test_refusal_is_told_again_after_a_successful_connect(qtbot):
     client._on_connect(FakePaho(), None, None, 5)
 
     assert len(told) == 2
+
+
+def test_same_client_id_fight_is_detected_and_this_side_backs_off(qtbot):
+    """같은 장치 ID 로 다른 RCS 가 붙으면 브로커가 번갈아 끊는다(2026-10-12).
+
+    붙자마자 끊기기를 연달아 세 번 겪으면 이쪽이 물러난다 — 다시 붙지 않고,
+    offline 도 내지 않는다(상대 RCS 의 online 을 덮어쓰지 않게).
+    """
+    client, paho = _client(qtbot)
+    halted: list[str] = []
+    client.link_halted.connect(halted.append)
+
+    for _ in range(3):
+        client._on_connect(paho, None, None, 0)
+        client._on_disconnect(paho, None, 7)          # 붙자마자 끊김(MQTT_ERR_CONN_LOST)
+    qtbot.waitUntil(lambda: client.halted, timeout=2000)
+
+    assert halted and "robot1" in halted[0]
+    assert client._client is None, "물러났는데 계속 다시 붙는다"
+    assert not any(t.endswith("evt/status") for t, *_ in paho.published), \
+        "물러나면서 offline 을 내 상대의 online 을 덮었다"
+
+
+def test_a_long_session_resets_the_fight_count(qtbot):
+    """오래 붙어 있다가 끊긴 것은 충돌이 아니다(네트워크 · 브로커 재시작)."""
+    client, paho = _client(qtbot)
+    for _ in range(2):
+        client._on_connect(paho, None, None, 0)
+        client._on_disconnect(paho, None, 7)
+    client._on_connect(paho, None, None, 0)
+    client._connected_at -= 60.0                       # 1분 붙어 있었다
+    client._on_disconnect(paho, None, 7)
+    client._on_connect(paho, None, None, 0)
+    client._on_disconnect(paho, None, 7)
+    qtbot.wait(50)
+
+    assert client.halted is False
+
+
+def test_saving_the_settings_retries_after_backing_off(qtbot):
+    client = ErutClient(ErutConfig(device_id="robot1"))
+    client._halted = True
+    client._enabled = True                           # 앱이 붙으라고 했다
+    calls: list[str] = []
+    client.start = lambda: calls.append("start")
+
+    assert client.apply_config(client.config) is True
+    assert calls == ["start"]
+

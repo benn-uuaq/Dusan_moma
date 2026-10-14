@@ -63,11 +63,13 @@ def test_changing_the_address_while_connected_reconnects(qtbot) -> None:
     window = _window(qtbot)
     calls: list[str] = []
     window.erut._client = object()          # 붙어 있는 상태로 둔다
-    window.erut.stop = lambda: calls.append("stop")
+    window.erut._enabled = True
+    window.erut._shutdown = lambda *a: calls.append("stop")
     window.erut.start = lambda: calls.append("start")
 
     assert window.erut.apply_config(window.erut.config) is False, "같은 값이면 그대로 둔다"
-    assert window.erut.apply_config(ErutConfig(host="10.1.1.2", client_id="y")) is True
+    assert window.erut.apply_config(
+        ErutConfig(host="10.1.1.2", device_id="3S", client_id="y")) is True
     assert calls == ["stop", "start"]
     window.close()
 
@@ -118,7 +120,8 @@ def test_erut_still_connects_when_the_settings_cannot_be_read(qtbot, monkeypatch
 
     window._show_settings_error("connection", "설정 파일을 읽을 수 없습니다")
 
-    assert hosts == ["127.0.0.1"]
+    # 붙으려 한다 — 다만 주소가 비어 있으면(기본) 실제로는 붙지 않는다(2026-10-14).
+    assert hosts == [""]
     window.close()
 
 
@@ -133,3 +136,61 @@ def test_erut_is_not_started_from_the_constructor(qtbot, monkeypatch) -> None:
 
     assert hosts == [], "설정을 읽기 전에 ERUT 에 붙었다"
     window.close()
+
+
+def test_top_bar_shows_the_erut_link(qtbot) -> None:
+    """상단 ERUT 표시: ERUT MQTT 에 붙었는가 — 연결됨 / 연결 안 됨(+ 접속 ID 충돌)."""
+    window = _window(qtbot)
+    window.erut.start = lambda: None                # 실제 브로커에는 붙지 않는다
+    badge = window.top_bar.badges["ERUT"]
+    assert "연결 안 됨" in badge.state_label.text()
+
+    window.erut._set_connected(True)                # ERUT MQTT 에 붙었다
+    assert "연결됨" in badge.state_label.text() and "안 됨" not in badge.state_label.text()
+    window.erut._set_erut_online(False)             # 브릿지 신호와는 상관없다(2026-10-14)
+    assert "연결됨" in badge.state_label.text()
+
+    window.erut._set_connected(False)
+    assert "연결 안 됨" in badge.state_label.text()
+
+    window.erut._halted = True
+    window.erut.link_halted.emit("같은 장치 ID")
+    assert "ID 중복" in badge.state_label.text()
+    window.close()
+
+
+def test_empty_erut_settings_are_allowed_and_disconnect(qtbot) -> None:
+    """접속 주소 · 장치 ID 를 비워 둘 수 있다 — 비우면 끊고 붙지 않는다(2026-10-14).
+
+    예전에는 비어 있으면 127.0.0.1 로 붙었고, 주소를 지워도 옛 주소에 붙은 채였다.
+    """
+    window = _window(qtbot)
+    calls: list[str] = []
+    window.erut._enabled = True
+    window.erut._shutdown = lambda *a: (calls.append("stop"),
+                                        setattr(window.erut, "_client", None))
+    window.erut.config = ErutConfig(host="10.1.1.2", device_id="3S")
+    window.erut._client = object()
+    conn = window.screens["connection"]
+
+    conn.apply_values({"ERUT Broker 주소": "", "ERUT 장치 ID": "", "ERUT 계정": "",
+                       "ERUT 비밀번호": ""})
+    window._sync_broker_endpoints()
+
+    assert calls == ["stop"]
+    assert window.erut.config.host == "" and window.erut._client is None
+    assert "연결 안 됨" in window.top_bar.badges["ERUT"].state_label.text()
+    window.close()
+
+
+def test_client_does_not_connect_without_an_address(qtbot) -> None:
+    from smr_operator_ui.services import ErutClient
+
+    client = ErutClient(ErutConfig(host="", device_id="3S"))
+    told: list[str] = []
+    client.activity.connect(told.append)
+    client.start()
+
+    assert client._client is None
+    assert any("비어 있어" in t for t in told)
+

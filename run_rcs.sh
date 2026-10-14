@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 현장 RCS 실행 — 환경을 불러오고, ERUT 브로커가 닿는지 보고, authbind 로 RCS 를 띄운다.
+# 현장 RCS 실행 — 환경을 불러오고, ERUT 에 붙는지 보고, authbind 로 RCS 를 띄운다.
 #
 #   ./run_rcs.sh
 #
@@ -7,7 +7,7 @@
 #   일반 사용자는 열 수 없다. python3 에 setcap 을 걸면 ROS 2 가 깨지므로(operator-ui
 #   README 「실행」) authbind 로 이 프로세스에만 권한을 준다. 그냥
 #   `python3 -m smr_operator_ui` 로 켜면 TPAC 시뮬레이터·장비와 안 붙는다.
-# * ERUT 브로커: RCS 의 외부 통신은 ERUT 브로커(MQTT) 하나다 — 사내 MC MQTT 는
+# * ERUT: RCS 의 외부 통신은 ERUT MQTT 하나다(RCS 는 접속만 한다) — 사내 MC MQTT 는
 #   2026-10-07 에 뺐다. 저장된 연결 설정(「ERUT Broker 주소」·「ERUT 포트」·계정)으로
 #   켜기 전에 실제로 붙어 보고, 안 되면 무엇을 볼지 알려 준 뒤 그대로 켠다(RCS 가
 #   켜진 뒤에도 계속 다시 붙어 본다). 따로 볼 때: python3 -m smr_operator_ui.erut_check
@@ -36,12 +36,12 @@ if [ -f .venv/bin/activate ]; then
     source .venv/bin/activate
 fi
 
-# ---- ERUT 브로커 확인 ----------------------------------------------------------
+# ---- ERUT 접속 확인 -----------------------------------------------------------
 # 포트만 보지 않고 RCS 와 같은 계정·판으로 실제 MQTT 접속을 해 본다
-# (operator-ui/src/smr_operator_ui/erut_check.py). 계정이 틀렸거나 엉뚱한 브로커면
-# 브로커의 거절 코드(rc)와 뜻을 알려 준다. 결과와 상관없이 RCS 는 켠다.
+# (operator-ui/src/smr_operator_ui/erut_check.py). 계정이 틀렸거나 엉뚱한 곳이면
+# 거절 코드(rc)와 뜻을 알려 준다. 접속 정보가 비어 있으면 붙지 않는다고 알린다. 결과와 상관없이 RCS 는 켠다.
 if ! timeout 20 python3 -m smr_operator_ui.erut_check; then
-    echo "        RCS 는 그대로 켭니다. 문제 해결: docs/rcs_update_guide.md 「ERUT 브로커에 안 붙을 때」"
+    echo "        RCS 는 그대로 켭니다. 문제 해결: docs/rcs_update_guide.md 「ERUT 에 안 붙을 때」"
 fi
 
 # ---- RCS 실행 ---------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""ERUT 브로커 점검 — RCS 가 쓸 연결 설정으로 실제 MQTT 접속을 해 본다.
+"""ERUT 접속 점검 — RCS 가 쓸 연결 설정으로 실제 MQTT 접속을 해 본다.
 
     python3 -m smr_operator_ui.erut_check
 
@@ -24,10 +24,11 @@ from typing import Any
 
 from smr_operator_ui.services.erut_client import connack_hint
 
-#: 연결 설정 화면의 기본값(ConnectionSettingsScreen)과 같다.
-DEFAULT_HOST = "127.0.0.1"
+#: 연결 설정 화면의 기본값(ConnectionSettingsScreen)과 같다 — 주소 · 장치 ID 는
+#: 비어 있을 수 있고, 그러면 RCS 는 ERUT 에 붙지 않는다.
+DEFAULT_HOST = ""
 DEFAULT_PORT = 1883
-DEFAULT_DEVICE = "robot1"
+DEFAULT_DEVICE = ""
 
 
 def load_connection() -> tuple[dict[str, Any], str]:
@@ -45,9 +46,9 @@ def load_connection() -> tuple[dict[str, Any], str]:
 def endpoint(values: dict[str, Any]) -> dict[str, Any]:
     """ConnectionSettingsScreen.erut_endpoint() 와 같은 규칙으로 접속 값을 만든다."""
     return {
-        "host": str(values.get("ERUT Broker 주소") or DEFAULT_HOST).strip() or DEFAULT_HOST,
+        "host": str(values.get("ERUT Broker 주소") or DEFAULT_HOST).strip(),
         "port": int(values.get("ERUT 포트") or DEFAULT_PORT),
-        "device_id": str(values.get("ERUT 장치 ID") or "").strip() or DEFAULT_DEVICE,
+        "device_id": str(values.get("ERUT 장치 ID") or DEFAULT_DEVICE).strip(),
         "username": str(values.get("ERUT 계정") or "").strip(),
         "password": str(values.get("ERUT 비밀번호") or ""),
     }
@@ -124,12 +125,14 @@ def main() -> int:
     ep = endpoint(values)
     where = f"{ep['host']}:{ep['port']}"
     print(f"[ERUT] 설정 {source}")
-    print(f"       브로커 {where} · 장치 ID {ep['device_id']} · 계정 "
+    if not ep["host"] or not ep["device_id"]:
+        # 비워 두는 것도 허용한다 — RCS 는 ERUT 에 붙지 않고 단독으로 돈다.
+        print("[안내] ERUT 접속 주소 · 장치 ID 가 비어 있어 ERUT 에 붙지 않습니다(RCS 단독). "
+              "붙으려면 RCS 연결 설정의 ERUT 주소 · 포트 · 장치 ID · 계정 · 비밀번호를 넣고 저장하세요.")
+        return 0
+    print(f"       ERUT {where} · 장치 ID {ep['device_id']} · 계정 "
           f"{ep['username'] or '(없음 — 익명)'} · 비밀번호 "
           f"{'있음' if ep['password'] else '없음'}")
-    if "ERUT Broker 주소" not in values:
-        print("[경고] 저장된 ERUT 브로커 주소가 없어 기본값으로 붙습니다 — RCS 연결 설정에서 "
-              "「ERUT Broker 주소」·「ERUT 포트」·「ERUT 계정」·「ERUT 비밀번호」를 넣고 저장하세요.")
     local = ep["host"] in ("127.0.0.1", "localhost", "::1")
     if local:
         listener = local_listener(ep["port"])
@@ -138,7 +141,7 @@ def main() -> int:
 
     reason = tcp_reachable(ep["host"], ep["port"])
     if reason:
-        print(f"[경고] ERUT 브로커 {where} 에 닿지 않습니다 ({reason}).")
+        print(f"[경고] ERUT {where} 에 닿지 않습니다 ({reason}).")
         if local:
             print("        로컬 시험용이면 이 PC 의 mosquitto 를 켜세요: "
                   "sudo systemctl enable --now mosquitto")
@@ -156,16 +159,16 @@ def main() -> int:
         print(f"[경고] MQTT 접속 중 오류: {exc}")
         return 2
     if rc is None:
-        print(f"[경고] {where} 가 MQTT 답(CONNACK)을 주지 않았습니다 — MQTT 브로커가 아니거나 "
+        print(f"[경고] {where} 가 MQTT 답(CONNACK)을 주지 않았습니다 — MQTT 서버가 아니거나 "
               "접속 수 한도에 걸렸을 수 있습니다.")
         return 2
     if rc != 0:
-        print(f"[경고] ERUT 브로커 {where} 가 접속을 거부했습니다 (rc={rc}) — {connack_hint(rc)}.")
+        print(f"[경고] ERUT {where} 가 접속을 거부했습니다 (rc={rc}) — {connack_hint(rc)}.")
         return 1
     tag = f" · {version}" if version else ""
-    print(f"[확인] ERUT 브로커 {where} 에 붙었습니다{tag}.")
+    print(f"[확인] ERUT {where} 에 붙었습니다{tag}.")
     if local:
-        print("       (이 PC 의 로컬 시험용 브로커입니다 — 현장 ERUT 브로커가 아닙니다.)")
+        print("       (이 PC 의 로컬 시험용 mosquitto 입니다 — 현장 ERUT 가 아닙니다.)")
     return 0
 
 

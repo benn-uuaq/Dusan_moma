@@ -6,7 +6,7 @@
 
   rcs    RCS 단독 작업('검사 시작'): 1A 부터 마지막 셀까지 순회한다.
          원점마다 RCS 가 접촉 2초 뒤 스스로 스캔을 풀어 준다.
-  erut   ERUT 표준(if-0.5): 자기소개 → calibrate(차량 한 바퀴) → prepare(차량만)
+  erut   ERUT 표준(if-0.9): 자기소개 → calibrate(차량 한 바퀴) → prepare(값 확인만)
          → start(3점 → contact → 스캔, 줄 중간 pause/resume) → mark(mark_ready ↔ mark_next) → home
          → 비상정지 → reset.
   io     로봇 디지털 출력(레지스터 2)을 화면 경로로 켜고 끈다.
@@ -258,7 +258,7 @@ class ErutTap:
 def scenario_erut(h: Harness) -> list[str]:
     """ERUT 표준 인터페이스(if-0.4) 한 바퀴.
 
-    자기소개 → calibrate → prepare(ready) → start(접촉·진행률·완료) →
+    자기소개 → calibrate → prepare(값 확인 → ready) → start(차량·리프트·로봇 → 접촉·진행률·완료) →
     mark(점마다 mark_ready ↔ mark_next) → home → 비상정지 → reset.
     """
     window = h.window
@@ -295,9 +295,10 @@ def scenario_erut(h: Harness) -> list[str]:
     if home_answer != "home":
         problems.append(f"[erut] prepare 전 query 의 home 이 {home_answer} 입니다")
 
-    log("[erut] prepare — 차량·리프트만 구간 자리로(preparing) → ready. 로봇은 홈")
+    log("[erut] prepare — 작업 값만 확인하고 바로 ready. 장비는 그대로(2026-10-14)")
     h.pump(1.0)
     tap.status.clear()
+    vehicle_before = h.window.amr.position
     area = {"start": {"x": 580, "y": 0}, "end": {"x": 1180, "y": 800}}
     session.handle_request("prepare", {
         "req_id": "prep-1", "job_id": "jb-erut", "surface": "outer",
@@ -306,10 +307,15 @@ def scenario_erut(h: Harness) -> list[str]:
     if not h.wait_until(lambda: tap.event("ready", "prepare"), timeout=90):
         return problems + ["[erut] 준비 완료(evt/ready)가 오지 않았습니다"]
     log(f"  evt/ready 받음 · activity {' → '.join(map(str, tap.activities()))}")
+    h.pump(1.0)
+    if (h.window.amr.position != vehicle_before
+            or h.window.sequencer.state.name not in ("IDLE", "DONE", "STOPPED")):
+        problems.append(f"[erut] prepare 에서 장비가 움직였습니다 — 차량 {vehicle_before} → "
+                        f"{h.window.amr.position} · 순회 {h.window.sequencer.state.name}")
     if tap.home and tap.home[-1] != "home":
         problems.append(f"[erut] 준비 단계에서 로봇이 홈을 벗어났습니다: {tap.home}")
 
-    log("[erut] start — 로봇 3점 측정 → 시작점에 붙음(contact) → 적심 → 스캔")
+    log("[erut] start — 차량 이동 → 아웃트리거 → 리프트 → 로봇 3점 측정 → 시작점(contact) → 적심 → 스캔")
     session.handle_request("start", {"req_id": "start-1", "job_id": "jb-erut",
                                      "surface": "outer", "area": area,
                                      "scan": {"pitch": 20, "speed": 100}})
@@ -359,7 +365,8 @@ def scenario_erut(h: Harness) -> list[str]:
         f" · 위치 {done.get('location')}")
     acts = tap.activities()
     log(f"  activity: {' → '.join(map(str, acts))}")
-    for needed in ("preparing", "ready", "running"):
+    # prepare 는 값만 보고 바로 ready 라 preparing 은 거의 안 보인다(2026-10-14).
+    for needed in ("ready", "running"):
         if needed not in acts:
             problems.append(f"[erut] activity 에 {needed} 가 없었습니다: {acts}")
     attached = [c for c in tap.contact if c["state"] == "attached"]

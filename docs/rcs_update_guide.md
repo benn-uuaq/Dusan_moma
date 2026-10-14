@@ -6,9 +6,9 @@
 
 - 저장소: `benn-uuaq/Dusan_moma`
 - 브랜치: `main` 과 `feature/ros2-workspace-setup` 은 같은 내용으로 올린다. 그 PC 가 받던 브랜치를 그대로 쓰면 된다.
-- RCS 의 외부 통신은 **ERUT 브로커(MQTT) 하나**다. 사내 MC MQTT 와 UT 설정은 2026-10-07 판에서 뺐다 — 연결 설정에 「MQTT Broker 주소」·「MQTT 포트」 칸이 없어지고, 상단에 UT 표시와 설정 메뉴의 「UT 시스템 설정」이 없어진다. 예전 설정 파일에 남은 MQTT·UT 값은 읽지 않고 그냥 둔다.
+- RCS 의 외부 통신은 **ERUT MQTT 하나**다(RCS 는 ERUT 가 띄운 MQTT 서버에 접속만 한다 — 브로커를 띄우지 않는다). 사내 MC MQTT 와 UT 설정은 2026-10-07 판에서 뺐다 — 연결 설정에 「MQTT Broker 주소」·「MQTT 포트」 칸이 없어지고, 상단에 UT 표시와 설정 메뉴의 「UT 시스템 설정」이 없어진다. 예전 설정 파일에 남은 MQTT·UT 값은 읽지 않고 그냥 둔다.
 - 아래 명령은 모두 워크스페이스 폴더(저장소를 받은 곳, 예: `~/dusan_ws`)에서 실행한다.
-- **RCS 는 `./run_rcs.sh` 로 켠다.** 환경을 불러오고, ERUT 브로커가 닿는지 먼저 보고, `authbind` 로 RCS 를 띄운다. 그냥 `python3 -m smr_operator_ui` 로 켜면 TPAC(초음파 장비) 서버 포트 502 를 못 열어 TPAC 시뮬레이터·장비와 안 붙는다.
+- **RCS 는 `./run_rcs.sh` 로 켠다.** 환경을 불러오고, ERUT 에 붙는지 먼저 보고, `authbind` 로 RCS 를 띄운다. 그냥 `python3 -m smr_operator_ui` 로 켜면 TPAC(초음파 장비) 서버 포트 502 를 못 열어 TPAC 시뮬레이터·장비와 안 붙는다.
 
 ---
 
@@ -118,15 +118,15 @@ chmod +x run_rcs.sh
 bash run_rcs.sh
 ```
 
-켜기 전에 스크립트가 **저장된 연결 설정으로 ERUT 브로커에 실제로 붙어 보고** 결과를 찍는다. 정상이면 이렇게 나온다.
+켜기 전에 스크립트가 **저장된 연결 설정으로 ERUT 에 실제로 붙어 보고** 결과를 찍는다. 정상이면 이렇게 나온다.
 
 ```
 [ERUT] 설정 /home/<사용자>/.config/smr-operator-ui/settings.json
-       브로커 <ERUT 주소>:<포트> · 장치 ID robot1 · 계정 <ERUT 계정> · 비밀번호 있음
-[확인] ERUT 브로커 <ERUT 주소>:<포트> 에 붙었습니다 · mosquitto version 2.1.2.
+       ERUT <ERUT 주소>:<포트> · 장치 ID <장치 ID> · 계정 <ERUT 계정> · 비밀번호 있음
+[확인] ERUT <ERUT 주소>:<포트> 에 붙었습니다 · mosquitto version 2.1.2.
 ```
 
-`[경고]` 가 나오면 아래 「ERUT 브로커에 안 붙을 때」를 본다(RCS 는 그대로 켜진다).
+`[경고]` 가 나오면 아래 「ERUT 에 안 붙을 때」를 본다(RCS 는 그대로 켜진다).
 스크립트 없이 켤 때는 반드시 `authbind --deep` 을 붙인다(5번 환경을 불러온 터미널에서):
 
 ```bash
@@ -138,10 +138,11 @@ authbind --deep python3 -m smr_operator_ui
 | 확인할 것 | 어디서 | 정상 |
 |---|---|---|
 | 로봇 연결 | RCS 상단 Cobot 표시 | 연결됨 |
-| ERUT 브로커 연결 | RCS 알림 | 「ERUT 브로커에 연결되었습니다」 · 「ERUT 브릿지가 온라인입니다」 |
+| ERUT 연결 | RCS 상단 ERUT 표시 · 알림 | 「연결됨」. 접속 주소 · 장치 ID 를 비워 두면 붙지 않고 「연결 안 됨」(RCS 단독) |
 | 규격 판 번호 | MQTT Explorer `erut/robot1/evt/info` | `interface_version` 이 지금 규격 판(예: `"0.9"`) |
 | 시각 | RCS 알림 | 「ERUT 브릿지와 시각이 … 어긋납니다」 경고가 없을 것(10초 넘게 어긋나면 ERUT 가 메시지를 버린다) |
 | 홈 상태 | MQTT Explorer `erut/robot1/evt/home` | 팔이 접혀 있으면 `home` |
+| 장착 EOAT | 설정 → Cobot 설정 「장착 EOAT」 | 실제 단 EOAT(5축 십자형 / 8축 직사각). 고르는 즉시 로봇 264 로 간다. 「없음」이면 RCS 로 돌릴 때 EOAT 오프셋이 안 걸린다 |
 
 다시 켰으면 ERUT 에 알린다 — 꺼져 있는 동안 ERUT 는 시작·재개를 「로봇에 연결할 수 없습니다」로 거절한다.
 
@@ -182,9 +183,9 @@ git checkout <이전 커밋>
 git checkout main && git pull
 ```
 
-## ERUT 브로커에 안 붙을 때
+## ERUT 에 안 붙을 때
 
-RCS 알림에 「ERUT 브로커에 연결되었습니다」가 안 뜨거나 「ERUT 브로커 … 연결 거부 (rc=…)」가 뜬다. 또는 `./run_rcs.sh` 가 `[경고]` 를 낸다.
+RCS 상단 ERUT 표시가 「연결 안 됨」이거나, 알림에 「ERUT(…) 접속 거부 (rc=…)」가 뜬다. 또는 `./run_rcs.sh` 가 `[경고]` 를 낸다.
 
 1. **점검 도구를 돌린다.** RCS 가 쓸 설정(어느 파일에서 읽었는지, 주소·포트·장치 ID·계정 — 비밀번호는 있는지만)을 찍고, RCS 와 같은 방식(MQTT 3.1.1·같은 계정)으로 실제로 붙어 본 뒤 브로커의 답을 알려 준다. 접속 ID 는 `3s-robot1-check` 라 돌고 있는 RCS 를 끊지 않는다.
 
@@ -196,12 +197,12 @@ RCS 알림에 「ERUT 브로커에 연결되었습니다」가 안 뜨거나 「
 
    | 결과 | 뜻 · 조치 |
    |---|---|
-   | `저장된 ERUT 브로커 주소가 없어 기본값으로 붙습니다` | 이 PC 에 ERUT 접속 정보가 저장된 적이 없다 — RCS 연결 설정에 ERUT 주소·포트·계정·비밀번호를 넣고 **저장**한다. 접속 정보는 저장소에 없고 PC 마다 설정 파일(`~/.config/smr-operator-ui/settings.json`)에만 있으므로, 새 PC 는 따로 넣어야 한다 |
+   | `ERUT 접속 주소 · 장치 ID 가 비어 있어 ERUT 에 붙지 않습니다` | 이 PC 에 ERUT 접속 정보가 없다 — RCS 연결 설정에 ERUT 주소·포트·장치 ID·계정·비밀번호를 넣고 **저장**한다. 접속 정보는 저장소에 없고 PC 마다 설정 파일(`~/.config/smr-operator-ui/settings.json`)에만 있으므로, 새 PC 는 따로 넣어야 한다. 비워 두는 것도 허용된다(RCS 단독) |
    | `닿지 않습니다` | 그 주소·포트까지 네트워크가 안 닿는다 — 랜선·인터넷, 주소·포트 오타. 주소가 `127.0.0.1` 이면 이 PC 의 mosquitto 가 꺼져 있다(로컬 시험용) |
-   | `rc=3` (서버 사용 불가) | **ERUT 브로커가 아닌 다른 브로커에 붙었다.** ERUT 브로커는 mosquitto 라 이 값을 보내지 않는다(계정이 틀리면 5). 주소·포트를 ERUT 가 알려 준 값으로 고친다. 주소가 `127.0.0.1` 이면 도구가 찍는 「이 PC 의 1883 포트」 줄로 그 포트를 쓰는 프로그램을 확인한다 |
+   | `rc=3` (서버 사용 불가) | **ERUT 가 아닌 다른 MQTT 서버에 붙었다.** ERUT(mosquitto)는 이 값을 보내지 않는다(계정이 틀리면 5). 주소·포트를 ERUT 가 알려 준 값으로 고친다. 주소가 `127.0.0.1` 이면 도구가 찍는 「이 PC 의 1883 포트」 줄로 그 포트를 쓰는 프로그램을 확인한다 |
    | `rc=5` (권한 없음) · `rc=4` | ERUT 계정·비밀번호가 틀렸다 |
    | `rc=2` | 클라이언트 ID 거부 — 「ERUT 장치 ID」 확인 |
-   | `rc=1` | MQTT 3.1.1 을 안 받는 곳 — 주소·포트가 ERUT 브로커인지 확인 |
+   | `rc=1` | MQTT 3.1.1 을 안 받는 곳 — 주소·포트가 ERUT 인지 확인 |
    | `[확인] … 붙었습니다 · mosquitto version …` 인데 RCS 에서만 안 붙음 | RCS 를 다시 켠다. 예전 판은 설정을 읽기 전에 기본값 `127.0.0.1:1883` 에 먼저 붙어 보다가 그 자리의 다른 브로커에 거절당하는 일이 있었다(10/7 두 번째 판에서 고쳤다) |
 
 3. 로컬 시험(주소 `127.0.0.1`)이면 이 PC 의 mosquitto 를 본다.
@@ -216,7 +217,7 @@ RCS 알림에 「ERUT 브로커에 연결되었습니다」가 안 뜨거나 「
    sudo systemctl enable --now mosquitto
    ```
 
-4. 고쳤으면 RCS 연결 설정을 **저장**한다 — 저장하면 바로 다시 붙는다. 붙으면 알림에 「ERUT 브로커에 연결되었습니다」가 뜬다. 점검 도구를 다시 돌려 `[확인]` 을 본다.
+4. 고쳤으면 RCS 연결 설정을 **저장**한다 — 저장하면 바로 다시 붙는다. 붙으면 상단 ERUT 표시가 「연결됨」이 되고 알림에 「ERUT 에 연결되었습니다」가 뜬다. 점검 도구를 다시 돌려 `[확인]` 을 본다.
 5. 붙었는데 ERUT 요청이 안 먹으면 시각을 본다 — 10초 넘게 어긋난 메시지는 버려진다. 이 PC 를 인터넷 시간(NTP)에 맞춘다.
 
 ## 자주 나는 문제
@@ -225,10 +226,12 @@ RCS 알림에 「ERUT 브로커에 연결되었습니다」가 안 뜨거나 「
 |---|---|
 | `git pull` 이 `Your local changes … would be overwritten` 으로 멈춤 | 그 PC 에서 고친 파일이 있다 — 2번으로 돌아가 정리한다 |
 | `./run_rcs.sh: Permission denied` | 실행 권한이 없다 — `chmod +x run_rcs.sh` 또는 `bash run_rcs.sh` (6번) |
-| 「ERUT 브로커 … 연결 거부 (rc=3)」 | ERUT 브로커가 아닌 곳에 붙었다 — 「ERUT 브로커에 안 붙을 때」의 점검 도구 |
+| 「ERUT(…) 접속 거부 (rc=3)」 | ERUT 가 아닌 곳에 붙었다 — 「ERUT 에 안 붙을 때」의 점검 도구 |
+| 「ERUT 에 연결되었습니다 / ERUT 연결이 끊겼습니다」가 1~2초마다 반복, 상단 ERUT 표시가 「ID 중복」 | **같은 장치 ID(예: robot1)로 다른 PC 의 RCS 가 ERUT 에 붙어 있다** — ERUT 가 둘을 번갈아 끊는다. RCS 는 세 번 겪으면 스스로 물러난다. 한쪽 RCS 를 끄거나 장치 ID 를 바꾼 뒤 연결 설정을 저장하면 다시 붙는다 |
 | TPAC(초음파 장비) 시뮬레이터·장비와 안 붙음, 통신 로그에 `[Errno 13] Permission denied` | `authbind` 없이 켰다 — `./run_rcs.sh` 로 켠다. 처음이면 「처음 한 번」의 authbind 설정 |
 | `colcon build` 에서 `ros2`·`ament` 를 못 찾음 | `source /opt/ros/humble/setup.bash` 를 먼저 안 했다 |
+| 로봇 연결이 「끊겼습니다 → 다시 연결됐습니다」를 0.1초도 안 돼 되풀이 · 알람에 「로봇 제어 노드가 2개 떠 있습니다」 | **로봇 제어 노드가 둘 떠 있다** — 예전 판 RCS 를 Ctrl+C · 터미널 닫기로 끄면 노드가 남았고, 다시 켠 RCS 가 하나 더 띄웠다. RCS 를 닫고 `pgrep -af robot_control_node` 로 확인, `pkill -f lib/elite_robot_controller/robot_control_node` 로 모두 끈 뒤 `./run_rcs.sh`. 2026-10-14 판부터는 RCS 가 어떻게 꺼지든 노드도 같이 꺼지고, 떠 있는 노드를 보면 또 띄우지 않는다 |
 | RCS 가 「로봇 제어 노드를 찾지 못했습니다」 | `source install/setup.bash` 를 안 한 터미널에서 켰다 |
 | RCS 의 모든 로봇 버튼이 잠김 | 워크스페이스를 소싱하지 않아 레지스터 표를 못 읽었다 — 5번 다시 |
-| ERUT 브로커에 안 붙음 | 위 「ERUT 브로커에 안 붙을 때」(설정 파일은 업데이트로 바뀌지 않는다) |
+| ERUT 에 안 붙음 | 위 「ERUT 에 안 붙을 때」(설정 파일은 업데이트로 바뀌지 않는다) |
 | 로봇 펜던트에 「ARC IS ZERO」 | 캘리브레이션(모재 지름) 전에 로봇을 출발시켰다 — ERUT 에서 calibrate 후 다시 시작 |

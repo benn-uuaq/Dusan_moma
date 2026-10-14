@@ -6,7 +6,8 @@ from smr_operator_ui import erut_check
 def test_missing_values_fall_back_to_the_screen_defaults() -> None:
     ep = erut_check.endpoint({})
 
-    assert (ep["host"], ep["port"], ep["device_id"]) == ("127.0.0.1", 1883, "robot1")
+    # 비어 있을 수 있다 — 그러면 ERUT 에 붙지 않는다(2026-10-14).
+    assert (ep["host"], ep["port"], ep["device_id"]) == ("", 1883, "")
     assert ep["username"] == "" and ep["password"] == ""
 
 
@@ -26,7 +27,7 @@ def _fake(monkeypatch, values, tcp="", connack=(0, "")):
     monkeypatch.setattr(erut_check, "local_listener", lambda port: "")
 
 
-SAVED = {"ERUT Broker 주소": "10.0.0.9", "ERUT 포트": 18884,
+SAVED = {"ERUT Broker 주소": "10.0.0.9", "ERUT 포트": 18884, "ERUT 장치 ID": "3S",
          "ERUT 계정": "acct", "ERUT 비밀번호": "secret-pw"}
 
 
@@ -35,7 +36,7 @@ def test_refusal_is_explained_and_fails(monkeypatch, capsys) -> None:
 
     assert erut_check.main() == 1
     out = capsys.readouterr().out
-    assert "rc=3" in out and "다른 브로커" in out
+    assert "rc=3" in out and "다른 MQTT 서버" in out
     assert "secret-pw" not in out, "비밀번호가 화면에 찍혔다"
 
 
@@ -51,8 +52,7 @@ def test_unsaved_address_is_pointed_out(monkeypatch, capsys) -> None:
 
     assert erut_check.main() == 0
     out = capsys.readouterr().out
-    assert "저장된 ERUT 브로커 주소가 없어" in out
-    assert "로컬 시험용" in out
+    assert "비어 있어 ERUT 에 붙지 않습니다" in out
 
 
 def test_good_connection_passes(monkeypatch, capsys) -> None:
