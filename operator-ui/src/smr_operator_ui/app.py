@@ -142,6 +142,13 @@ _POSE_LABELS = ("X", "Y", "Z", "RX", "RY", "RZ")
 _PX_RE = re.compile(r"(-?\d+)px")
 
 
+#: 1024x768(4:3) 화면의 글자·버튼·여백 배율(2026-10-16). app.qss 의 px 값은
+#: 1280x720 시절 그대로 두고 여기서 한꺼번에 줄인다 — 글자 20px -> 16px,
+#: 버튼 높이 64px -> 51px, 오른쪽 제어 패널 340px -> 272px, 속도 바 112px -> 90px.
+#: 창이 커지면(전체화면 등) 이 값에 창 배율을 곱한다(OperatorWindow._apply_ui_scale).
+UI_BASE_SCALE = 0.8
+
+
 def _scale_stylesheet(base_qss: str, scale: float) -> str:
     """QSS 안의 모든 px 값(글자 크기·여백·버튼 높이 등)을 같은 비율로 늘린다.
 
@@ -341,11 +348,12 @@ class TopBar(QFrame):
 class OperatorWindow(QMainWindow):
     """화면 스택을 소유하고 UI·시뮬레이터·설정 서비스를 조정한다."""
 
-    # 1280x720이 창의 최소 크기이자 UI 배율의 기준(1.0)이다. 전체화면 등으로
+    # 1024x768(4:3)이 창의 최소 크기이자 UI 배율의 기준이다(2026-10-16, 예전
+    # 1280x720). 기준 크기에서 글자·버튼은 UI_BASE_SCALE 배다. 전체화면 등으로
     # 창이 커지면 폭/높이 중 더 여유 없는 쪽 비율로 전체 QSS를 같이 키운다
     # ("전체 화면과 작은 화면 비율이 유지가 되었으면 좋겠음").
-    _UI_SCALE_REFERENCE_W = 1280
-    _UI_SCALE_REFERENCE_H = 720
+    _UI_SCALE_REFERENCE_W = 1024
+    _UI_SCALE_REFERENCE_H = 768
     # 창이 커진 만큼 글자·버튼을 그대로 키우면(배율 = 창 배수) 전체화면에서
     # 너무 커진다 — 1920x1080 이면 1.5배라 글자가 눈에 띄게 굵어졌다. 커지긴
     # 하되 창 배수보다 완만하게 따라가도록 눌러 준다.
@@ -362,10 +370,11 @@ class OperatorWindow(QMainWindow):
         # 입력값은 클릭해서 키패드·키보드로만 바꾼다 — 휠로는 안 바뀐다.
         install_wheel_guard()
         self.setWindowTitle("3S-Robotics | SMR Operator Console")
-        self.resize(1280, 720)
-        self.setMinimumSize(1280, 720)
+        self.resize(self._UI_SCALE_REFERENCE_W, self._UI_SCALE_REFERENCE_H)
+        self.setMinimumSize(self._UI_SCALE_REFERENCE_W, self._UI_SCALE_REFERENCE_H)
         self._base_qss = load_stylesheet()
-        self._current_ui_scale = 1.0
+        # 지금 적용된 배율. create_application 이 기준 배율로 QSS 를 걸어 둔다.
+        self._current_ui_scale = UI_BASE_SCALE
         root = QWidget()
         root.setObjectName("AppRoot")
         layout = QVBoxLayout(root)
@@ -588,6 +597,9 @@ class OperatorWindow(QMainWindow):
         self._setup_data_recorder()
         # 오류 로그·로그 파일·운전 모드 화면을 기록기와 설정에 잇는다.
         self._setup_record_screens()
+        # 상단바·요약 칸은 QSS 가 아니라 스스로 글자 크기를 잡는다 — 기준 배율을
+        # 처음부터 넘겨 둔다(창이 기준 크기면 _apply_ui_scale 이 다시 부르지 않는다).
+        self._apply_widget_scale(self._current_ui_scale)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -607,13 +619,17 @@ class OperatorWindow(QMainWindow):
         raw = min(width / self._UI_SCALE_REFERENCE_W, height / self._UI_SCALE_REFERENCE_H)
         # 창 배수를 그대로 쓰지 않고 눌러서 반영한다(_UI_SCALE_DAMPING 참고).
         scale = 1.0 + (raw - 1.0) * self._UI_SCALE_DAMPING
-        scale = max(1.0, min(scale, self._UI_SCALE_MAX))
+        scale = max(1.0, min(scale, self._UI_SCALE_MAX)) * UI_BASE_SCALE
         if abs(scale - self._current_ui_scale) < 0.02:
             return
         self._current_ui_scale = scale
         app = QApplication.instance()
         if app is not None:
             app.setStyleSheet(_scale_stylesheet(self._base_qss, scale))
+        self._apply_widget_scale(scale)
+
+    def _apply_widget_scale(self, scale: float) -> None:
+        """QSS 밖에서 글자 크기를 직접 잡는 위젯에 배율을 넘긴다."""
         # 상단바는 배지 개수가 많아 넓은 화면에서도 자체적으로 다시 줄일
         # 필요가 있을 수 있어, 전체 QSS를 다시 적용한 *다음*에 불러야
         # 상단바의 세밀한 계산이 QSS 재적용으로 덮이지 않는다.
@@ -2540,8 +2556,12 @@ class OperatorWindow(QMainWindow):
     # 홈은 movej로 가므로 관절값을, 시작 포즈는 TCP 좌표를 쓴다.
     POSE_TARGETS = {
         "save_home_pose": ("home_joint", _JOINT_LABELS),
+        "save_standby_pose": ("standby_joint", _JOINT_LABELS),
         "save_start_pose": ("start_pose", _POSE_LABELS),
     }
+
+    #: 관절값으로 저장하는 기준 위치(나머지는 TCP pose).
+    _JOINT_TARGETS = ("home_joint", "standby_joint")
 
     def _save_reference_pose(self, command: str) -> None:
         """현재 자세를 기준 위치로 기록하고 로봇 레지스터에도 쓴다."""
@@ -2549,7 +2569,7 @@ class OperatorWindow(QMainWindow):
         if target is None:
             return
         values = (
-            getattr(self, "_last_joint", None) if target == "home_joint"
+            getattr(self, "_last_joint", None) if target in self._JOINT_TARGETS
             else getattr(self, "_last_tcp_pose", None)
         )
         if not values:
@@ -2618,7 +2638,8 @@ class OperatorWindow(QMainWindow):
         무관하다. 조그 버튼의 활성화는 `_update_jog_enabled()`가 로봇
         연결 여부로 따로 관리한다.
         """
-        names = ("save_home_pose", "save_start_pose", "move_home", "linear_speed")
+        names = ("save_home_pose", "save_standby_pose", "save_start_pose",
+                 "move_home", "linear_speed")
         return [name for name in names if self.ros_status.writable(name)]
 
     def _update_jog_enabled(self, connected: bool) -> None:
@@ -2740,7 +2761,7 @@ class OperatorWindow(QMainWindow):
         self.main_screen.show_activity(f"스캔 상승 높이 제한 {rise:g} mm 를 로봇에 보냈습니다.")
 
     # 위치 저장은 조그 화면에서, 나머지는 수동 제어 화면에서 요청한다.
-    _JOG_COMMANDS = ("save_home_pose", "save_start_pose")
+    _JOG_COMMANDS = ("save_home_pose", "save_standby_pose", "save_start_pose")
 
     #: 스캔을 띄우고 멈추는 명령. 실패가 메인 화면에도 보여야 한다.
     _SCAN_COMMANDS = ("play", "stop", "remote_control_on",
@@ -3611,7 +3632,8 @@ def create_application(argv: list[str] | None = None) -> QApplication:
     font_path = files("smr_operator_ui.resources").joinpath("malgun.ttf")
     if font_path.is_file():
         QFontDatabase.addApplicationFont(str(font_path))
-    app.setStyleSheet(load_stylesheet())
+    # 1024x768 기준 크기로 줄여 건다(UI_BASE_SCALE).
+    app.setStyleSheet(_scale_stylesheet(load_stylesheet(), UI_BASE_SCALE))
     install_wheel_guard(app)
     return app
 

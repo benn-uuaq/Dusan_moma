@@ -122,16 +122,16 @@ def test_top_bar_shrinks_font_to_fit_narrow_width(qtbot) -> None:
     qtbot.addWidget(window)
     top_bar = window.top_bar
 
-    # 넉넉한 폭에서는 기본(등록해 둔) 글자 크기 그대로 유지돼야 한다.
+    # 넉넉한 폭에서는 기본(등록해 둔) 글자 크기 x 기준 배율 그대로 유지돼야 한다
+    # (1024x768 기준에서는 20px x 0.8 = 16px).
     top_bar.resize(3000, top_bar.height())
     top_bar._rescale_to_fit()
     base_px = top_bar.clock.font().pixelSize()
-    assert base_px == 20
+    assert base_px == round(20 * window._current_ui_scale)
 
     # 배지 다섯 개가 다 못 들어가는 폭에서는 잘리는 대신 전체 글자 크기가
     # 줄어야 하고, 그 결과 필요한 폭이 지금 폭 안에 들어와야 한다.
-    # (배포 최소 폭 1280 px 에서는 이제 줄이지 않고도 들어간다 — 상단
-    #  제품 문구를 뺐다.)
+    # (배포 최소 폭 1024 px 에서도 줄이지 않고 들어간다 — 기준 배율로 이미 작다.)
     narrow = top_bar.layout().sizeHint().width() - 120
     top_bar.resize(narrow, top_bar.height())
     top_bar._rescale_to_fit()

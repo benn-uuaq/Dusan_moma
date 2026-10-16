@@ -399,29 +399,34 @@ def test_scale_stylesheet_scales_every_px_value_uniformly() -> None:
 
 
 def test_window_scales_whole_ui_and_topbar_with_window_size(qtbot) -> None:
-    """창이 1280x720(기준)보다 커지면(예: 전체화면) 전체 QSS 배율과
+    """창이 1024x768(기준)보다 커지면(예: 전체화면) 전체 QSS 배율과
 
     창이 커지면 글자·버튼도 커지되, **창 배수를 그대로 따라가면 전체화면에서
     너무 커진다**("전체화면하면 글씨나 이런게 너무 많이 커져"). 창 배수보다
-    완만하게 커지고, 기준 크기로 돌아오면 1.0으로 복귀해야 한다.
+    완만하게 커지고, 기준 크기로 돌아오면 기준 배율(UI_BASE_SCALE)로 복귀해야
+    한다. 기준 크기에서는 글자가 1280x720 시절보다 작다(2026-10-16, 4:3 화면).
     """
+    from smr_operator_ui.app import UI_BASE_SCALE
+
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
-    assert window._current_ui_scale == 1.0
+    assert window.minimumSize().width() == 1024 and window.minimumSize().height() == 768
+    assert window._current_ui_scale == UI_BASE_SCALE < 1.0
+    assert window.top_bar._global_scale == UI_BASE_SCALE
 
-    window.resize(1920, 1080)          # 창 배수 1.5
+    window.resize(1920, 1080)          # 창 배수 1.4 (높이 기준)
     scale = window._current_ui_scale
-    assert 1.0 < scale < 1.5, "커지긴 하되 창 배수보다는 완만해야 한다"
+    assert UI_BASE_SCALE < scale < 1.4 * UI_BASE_SCALE, "커지긴 하되 창 배수보다는 완만해야 한다"
     assert window.top_bar._global_scale == scale
     assert f"font-size: {round(20 * scale)}px" in QApplication.instance().styleSheet()
 
     window.resize(3840, 2160)          # 아무리 커도 상한을 넘지 않는다
-    assert window._current_ui_scale == OperatorWindow._UI_SCALE_MAX
+    assert window._current_ui_scale == OperatorWindow._UI_SCALE_MAX * UI_BASE_SCALE
 
-    window.resize(1280, 720)
-    assert window._current_ui_scale == 1.0
-    assert window.top_bar._global_scale == 1.0
+    window.resize(1024, 768)
+    assert window._current_ui_scale == UI_BASE_SCALE
+    assert window.top_bar._global_scale == UI_BASE_SCALE
     window.close()
 
 

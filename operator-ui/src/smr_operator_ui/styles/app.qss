@@ -37,6 +37,8 @@ QPushButton#PrimaryButton { min-height: 82px; background: #0070C0; color: #FFFFF
 QPushButton#PrimaryButton:hover { background: #00599A; }
 QPushButton#PauseButton { min-height: 64px; }
 QPushButton#DangerButton { color: #D32F2F; border-color: #D32F2F; }
+/* 버튼이 여럿 나란히 놓이는 좁은 칸(Cobot 수동 제어) — 좌우 여백만 줄인다. */
+QPushButton#CompactButton { padding: 0 8px; }
 QFrame#SequenceStep { background: #FFFFFF; border: 1px solid #D4DCE5; border-radius: 7px; }
 QFrame#SequenceStep[active="true"] { background: #EAF5FD; border: 2px solid #0070C0; }
 QFrame#CycleRow { border-bottom: 1px solid #D4DCE5; }

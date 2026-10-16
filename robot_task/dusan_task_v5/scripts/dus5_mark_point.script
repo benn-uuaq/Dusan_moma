@@ -120,6 +120,35 @@ def mk_tip_movel(target, blend):
 end
 
 
+def mk_retreat(limit):
+  # 벽에서 물러나되 **스캔 대기 위치(Standby_joint)보다 뒤로는 가지 않는다.**
+  #   - 기준점은 Standby_joint 의 플랜지 자세(get_forward_kin)다. Standby_pose 변수는
+  #     안 쓴다 — 펜던트에 옛 값이 남아 있을 수 있다.
+  #   - 지금 자리도 플랜지로 본다. EOAT 끝점 TCP(eoat_ofs)가 남아 있으면 끝점이
+  #     245 mm 앞이라 남은 거리가 그만큼 크게 잡혔다. 그래서 먼저 TCP 를 플랜지로.
+  #   - 방향은 툴 -Z(벽 법선 반대)다. 호 끝처럼 툴이 돌아가 있어도 벽에서 곧게 뗀다.
+  #   - 거리는 limit [m] 과 「대기 위치 X 까지 남은 거리」 중 작은 쪽. 툴 -Z 로 d 만큼
+  #     가면 베이스 X 는 d * cz 만큼 준다(cz = 툴 Z 의 베이스 X 성분). 이미 대기
+  #     위치보다 뒤면 물러나지 않는다.
+  #   - 툴이 벽(+X) 쪽을 보고 있지 않으면(cz <= 0.2, 약 78 도 넘게 돌아감) 벽에
+  #     붙은 자세가 아니다 — 엉뚱한 쪽으로 가지 않게 물러나지 않는다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  mh_ref = get_forward_kin(Standby_joint)
+  mh_cur = get_actual_tool_flange_pose()
+  mh_cz = pose_trans(mh_cur, [0, 0, 1, 0, 0, 0])[0] - mh_cur[0]
+  mh_back = 0
+  if (mh_cz > 0.2):
+    mh_back = (mh_cur[0] - mh_ref[0]) / mh_cz
+    if (mh_back > limit):
+      mh_back = limit
+    end
+  end
+  if (mh_back > 0.001):
+    movel(pose_trans(mh_cur, [0, 0, -mh_back, 0, 0, 0]), a = a_l, v = v_l)
+  end
+end
+
+
 # ------------------------------------------------------------------ 본문
 write_port_register(290, 10)
 mk_u = read_port_register(268, True)
@@ -160,5 +189,7 @@ end
 write_port_register(278, 0)
 
 # 벽에서 물러난다 — 다음 노드(dus5_home)가 올라가며 곡면을 긁지 않게.
-movel(pose_trans(get_actual_tcp_pose(), [0, 0, -probe_dist * 0.001, 0, 0, 0]),
-      a = a_l, v = v_l)
+# 최대 probe_dist, 스캔 대기 위치보다 뒤로는 안 간다. 예전에는 probe_dist 만큼
+# 무조건 물러나고 dus5_home 이 한 번 더 물러나 기준 자세보다 뒤로 갈 수
+# 있었다(2026-10-15).
+mk_retreat(probe_dist * 0.001)

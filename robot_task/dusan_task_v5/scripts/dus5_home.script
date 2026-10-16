@@ -1,6 +1,6 @@
 # =============================================================================
 #  dus5_home.script — dusan_v5
-#  홈 높이만큼 먼저 올라간 뒤 moveJ 로 홈 자세로 간다
+#  벽에서 물러나 스캔 대기 위치를 거쳐 홈으로 간다 (마킹 끝)
 #
 #  마킹 태스크의 마지막 노드. 펜던트의 move_home 노드와 같은 순서지만
 #  스크립트로 두어 끝나고 상태를 알린다:
@@ -8,24 +8,63 @@
 #    290 = 12  홈 도착 = 마킹 작업 끝 (RCS 가 이걸 보고 다음 점으로 간다)
 #
 #  ※ def main() 으로 감싸지 말 것
+#
+#  홈과 작업 자리 사이는 **언제나 스캔 대기 위치를 거친다**(2026-10-15):
+#    시작 : 홈 --movej--> 스캔 대기 위치 --> 시작 위치(start_pose)
+#    끝   : 스캔 완료 자리 --> (대기 위치 기준) 물러나고 상승 --movej--> 스캔 대기
+#           위치 --movej--> 홈
+#  스캔 대기 위치(Standby_joint) = 예전의 「홈」. RCS 「스캔 대기 위치 저장」(레지스터
+#  310~315, 308 = 1) 또는 펜던트 변수. 홈(Home_joint)은 RCS 「홈 위치 저장」(레지스터
+#  322~327, 328 = 1) 또는 펜던트에서 티칭한 변수(dus5_init 참고).
 # =============================================================================
+
+def hm_retreat(limit):
+  # 벽에서 물러나되 **스캔 대기 위치(Standby_joint)보다 뒤로는 가지 않는다.**
+  #   - 기준점은 Standby_joint 의 플랜지 자세(get_forward_kin)다. Standby_pose 변수는
+  #     안 쓴다 — 펜던트에 옛 값이 남아 있을 수 있다.
+  #   - 지금 자리도 플랜지로 본다. EOAT 끝점 TCP(eoat_ofs)가 남아 있으면 끝점이
+  #     245 mm 앞이라 남은 거리가 그만큼 크게 잡혔다. 그래서 먼저 TCP 를 플랜지로.
+  #   - 방향은 툴 -Z(벽 법선 반대)다. 호 끝처럼 툴이 돌아가 있어도 벽에서 곧게 뗀다.
+  #   - 거리는 limit [m] 과 「대기 위치 X 까지 남은 거리」 중 작은 쪽. 툴 -Z 로 d 만큼
+  #     가면 베이스 X 는 d * cz 만큼 준다(cz = 툴 Z 의 베이스 X 성분). 이미 대기
+  #     위치보다 뒤면 물러나지 않는다.
+  #   - 툴이 벽(+X) 쪽을 보고 있지 않으면(cz <= 0.2, 약 78 도 넘게 돌아감) 벽에
+  #     붙은 자세가 아니다 — 엉뚱한 쪽으로 가지 않게 물러나지 않는다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  hb_ref = get_forward_kin(Standby_joint)
+  hb_cur = get_actual_tool_flange_pose()
+  hb_cz = pose_trans(hb_cur, [0, 0, 1, 0, 0, 0])[0] - hb_cur[0]
+  hb_back = 0
+  if (hb_cz > 0.2):
+    hb_back = (hb_cur[0] - hb_ref[0]) / hb_cz
+    if (hb_back > limit):
+      hb_back = limit
+    end
+  end
+  if (hb_back > 0.001):
+    movel(pose_trans(hb_cur, [0, 0, -hb_back, 0, 0, 0]), a = a_l, v = v_l)
+  end
+end
+
+
+def hm_rise():
+  # 스캔 대기 위치 높이까지 곧게(베이스 Z) 올라간다 — 플랜지 기준. 이미 그보다
+  # 높으면 그대로 둔다. 벽 근처에서 곧장 movej 하면 팔이 곡면을 스칠 수 있다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  hu_ref = get_forward_kin(Standby_joint)
+  hu_up = get_actual_tool_flange_pose()
+  if (hu_up[2] < hu_ref[2] - 0.001):
+    hu_up[2] = hu_ref[2]
+    movel(hu_up, a = a_l, v = v_l)
+  end
+end
+
+
 write_port_register(290, 13)
-# 벽에 붙어 있을 수 있으니 먼저 TCP -Z 로 물러난다. 단 홈 자세보다 더
-# 뒤로는 안 간다 — 홈이 TCP 축으로 뒤에 있는 만큼만, 최대 probe_dist.
-# (RCS 의 홈 이동 명령과 같은 규칙이다.)
-hm_cur = get_actual_tcp_pose()
-hm_rel = pose_trans(pose_inv(hm_cur), Home_pose)
-hm_back = -hm_rel[2]
-if (hm_back > probe_dist * 0.001):
-  hm_back = probe_dist * 0.001
-end
-if (hm_back > 0.001):
-  movel(pose_trans(hm_cur, [0, 0, -hm_back, 0, 0, 0]), a = a_l, v = v_l)
-end
-if (get_actual_tcp_pose()[2] < Home_pose[2] - 0.001):
-  hm_up = get_actual_tcp_pose()
-  hm_up[2] = Home_pose[2]
-  movel(hm_up, a = a_l, v = v_l)
-end
+# 벽에 붙어 있을 수 있으니 먼저 툴 -Z 로 물러난다 — 최대 probe_dist, 스캔 대기
+# 위치보다 뒤로는 안 간다(dus5_mark_point 가 이미 물러났으면 남은 만큼만).
+hm_retreat(probe_dist * 0.001)
+hm_rise()
+movej(Standby_joint, a = a_j, v = v_j)
 movej(Home_joint, a = a_j, v = v_j)
 write_port_register(290, 12)

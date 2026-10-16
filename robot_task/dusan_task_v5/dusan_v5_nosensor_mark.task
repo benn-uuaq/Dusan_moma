@@ -161,59 +161,66 @@ def pub_rel():
   # 예전에는 scan_on 이라는 스크립트 변수를 썼는데, 값을 켜는 곳(다른 스크립트
   # 노드)과 읽는 곳(이 발행 스레드)이 달라 전달을 신뢰할 수 없었다.
   # 레지스터는 로봇 안에 하나뿐이라 그런 문제가 없고, RCS 도 같은 값을 본다.
-  # 스캔 좌표는 **EOAT(프로브) 중심** 기준이다. 툴 플랜지에서 eoat_ofs
-  # (툴 로컬, dus5_init 이 eoat5_offset / eoat8_offset 으로 계산)만큼 옮긴
-  # 점을 쓴다. 원점도 같은 방식으로 옮겨야 원점에서 0 이 나온다.
-  # 오프셋이 0 이면 pose_trans 는 그대로라 예전 값과 똑같다.
-  scan_pose = pose_trans(cur_pose, eoat_ofs)
-  if (zero_ok == True and read_port_register(290, True) == 6):
-    zero_scan = pose_trans(zero_pose, eoat_ofs)
-    rel_pose = [scan_pose[0] - zero_scan[0],
-          scan_pose[1] - zero_scan[1],
-          scan_pose[2] - zero_scan[2],
-          scan_pose[3] - zero_scan[3],
-          scan_pose[4] - zero_scan[4],
-          scan_pose[5] - zero_scan[5]]
-    #
-    # 여기서 **Rz 180 도**로 뒤집어 내보낸다. 반시계 방향으로 훑도록
-    # 바꾸면서 원점이 베이스 Y 가 큰 쪽 끝이 되었는데, 그대로 빼면
-    # Y 가 계속 음수로 나간다. 제로점 좌표계를 180 도 돌려 놓으면
-    # 훑는 방향이 반대여도 Y 는 0 에서 + 로만 커진다.
-    #   x' = -x,  y' = -y,  z' = z   (Z 축 회전이라 높이는 그대로)
-    rel_pose[0] = -rel_pose[0]
-    rel_pose[1] = -rel_pose[1]
-    ini_w6(280, rel_pose)
-  else:
-    ini_w6(280, [0, 0, 0, 0, 0, 0])
-  end
-  # ---- 호 위 위치 (TPAC 스캔 축) ----------------------------------
-  # 좌표를 그대로 주면 현(1031.8)으로 7% 눌리고 호 위치에 비례하지도
-  # 않는다. 원점부터 호를 따라 실제로 지난 거리를 계산해서 내보낸다.
-  #   286 = 이번 줄의 호 위 거리 [0.1mm]  (0 ~ 11100)
-  #   287 = 완료된 줄까지 더한 누적 [mm]
-  if (arc_ok == True):
-    adx = scan_pose[0] - arc_ox
-    ady = scan_pose[1] - arc_oy
-    # 원점 방위각도 프로브 중심 기준으로 잰다(오프셋 0 이면 arc_phi0 와 같다).
-    zero_scan = pose_trans(zero_pose, eoat_ofs)
-    aph = atan2(ady, adx) - atan2(zero_scan[1] - arc_oy, zero_scan[0] - arc_ox)
-    # atan2 는 ±pi 로 감기므로 한 바퀴 보정한다
-    if (aph &gt; 3.14159265):
-      aph = aph - 6.28318531
+  # ※ 스캔 끝(290 = 5)부터 다음 작업 시작(dus5_init 이 290 = 0)까지는 280~287 을
+  #   **고치지 않는다** — 마지막 스캔 값이 그대로 남는다. dus5_finish 가 마지막
+  #   스캔 좌표에서 5 를 쓰고 나서 물러나므로, 후퇴·홈 이동 중에 좌표가 움직이거나
+  #   0,0,0 으로 떨어져 TPAC 스캔 데이터에 섞이지 않는다(2026-10-15).
+  pub_st = read_port_register(290, True)
+  if (pub_st != 5):
+    # 스캔 좌표는 **EOAT(프로브) 중심** 기준이다. 툴 플랜지에서 eoat_ofs
+    # (툴 로컬, dus5_init 이 eoat5_offset / eoat8_offset 으로 계산)만큼 옮긴
+    # 점을 쓴다. 원점도 같은 방식으로 옮겨야 원점에서 0 이 나온다.
+    # 오프셋이 0 이면 pose_trans 는 그대로라 예전 값과 똑같다.
+    scan_pose = pose_trans(cur_pose, eoat_ofs)
+    if (zero_ok == True and pub_st == 6):
+      zero_scan = pose_trans(zero_pose, eoat_ofs)
+      rel_pose = [scan_pose[0] - zero_scan[0],
+            scan_pose[1] - zero_scan[1],
+            scan_pose[2] - zero_scan[2],
+            scan_pose[3] - zero_scan[3],
+            scan_pose[4] - zero_scan[4],
+            scan_pose[5] - zero_scan[5]]
+      #
+      # 여기서 **Rz 180 도**로 뒤집어 내보낸다. 반시계 방향으로 훑도록
+      # 바꾸면서 원점이 베이스 Y 가 큰 쪽 끝이 되었는데, 그대로 빼면
+      # Y 가 계속 음수로 나간다. 제로점 좌표계를 180 도 돌려 놓으면
+      # 훑는 방향이 반대여도 Y 는 0 에서 + 로만 커진다.
+      #   x' = -x,  y' = -y,  z' = z   (Z 축 회전이라 높이는 그대로)
+      rel_pose[0] = -rel_pose[0]
+      rel_pose[1] = -rel_pose[1]
+      ini_w6(280, rel_pose)
+    else:
+      ini_w6(280, [0, 0, 0, 0, 0, 0])
     end
-    if (aph &lt; -3.14159265):
-      aph = aph + 6.28318531
+    # ---- 호 위 위치 (TPAC 스캔 축) ----------------------------------
+    # 좌표를 그대로 주면 현(1031.8)으로 7% 눌리고 호 위치에 비례하지도
+    # 않는다. 원점부터 호를 따라 실제로 지난 거리를 계산해서 내보낸다.
+    #   286 = 이번 줄의 호 위 거리 [0.1mm]  (0 ~ 11100)
+    #   287 = 완료된 줄까지 더한 누적 [mm]
+    if (arc_ok == True):
+      adx = scan_pose[0] - arc_ox
+      ady = scan_pose[1] - arc_oy
+      # 원점 방위각도 프로브 중심 기준으로 잰다(오프셋 0 이면 arc_phi0 와 같다).
+      zero_scan = pose_trans(zero_pose, eoat_ofs)
+      aph = atan2(ady, adx) - atan2(zero_scan[1] - arc_oy, zero_scan[0] - arc_ox)
+      # atan2 는 ±pi 로 감기므로 한 바퀴 보정한다
+      if (aph &gt; 3.14159265):
+        aph = aph - 6.28318531
+      end
+      if (aph &lt; -3.14159265):
+        aph = aph + 6.28318531
+      end
+      if (aph &lt; 0):
+        aph = -aph
+      end
+      arc_s = aph * scan_radius
+      ini_w1(286, arc_s * 10)
+      ini_w1(287, path_len + arc_s)
+    else:
+      arc_s = 0
+      ini_w1(286, 0)
+      ini_w1(287, path_len)
     end
-    if (aph &lt; 0):
-      aph = -aph
-    end
-    arc_s = aph * scan_radius
-    ini_w1(286, arc_s * 10)
-    ini_w1(287, path_len + arc_s)
-  else:
-    arc_s = 0
-    ini_w1(286, 0)
-    ini_w1(287, path_len)
   end
 
   alive = alive + 1
@@ -384,25 +391,63 @@ if (v_scan &gt; v_l_limit):
   v_scan = v_l_limit
 end
 
-# ---- 기준 위치 : 308 이 1 이면 310~321 의 값을 쓴다 --------------------
-# 310~315 홈 관절값 [mRad], 316~321 그리퍼 기준점 pose(길이 0.1mm, 회전 mRad)
-# — 316~321 은 작업면에 붙였을 때의 툴 플랜지 pose 다(티칭한 그대로).
+# ---- 기준 위치 (RCS 「위치 저장」) ----------------------------------------
+#   308 = 1 : 310~315 **스캔 대기 위치** 관절값 [mRad] — RCS 「스캔 대기 위치 저장」
+#             (예전 「홈 위치 저장」 자리, 2026-10-15 부터 대기 위치)
+#             316~321 그리퍼 기준점 pose(길이 0.1mm, 회전 mRad) — RCS 「시작 포즈 저장」.
+#             작업면에 붙였을 때의 툴 플랜지 pose 다(티칭한 그대로).
+#   328 = 1 : 322~327 **홈** 관절값 [mRad] — RCS 「홈 위치 저장」(2026-10-16)
+# 플래그가 0 이면 펜던트 변수 값을 그대로 쓴다. 홈과 작업 자리 사이는 언제나
+# 대기 위치를 거친다(dus5_leave_home · dus5_go_home · dus5_home).
+# 플래그가 1 이어도 칸이 전부 0 이면 **저장한 적이 없는 칸**이다(308 하나가
+# 대기 위치와 그리퍼 기준점을 같이 세운다) — 그 칸은 읽지 않는다. 0 으로
+# movej 하면 엉뚱한 자세로 간다.
 # EOAT 중심 오프셋은 시작 자세에는 쓰지 않는다 — 호 계산과 스캔 좌표에 쓴다(아래 참고).
-if (read_port_register(308, True) == 1):
-  Home_joint = [read_port_register(310, True) / 1000.0,
-         read_port_register(311, True) / 1000.0,
-         read_port_register(312, True) / 1000.0,
-         read_port_register(313, True) / 1000.0,
-         read_port_register(314, True) / 1000.0,
-         read_port_register(315, True) / 1000.0]
-  gripper_target_pose = [read_port_register(316, True) / 10000.0,
-         read_port_register(317, True) / 10000.0,
-         read_port_register(318, True) / 10000.0,
-         read_port_register(319, True) / 1000.0,
-         read_port_register(320, True) / 1000.0,
-         read_port_register(321, True) / 1000.0]
-  Home_pose = get_forward_kin(Home_joint)
+def ini_regs_set(a):
+  ini_k = 0
+  while (ini_k &lt; 6):
+    if (read_port_register(a + ini_k, True) != 0):
+      return True
+    end
+    ini_k = ini_k + 1
+  end
+  return False
 end
+
+
+def ini_joints(a):
+  return [read_port_register(a, True) / 1000.0,
+         read_port_register(a + 1, True) / 1000.0,
+         read_port_register(a + 2, True) / 1000.0,
+         read_port_register(a + 3, True) / 1000.0,
+         read_port_register(a + 4, True) / 1000.0,
+         read_port_register(a + 5, True) / 1000.0]
+end
+
+
+if (read_port_register(308, True) == 1):
+  if (ini_regs_set(310)):
+    Standby_joint = ini_joints(310)
+  end
+  if (ini_regs_set(316)):
+    gripper_target_pose = [read_port_register(316, True) / 10000.0,
+           read_port_register(317, True) / 10000.0,
+           read_port_register(318, True) / 10000.0,
+           read_port_register(319, True) / 1000.0,
+           read_port_register(320, True) / 1000.0,
+           read_port_register(321, True) / 1000.0]
+  end
+end
+if (read_port_register(328, True) == 1):
+  if (ini_regs_set(322)):
+    Home_joint = ini_joints(322)
+  end
+end
+# pose 는 **언제나 관절값에서** 다시 계산한다(플랜지 기준 — 위에서 TCP 를 0 으로
+# 돌려 두었다). 예전에는 308 = 1 일 때만 계산해, 펜던트 변수로 돌리면 옛 값이
+# 남아 관절값과 어긋날 수 있었다. 홈 판정(hm_flag · 276)은 Home_pose 를 쓴다.
+Home_pose = get_forward_kin(Home_joint)
+Standby_pose = get_forward_kin(Standby_joint)
 
 # ---- EOAT(프로브) 중심점 오프셋 --------------------------------------------
 # 툴 플랜지에서 프로브 중심까지의 거리. **펜던트 변수에서 입력한다**:
@@ -552,183 +597,108 @@ if (pub_started == 0):
 end
 
 # ---- 차량 고정을 확인하고 나서 움직인다 -----------------------------------
-# 이 다음 노드(move_home)부터 로봇이 실제로 움직인다. 그 전에 차량·리프트가
+# 이 다음 노드(dus5_leave_home)부터 로봇이 실제로 움직인다. 그 전에 차량·리프트가
 # 굳어 있는지 확인한다.
 ini_veh_wait()
 </cachedFileContents>
         <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_nosensor/dus5_init.script"/>
       </ScriptNode>
     </FolderNode>
-    <FolderNode display="2 move_home" isHideSubtree="false" typeName="폴더">
-      <IfNode checkExpressionContinuous="false" typeName="If">
-        <Expression>
-          <ExpressionCharCell char="g"/>
-          <ExpressionCharCell char="e"/>
-          <ExpressionCharCell char="t"/>
-          <ExpressionCharCell char="_"/>
-          <ExpressionCharCell char="a"/>
-          <ExpressionCharCell char="c"/>
-          <ExpressionCharCell char="t"/>
-          <ExpressionCharCell char="u"/>
-          <ExpressionCharCell char="a"/>
-          <ExpressionCharCell char="l"/>
-          <ExpressionCharCell char="_"/>
-          <ExpressionCharCell char="t"/>
-          <ExpressionCharCell char="c"/>
-          <ExpressionCharCell char="p"/>
-          <ExpressionCharCell char="_"/>
-          <ExpressionCharCell char="p"/>
-          <ExpressionCharCell char="o"/>
-          <ExpressionCharCell char="s"/>
-          <ExpressionCharCell char="e"/>
-          <ExpressionCharCell char="("/>
-          <ExpressionCharCell char=")"/>
-          <ExpressionCharCell char="["/>
-          <ExpressionCharCell char="2"/>
-          <ExpressionCharCell char="]"/>
-          <ExpressionCharCell char="&lt;"/>
-          <ExpressionCharCell char="H"/>
-          <ExpressionCharCell char="o"/>
-          <ExpressionCharCell char="m"/>
-          <ExpressionCharCell char="e"/>
-          <ExpressionCharCell char="_"/>
-          <ExpressionCharCell char="p"/>
-          <ExpressionCharCell char="o"/>
-          <ExpressionCharCell char="s"/>
-          <ExpressionCharCell char="e"/>
-          <ExpressionCharCell char="["/>
-          <ExpressionCharCell char="2"/>
-          <ExpressionCharCell char="]"/>
-          <ExpressionCharCell char="-"/>
-          <ExpressionCharCell char="0"/>
-          <ExpressionCharCell char="."/>
-          <ExpressionCharCell char="0"/>
-          <ExpressionCharCell char="0"/>
-          <ExpressionCharCell char="1"/>
-        </Expression>
-        <children>
-          <MoveNode movementType="LINEAR_MOVEMENT" positionType="CARTESIAN_POSE" tcpType="ACTIVE_TCP" describe="" typeName="MoveL">
-            <frameReference>Ctrl_base_frame</frameReference>
-            <cartesianSpeed value="0.15" unit="M_S">
-              <valueInSi>0.15</valueInSi>
-              <siUnit class="cn.elibot.robot.plugin.domain.value.Speed$Unit">M_S</siUnit>
-            </cartesianSpeed>
-            <cartesianAcceleration value="0.6" unit="M_S2">
-              <valueInSi>0.6</valueInSi>
-              <siUnit class="cn.elibot.robot.plugin.domain.value.Acceleration$Unit">M_S2</siUnit>
-            </cartesianAcceleration>
-            <DirectionNode useSharedFrame="true" useDirection="true" selectedDirection="ZPositive" useSharedParams="true" typeName="방향">
-              <children>
-                <UntilNode type="EXPRESSION" typeName="Until">
-                  <Expression>
-                    <ExpressionCharCell char="g"/>
-                    <ExpressionCharCell char="e"/>
-                    <ExpressionCharCell char="t"/>
-                    <ExpressionCharCell char="_"/>
-                    <ExpressionCharCell char="a"/>
-                    <ExpressionCharCell char="c"/>
-                    <ExpressionCharCell char="t"/>
-                    <ExpressionCharCell char="u"/>
-                    <ExpressionCharCell char="a"/>
-                    <ExpressionCharCell char="l"/>
-                    <ExpressionCharCell char="_"/>
-                    <ExpressionCharCell char="t"/>
-                    <ExpressionCharCell char="c"/>
-                    <ExpressionCharCell char="p"/>
-                    <ExpressionCharCell char="_"/>
-                    <ExpressionCharCell char="p"/>
-                    <ExpressionCharCell char="o"/>
-                    <ExpressionCharCell char="s"/>
-                    <ExpressionCharCell char="e"/>
-                    <ExpressionCharCell char="("/>
-                    <ExpressionCharCell char=")"/>
-                    <ExpressionCharCell char="["/>
-                    <ExpressionCharCell char="2"/>
-                    <ExpressionCharCell char="]"/>
-                    <ExpressionCharCell char="&gt;"/>
-                    <ExpressionCharCell char="="/>
-                    <ExpressionCharCell char="H"/>
-                    <ExpressionCharCell char="o"/>
-                    <ExpressionCharCell char="m"/>
-                    <ExpressionCharCell char="e"/>
-                    <ExpressionCharCell char="_"/>
-                    <ExpressionCharCell char="p"/>
-                    <ExpressionCharCell char="o"/>
-                    <ExpressionCharCell char="s"/>
-                    <ExpressionCharCell char="e"/>
-                    <ExpressionCharCell char="["/>
-                    <ExpressionCharCell char="2"/>
-                    <ExpressionCharCell char="]"/>
-                    <ExpressionCharCell char="-"/>
-                    <ExpressionCharCell char="0"/>
-                    <ExpressionCharCell char="."/>
-                    <ExpressionCharCell char="0"/>
-                    <ExpressionCharCell char="0"/>
-                    <ExpressionCharCell char="1"/>
-                  </Expression>
-                  <expressionDecelerationType>INHERITED</expressionDecelerationType>
-                  <jointDecelerationValue value="1.396263401670578" unit="RAD_S2">
-                    <valueInSi>1.396263401670578</valueInSi>
-                    <siUnit class="cn.elibot.robot.plugin.domain.value.AngularAcceleration$Unit">RAD_S2</siUnit>
-                  </jointDecelerationValue>
-                  <cartesianDeceleration value="1.2" unit="M_S2">
-                    <valueInSi>1.2</valueInSi>
-                    <siUnit class="cn.elibot.robot.plugin.domain.value.Acceleration$Unit">M_S2</siUnit>
-                  </cartesianDeceleration>
-                </UntilNode>
-              </children>
-            </DirectionNode>
-          </MoveNode>
-        </children>
-      </IfNode>
-      <MoveNode movementType="JOINT_MOVEMENT" positionType="CARTESIAN_POSE" tcpType="ACTIVE_TCP" describe="" typeName="MoveJ">
-        <frameReference>Ctrl_base_frame</frameReference>
-        <jointSpeed value="0.3490658503988659" unit="RAD_S">
-          <valueInSi>0.3490658503988659</valueInSi>
-          <siUnit class="cn.elibot.robot.plugin.domain.value.AngularSpeed$Unit">RAD_S</siUnit>
-        </jointSpeed>
-        <jointAcceleration value="0.698131700835289" unit="RAD_S2">
-          <valueInSi>0.698131700835289</valueInSi>
-          <siUnit class="cn.elibot.robot.plugin.domain.value.AngularAcceleration$Unit">RAD_S2</siUnit>
-        </jointAcceleration>
-        <WaypointNode name="웨이포인트" positionNodeType="VARIABLE_POSITION" kinematicFlag="-1" customTransitionRadius="false" advancedPositionOptionType="INHERITED_PARAMETERS">
-          <ConfigurationEntityReference frameName="Home_joint" type="Configuration_Variable"/> typeName="웨이포인트"
-          <transitionRadius value="0.0" unit="M">
-            <valueInSi>0.0</valueInSi>
-            <siUnit class="cn.elibot.robot.plugin.domain.value.Length$Unit">M</siUnit>
-          </transitionRadius>
-          <internalPosition>
-            <jointPositions joints="NaN, NaN, NaN, NaN, NaN, NaN"/>
-            <toolPose X="0.0" Y="0.0" Z="0.0" RX="0.0" RY="0.0" RZ="0.0"/>
-            <flangePose X="0.0" Y="0.0" Z="0.0" RX="0.0" RY="0.0" RZ="0.0"/>
-          </internalPosition>
-          <fromPosition>
-            <jointPositions joints="NaN, NaN, NaN, NaN, NaN, NaN"/>
-            <toolPose X="0.0" Y="0.0" Z="0.0" RX="0.0" RY="0.0" RZ="0.0"/>
-            <flangePose X="0.0" Y="0.0" Z="0.0" RX="0.0" RY="0.0" RZ="0.0"/>
-          </fromPosition>
-          <jointSpeed value="1.0471975511965976" unit="RAD_S">
-            <valueInSi>1.0471975511965976</valueInSi>
-            <siUnit class="cn.elibot.robot.plugin.domain.value.AngularSpeed$Unit">RAD_S</siUnit>
-          </jointSpeed>
-          <jointAcceleration value="1.3962634015954636" unit="RAD_S2">
-            <valueInSi>1.3962634015954636</valueInSi>
-            <siUnit class="cn.elibot.robot.plugin.domain.value.AngularAcceleration$Unit">RAD_S2</siUnit>
-          </jointAcceleration>
-          <cartesianSpeed value="0.25" unit="M_S">
-            <valueInSi>0.25</valueInSi>
-            <siUnit class="cn.elibot.robot.plugin.domain.value.Speed$Unit">M_S</siUnit>
-          </cartesianSpeed>
-          <cartesianAcceleration value="1.2" unit="M_S2">
-            <valueInSi>1.2</valueInSi>
-            <siUnit class="cn.elibot.robot.plugin.domain.value.Acceleration$Unit">M_S2</siUnit>
-          </cartesianAcceleration>
-          <nextMotionTime value="2.0" unit="S">
-            <valueInSi>2.0</valueInSi>
-            <siUnit class="cn.elibot.robot.plugin.domain.value.Time$Unit">S</siUnit>
-          </nextMotionTime>
-        </WaypointNode>
-      </MoveNode>
+    <FolderNode display="2 [스크립트파일] dus5_leave_home.script" isHideSubtree="false" typeName="Folder">
+      <ScriptNode scriptType="FILE_TYPE" typeName="Script">
+        <cachedFileContents># =============================================================================
+#  dus5_leave_home.script — dusan_v5
+#  홈에서 스캔 대기 위치로 moveJ 로 간다 (작업 시작)
+#
+#  펜던트에서 "2 move_home" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  다음 노드(move_start)가 스캔 대기 위치에서 시작 위치로 간다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  홈과 작업 자리 사이는 **언제나 스캔 대기 위치를 거친다**(2026-10-15):
+#    시작 : 홈 --movej--&gt; 스캔 대기 위치 --&gt; 시작 위치(start_pose)
+#    끝   : 스캔 완료 자리 --&gt; (대기 위치 기준) 물러나고 상승 --movej--&gt; 스캔 대기
+#           위치 --movej--&gt; 홈
+#  스캔 대기 위치(Standby_joint) = 예전의 「홈」. RCS 「스캔 대기 위치 저장」(레지스터
+#  310~315, 308 = 1) 또는 펜던트 변수. 홈(Home_joint)은 RCS 「홈 위치 저장」(레지스터
+#  322~327, 328 = 1) 또는 펜던트에서 티칭한 변수(dus5_init 참고).
+#
+#  홈이 아닌 자리에서 시작했으면(작업 도중 멈춘 뒤 다시 튼 경우 등) 곧장 movej 하지
+#  않고 벽에서 물러나(대기 위치 기준) 대기 위치 높이로 올라간 뒤 movej 한다.
+# =============================================================================
+
+def lh_retreat(limit):
+  # 벽에서 물러나되 **스캔 대기 위치(Standby_joint)보다 뒤로는 가지 않는다.**
+  #   - 기준점은 Standby_joint 의 플랜지 자세(get_forward_kin)다. Standby_pose 변수는
+  #     안 쓴다 — 펜던트에 옛 값이 남아 있을 수 있다.
+  #   - 지금 자리도 플랜지로 본다. EOAT 끝점 TCP(eoat_ofs)가 남아 있으면 끝점이
+  #     245 mm 앞이라 남은 거리가 그만큼 크게 잡혔다. 그래서 먼저 TCP 를 플랜지로.
+  #   - 방향은 툴 -Z(벽 법선 반대)다. 호 끝처럼 툴이 돌아가 있어도 벽에서 곧게 뗀다.
+  #   - 거리는 limit [m] 과 「대기 위치 X 까지 남은 거리」 중 작은 쪽. 툴 -Z 로 d 만큼
+  #     가면 베이스 X 는 d * cz 만큼 준다(cz = 툴 Z 의 베이스 X 성분). 이미 대기
+  #     위치보다 뒤면 물러나지 않는다.
+  #   - 툴이 벽(+X) 쪽을 보고 있지 않으면(cz &lt;= 0.2, 약 78 도 넘게 돌아감) 벽에
+  #     붙은 자세가 아니다 — 엉뚱한 쪽으로 가지 않게 물러나지 않는다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  lr_ref = get_forward_kin(Standby_joint)
+  lr_cur = get_actual_tool_flange_pose()
+  lr_cz = pose_trans(lr_cur, [0, 0, 1, 0, 0, 0])[0] - lr_cur[0]
+  lr_back = 0
+  if (lr_cz &gt; 0.2):
+    lr_back = (lr_cur[0] - lr_ref[0]) / lr_cz
+    if (lr_back &gt; limit):
+      lr_back = limit
+    end
+  end
+  if (lr_back &gt; 0.001):
+    movel(pose_trans(lr_cur, [0, 0, -lr_back, 0, 0, 0]), a = a_l, v = v_l)
+  end
+end
+
+
+def lh_rise():
+  # 스캔 대기 위치 높이까지 곧게(베이스 Z) 올라간다 — 플랜지 기준. 이미 그보다
+  # 높으면 그대로 둔다. 벽 근처에서 곧장 movej 하면 팔이 곡면을 스칠 수 있다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  lu_ref = get_forward_kin(Standby_joint)
+  lu_up = get_actual_tool_flange_pose()
+  if (lu_up[2] &lt; lu_ref[2] - 0.001):
+    lu_up[2] = lu_ref[2]
+    movel(lu_up, a = a_l, v = v_l)
+  end
+end
+
+
+def lh_at_home():
+  # 관절이 홈(Home_joint)에서 home_tol_j [rad] 안이면 홈이다(dus5_init 의 hm_flag 와
+  # 같은 기준).
+  lh_q = get_actual_joint_positions()
+  lh_i = 0
+  while (lh_i &lt; 6):
+    lh_d = lh_q[lh_i] - Home_joint[lh_i]
+    if (lh_d &lt; 0):
+      lh_d = -lh_d
+    end
+    if (lh_d &gt; home_tol_j):
+      return False
+    end
+    lh_i = lh_i + 1
+  end
+  return True
+end
+
+
+set_tcp([0, 0, 0, 0, 0, 0])
+if (lh_at_home() == False):
+  lh_retreat(probe_dist * 0.001)
+  lh_rise()
+end
+movej(Standby_joint, a = a_j, v = v_j)
+</cachedFileContents>
+        <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts/dus5_leave_home.script"/>
+      </ScriptNode>
     </FolderNode>
     <FolderNode display="2 move_start" isHideSubtree="false" typeName="폴더">
       <ScriptNode scriptType="FILE_TYPE" typeName="스크립트">
@@ -1293,6 +1263,35 @@ def mk_tip_movel(target, blend):
 end
 
 
+def mk_retreat(limit):
+  # 벽에서 물러나되 **스캔 대기 위치(Standby_joint)보다 뒤로는 가지 않는다.**
+  #   - 기준점은 Standby_joint 의 플랜지 자세(get_forward_kin)다. Standby_pose 변수는
+  #     안 쓴다 — 펜던트에 옛 값이 남아 있을 수 있다.
+  #   - 지금 자리도 플랜지로 본다. EOAT 끝점 TCP(eoat_ofs)가 남아 있으면 끝점이
+  #     245 mm 앞이라 남은 거리가 그만큼 크게 잡혔다. 그래서 먼저 TCP 를 플랜지로.
+  #   - 방향은 툴 -Z(벽 법선 반대)다. 호 끝처럼 툴이 돌아가 있어도 벽에서 곧게 뗀다.
+  #   - 거리는 limit [m] 과 「대기 위치 X 까지 남은 거리」 중 작은 쪽. 툴 -Z 로 d 만큼
+  #     가면 베이스 X 는 d * cz 만큼 준다(cz = 툴 Z 의 베이스 X 성분). 이미 대기
+  #     위치보다 뒤면 물러나지 않는다.
+  #   - 툴이 벽(+X) 쪽을 보고 있지 않으면(cz &lt;= 0.2, 약 78 도 넘게 돌아감) 벽에
+  #     붙은 자세가 아니다 — 엉뚱한 쪽으로 가지 않게 물러나지 않는다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  mh_ref = get_forward_kin(Standby_joint)
+  mh_cur = get_actual_tool_flange_pose()
+  mh_cz = pose_trans(mh_cur, [0, 0, 1, 0, 0, 0])[0] - mh_cur[0]
+  mh_back = 0
+  if (mh_cz &gt; 0.2):
+    mh_back = (mh_cur[0] - mh_ref[0]) / mh_cz
+    if (mh_back &gt; limit):
+      mh_back = limit
+    end
+  end
+  if (mh_back &gt; 0.001):
+    movel(pose_trans(mh_cur, [0, 0, -mh_back, 0, 0, 0]), a = a_l, v = v_l)
+  end
+end
+
+
 write_port_register(290, 10)
 mk_u = read_port_register(268, True)
 mk_v = read_port_register(269, True)
@@ -1331,8 +1330,10 @@ end
 write_port_register(278, 0)
 
 # 벽에서 물러난다 — 다음 노드(dus5_home)가 올라가며 곡면을 긁지 않게.
-movel(pose_trans(get_actual_tcp_pose(), [0, 0, -probe_dist * 0.001, 0, 0, 0]),
-      a = a_l, v = v_l)
+# 최대 probe_dist, 스캔 대기 위치보다 뒤로는 안 간다. 예전에는 probe_dist 만큼
+# 무조건 물러나고 dus5_home 이 한 번 더 물러나 기준 자세보다 뒤로 갈 수
+# 있었다(2026-10-15).
+mk_retreat(probe_dist * 0.001)
 </cachedFileContents>
         <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_nosensor/dus5_mark_point.script"/>
       </ScriptNode>
@@ -1341,7 +1342,7 @@ movel(pose_trans(get_actual_tcp_pose(), [0, 0, -probe_dist * 0.001, 0, 0, 0]),
       <ScriptNode scriptType="FILE_TYPE" typeName="Script">
         <cachedFileContents># =============================================================================
 #  dus5_home.script — dusan_v5
-#  홈 높이만큼 먼저 올라간 뒤 moveJ 로 홈 자세로 간다
+#  벽에서 물러나 스캔 대기 위치를 거쳐 홈으로 간다 (마킹 끝)
 #
 #  마킹 태스크의 마지막 노드. 펜던트의 move_home 노드와 같은 순서지만
 #  스크립트로 두어 끝나고 상태를 알린다:
@@ -1349,25 +1350,64 @@ movel(pose_trans(get_actual_tcp_pose(), [0, 0, -probe_dist * 0.001, 0, 0, 0]),
 #    290 = 12  홈 도착 = 마킹 작업 끝 (RCS 가 이걸 보고 다음 점으로 간다)
 #
 #  ※ def main() 으로 감싸지 말 것
+#
+#  홈과 작업 자리 사이는 **언제나 스캔 대기 위치를 거친다**(2026-10-15):
+#    시작 : 홈 --movej--&gt; 스캔 대기 위치 --&gt; 시작 위치(start_pose)
+#    끝   : 스캔 완료 자리 --&gt; (대기 위치 기준) 물러나고 상승 --movej--&gt; 스캔 대기
+#           위치 --movej--&gt; 홈
+#  스캔 대기 위치(Standby_joint) = 예전의 「홈」. RCS 「스캔 대기 위치 저장」(레지스터
+#  310~315, 308 = 1) 또는 펜던트 변수. 홈(Home_joint)은 RCS 「홈 위치 저장」(레지스터
+#  322~327, 328 = 1) 또는 펜던트에서 티칭한 변수(dus5_init 참고).
 # =============================================================================
+
+def hm_retreat(limit):
+  # 벽에서 물러나되 **스캔 대기 위치(Standby_joint)보다 뒤로는 가지 않는다.**
+  #   - 기준점은 Standby_joint 의 플랜지 자세(get_forward_kin)다. Standby_pose 변수는
+  #     안 쓴다 — 펜던트에 옛 값이 남아 있을 수 있다.
+  #   - 지금 자리도 플랜지로 본다. EOAT 끝점 TCP(eoat_ofs)가 남아 있으면 끝점이
+  #     245 mm 앞이라 남은 거리가 그만큼 크게 잡혔다. 그래서 먼저 TCP 를 플랜지로.
+  #   - 방향은 툴 -Z(벽 법선 반대)다. 호 끝처럼 툴이 돌아가 있어도 벽에서 곧게 뗀다.
+  #   - 거리는 limit [m] 과 「대기 위치 X 까지 남은 거리」 중 작은 쪽. 툴 -Z 로 d 만큼
+  #     가면 베이스 X 는 d * cz 만큼 준다(cz = 툴 Z 의 베이스 X 성분). 이미 대기
+  #     위치보다 뒤면 물러나지 않는다.
+  #   - 툴이 벽(+X) 쪽을 보고 있지 않으면(cz &lt;= 0.2, 약 78 도 넘게 돌아감) 벽에
+  #     붙은 자세가 아니다 — 엉뚱한 쪽으로 가지 않게 물러나지 않는다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  hb_ref = get_forward_kin(Standby_joint)
+  hb_cur = get_actual_tool_flange_pose()
+  hb_cz = pose_trans(hb_cur, [0, 0, 1, 0, 0, 0])[0] - hb_cur[0]
+  hb_back = 0
+  if (hb_cz &gt; 0.2):
+    hb_back = (hb_cur[0] - hb_ref[0]) / hb_cz
+    if (hb_back &gt; limit):
+      hb_back = limit
+    end
+  end
+  if (hb_back &gt; 0.001):
+    movel(pose_trans(hb_cur, [0, 0, -hb_back, 0, 0, 0]), a = a_l, v = v_l)
+  end
+end
+
+
+def hm_rise():
+  # 스캔 대기 위치 높이까지 곧게(베이스 Z) 올라간다 — 플랜지 기준. 이미 그보다
+  # 높으면 그대로 둔다. 벽 근처에서 곧장 movej 하면 팔이 곡면을 스칠 수 있다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  hu_ref = get_forward_kin(Standby_joint)
+  hu_up = get_actual_tool_flange_pose()
+  if (hu_up[2] &lt; hu_ref[2] - 0.001):
+    hu_up[2] = hu_ref[2]
+    movel(hu_up, a = a_l, v = v_l)
+  end
+end
+
+
 write_port_register(290, 13)
-# 벽에 붙어 있을 수 있으니 먼저 TCP -Z 로 물러난다. 단 홈 자세보다 더
-# 뒤로는 안 간다 — 홈이 TCP 축으로 뒤에 있는 만큼만, 최대 probe_dist.
-# (RCS 의 홈 이동 명령과 같은 규칙이다.)
-hm_cur = get_actual_tcp_pose()
-hm_rel = pose_trans(pose_inv(hm_cur), Home_pose)
-hm_back = -hm_rel[2]
-if (hm_back &gt; probe_dist * 0.001):
-  hm_back = probe_dist * 0.001
-end
-if (hm_back &gt; 0.001):
-  movel(pose_trans(hm_cur, [0, 0, -hm_back, 0, 0, 0]), a = a_l, v = v_l)
-end
-if (get_actual_tcp_pose()[2] &lt; Home_pose[2] - 0.001):
-  hm_up = get_actual_tcp_pose()
-  hm_up[2] = Home_pose[2]
-  movel(hm_up, a = a_l, v = v_l)
-end
+# 벽에 붙어 있을 수 있으니 먼저 툴 -Z 로 물러난다 — 최대 probe_dist, 스캔 대기
+# 위치보다 뒤로는 안 간다(dus5_mark_point 가 이미 물러났으면 남은 만큼만).
+hm_retreat(probe_dist * 0.001)
+hm_rise()
+movej(Standby_joint, a = a_j, v = v_j)
 movej(Home_joint, a = a_j, v = v_j)
 write_port_register(290, 12)
 </cachedFileContents>

@@ -68,9 +68,9 @@ class RobotControlNode(Node):
         # 마지막으로 읽은 레지스터 값(publish_code) · 관절값 [mrad].
         self._last_codes = {}
         self._last_joint_mrad = None
-        # 홈 관절값 [rad] 과 그걸 읽어 온 때. 태스크가 안 돌 때 276 을 직접 판정한다.
-        self._home_target = None
-        self._home_target_at = 0.0
+        # 29999 로 읽어 둔 로봇 변수(Home_joint · Standby_joint)와 읽은 때.
+        # 태스크가 안 돌 때 276 을 직접 판정하고, 홈 이동 경로를 정한다.
+        self._joint_variables = {}
 
         # 발행할 토픽 정의
         self.pub_robot_mode = self.create_publisher(Int32, 'robot/status/robot_mode', 10)
@@ -141,9 +141,12 @@ class RobotControlNode(Node):
         self.create_subscription(Int32, 'robot/command/jog_joint', self.cb_jog_joint, 10)
         self.create_subscription(Int32, 'robot/command/jog_tcp', self.cb_jog_tcp, 10)
 
-        # 기준 위치는 6개 레지스터에 한 번에 쓴다.
+        # 기준 위치는 6개 레지스터에 한 번에 쓴다. 홈(322~327)과 스캔 대기
+        # 위치(310~315, 예전의 홈)는 따로 저장한다(2026-10-16).
         self.create_subscription(
             Float32MultiArray, 'robot/command/home_joint', self.cb_home_joint, 10)
+        self.create_subscription(
+            Float32MultiArray, 'robot/command/standby_joint', self.cb_standby_joint, 10)
         self.create_subscription(
             Float32MultiArray, 'robot/command/start_pose', self.cb_start_pose, 10)
 
@@ -495,8 +498,8 @@ class RobotControlNode(Node):
     def _write_pose_topic(self, name, msg, flag_name='pose_src'):
         """값 N개를 레지스터에 쓰고, 태스크가 읽도록 플래그 레지스터를 1로 세운다.
 
-        home_joint/start_pose는 pose_src(308)를, work_area는 param_src(266)를
-        쓴다. 플래그 이름이 다를 뿐 동작은 같다.
+        standby_joint/start_pose는 pose_src(308)를, home_joint는 home_src(328)를,
+        work_area는 param_src(266)를 쓴다. 플래그 이름이 다를 뿐 동작은 같다.
         """
         success, message = self.write_pose(name, list(msg.data))
         if not success:
@@ -509,7 +512,12 @@ class RobotControlNode(Node):
             self.get_logger().warn(f"[{name}] {flag_name} 주소가 설정되지 않았습니다.")
 
     def cb_home_joint(self, msg):
-        self._write_pose_topic('home_joint', msg)
+        """홈 관절값 -> 322~327, home_src(328) = 1. 태스크가 Home_joint 로 읽는다."""
+        self._write_pose_topic('home_joint', msg, flag_name='home_src')
+
+    def cb_standby_joint(self, msg):
+        """스캔 대기 위치 관절값 -> 310~315, pose_src(308) = 1 (예전의 홈 자리)."""
+        self._write_pose_topic('standby_joint', msg)
 
     def cb_start_pose(self, msg):
         self._write_pose_topic('start_pose', msg)
@@ -628,28 +636,60 @@ class RobotControlNode(Node):
     #: 태스크 상태(500) 중 태스크가 직접 276 을 쓰는 값(실행 중).
     _TASK_RUNNING = 1
 
-    def _home_joint_target(self):
-        """홈 관절값 [rad]. 308 이 1 이면 310~315, 아니면 로봇의 Home_joint.
+    def _saved_joints(self, flag_name, entry_name):
+        """플래그가 1 이고 값이 들어 있으면 저장한 관절값 [rad]. 아니면 None.
 
-        태스크(dus_init)와 홈 이동 스크립트가 고르는 방식과 같다. 29999 로
-        읽는 값은 home_refresh_s 마다 다시 읽는다(펜던트에서 고칠 수 있다).
+        레지스터가 전부 0 이면 저장한 적이 없는 것이다 — 그대로 쓰면
+        movej([0, 0, 0, 0, 0, 0]) 처럼 엉뚱한 자세로 간다.
         """
-        override = self.registers.read_entry('pose_src')
-        write_override = self.registers.write_entry('pose_src')
-        address = (override if override.available else write_override).address
-        if address is not None and self.robot_modbus.get_register(address) == 1:
-            regs = self.robot_modbus.get_all_registers(310, 6)
-            if regs and len(regs) == 6 and any(regs):
-                return [v / 1000.0 for v in regs]
+        flag = self.registers.read_entry(flag_name)
+        if not flag.available:
+            flag = self.registers.write_entry(flag_name)
+        entry = self.registers.write_entry(entry_name)
+        if not flag.available or not entry.available:
+            return None
+        if self.robot_modbus.get_register(flag.address) != 1:
+            return None
+        regs = self.robot_modbus.get_all_registers(entry.address, entry.count)
+        if regs and len(regs) == 6 and any(regs):
+            return [v / 1000.0 for v in regs]
+        return None
+
+    def _robot_joint_variable(self, name):
+        """로봇 변수(펜던트 값)를 home_refresh_s 마다 다시 읽어 둔다. 모르면 None."""
+        cache = getattr(self, '_joint_variables', None)
+        if cache is None:
+            cache = self._joint_variables = {}
         now = time.monotonic()
         refresh = self.get_parameter('home_refresh_s').value
-        if getattr(self, '_home_target', None) is None \
-                or now - getattr(self, '_home_target_at', 0.0) > refresh:
-            value = self.robot_dash.get_variable('Home_joint')
-            self._home_target_at = now
-            if isinstance(value, list) and len(value) == 6:
-                self._home_target = [float(v) for v in value]
-        return getattr(self, '_home_target', None)
+        value, read_at = cache.get(name, (None, None))
+        if read_at is None or now - read_at > refresh:
+            fresh = self.robot_dash.get_variable(name)
+            if isinstance(fresh, list) and len(fresh) == 6:
+                value = [float(v) for v in fresh]
+            cache[name] = (value, now)
+        return value
+
+    def _home_joint_target(self):
+        """홈 관절값 [rad]. 328 이 1 이면 322~327, 아니면 로봇의 Home_joint.
+
+        태스크(dus5_init)와 같은 규칙이다(2026-10-16 부터 310~315 는 홈이 아니라
+        스캔 대기 위치다). 29999 로 읽는 값은 home_refresh_s 마다 다시 읽는다.
+        """
+        saved = self._saved_joints('home_src', 'home_joint')
+        if saved is not None:
+            return saved
+        return self._robot_joint_variable('Home_joint')
+
+    def _standby_joint_target(self):
+        """스캔 대기 위치 관절값 [rad]. 308 이 1 이면 310~315, 아니면 Standby_joint.
+
+        로봇에 Standby_joint 변수가 아직 없으면(태스크를 안 올렸으면) None.
+        """
+        saved = self._saved_joints('pose_src', 'standby_joint')
+        if saved is not None:
+            return saved
+        return self._robot_joint_variable('Standby_joint')
 
     def _watch_home(self):
         """태스크가 안 도는 동안 홈 플래그(276)를 실제 관절값으로 판정해 쓴다.
@@ -732,99 +772,104 @@ class RobotControlNode(Node):
         self.robot_primary.send_script(f"speedl({xd}, {round(accel, 6)}, {hold})")
 
     # get_variable이 실패했을 때만 쓰는 마지막 안전망. 정상 경로에서는
-    # 항상 로봇에서 29999로 직접 읽은 값을 쓴다.
+    # 항상 레지스터나 로봇에서 29999로 직접 읽은 값을 쓴다. (2026-10-16 전의
+    # 홈 = 지금의 스캔 대기 위치 값이다.)
     _HOME_JOINT_FALLBACK = [0.79941, -1.55029, -2.70026, 1.10839, 0.81203, -3.14139]
-    _HOME_POSE_FALLBACK = [0.40795, 0.05529, 0.40515, 1.57121, 0.00018, 1.61144]
 
     def cb_move_home(self, req, res):
-        """안전 높이까지 movel로 올린 뒤 movej로 홈 관절값에 간다.
+        """스캔 대기 위치를 거쳐 홈으로 간다(2026-10-16, 로봇 태스크와 같은 순서).
+
+            벽에서 물러남(대기 위치보다 뒤로는 안 감) -> 대기 위치 높이로 상승
+            -> movej 스캔 대기 위치 -> movej 홈
+
+        이미 홈에 있으면 movej 홈만 한다.
 
         30001 소켓(실시간 명령 채널)에 if/else 를 최상위(top-level)로
         그냥 보내면 한 줄씩 별개 명령으로 읽혀 실패한다("No 'if' command").
         def 이름(): ... end 로 감싼 하나의 프로그램으로 보내야 하고,
         보내고 나면 파싱이 끝나는 대로 바로 실행되므로 따로 호출하면
         안 된다("move_home_now 정의 안 됨"). 이 프로그램은 태스크
-        preamble 밖에서 독립적으로 도는 별개 컨텍스트라 태스크가 저장해
-        둔 Home_joint/Home_pose 전역도 그냥은 안 보여서("정의되지
-        않았습니다") 쓸 수 없다. 대신 29999의 `variable -get`으로 로봇에
-        저장된 실제 값을 그때그때 읽어와, global 선언 뒤 이 스크립트
-        안에서 그 값을 직접 대입해 준다 — 하드코딩해 두면 태스크 쪽
-        값이 바뀔 때 둘이 어긋날 수 있어서다.
+        preamble 밖에서 독립적으로 도는 별개 컨텍스트라 태스크 전역(Home_joint
+        등)이 안 보인다. 그래서 홈 · 대기 위치를 여기서 정해 값으로 박아 넣는다:
+          홈        = 328 이 1 이면 322~327(RCS 「홈 위치 저장」), 아니면 Home_joint
+          대기 위치 = 308 이 1 이면 310~315(RCS 「스캔 대기 위치 저장」),
+                      아니면 Standby_joint. 둘 다 모르면 홈을 대기 위치로 쓴다.
+        레지스터가 비어 있으면(전부 0) 저장한 적이 없는 것으로 본다 — 예전에
+        308 만 보고 310~315 를 읽어 movej([0,0,0,0,0,0]) 로 간 일이 있다.
 
-        레지스터 308(pose_src)이 1일 때만 310~315 override 값을 쓰고,
-        평소(0)에는 위에서 읽어온 Home_joint/Home_pose 를 쓴다. 예전에는
-        항상 310~315를 읽었는데, 운영자가 '위치 저장'으로 한 번도 값을
-        넣지 않으면 그 레지스터가 0으로 남아 있어 movej([0,0,0,0,0,0],
-        ...) 처럼 전혀 엉뚱한 관절로 가 버렸다 — 그게 '고장 홈 위치로
-        간다'로 보인 원인이다.
+        물러나는 거리는 툴 -Z 로, probe_dist 와 「대기 위치 X 까지 남은 거리」 중
+        작은 쪽이다. 툴이 벽(+X) 쪽을 보고 있지 않으면 물러나지 않는다.
+        자리는 플랜지로 본다(TCP 를 0 으로 돌린 뒤) — EOAT 끝점 TCP 가 남아
+        있어도 거리가 틀리지 않는다.
         """
         if not self.connected:
             res.success = False
             res.message = "[move_home] 로봇에 연결되어 있지 않습니다."
             return res
 
-        home_joint = self.robot_dash.get_variable("Home_joint")
-        home_pose = self.robot_dash.get_variable("Home_pose")
+        home = self._home_joint_target()
+        if not home:
+            self.get_logger().warn(
+                "[move_home] 홈 관절값을 로봇에서 못 읽었습니다. 고정값으로 대신합니다.")
+            home = list(self._HOME_JOINT_FALLBACK)
+        standby = self._standby_joint_target()
+        if not standby:
+            self.get_logger().warn(
+                "[move_home] 스캔 대기 위치(Standby_joint)를 모릅니다 — 홈을 대기 위치로 씁니다.")
+            standby = list(home)
         # 벽에서 먼저 물러날 거리 [m]. 태스크가 쓰는 probe_dist(mm)와 같다.
         probe_dist = self.robot_dash.get_variable("probe_dist")
         if not isinstance(probe_dist, (int, float)) or probe_dist <= 0:
             probe_dist = self._HOME_RETREAT_FALLBACK_MM
         retreat_m = round(float(probe_dist) / 1000.0, 4)
-        if not isinstance(home_joint, list) or len(home_joint) != 6:
-            self.get_logger().warn(
-                f"[move_home] Home_joint를 로봇에서 못 읽었습니다({home_joint!r}). "
-                "고정값으로 대신합니다.")
-            home_joint = self._HOME_JOINT_FALLBACK
-        if not isinstance(home_pose, list) or len(home_pose) != 6:
-            self.get_logger().warn(
-                f"[move_home] Home_pose를 로봇에서 못 읽었습니다({home_pose!r}). "
-                "고정값으로 대신합니다.")
-            home_pose = self._HOME_POSE_FALLBACK
+        tol = float(self.get_parameter('home_tol_j').value)
+        home = [round(float(v), 5) for v in home]
+        standby = [round(float(v), 5) for v in standby]
 
         # p, j 는 pose/joint 리터럴(p[..], j[..])에 쓰는 내장 이름과
-        # 충돌한다("변수 p가 내장 함수의 이름과 충돌"). 겹치지 않는
-        # 이름으로 바꾼다.
-        # 30001은 def 이름(): ... end 블록 자체를 프로그램으로 받아
-        # 파싱이 끝나면 바로 실행한다 — 따로 move_home_now() 를 호출하면
-        # 그 호출을 다시 "정의 안 된 변수"로 오해해서 실패한다.
+        # 충돌한다. 겹치지 않는 mh_ 접두 이름을 쓴다.
         script = (
             "def move_home_now():\n"
-            "  global Home_joint\n"
-            f"  Home_joint = {home_joint}\n"
-            "  global Home_pose\n"
-            f"  Home_pose = {home_pose}\n"
-            "  if (read_port_register(308, True) == 1):\n"
-            "    tgt_j = [read_port_register(310, True) / 1000.0,\n"
-            "             read_port_register(311, True) / 1000.0,\n"
-            "             read_port_register(312, True) / 1000.0,\n"
-            "             read_port_register(313, True) / 1000.0,\n"
-            "             read_port_register(314, True) / 1000.0,\n"
-            "             read_port_register(315, True) / 1000.0]\n"
-            "    tgt_h = get_forward_kin(tgt_j)\n"
-            "  else:\n"
-            "    tgt_j = Home_joint\n"
-            "    tgt_h = Home_pose\n"
+            f"  mh_home = {home}\n"
+            f"  mh_sb = {standby}\n"
+            "  set_tcp([0, 0, 0, 0, 0, 0])\n"
+            "  mh_q = get_actual_joint_positions()\n"
+            "  mh_far = 0\n"
+            "  mh_i = 0\n"
+            "  while (mh_i < 6):\n"
+            "    mh_d = mh_q[mh_i] - mh_home[mh_i]\n"
+            "    if (mh_d < 0):\n"
+            "      mh_d = -mh_d\n"
+            "    end\n"
+            "    if (mh_d > mh_far):\n"
+            "      mh_far = mh_d\n"
+            "    end\n"
+            "    mh_i = mh_i + 1\n"
             "  end\n"
-            # 벽에 붙어 있을 수 있다(스캔·마킹 도중 멈춘 경우). 곧장 올라가면
-            # 프로브가 곡면을 긁고 올라가므로 **먼저 TCP -Z 로 물러난다.**
-            # 다만 홈 자세보다 더 뒤로는 가지 않는다 — 홈이 지금 자리에서
-            # TCP 축으로 얼마나 뒤에 있는지(hm_rel[2])만큼만, 최대 probe_dist.
-            # 이미 홈보다 뒤에 있거나 홈에 있으면 물러나지 않는다.
-            "  cur_pose = get_actual_tcp_pose()\n"
-            "  hm_rel = pose_trans(pose_inv(cur_pose), tgt_h)\n"
-            "  hm_back = -hm_rel[2]\n"
-            f"  if (hm_back > {retreat_m}):\n"
-            f"    hm_back = {retreat_m}\n"
+            f"  if (mh_far > {tol}):\n"
+            # 벽에서 물러난다 — 대기 위치보다 뒤로는 안 간다.
+            "    mh_ref = get_forward_kin(mh_sb)\n"
+            "    mh_cur = get_actual_tool_flange_pose()\n"
+            "    mh_cz = pose_trans(mh_cur, [0, 0, 1, 0, 0, 0])[0] - mh_cur[0]\n"
+            "    mh_back = 0\n"
+            "    if (mh_cz > 0.2):\n"
+            "      mh_back = (mh_cur[0] - mh_ref[0]) / mh_cz\n"
+            f"      if (mh_back > {retreat_m}):\n"
+            f"        mh_back = {retreat_m}\n"
+            "      end\n"
+            "    end\n"
+            "    if (mh_back > 0.001):\n"
+            "      movel(pose_trans(mh_cur, [0, 0, -mh_back, 0, 0, 0]), a=0.4, v=0.1)\n"
+            "    end\n"
+            # 대기 위치 높이까지 곧게 올라간다.
+            "    mh_up = get_actual_tool_flange_pose()\n"
+            "    if (mh_up[2] < mh_ref[2] - 0.001):\n"
+            "      mh_up[2] = mh_ref[2]\n"
+            "      movel(mh_up, a=0.4, v=0.1)\n"
+            "    end\n"
+            "    movej(mh_sb, a=1.4, v=0.5)\n"
             "  end\n"
-            "  if (hm_back > 0.001):\n"
-            "    movel(pose_trans(cur_pose, [0, 0, -hm_back, 0, 0, 0]), a=0.4, v=0.1)\n"
-            "  end\n"
-            "  cur_pose = get_actual_tcp_pose()\n"
-            "  if (cur_pose[2] < tgt_h[2] - 0.001):\n"
-            "    cur_pose[2] = tgt_h[2]\n"
-            "    movel(cur_pose, a=0.4, v=0.1)\n"
-            "  end\n"
-            "  movej(tgt_j, a=1.4, v=0.5)\n"
+            "  movej(mh_home, a=1.4, v=0.5)\n"
             # 홈에 닿았다 — 레지스터 276 을 세운다. 태스크가 돌지 않는
             # 동안에는 이 스크립트 말고 아무도 이 값을 갱신하지 않는다.
             "  write_port_register(276, 1)\n"

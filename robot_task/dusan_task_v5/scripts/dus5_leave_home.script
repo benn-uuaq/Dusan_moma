@@ -1,0 +1,90 @@
+# =============================================================================
+#  dus5_leave_home.script — dusan_v5
+#  홈에서 스캔 대기 위치로 moveJ 로 간다 (작업 시작)
+#
+#  펜던트에서 "2 move_home" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  다음 노드(move_start)가 스캔 대기 위치에서 시작 위치로 간다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  홈과 작업 자리 사이는 **언제나 스캔 대기 위치를 거친다**(2026-10-15):
+#    시작 : 홈 --movej--> 스캔 대기 위치 --> 시작 위치(start_pose)
+#    끝   : 스캔 완료 자리 --> (대기 위치 기준) 물러나고 상승 --movej--> 스캔 대기
+#           위치 --movej--> 홈
+#  스캔 대기 위치(Standby_joint) = 예전의 「홈」. RCS 「스캔 대기 위치 저장」(레지스터
+#  310~315, 308 = 1) 또는 펜던트 변수. 홈(Home_joint)은 RCS 「홈 위치 저장」(레지스터
+#  322~327, 328 = 1) 또는 펜던트에서 티칭한 변수(dus5_init 참고).
+#
+#  홈이 아닌 자리에서 시작했으면(작업 도중 멈춘 뒤 다시 튼 경우 등) 곧장 movej 하지
+#  않고 벽에서 물러나(대기 위치 기준) 대기 위치 높이로 올라간 뒤 movej 한다.
+# =============================================================================
+
+def lh_retreat(limit):
+  # 벽에서 물러나되 **스캔 대기 위치(Standby_joint)보다 뒤로는 가지 않는다.**
+  #   - 기준점은 Standby_joint 의 플랜지 자세(get_forward_kin)다. Standby_pose 변수는
+  #     안 쓴다 — 펜던트에 옛 값이 남아 있을 수 있다.
+  #   - 지금 자리도 플랜지로 본다. EOAT 끝점 TCP(eoat_ofs)가 남아 있으면 끝점이
+  #     245 mm 앞이라 남은 거리가 그만큼 크게 잡혔다. 그래서 먼저 TCP 를 플랜지로.
+  #   - 방향은 툴 -Z(벽 법선 반대)다. 호 끝처럼 툴이 돌아가 있어도 벽에서 곧게 뗀다.
+  #   - 거리는 limit [m] 과 「대기 위치 X 까지 남은 거리」 중 작은 쪽. 툴 -Z 로 d 만큼
+  #     가면 베이스 X 는 d * cz 만큼 준다(cz = 툴 Z 의 베이스 X 성분). 이미 대기
+  #     위치보다 뒤면 물러나지 않는다.
+  #   - 툴이 벽(+X) 쪽을 보고 있지 않으면(cz <= 0.2, 약 78 도 넘게 돌아감) 벽에
+  #     붙은 자세가 아니다 — 엉뚱한 쪽으로 가지 않게 물러나지 않는다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  lr_ref = get_forward_kin(Standby_joint)
+  lr_cur = get_actual_tool_flange_pose()
+  lr_cz = pose_trans(lr_cur, [0, 0, 1, 0, 0, 0])[0] - lr_cur[0]
+  lr_back = 0
+  if (lr_cz > 0.2):
+    lr_back = (lr_cur[0] - lr_ref[0]) / lr_cz
+    if (lr_back > limit):
+      lr_back = limit
+    end
+  end
+  if (lr_back > 0.001):
+    movel(pose_trans(lr_cur, [0, 0, -lr_back, 0, 0, 0]), a = a_l, v = v_l)
+  end
+end
+
+
+def lh_rise():
+  # 스캔 대기 위치 높이까지 곧게(베이스 Z) 올라간다 — 플랜지 기준. 이미 그보다
+  # 높으면 그대로 둔다. 벽 근처에서 곧장 movej 하면 팔이 곡면을 스칠 수 있다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  lu_ref = get_forward_kin(Standby_joint)
+  lu_up = get_actual_tool_flange_pose()
+  if (lu_up[2] < lu_ref[2] - 0.001):
+    lu_up[2] = lu_ref[2]
+    movel(lu_up, a = a_l, v = v_l)
+  end
+end
+
+
+def lh_at_home():
+  # 관절이 홈(Home_joint)에서 home_tol_j [rad] 안이면 홈이다(dus5_init 의 hm_flag 와
+  # 같은 기준).
+  lh_q = get_actual_joint_positions()
+  lh_i = 0
+  while (lh_i < 6):
+    lh_d = lh_q[lh_i] - Home_joint[lh_i]
+    if (lh_d < 0):
+      lh_d = -lh_d
+    end
+    if (lh_d > home_tol_j):
+      return False
+    end
+    lh_i = lh_i + 1
+  end
+  return True
+end
+
+
+set_tcp([0, 0, 0, 0, 0, 0])
+if (lh_at_home() == False):
+  lh_retreat(probe_dist * 0.001)
+  lh_rise()
+end
+movej(Standby_joint, a = a_j, v = v_j)

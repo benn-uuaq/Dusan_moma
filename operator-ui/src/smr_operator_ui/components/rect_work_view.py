@@ -180,10 +180,10 @@ class RectWorkView(QWidget):
         self._has_position = False
         self._cell_label = ""
         # 최소 폭은 실제로 쓸 수 있는 공간에 맞춘다.
-        # 메인 화면은 1280px 고정인데 우측 레일(340)·속도 바(112)·여백을
-        # 빼면 원통·작업영역 둘이 나눠 쓸 폭이 780 밖에 없다. 둘 다 500을
-        # 요구하면 1014 가 되어 234px 이 창 밖으로 밀려 오른쪽이 잘린다.
-        self.setMinimumSize(360, 330)
+        # 메인 화면 기준은 1024x768 이다(2026-10-16). 우측 레일(272)·속도 바(90)·
+        # 여백을 빼면 원통·작업영역 둘이 나눠 쓸 폭이 640 남짓이다 — 둘이 합쳐
+        # 그보다 크면 창 밖으로 밀려 오른쪽이 잘린다(예전 1280 에서 겪은 일).
+        self.setMinimumSize(290, 280)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("작업 영역을 클릭하여 크기를 설정하세요.")
 
@@ -300,13 +300,13 @@ class RectWorkView(QWidget):
         # 작은 글꼴에 줄바꿈을 허용해 따로 그린다.
         text_area = QRectF(6, 8, max(self.width() - 12, 10), 60)
         painter.setPen(QColor(COLORS["text"]))
-        painter.setFont(QFont("Malgun Gothic", 12, 600))
+        painter.setFont(QFont("Malgun Gothic", 11, 600))
         title = f"작업 영역  {self._cell_label}" if self._cell_label else "작업 영역"
         painter.drawText(
             QRectF(text_area.x(), text_area.y(), text_area.width(), 20),
             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, title,
         )
-        painter.setFont(QFont("Malgun Gothic", 9))
+        painter.setFont(QFont("Malgun Gothic", 8))
         painter.drawText(
             QRectF(text_area.x(), text_area.y() + 22, text_area.width(), 40),
             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
@@ -396,7 +396,7 @@ class RectWorkView(QWidget):
 
         # 범례
         legend_y = self.height() - 22
-        painter.setFont(QFont("Malgun Gothic", 9))
+        painter.setFont(QFont("Malgun Gothic", 8))
         painter.setPen(QColor(COLORS["primary"]))
         painter.drawText(QRectF(18, legend_y - 3, 70, 18), Qt.AlignmentFlag.AlignLeft, "─ 경로")
         painter.setPen(QColor(COLORS["text"]))

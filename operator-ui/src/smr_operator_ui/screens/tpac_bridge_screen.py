@@ -240,6 +240,16 @@ class TpacBridgeScreen(BaseScreen):
         layout.addWidget(goto)
         return card
 
+    @staticmethod
+    def _shrinkable(combo: QComboBox) -> QComboBox:
+        """가장 긴 항목 폭을 고집하지 않게 한다 — 1024 폭에서 카드가 화면을 넘었다.
+
+        펼친 목록에는 문구가 그대로 다 보이고, 닫힌 칸에서만 줄여 보인다.
+        """
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(14)
+        return combo
+
     def _build_server_card(self) -> QWidget:
         card, layout = self.surface("외부에 제공 (Modbus 서버)")
         form = QFormLayout(); form.setSpacing(8)
@@ -250,12 +260,14 @@ class TpacBridgeScreen(BaseScreen):
         for key, (label, _n, desc) in OUT_FORMATS.items():
             self.srv_fmt.addItem(f"{label} — {desc}", key)
         self.srv_fmt.setCurrentIndex(list(OUT_FORMATS).index("float32"))
+        self._shrinkable(self.srv_fmt)
         self.srv_word_order = TouchComboBox()
         for key, label in WORD_ORDERS.items():
             self.srv_word_order.addItem(label, key)
         # 폭주하는 장치가 스스로 죽는 것을 막는 응답 지연. 0이면 지연 없음.
         self.srv_delay_ms = TouchSpinBox(); self.srv_delay_ms.setRange(0, 5000); self.srv_delay_ms.setValue(0)
         self.srv_delay_ms.setSuffix(" ms")
+        self._shrinkable(self.srv_word_order)
         form.addRow("Bind IP", self.srv_bind_ip)
         form.addRow("포트", self.srv_port)
         form.addRow("시작 주소", self.srv_start_addr)
@@ -286,6 +298,7 @@ class TpacBridgeScreen(BaseScreen):
         # 펴는 장치다. 그러니 기본값은 베이스 좌표가 아니라 제로점 기준
         # 스캔 값이어야 한다.
         self.srv_pose_source.setCurrentIndex(1)
+        self._shrinkable(self.srv_pose_source)
         pose_form = QFormLayout(); pose_form.setSpacing(8)
         pose_form.addRow("포즈(400) 값", self.srv_pose_source)
         layout.addLayout(pose_form)

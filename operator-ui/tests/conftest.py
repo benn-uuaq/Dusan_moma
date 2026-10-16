@@ -22,11 +22,15 @@ def isolated_settings_file(tmp_path_factory):
         "SMR_SETTINGS_FILE": os.environ.get("SMR_SETTINGS_FILE"),
         "SMR_DATABASE_URL": os.environ.get("SMR_DATABASE_URL"),
         "SMR_DATA_DIR": os.environ.get("SMR_DATA_DIR"),
+        "SMR_ROBOT_CONFIG_DIR": os.environ.get("SMR_ROBOT_CONFIG_DIR"),
     }
     os.environ["SMR_SETTINGS_FILE"] = str(path)
     # 운영 기록도 마찬가지 — 안 막으면 테스트가 실제 데이터 저장 위치
     # (D:/SMR/Data 등)에 가짜 작업기록·알람을 쌓는다.
     os.environ["SMR_DATA_DIR"] = str(tmp_path_factory.mktemp("operator_data"))
+    # 기준 위치 파일(robot_task/config/reference_poses.json)도 — 저장소에 든
+    # 파일이라, 안 막으면 읽을 때 옛 형식을 옮겨 저장하며 고쳐 쓴다.
+    os.environ["SMR_ROBOT_CONFIG_DIR"] = str(tmp_path_factory.mktemp("robot_config"))
     # DB 가 잡혀 있으면 그쪽으로 가 버리므로 파일 저장소를 쓰게 비워 둔다.
     os.environ.pop("SMR_DATABASE_URL", None)
     yield path

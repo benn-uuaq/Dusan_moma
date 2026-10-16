@@ -48,10 +48,10 @@ class OrbitView(QWidget):
             )
             self._robot_pixmap = source.copy(crop)
         # 최소 폭은 실제로 쓸 수 있는 공간에 맞춘다.
-        # 메인 화면은 1280px 고정인데 우측 레일(340)·속도 바(112)·여백을
-        # 빼면 원통·작업영역 둘이 나눠 쓸 폭이 780 밖에 없다. 둘 다 500을
-        # 요구하면 1014 가 되어 234px 이 창 밖으로 밀려 오른쪽이 잘린다.
-        self.setMinimumSize(360, 330)
+        # 메인 화면 기준은 1024x768 이다(2026-10-16). 우측 레일(272)·속도 바(90)·
+        # 여백을 빼면 원통·작업영역 둘이 나눠 쓸 폭이 640 남짓이다 — 둘이 합쳐
+        # 그보다 크면 창 밖으로 밀려 오른쪽이 잘린다(예전 1280 에서 겪은 일).
+        self.setMinimumSize(290, 280)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("검사 대상을 클릭하여 크기를 설정하세요.")
 
@@ -156,10 +156,19 @@ class OrbitView(QWidget):
         """현재 검사 대상의 지름과 높이를 미터 단위로 반환한다."""
         return self._target_diameter_m, self._target_height_m
 
+    def _geometry(self) -> tuple[QPointF, float]:
+        """원주 중심과 반지름. 구간 번호(반지름 x 1.28, 폭 34)가 양옆에서 안 잘리게 잡는다.
+
+        예전에는 중심이 폭의 0.44 자리라 왼쪽 끝 번호("04")가 위젯 밖으로 잘렸다.
+        """
+        w, h = self.width(), self.height()
+        center = QPointF(w * 0.5, h * 0.48)
+        radius = min(w * 0.34, h * 0.36, max((w * 0.5 - 20) / 1.28, 1.0))
+        return center, radius
+
     def _target_rect(self) -> QRectF:
         """현재 위젯 크기를 기준으로 클릭 가능한 중앙 원 영역을 계산한다."""
-        center = QPointF(self.width() * 0.44, self.height() * 0.48)
-        radius = min(self.width() * 0.34, self.height() * 0.36)
+        center, radius = self._geometry()
         target_diameter = radius * 1.24
         return QRectF(
             center.x() - target_diameter * 0.5,
@@ -181,8 +190,7 @@ class OrbitView(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        center = QPointF(w * 0.44, h * 0.48)
-        radius = min(w * 0.34, h * 0.36)
+        center, radius = self._geometry()
 
         target = self._target_rect()
         # 지름에는 두께를 포함하지 않는다(검사 대상 자체의 크기) — 두께는
@@ -199,7 +207,7 @@ class OrbitView(QWidget):
         painter.setBrush(QColor("#E4E7EA"))
         painter.drawEllipse(target)
         painter.setPen(QColor(COLORS["text"]))
-        painter.setFont(QFont("Malgun Gothic", 12, 600))
+        painter.setFont(QFont("Malgun Gothic", 11, 600))
         painter.drawText(target, Qt.AlignmentFlag.AlignCenter, target_text)
 
         orbit = QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
@@ -243,7 +251,7 @@ class OrbitView(QWidget):
         painter.setPen(QColor(COLORS["text"]))
         painter.drawText(target, Qt.AlignmentFlag.AlignCenter, target_text)
 
-        painter.setFont(QFont("Malgun Gothic", 9, 600))
+        painter.setFont(QFont("Malgun Gothic", 8, 600))
         if self._sections is not None:
             count = self.section_count()
             centers = [i * 360.0 / count for i in range(count)]
@@ -272,7 +280,8 @@ class OrbitView(QWidget):
         rx = center.x() + math.cos(robot_angle) * radius*0.9
         ry = center.y() + math.sin(robot_angle) * radius*0.9
         if not self._robot_pixmap.isNull():
-            size = int(radius * 0.6)
+            # 로봇 그림 — 1024x768 에 맞춰 조금 줄였다(2026-10-16, 예전 0.6).
+            size = int(radius * 0.48)
             robot = self._robot_pixmap.scaled(
                 size,
                 size,
@@ -284,7 +293,7 @@ class OrbitView(QWidget):
         legend_y = h - 24
         items = ((COLORS["success"], "완료"), (COLORS["warning"], "현재"), (COLORS["pending"], "대기"))
         x = 18
-        painter.setFont(QFont("Malgun Gothic", 9))
+        painter.setFont(QFont("Malgun Gothic", 8))
         for color, label in items:
             painter.fillRect(QRectF(x, legend_y, 16, 12), QColor(color))
             painter.setPen(QColor(COLORS["text"]))

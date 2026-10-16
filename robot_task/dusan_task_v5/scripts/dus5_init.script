@@ -156,59 +156,66 @@ def pub_rel():
   # 예전에는 scan_on 이라는 스크립트 변수를 썼는데, 값을 켜는 곳(다른 스크립트
   # 노드)과 읽는 곳(이 발행 스레드)이 달라 전달을 신뢰할 수 없었다.
   # 레지스터는 로봇 안에 하나뿐이라 그런 문제가 없고, RCS 도 같은 값을 본다.
-  # 스캔 좌표는 **EOAT(프로브) 중심** 기준이다. 툴 플랜지에서 eoat_ofs
-  # (툴 로컬, dus5_init 이 eoat5_offset / eoat8_offset 으로 계산)만큼 옮긴
-  # 점을 쓴다. 원점도 같은 방식으로 옮겨야 원점에서 0 이 나온다.
-  # 오프셋이 0 이면 pose_trans 는 그대로라 예전 값과 똑같다.
-  scan_pose = pose_trans(cur_pose, eoat_ofs)
-  if (zero_ok == True and read_port_register(290, True) == 6):
-    zero_scan = pose_trans(zero_pose, eoat_ofs)
-    rel_pose = [scan_pose[0] - zero_scan[0],
-          scan_pose[1] - zero_scan[1],
-          scan_pose[2] - zero_scan[2],
-          scan_pose[3] - zero_scan[3],
-          scan_pose[4] - zero_scan[4],
-          scan_pose[5] - zero_scan[5]]
-    #
-    # 여기서 **Rz 180 도**로 뒤집어 내보낸다. 반시계 방향으로 훑도록
-    # 바꾸면서 원점이 베이스 Y 가 큰 쪽 끝이 되었는데, 그대로 빼면
-    # Y 가 계속 음수로 나간다. 제로점 좌표계를 180 도 돌려 놓으면
-    # 훑는 방향이 반대여도 Y 는 0 에서 + 로만 커진다.
-    #   x' = -x,  y' = -y,  z' = z   (Z 축 회전이라 높이는 그대로)
-    rel_pose[0] = -rel_pose[0]
-    rel_pose[1] = -rel_pose[1]
-    ini_w6(280, rel_pose)
-  else:
-    ini_w6(280, [0, 0, 0, 0, 0, 0])
-  end
-  # ---- 호 위 위치 (TPAC 스캔 축) ----------------------------------
-  # 좌표를 그대로 주면 현(1031.8)으로 7% 눌리고 호 위치에 비례하지도
-  # 않는다. 원점부터 호를 따라 실제로 지난 거리를 계산해서 내보낸다.
-  #   286 = 이번 줄의 호 위 거리 [0.1mm]  (0 ~ 11100)
-  #   287 = 완료된 줄까지 더한 누적 [mm]
-  if (arc_ok == True):
-    adx = scan_pose[0] - arc_ox
-    ady = scan_pose[1] - arc_oy
-    # 원점 방위각도 프로브 중심 기준으로 잰다(오프셋 0 이면 arc_phi0 와 같다).
-    zero_scan = pose_trans(zero_pose, eoat_ofs)
-    aph = atan2(ady, adx) - atan2(zero_scan[1] - arc_oy, zero_scan[0] - arc_ox)
-    # atan2 는 ±pi 로 감기므로 한 바퀴 보정한다
-    if (aph > 3.14159265):
-      aph = aph - 6.28318531
+  # ※ 스캔 끝(290 = 5)부터 다음 작업 시작(dus5_init 이 290 = 0)까지는 280~287 을
+  #   **고치지 않는다** — 마지막 스캔 값이 그대로 남는다. dus5_finish 가 마지막
+  #   스캔 좌표에서 5 를 쓰고 나서 물러나므로, 후퇴·홈 이동 중에 좌표가 움직이거나
+  #   0,0,0 으로 떨어져 TPAC 스캔 데이터에 섞이지 않는다(2026-10-15).
+  pub_st = read_port_register(290, True)
+  if (pub_st != 5):
+    # 스캔 좌표는 **EOAT(프로브) 중심** 기준이다. 툴 플랜지에서 eoat_ofs
+    # (툴 로컬, dus5_init 이 eoat5_offset / eoat8_offset 으로 계산)만큼 옮긴
+    # 점을 쓴다. 원점도 같은 방식으로 옮겨야 원점에서 0 이 나온다.
+    # 오프셋이 0 이면 pose_trans 는 그대로라 예전 값과 똑같다.
+    scan_pose = pose_trans(cur_pose, eoat_ofs)
+    if (zero_ok == True and pub_st == 6):
+      zero_scan = pose_trans(zero_pose, eoat_ofs)
+      rel_pose = [scan_pose[0] - zero_scan[0],
+            scan_pose[1] - zero_scan[1],
+            scan_pose[2] - zero_scan[2],
+            scan_pose[3] - zero_scan[3],
+            scan_pose[4] - zero_scan[4],
+            scan_pose[5] - zero_scan[5]]
+      #
+      # 여기서 **Rz 180 도**로 뒤집어 내보낸다. 반시계 방향으로 훑도록
+      # 바꾸면서 원점이 베이스 Y 가 큰 쪽 끝이 되었는데, 그대로 빼면
+      # Y 가 계속 음수로 나간다. 제로점 좌표계를 180 도 돌려 놓으면
+      # 훑는 방향이 반대여도 Y 는 0 에서 + 로만 커진다.
+      #   x' = -x,  y' = -y,  z' = z   (Z 축 회전이라 높이는 그대로)
+      rel_pose[0] = -rel_pose[0]
+      rel_pose[1] = -rel_pose[1]
+      ini_w6(280, rel_pose)
+    else:
+      ini_w6(280, [0, 0, 0, 0, 0, 0])
     end
-    if (aph < -3.14159265):
-      aph = aph + 6.28318531
+    # ---- 호 위 위치 (TPAC 스캔 축) ----------------------------------
+    # 좌표를 그대로 주면 현(1031.8)으로 7% 눌리고 호 위치에 비례하지도
+    # 않는다. 원점부터 호를 따라 실제로 지난 거리를 계산해서 내보낸다.
+    #   286 = 이번 줄의 호 위 거리 [0.1mm]  (0 ~ 11100)
+    #   287 = 완료된 줄까지 더한 누적 [mm]
+    if (arc_ok == True):
+      adx = scan_pose[0] - arc_ox
+      ady = scan_pose[1] - arc_oy
+      # 원점 방위각도 프로브 중심 기준으로 잰다(오프셋 0 이면 arc_phi0 와 같다).
+      zero_scan = pose_trans(zero_pose, eoat_ofs)
+      aph = atan2(ady, adx) - atan2(zero_scan[1] - arc_oy, zero_scan[0] - arc_ox)
+      # atan2 는 ±pi 로 감기므로 한 바퀴 보정한다
+      if (aph > 3.14159265):
+        aph = aph - 6.28318531
+      end
+      if (aph < -3.14159265):
+        aph = aph + 6.28318531
+      end
+      if (aph < 0):
+        aph = -aph
+      end
+      arc_s = aph * scan_radius
+      ini_w1(286, arc_s * 10)
+      ini_w1(287, path_len + arc_s)
+    else:
+      arc_s = 0
+      ini_w1(286, 0)
+      ini_w1(287, path_len)
     end
-    if (aph < 0):
-      aph = -aph
-    end
-    arc_s = aph * scan_radius
-    ini_w1(286, arc_s * 10)
-    ini_w1(287, path_len + arc_s)
-  else:
-    arc_s = 0
-    ini_w1(286, 0)
-    ini_w1(287, path_len)
   end
 
   alive = alive + 1
@@ -385,25 +392,63 @@ if (v_scan > v_l_limit):
   v_scan = v_l_limit
 end
 
-# ---- 기준 위치 : 308 이 1 이면 310~321 의 값을 쓴다 --------------------
-# 310~315 홈 관절값 [mRad], 316~321 그리퍼 기준점 pose(길이 0.1mm, 회전 mRad)
-# — 316~321 은 작업면에 붙였을 때의 툴 플랜지 pose 다(티칭한 그대로).
+# ---- 기준 위치 (RCS 「위치 저장」) ----------------------------------------
+#   308 = 1 : 310~315 **스캔 대기 위치** 관절값 [mRad] — RCS 「스캔 대기 위치 저장」
+#             (예전 「홈 위치 저장」 자리, 2026-10-15 부터 대기 위치)
+#             316~321 그리퍼 기준점 pose(길이 0.1mm, 회전 mRad) — RCS 「시작 포즈 저장」.
+#             작업면에 붙였을 때의 툴 플랜지 pose 다(티칭한 그대로).
+#   328 = 1 : 322~327 **홈** 관절값 [mRad] — RCS 「홈 위치 저장」(2026-10-16)
+# 플래그가 0 이면 펜던트 변수 값을 그대로 쓴다. 홈과 작업 자리 사이는 언제나
+# 대기 위치를 거친다(dus5_leave_home · dus5_go_home · dus5_home).
+# 플래그가 1 이어도 칸이 전부 0 이면 **저장한 적이 없는 칸**이다(308 하나가
+# 대기 위치와 그리퍼 기준점을 같이 세운다) — 그 칸은 읽지 않는다. 0 으로
+# movej 하면 엉뚱한 자세로 간다.
 # EOAT 중심 오프셋은 시작 자세에는 쓰지 않는다 — 호 계산과 스캔 좌표에 쓴다(아래 참고).
-if (read_port_register(308, True) == 1):
-  Home_joint = [read_port_register(310, True) / 1000.0,
-         read_port_register(311, True) / 1000.0,
-         read_port_register(312, True) / 1000.0,
-         read_port_register(313, True) / 1000.0,
-         read_port_register(314, True) / 1000.0,
-         read_port_register(315, True) / 1000.0]
-  gripper_target_pose = [read_port_register(316, True) / 10000.0,
-         read_port_register(317, True) / 10000.0,
-         read_port_register(318, True) / 10000.0,
-         read_port_register(319, True) / 1000.0,
-         read_port_register(320, True) / 1000.0,
-         read_port_register(321, True) / 1000.0]
-  Home_pose = get_forward_kin(Home_joint)
+def ini_regs_set(a):
+  ini_k = 0
+  while (ini_k < 6):
+    if (read_port_register(a + ini_k, True) != 0):
+      return True
+    end
+    ini_k = ini_k + 1
+  end
+  return False
 end
+
+
+def ini_joints(a):
+  return [read_port_register(a, True) / 1000.0,
+         read_port_register(a + 1, True) / 1000.0,
+         read_port_register(a + 2, True) / 1000.0,
+         read_port_register(a + 3, True) / 1000.0,
+         read_port_register(a + 4, True) / 1000.0,
+         read_port_register(a + 5, True) / 1000.0]
+end
+
+
+if (read_port_register(308, True) == 1):
+  if (ini_regs_set(310)):
+    Standby_joint = ini_joints(310)
+  end
+  if (ini_regs_set(316)):
+    gripper_target_pose = [read_port_register(316, True) / 10000.0,
+           read_port_register(317, True) / 10000.0,
+           read_port_register(318, True) / 10000.0,
+           read_port_register(319, True) / 1000.0,
+           read_port_register(320, True) / 1000.0,
+           read_port_register(321, True) / 1000.0]
+  end
+end
+if (read_port_register(328, True) == 1):
+  if (ini_regs_set(322)):
+    Home_joint = ini_joints(322)
+  end
+end
+# pose 는 **언제나 관절값에서** 다시 계산한다(플랜지 기준 — 위에서 TCP 를 0 으로
+# 돌려 두었다). 예전에는 308 = 1 일 때만 계산해, 펜던트 변수로 돌리면 옛 값이
+# 남아 관절값과 어긋날 수 있었다. 홈 판정(hm_flag · 276)은 Home_pose 를 쓴다.
+Home_pose = get_forward_kin(Home_joint)
+Standby_pose = get_forward_kin(Standby_joint)
 
 # ---- EOAT(프로브) 중심점 오프셋 --------------------------------------------
 # 툴 플랜지에서 프로브 중심까지의 거리. **펜던트 변수에서 입력한다**:
@@ -553,6 +598,6 @@ if (pub_started == 0):
 end
 
 # ---- 차량 고정을 확인하고 나서 움직인다 -----------------------------------
-# 이 다음 노드(move_home)부터 로봇이 실제로 움직인다. 그 전에 차량·리프트가
+# 이 다음 노드(dus5_leave_home)부터 로봇이 실제로 움직인다. 그 전에 차량·리프트가
 # 굳어 있는지 확인한다.
 ini_veh_wait()

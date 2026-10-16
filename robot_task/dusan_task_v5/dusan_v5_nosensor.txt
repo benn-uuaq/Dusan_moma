@@ -3,13 +3,8 @@
     로봇 메인 작업
         1 [스크립트파일] dus5_init.script
             스크립트: dus5_init.script
-        2 move_home
-            If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
-                MoveL
-                    방향 로봇 Z+
-                        Until get_actual_tcp_pose()[2]>=Home_pose[2]-0.001
-            MoveJ
-                Home_joint
+        2 [스크립트파일] dus5_leave_home.script
+            스크립트: dus5_leave_home.script
         3 [스크립트파일] dus5_probe_c.script
             스크립트: dus5_probe_c.script
         2 move_home
@@ -53,12 +48,7 @@
             If row_idx>=rows
                 10 [스크립트파일] dus5_finish.script
                     스크립트: dus5_finish.script
-                11 move_home
-                    If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
-                        MoveL
-                            방향 로봇 Z+
-                                Until get_actual_tcp_pose()[2]>=Home_pose[2]-0.001
-                    MoveJ
-                        Home_joint
+                11 [스크립트파일] dus5_go_home.script
+                    스크립트: dus5_go_home.script
                 중지
         중지

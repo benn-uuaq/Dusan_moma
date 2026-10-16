@@ -440,6 +440,9 @@ class CobotManualScreen(BaseScreen):
         row=QHBoxLayout()
         for text,command in items:
             button=QPushButton(text); button.setMinimumHeight(52)
+            # 1024 폭에서는 네 칸의 최소 폭 합이 화면보다 커 「브레이크 해제」가
+            # 잘렸다 — 이 화면의 명령 버튼은 좌우 여백을 줄인다(app.qss).
+            button.setObjectName("CompactButton")
             if keep is not None:
                 keep[command]=button
             # command를 기본 인자로 고정하지 않으면 모든 버튼이 반복문의
@@ -557,7 +560,11 @@ class CobotJogScreen(BaseScreen):
                ("손목 1", "mrad"), ("손목 2", "mrad"), ("손목 3", "mrad"))
     _TCP_AXES = (("X", "mm"), ("Y", "mm"), ("Z", "mm"),
                  ("RX", "mrad"), ("RY", "mrad"), ("RZ", "mrad"))
-    _SAVE = (("홈 위치 저장", "save_home_pose"), ("시작 포즈 저장", "save_start_pose"))
+    # 홈(접힌 자세)과 스캔 대기 위치(예전의 홈)를 따로 저장한다(2026-10-16).
+    # 로봇은 홈과 작업 자리 사이를 언제나 스캔 대기 위치를 거쳐 오간다.
+    _SAVE = (("홈 위치 저장", "save_home_pose"),
+             ("스캔 대기 위치 저장", "save_standby_pose"),
+             ("시작 포즈 저장", "save_start_pose"))
 
     def __init__(self) -> None:
         super().__init__("Cobot 조그 / 위치 저장",
@@ -714,6 +721,9 @@ class RunScreen(BaseScreen):
 class SettingsMenuScreen(BaseScreen):
     """설정, 진단, 로그, 수동 제어 화면으로 이동하는 타일 메뉴."""
 
+    #: 한 줄의 타일 수.
+    COLUMNS = 3
+
     def __init__(self) -> None:
         super().__init__("설정 / 진단", "장비 설정과 운전 기록을 관리합니다.")
         self.setObjectName("SettingsScreen")
@@ -722,7 +732,8 @@ class SettingsMenuScreen(BaseScreen):
         for i,(key,title,desc) in enumerate(items):
             # key를 기본 인자로 고정한다. 그렇지 않으면 모든 lambda가
             # 반복문의 마지막 key만 참조하게 된다.
-            b=QPushButton(f"{title}\n{desc}"); b.setObjectName("SettingsTile"); b.clicked.connect(lambda _,k=key:self.navigate.emit(k)); grid.addWidget(b,i//4,i%4)
+            # 1024x768(4:3) 에서는 4열이면 타일이 좁아 설명이 잘린다 — 3열로 둔다.
+            b=QPushButton(f"{title}\n{desc}"); b.setObjectName("SettingsTile"); b.clicked.connect(lambda _,k=key:self.navigate.emit(k)); grid.addWidget(b,i//self.COLUMNS,i%self.COLUMNS)
 
 
 class IOStatusScreen(BaseScreen):

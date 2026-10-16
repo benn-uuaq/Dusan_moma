@@ -284,7 +284,11 @@ def test_speed_ratio_is_limited_to_robot_range(qtbot) -> None:
 
 
 def test_saved_poses_are_shown_on_start(qtbot, tmp_path, monkeypatch) -> None:
-    """저장 파일이 있으면 UI를 다시 열어도 기준 위치가 보여야 한다."""
+    """저장 파일이 있으면 UI를 다시 열어도 기준 위치가 보여야 한다.
+
+    형식 판이 없는 옛 파일의 home_joint 는 그때의 「홈」 = 지금의 **스캔 대기
+    위치**다(2026-10-16). 대기 위치로 옮겨 보여 주고 파일도 고쳐 둔다.
+    """
     import json
 
     monkeypatch.setenv("SMR_ROBOT_CONFIG_DIR", str(tmp_path))
@@ -299,9 +303,48 @@ def test_saved_poses_are_shown_on_start(qtbot, tmp_path, monkeypatch) -> None:
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
 
-    home = window.cobot_jog_screen.saved_labels["save_home_pose"].text()
-    assert "J1 207.0" in home
-    assert "2026-08-11 16:42" in home
+    labels = window.cobot_jog_screen.saved_labels
+    standby = labels["save_standby_pose"].text()
+    assert "J1 207.0" in standby
+    assert "2026-08-11 16:42" in standby
+    assert "저장된 값 없음" in labels["save_home_pose"].text()
+    saved = json.loads((tmp_path / "reference_poses.json").read_text(encoding="utf-8"))
+    assert saved["_layout"] == 2 and "home_joint" not in saved
+    assert saved["standby_joint"]["values"][0] == 207.0
+    window.close()
+
+
+def test_home_and_standby_are_saved_separately(qtbot, tmp_path, monkeypatch) -> None:
+    """홈 위치 저장 -> home_joint(322~327), 스캔 대기 위치 저장 -> standby_joint(310~315)."""
+    import json
+
+    monkeypatch.setenv("SMR_ROBOT_CONFIG_DIR", str(tmp_path))
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    sent: list[tuple[str, list]] = []
+    window.ros_status.send_pose = lambda name, v: sent.append((name, list(v))) or True
+    screen = window.cobot_jog_screen
+    assert set(screen.save_buttons) == {"save_home_pose", "save_standby_pose", "save_start_pose"}
+
+    window.ros_status.joint_position_changed.emit([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    screen.command_requested.emit("save_standby_pose")
+    window.ros_status.joint_position_changed.emit([7.0, 8.0, 9.0, 10.0, 11.0, 12.0])
+    screen.command_requested.emit("save_home_pose")
+
+    assert sent == [("standby_joint", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+                    ("home_joint", [7.0, 8.0, 9.0, 10.0, 11.0, 12.0])]
+    assert "J1 1.0" in screen.saved_labels["save_standby_pose"].text()
+    assert "J1 7.0" in screen.saved_labels["save_home_pose"].text()
+    saved = json.loads((tmp_path / "reference_poses.json").read_text(encoding="utf-8"))
+    assert saved["standby_joint"]["values"][0] == 1.0
+    assert saved["home_joint"]["values"][0] == 7.0
+    window.close()
+
+    # 새 형식 파일은 다시 열어도 홈을 대기 위치로 옮기지 않는다.
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    assert "J1 7.0" in window.cobot_jog_screen.saved_labels["save_home_pose"].text()
+    assert "J1 1.0" in window.cobot_jog_screen.saved_labels["save_standby_pose"].text()
     window.close()
 
 
@@ -331,8 +374,10 @@ def test_reconnect_rewrites_volatile_registers(qtbot, tmp_path, monkeypatch) -> 
 
     window.ros_status.connected_changed.emit(True)
 
-    assert ("home_joint", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) in poses
+    # 옛 파일의 home_joint 는 스캔 대기 위치로 옮겨져 310~315 로 간다(예전과 같은 자리).
+    assert ("standby_joint", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) in poses
     assert ("start_pose", [10.0, 20.0, 30.0, 0.0, 0.0, 0.0]) in poses
+    assert not any(name == "home_joint" for name, _values in poses)
     # 속도 설정도 같은 이유로 다시 올린다.
     assert ("linear_speed", 100) in values
     assert ("speed_ratio", 100) in values

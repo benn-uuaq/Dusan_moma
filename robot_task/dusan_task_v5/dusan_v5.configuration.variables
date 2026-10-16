@@ -1,6 +1,8 @@
 <VariablesManager>
-  <Variable name="Home_joint" value="[0.79941, -1.55029, -2.70026, 1.10839, 0.81203, -3.14139]" remarks="" favorite="false"/>
-  <Variable name="Home_pose" value="[0.40795, 0.05529, 0.40515, 1.57121, 0.00018, 1.61144]" remarks="" favorite="false"/>
+  <Variable name="Home_joint" value="[0.79941, -1.55029, -2.70026, 1.10839, 0.81203, -3.14139]" remarks="홈(접힌 자세) 관절값 [rad]. RCS 「홈 위치 저장」(레지스터 322~327, 328 = 1)이 있으면 그 값으로 덮어쓰고, 없으면 펜던트에서 티칭한 이 값을 쓴다. 작업 시작·끝에 언제나 스캔 대기 위치(Standby_joint)를 거쳐 movej 로 오간다. 로봇이 여기 있으면 276 = 1(차량·리프트 이동 허가). 처음 값은 예전 홈(= 지금 스캔 대기 위치)과 같으니 새로 티칭할 것" favorite="false"/>
+  <Variable name="Home_pose" value="[0.40795, 0.05529, 0.40515, 1.57121, 0.00018, 1.61144]" remarks="[계산값] 홈의 툴 플랜지 pose. dus5_init 이 Home_joint 로 매번 다시 계산한다 — 직접 바꾸지 말 것" favorite="false"/>
+  <Variable name="Standby_joint" value="[0.79941, -1.55029, -2.70026, 1.10839, 0.81203, -3.14139]" remarks="스캔 대기 위치 관절값 [rad] (예전의 홈). 홈과 작업 자리 사이는 언제나 여기를 거친다: 홈 -movej-> 여기 -> 시작 위치 / 스캔 끝 -> 물러나고(여기보다 뒤로는 안 감) 이 높이로 상승 -movej-> 여기 -movej-> 홈. RCS 「스캔 대기 위치 저장」(레지스터 310~315, 308 = 1)이 있으면 그 값으로 덮어쓴다" favorite="false"/>
+  <Variable name="Standby_pose" value="[0.40795, 0.05529, 0.40515, 1.57121, 0.00018, 1.61144]" remarks="[계산값] 스캔 대기 위치의 툴 플랜지 pose. dus5_init 이 Standby_joint 로 매번 다시 계산한다 — 직접 바꾸지 말 것" favorite="false"/>
   <Variable name="gripper_target_pose" value="[0.63329, 0.05528, 0.19672, 1.57117, 0.00016, 1.61143]" remarks="그리퍼(EOAT)를 작업면 중앙에 딱 붙여 티칭한 pose (입력레지스터 316~321, UI가 저장한 값). 접촉 상태이지 대기 자세가 아니다 — 툴플렌지 pose도 아니다. dus_init이 eoat_type 오프셋을 빼 접촉 시점 플랜지 pose를 구한 뒤, probe_dist 만큼 TCP -Z로 물러난 곳을 start_pose로 계산한다" favorite="false"/>
   <Variable name="start_pose" value="[0.53337, 0.05122, 0.19676, 1.57117, 0.00016, 1.61143]" remarks="실제 movej 목표(툴플랜지 기준, 그리퍼가 작업면에서 probe_dist 만큼 물러난 대기 자세). dus_init이 매 작업마다 gripper_target_pose 로부터 다시 계산한다 — 여기 직접 값을 넣어도 다음 작업 시작 시 덮어써진다" favorite="false"/>
   <Variable name="pose_src" value="0" remarks="0=이 변수값 사용, 1=Modbus 310~321 사용 (레지스터 308)" favorite="false"/>

@@ -69,6 +69,8 @@ class RosTopics:
     LINEAR_SPEED = "robot/command/linear_speed"
     SPEED_RATIO = "robot/command/speed_ratio"
     HOME_JOINT = "robot/command/home_joint"
+    # 스캔 대기 위치(레지스터 310~315, 예전의 홈 자리). 홈은 322~327 이다.
+    STANDBY_JOINT = "robot/command/standby_joint"
     START_POSE = "robot/command/start_pose"
     WORK_AREA = "robot/command/work_area"
     JOG_JOINT = "robot/command/jog_joint"
@@ -323,6 +325,8 @@ class RosStatusClient(QObject):
             self._pose_publishers = {
                 "home_joint": self._node.create_publisher(
                     Float32MultiArray, RosTopics.HOME_JOINT, 10),
+                "standby_joint": self._node.create_publisher(
+                    Float32MultiArray, RosTopics.STANDBY_JOINT, 10),
                 "start_pose": self._node.create_publisher(
                     Float32MultiArray, RosTopics.START_POSE, 10),
                 "work_area": self._node.create_publisher(

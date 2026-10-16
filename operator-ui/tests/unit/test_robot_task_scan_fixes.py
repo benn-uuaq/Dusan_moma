@@ -317,3 +317,141 @@ def test_init_starts_on_the_flange_and_publishes_flange_poses(folder) -> None:
     assert "cur_pose = get_actual_tool_flange_pose()" in code
     assert "hm_p = get_actual_tool_flange_pose()" in code
 
+
+
+# ---- 스캔 대기 위치를 거치는 홈 출입 (2026-10-15) --------------------------------
+# 예전의 「홈」은 이제 스캔 대기 위치(Standby_joint, RCS 「홈 위치 저장」 = 310~315)다.
+# 홈(Home_joint)은 펜던트에서 따로 티칭한다. 순서는
+#   시작 : 홈 --movej--> 대기 위치 --> 시작 위치
+#   끝   : 스캔 끝 --> (대기 위치 기준) 물러나고 상승 --movej--> 대기 위치 --movej--> 홈
+# 물러날 때는 대기 위치보다 뒤(베이스 X)로 가지 않는다 — 예전에는 스캔 끝이 베이스
+# -X 로 back_off 를, 마킹 끝이 probe_dist 를 무조건 물러났다.
+V5 = ROOT / "robot_task" / "dusan_task_v5"
+RETREATS = (
+    ("scripts", "finish", "fn_retreat", "back_off * 0.001"),
+    ("scripts_nosensor", "finish", "fn_retreat", "back_off * 0.001"),
+    ("scripts", "mark_point", "mk_retreat", "probe_dist * 0.001"),
+    ("scripts_nosensor", "mark_point", "mk_retreat", "probe_dist * 0.001"),
+    ("scripts", "home", "hm_retreat", "probe_dist * 0.001"),
+    ("scripts", "leave_home", "lh_retreat", "probe_dist * 0.001"),
+)
+
+
+def _func(code: str, name: str) -> str:
+    return code.split(f"def {name}(")[1].split("\nend\n")[0]
+
+
+def _main(code: str) -> str:
+    """마지막 def 블록 뒤의 최상위 코드."""
+    last = code.rindex("\ndef ")
+    return code[code.index("\nend\n", last) + len("\nend\n"):]
+
+
+@pytest.mark.parametrize("folder, name, func, limit", RETREATS)
+def test_retreat_never_goes_behind_the_scan_standby(folder, name, func, limit) -> None:
+    code = _code(_script("dusan_task_v5", folder, name))
+    body = _func(code, func)
+    # 기준점 = 대기 위치 관절값의 플랜지 자세. 계산값 변수는 안 쓴다.
+    assert "get_forward_kin(Standby_joint)" in body
+    assert "Home_" not in body and "Standby_pose" not in body
+    # TCP 를 플랜지로 돌린 뒤 플랜지로 본다 — EOAT 끝점 TCP 가 남아 있어도 같다.
+    assert body.index("set_tcp([0, 0, 0, 0, 0, 0])") < body.index("get_forward_kin(")
+    assert "get_actual_tool_flange_pose()" in body and "get_actual_tcp_pose()" not in body
+    # 벽 쪽을 볼 때만, 상한과 대기 위치 X 까지 남은 거리 중 작은 쪽만큼 툴 -Z 로.
+    assert "_cz > 0.2):" in body and "> limit):" in body and "[0, 0, -" in body
+    assert f"{func}({limit})" in code
+    # 기준을 안 보는 옛 후퇴가 남아 있지 않다.
+    assert "- back_off * 0.001" not in code
+    assert "movel(pose_trans(get_actual_tcp_pose(), [0, 0, -probe_dist" not in code
+
+
+def test_leaving_home_goes_to_the_standby_by_movej() -> None:
+    code = _code(_script("dusan_task_v5", "scripts", "leave_home"))
+    main = _main(code)
+    assert "movej(Standby_joint, a = a_j, v = v_j)" in main
+    assert "Home_joint" not in main, "홈으로 가지 않는다 — 홈에서 대기 위치로 나간다"
+    # 홈이 아닌 데서 시작했으면 물러나고 올라간 뒤에 movej.
+    assert main.index("lh_retreat(") < main.index("lh_rise()") < main.index("movej(")
+    assert "Home_joint[lh_i]" in _func(code, "lh_at_home")
+
+
+@pytest.mark.parametrize("name, func", (("go_home", "gh_rise"), ("home", "hm_rise")))
+def test_going_home_passes_the_standby_by_movej(name, func) -> None:
+    code = _code(_script("dusan_task_v5", "scripts", name))
+    main = _main(code)
+    order = [main.index(f"{func}()"),
+             main.index("movej(Standby_joint, a = a_j, v = v_j)"),
+             main.index("movej(Home_joint, a = a_j, v = v_j)")]
+    assert order == sorted(order)
+    rise = _func(code, func)
+    assert "get_forward_kin(Standby_joint)" in rise and "movel(" in rise
+    if name == "go_home":
+        assert "write_port_register(290" not in code, "완료(290 = 5)는 finish 가 냈다"
+
+
+@pytest.mark.parametrize("task", sorted(p.name for p in V5.glob("dusan_v5*.task")))
+def test_tasks_enter_and_leave_home_through_the_standby(task) -> None:
+    text = (V5 / task).read_text(encoding="utf-8")
+    nodes = re.findall(r'display="([^"]*)"', text)
+    assert not any(n.endswith("move_home") for n in nodes), "펜던트 move_home 노드가 남았다"
+    assert "dus5_init" in nodes[0]
+    # init 바로 다음 동작(루프판은 init 이 둘이다)이 홈 -> 대기 위치다.
+    assert "dus5_leave_home" in [n for n in nodes if "dus5_init" not in n][0]
+    last = "dus5_home" if "mark" in task else "dus5_go_home"
+    assert last in nodes[-1]
+    if "mark" not in task:
+        assert "dus5_finish" in nodes[-2]
+
+
+@pytest.mark.parametrize("folder", INIT_FOLDERS)
+def test_init_reads_310_as_standby_and_322_as_home(folder) -> None:
+    code = _code(_script("dusan_task_v5", folder, "init"))
+    block = code.split("if (read_port_register(308, True) == 1):")[1].split("\nend\n")[0]
+    assert "Standby_joint = ini_joints(310)" in block
+    assert "Home_joint" not in block, "310~315 는 스캔 대기 위치다 — 홈이 아니다"
+    # 홈은 RCS 「홈 위치 저장」(322~327, 328 = 1) — 2026-10-16.
+    home = code.split("if (read_port_register(328, True) == 1):")[1].split("\nend\n")[0]
+    assert "Home_joint = ini_joints(322)" in home
+    # 플래그가 서 있어도 비어 있는(전부 0) 칸은 읽지 않는다.
+    assert "if (ini_regs_set(310)):" in block and "if (ini_regs_set(316)):" in block
+    assert "if (ini_regs_set(322)):" in home
+    after = code.split("if (read_port_register(308, True) == 1):")[1].split("\nend\n", 1)[1]
+    assert "Home_pose = get_forward_kin(Home_joint)" in after
+    assert "Standby_pose = get_forward_kin(Standby_joint)" in after
+    assert code.index("set_tcp([0, 0, 0, 0, 0, 0])") < code.index("Home_pose = get_forward_kin")
+
+
+def test_standby_variables_are_declared() -> None:
+    text = _variables("dusan_task_v5")
+    for name in ("Standby_joint", "Standby_pose", "Home_joint", "Home_pose"):
+        assert f'name="{name}"' in text, name
+
+
+# ---- 스캔 끝을 TPAC 에 먼저 알리고 물러난다 (2026-10-15) ------------------------
+# 290 = 6 인 채로 물러나서, 후퇴 경로와 그 뒤 0,0,0 으로 떨어지는 좌표까지 TPAC
+# 스캔 데이터에 들어갔다. 마지막 스캔 좌표에서 277 = 0 · 290 = 5 를 먼저 쓰고
+# sig_hold 동안 선 뒤 물러나며, 5 인 동안 발행 스레드는 280~287 을 고치지 않는다.
+@pytest.mark.parametrize("folder", INIT_FOLDERS)
+def test_finish_closes_the_scan_before_retreating(folder) -> None:
+    main = _main(_code(_script("dusan_task_v5", folder, "finish")))
+    order = [main.index("write_port_register(277, 0)"),
+             main.index("write_port_register(290, 5)"),
+             main.index("write_port_register(295, 1)"),
+             main.index("sleep(sig_hold)"),
+             main.index("fn_retreat(back_off * 0.001)")]
+    assert order == sorted(order)
+
+
+@pytest.mark.parametrize("folder", INIT_FOLDERS)
+def test_scan_coordinates_hold_after_the_scan_ends(folder) -> None:
+    body = _func(_code(_script("dusan_task_v5", folder, "init")), "pub_rel")
+    hold = body.index("if (pub_st != 5):")
+    assert body.index("pub_st = read_port_register(290, True)") < hold
+    # 280~287 을 쓰는 곳은 모두 5 가 아닐 때만이다.
+    for write in ("ini_w6(280, rel_pose)", "ini_w6(280, [0, 0, 0, 0, 0, 0])",
+                  "ini_w1(286, arc_s * 10)", "ini_w1(287, path_len + arc_s)"):
+        assert body.index(write) > hold, write
+    assert "if (zero_ok == True and pub_st == 6):" in body
+    # 워치독 · 홈 판정은 상태와 상관없이 계속 돈다.
+    tail = body.split("if (pub_st != 5):")[1]
+    assert "write_port_register(293, alive)" in tail and "hm_flag()" in tail

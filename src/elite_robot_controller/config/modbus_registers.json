@@ -170,10 +170,20 @@
       "address": 308,
       "count": 1
     },
-    "home_joint": {
+    "_standby_comment": "310~315 = 스캔 대기 위치 관절값(예전의 홈, 2026-10-16). 308(pose_src)=1 이면 태스크가 Standby_joint 로 읽는다. 322~327 = 홈 관절값, 328(home_src)=1 이면 태스크가 Home_joint 로 읽는다.",
+    "standby_joint": {
       "address": 310,
       "count": 6,
       "kind": "angle"
+    },
+    "home_joint": {
+      "address": 322,
+      "count": 6,
+      "kind": "angle"
+    },
+    "home_src": {
+      "address": 328,
+      "count": 1
     },
     "start_pose": {
       "address": 316,

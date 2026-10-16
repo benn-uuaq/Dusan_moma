@@ -7,13 +7,8 @@ Current Task: dusan_v5_nosensor_loop
     Robot Main Task
         1 [스크립트파일] dus5_init.script
             Script: dus5_init.script
-        2 move_home
-            If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
-                MoveL
-                    Direction Robot Z+
-                        Until expression get_actual_tcp_pose()[2]>=Home_pose[2]-0.001
-            MoveJ
-                Home_joint
+        2 [스크립트파일] dus5_leave_home.script
+            Script: dus5_leave_home.script
         2 move_start
             Script: dus5_move_start.script
         3 [스크립트파일] dus5_probe_c.script
@@ -44,13 +39,8 @@ Current Task: dusan_v5_nosensor_loop
             If row_idx>=rows
                 10 [스크립트파일] dus5_finish.script
                     Script: dus5_finish.script
-                11 move_home
-                    If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
-                        MoveL
-                            Direction Robot Z+
-                                Until expression get_actual_tcp_pose()[2]>=Home_pose[2]-0.001
-                    MoveJ
-                        Home_joint
+                11 [스크립트파일] dus5_go_home.script
+                    Script: dus5_go_home.script
                 'Halt'
                 break
         'Halt'

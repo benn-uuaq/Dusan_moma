@@ -110,8 +110,16 @@ class ConnectionBadge(QFrame):
         self._state_text = text
         self.state_label.setText(f"● {text}")
         self.state_label.setObjectName(kind)
+        # 색을 바꾸려고 스타일을 다시 입히면(polish) 글자 크기도 스타일시트 값으로
+        # 돌아간다. 상단바가 폭에 맞춰 줄여 둔 크기를 지켜야 배지 폭이 다른
+        # 배지와 같다(1024 폭에서 상태가 바뀐 배지만 넓어졌다).
+        size = self.state_label.font().pixelSize()
         self.state_label.style().unpolish(self.state_label)
         self.state_label.style().polish(self.state_label)
+        if size > 0:
+            font = self.state_label.font()
+            font.setPixelSize(size)
+            self.state_label.setFont(font)
         self.sync_width()
 
     def sync_width(self) -> None:

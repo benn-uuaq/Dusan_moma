@@ -103,12 +103,18 @@ def test_shipped_register_map_matches_known_addresses():
     assert registers.read_entry("operation_mode").address == 72
     assert registers.read_entry("joint_position").address == 73
     # 쓰기 주소는 로봇 태스크가 읽는 범용 레지스터 대역에 있어야 한다.
-    for name in ("linear_speed", "speed_ratio", "home_joint", "start_pose"):
+    for name in ("linear_speed", "speed_ratio", "home_joint", "standby_joint",
+                 "start_pose", "home_src", "pose_src"):
         entry = registers.write_entry(name)
         assert entry.available, f"{name} 주소가 비어 있습니다"
         assert 256 <= entry.address <= 383, f"{name}이 범용 대역 밖입니다"
-    assert registers.write_entry("home_joint").count == 6
-    assert registers.write_entry("home_joint").kind == "angle"
+    # 2026-10-16: 310~315 는 스캔 대기 위치(예전의 홈), 홈은 322~327 + 328.
+    assert registers.write_entry("standby_joint").address == 310
+    assert registers.write_entry("home_joint").address == 322
+    assert registers.write_entry("home_src").address == 328
+    for name in ("home_joint", "standby_joint"):
+        assert registers.write_entry(name).count == 6
+        assert registers.write_entry(name).kind == "angle"
 
 
 def test_joint_angles_use_rotation_scale_for_every_axis():

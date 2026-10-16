@@ -3,13 +3,8 @@ Current Task: dusan_v5
     Robot Main Task
         1 [스크립트파일] dus5_init.script
             Script: dus5_init.script
-        2 move_home
-            If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
-                MoveL
-                    Direction Robot Z+
-                        Until expression get_actual_tcp_pose()[2]≥Home_pose[2]
-            MoveJ
-                Home_joint
+        2 [스크립트파일] dus5_leave_home.script
+            Script: dus5_leave_home.script
         3 move_start
             Script: dus5_move_start.script
         4 [스크립트파일] dus5_probe_c.script
@@ -43,12 +38,7 @@ Current Task: dusan_v5
             If row_idx>=rows
                 14 [스크립트파일] dus5_finish.script
                     Script: dus5_finish.script
-                15 move_home
-                    If get_actual_tcp_pose()[2]<Home_pose[2]-0.001
-                        MoveL
-                            Direction Robot Z+
-                                Until expression get_actual_tcp_pose()[2]>=Home_pose[2]-0.001
-                    MoveJ
-                        Home_joint
+                15 [스크립트파일] dus5_go_home.script
+                    Script: dus5_go_home.script
                 Halt
         Halt

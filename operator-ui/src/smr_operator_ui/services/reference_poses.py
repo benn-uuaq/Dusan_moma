@@ -1,4 +1,4 @@
-"""기준 위치(홈 관절값, 시작 포즈)를 로봇 쪽 설정 파일에 저장한다.
+"""기준 위치(홈 · 스캔 대기 위치 관절값, 시작 포즈)를 로봇 쪽 설정 파일에 저장한다.
 
 로봇 태스크는 Modbus 레지스터로 값을 받지만, 레지스터는 전원을 내리면
 남지 않는다. 그래서 같은 값을 파일에도 남겨 다음에 다시 올릴 수 있게 한다.
@@ -15,6 +15,9 @@ from datetime import datetime
 
 FILENAME = "reference_poses.json"
 ENV_VAR = "SMR_ROBOT_CONFIG_DIR"
+#: 파일 형식 판. 2 부터 홈(home_joint)과 스캔 대기 위치(standby_joint)가 따로다.
+LAYOUT_KEY = "_layout"
+LAYOUT = 2
 
 
 def config_dir() -> str:
@@ -34,13 +37,37 @@ def config_path() -> str:
 
 
 def load_reference_poses() -> dict:
-    """저장된 기준 위치를 읽는다. 파일이 없으면 빈 값을 돌려준다."""
+    """저장된 기준 위치를 읽는다. 파일이 없으면 빈 값을 돌려준다.
+
+    형식 판이 없는 옛 파일(2026-10-16 전)의 `home_joint` 는 지금의 **스캔 대기
+    위치**다(그때의 「홈」이 대기 위치가 되고, 홈은 따로 티칭한다). 그래서
+    `standby_joint` 로 옮겨 다시 저장한다 — 로봇에도 예전처럼 310~315 로 간다.
+    """
     try:
         with open(config_path(), encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    if data.get(LAYOUT_KEY) != LAYOUT:
+        if "home_joint" in data and "standby_joint" not in data:
+            data["standby_joint"] = data.pop("home_joint")
+        data[LAYOUT_KEY] = LAYOUT
+        _write(data)
+    return data
+
+
+def _write(data: dict) -> str | None:
+    path = config_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+    except OSError:
+        return None
+    return path
 
 
 def save_reference_poses(values: dict) -> str | None:
@@ -53,13 +80,5 @@ def save_reference_poses(values: dict) -> str | None:
     stamp = datetime.now().isoformat(timespec="seconds")
     for name, pose in values.items():
         data[name] = {"values": [float(v) for v in pose], "saved_at": stamp}
-
-    path = config_path()
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-    except OSError:
-        return None
-    return path
+    data[LAYOUT_KEY] = LAYOUT
+    return _write(data)
