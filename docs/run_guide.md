@@ -281,6 +281,6 @@ ros2 launch vehicle_sim vehicle_sim.launch.py
 ## 참고
 
 - 작업 모델과 격자 순회 설계: [`docs/grid_sequencer_design.md`](grid_sequencer_design.md)
-- ERUT MQTT 규격: `mqtt_test/MQTT_인터페이스/ERUT_검사로봇_MQTT_표준인터페이스_if-0.9.xlsx`
+- ERUT MQTT 규격: `mqtt_test/MQTT_인터페이스/ERUT_검사로봇_MQTT_표준인터페이스_if-0.10.xlsx`
 - 옛 사내 MC 토픽 규격(지금은 안 씀): [`docs/mqtt_topic_form.md`](mqtt_topic_form.md)
 - 시뮬레이터 도구 설명: [`mqtt_test/README.md`](../mqtt_test/README.md)

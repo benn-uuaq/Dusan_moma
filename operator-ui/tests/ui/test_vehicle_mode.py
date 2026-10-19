@@ -201,7 +201,7 @@ def test_vehicle_stops_when_the_arm_leaves_home_while_moving(window) -> None:
     window._on_robot_at_home(False)
 
     assert not window.lift.moving
-    assert raised and raised[-1]["code"] == "E9303"
+    assert raised and raised[-1]["code"] == "E2003"   # if-0.10 (예전 E9303)
 
 
 def test_home_flag_is_ignored_until_the_robot_reports_home_once(window) -> None:

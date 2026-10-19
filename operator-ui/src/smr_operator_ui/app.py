@@ -774,9 +774,13 @@ class OperatorWindow(QMainWindow):
         EOAT 를 안 골랐으면 예전처럼 로컬 설정의 스캐너 높이를 쓴다.
         """
         _w, h = plan.eoat_size
-        if h > 0:
-            return h
-        return self.main_screen.rect_view.work_area()[2]
+        if h <= 0:
+            h = self.main_screen.rect_view.work_area()[2]
+        # ERUT scan.pitch(검사 줄 간격)를 넘지 않는다(if-0.10 탭11 Q-39 가안).
+        pitch = float(getattr(plan, "line_pitch_max", 0.0) or 0.0)
+        if pitch > 0:
+            h = min(h, pitch)
+        return h
 
     def _fill_from_local_setup(self, plan):
         """ERUT 가 안 준 장비 값(반지름·두께·EOAT)을 RCS 설정으로 채운다.
@@ -806,6 +810,14 @@ class OperatorWindow(QMainWindow):
         # 스캔 상승 높이 제한은 Cobot 설정에서 EOAT 종류별로 넣은 값이다(2026-10-12).
         probes = int(changes.get("eoat_probes", plan.eoat_probes) or 0)
         rise = self.screens["cobot"].scan_rise_mm(probes)
+        if rise <= 0 and probes in PROBE_COVERAGE_MM:
+            rise = PROBE_COVERAGE_MM[probes][1]
+        # ERUT 가 보낸 scan.pitch(검사 줄 간격)를 줄 간격의 최대값으로 본다 — 탐촉자
+        # 유효 높이로 자동으로 정하되 pitch 를 넘지 않게 줄을 늘린다(if-0.10 Q-39 가안).
+        # 로봇은 이 값(263 → scan_h)으로 구역 세로를 균등하게 나눈다.
+        pitch = float(getattr(plan, "line_pitch_max", 0.0) or 0.0)
+        if pitch > 0 and rise > 0:
+            rise = min(rise, pitch)
         if plan.scan_rise_mm <= 0 and rise > 0:
             changes["scan_rise_mm"] = rise
         return replace(plan, **changes) if changes else plan
@@ -1386,7 +1398,8 @@ class OperatorWindow(QMainWindow):
             for motion in (self.amr, self.lift):
                 motion.cancel()
             self.erut_session.raise_error({
-                "code": "E9303", "name": "ROBOT_LEFT_HOME_WHILE_MOVING",
+                # if-0.10 표준 번호(예전 3S E9303 ROBOT_LEFT_HOME_WHILE_MOVING, 탭11 Q-33).
+                "code": "E2003", "name": "HOME_LOST_WHILE_MOVING",
                 "level": "stop", "recovery": "manual",
                 "detail": "차량·리프트가 움직이는 중에 로봇이 홈을 벗어나 이동을 멈췄습니다",
             })
@@ -1559,6 +1572,54 @@ class OperatorWindow(QMainWindow):
 
     def _on_scan_arc(self, values: list) -> None:
         self._scan_arc = [int(v) for v in values]
+        self._watch_press(self._scan_arc)
+
+    # ---- 스캔 중 눌림 유지 (E3002) ---------------------------------------------------
+    #: scan_arc(286~289)의 3번째 값 = 레지스터 288 — 스캔 중 눌림 상태.
+    #: 0 감시 안 함 · 1 적정 · 2 덜 눌림(눌림 센서가 떨어짐) · 3 너무 눌림.
+    _PRESS_STATE_INDEX = 2
+    _PRESS_LOST = 2
+    #: 스캔 중 눌림 센서가 이만큼 넘게 **계속** 떨어져 있으면 E3002 PROBE_CONTACT_LOST [ms]
+    #: (2026-10-19). 잠깐 떨어지면 로봇 태스크가 TCP +Z 로 다시 눌러 잡는다
+    #: (dus5_pass_r/l) — 그건 장애가 아니다.
+    PRESS_LOST_MS = 1000
+
+    def _watch_press(self, values: list) -> None:
+        """눌림 센서가 떨어지면 시간을 잰다. 다시 붙으면 처음부터 다시 잰다.
+
+        scan_arc 는 값이 바뀔 때만 오므로(떨어진 채 로봇이 서 있으면 더 안 온다)
+        타이머로 잰다.
+        """
+        timer = getattr(self, "_press_timer", None)
+        if timer is None:
+            timer = self._press_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(self.PRESS_LOST_MS)
+            timer.timeout.connect(self._press_lost_too_long)
+        state = values[self._PRESS_STATE_INDEX] if len(values) > self._PRESS_STATE_INDEX else 0
+        if state == self._PRESS_LOST:
+            if not timer.isActive() and not getattr(self, "_press_lost_reported", False):
+                timer.start()
+            return
+        timer.stop()
+        self._press_lost_reported = False
+
+    def _press_lost_too_long(self) -> None:
+        """눌림 센서가 PRESS_LOST_MS 넘게 떨어져 있다 — E3002 로 세운다."""
+        arc = getattr(self, "_scan_arc", None) or []
+        if len(arc) <= self._PRESS_STATE_INDEX or arc[self._PRESS_STATE_INDEX] != self._PRESS_LOST:
+            return
+        self._press_lost_reported = True
+        if "E3002" in self.erut_session.error_codes():
+            return                      # 로봇 태스크가 먼저 알렸다(299 = 6)
+        text = (f"스캔 중 눌림 센서가 {self.PRESS_LOST_MS / 1000:g}초 넘게 떨어져 멈췄습니다"
+                " — 탐촉자가 벽에서 떨어졌습니다")
+        self.main_screen.show_activity(text)
+        self.cobot_manual_screen.add_alarm(text)
+        self.erut_session.raise_error({
+            "code": "E3002", "name": "PROBE_CONTACT_LOST",
+            "level": "stop", "recovery": "manual", "probe": "center", "detail": text,
+        })
 
     def _row_pitch_01mm(self, state: list) -> int:
         """줄 간격(296)을 0.1 mm 로. 옛 태스크(정수 mm)가 올라가 있어도 맞게 읽는다.
@@ -1936,6 +1997,9 @@ class OperatorWindow(QMainWindow):
         자세(10 Hz)·태스크 상태·차량 상태·이동 도착마다 불린다. evt/status 는
         값이 바뀔 때만 나가므로 자주 불러도 된다.
         """
+        if getattr(self.erut_session, "stopping", False):
+            # abort 뒤 서는 중 — 다 서는 순간 idle 을 바로 낸다(if-0.10 탭11 Q-35).
+            self.erut_session.refresh_status()
         paused = (self.sequencer.state is SequencerState.PAUSED
                   or getattr(self.erut_session, "_paused_work", ""))
         if not paused:
@@ -2828,15 +2892,19 @@ class OperatorWindow(QMainWindow):
     #: 299 값 → (ERUT 장애 code, name, 화면 문구, error 에 더 싣는 칸).
     #: 탐촉자가 벽에 안 닿는 것은 어느 장비에나 생기므로 공통 번호 E3001
     #: PROBE_CONTACT_FAILED 에 어느 탐촉자인지(probe)를 싣는다(if-0.9 탭11 Q-26 —
-    #: ERUT 제안). 나머지는 3S 제조사 대역 E9xxx 다. 문구는 detail 로 싣는다.
+    #: ERUT 제안). 스캔 중 접촉을 잃음 E3002 · 마킹 자리 접촉 실패 E3003 도 if-0.10
+    #: 표준 번호다(Q-33 — 예전 3S E9106 · E9105). 둘 다 가운데 눌림 센서로 본다.
+    #: 나머지는 3S 제조사 대역 E9xxx 다. 문구는 detail 로 싣는다.
     _PROBE_ERROR_MESSAGES = {
         1: ("E3001", "PROBE_CONTACT_FAILED", "센터 프로브 벽 접촉 실패", {"probe": "center"}),
         2: ("E3001", "PROBE_CONTACT_FAILED", "좌측(원점) 프로브 벽 접촉 실패", {"probe": "left"}),
         3: ("E3001", "PROBE_CONTACT_FAILED", "우측 프로브 벽 접촉 실패", {"probe": "right"}),
         4: ("E9104", "ARC_ZERO", "호 길이/반지름이 0 — 작업 영역 값을 확인하세요", {}),
-        5: ("E9105", "MARK_CONTACT_FAILED", "마킹 자리에서 벽 접촉을 찾지 못했습니다", {}),
+        5: ("E3003", "MARKER_CONTACT_FAILED", "마킹 자리에서 벽 접촉을 찾지 못했습니다",
+            {"probe": "center"}),
         # v5 (servoj 스캔) — 호를 도는 동안 눌림을 계속 확인한다.
-        6: ("E9106", "SCAN_PRESS_LOST", "스캔 중 접촉(눌림)을 유지하지 못해 멈췄습니다 — 보정 한계(press_max) 초과", {}),
+        6: ("E3002", "PROBE_CONTACT_LOST", "스캔 중 접촉(눌림)을 유지하지 못해 멈췄습니다 — 보정 한계(press_max) 초과",
+            {"probe": "center"}),
         7: ("E9107", "SCAN_IK_FAILED", "스캔 호 경로에 역기구학 해가 없어 멈췄습니다 — 로봇 위치·자세를 확인하세요", {}),
         # v5 인터락 — 차량 고정 확인(레지스터 309)을 기다리다 시간이 넘었다.
         8: ("E9108", "VEHICLE_HOLD_TIMEOUT", "차량 고정 확인을 못 받아 로봇이 멈췄습니다 — 아웃트리거 고정·차량 정지를 확인하세요", {}),
@@ -2873,6 +2941,10 @@ class OperatorWindow(QMainWindow):
             code, (f"E91{code:02d}", "ROBOT_TASK_STOPPED", "로봇 태스크가 멈췄습니다", {}))
         self.main_screen.show_activity(f"{text} (레지스터 299={code})")
         self.cobot_manual_screen.add_alarm(text)
+        if err_code in self.erut_session.error_codes():
+            # 같은 장애를 이미 알렸다 — 예: 눌림이 1초 넘게 떨어져 RCS 가 E3002 를
+            # 낸 뒤 로봇 태스크도 보정 한계로 멈췄다(299 = 6). 두 번 내지 않는다.
+            return
         self.erut_session.raise_error({
             "code": err_code, "name": err_name,
             "level": "stop", "recovery": "manual", "detail": text, **fields,

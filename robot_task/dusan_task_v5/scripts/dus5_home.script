@@ -11,8 +11,8 @@
 #
 #  홈과 작업 자리 사이는 **언제나 스캔 대기 위치를 거친다**(2026-10-15):
 #    시작 : 홈 --movej--> 스캔 대기 위치 --> 시작 위치(start_pose)
-#    끝   : 스캔 완료 자리 --> (대기 위치 기준) 물러나고 상승 --movej--> 스캔 대기
-#           위치 --movej--> 홈
+#    끝   : 스캔 완료 자리 --> (대기 위치 기준) 물러나고 --> 대기 위치 선상(X · 높이)에
+#           맞추고 --movej--> 스캔 대기 위치 --movej--> 홈
 #  스캔 대기 위치(Standby_joint) = 예전의 「홈」. RCS 「스캔 대기 위치 저장」(레지스터
 #  310~315, 308 = 1) 또는 펜던트 변수. 홈(Home_joint)은 RCS 「홈 위치 저장」(레지스터
 #  322~327, 328 = 1) 또는 펜던트에서 티칭한 변수(dus5_init 참고).
@@ -47,15 +47,26 @@ def hm_retreat(limit):
 end
 
 
-def hm_rise():
-  # 스캔 대기 위치 높이까지 곧게(베이스 Z) 올라간다 — 플랜지 기준. 이미 그보다
-  # 높으면 그대로 둔다. 벽 근처에서 곧장 movej 하면 팔이 곡면을 스칠 수 있다.
+def hm_align():
+  # 스캔 대기 위치 **선상**에 맞춘다(플랜지 기준, 2026-10-16):
+  #   1) 아직 대기 위치보다 앞(베이스 +X, 벽 쪽)이면 베이스 -X 로 곧게 물러나
+  #      대기 위치 X 에 선다. 벽에서는 앞 동작(_retreat · dus5_finish)이 이미
+  #      툴 -Z 로 떨어졌다 — 여기서는 남은 만큼 뒤로만 간다.
+  #   2) 높이(베이스 Z)를 대기 위치 높이로 **올리거나 내린다.** 위 줄에서 끝나
+  #      대기 위치보다 높으면 내려온다(예전에는 올라가기만 했다).
+  # Y 와 자세는 그대로 둔다 — 남은 것은 다음 movej(대기 위치)가 맞춘다.
+  # 이미 대기 위치보다 뒤에 있으면 앞으로 나가지 않는다.
   set_tcp([0, 0, 0, 0, 0, 0])
-  hu_ref = get_forward_kin(Standby_joint)
-  hu_up = get_actual_tool_flange_pose()
-  if (hu_up[2] < hu_ref[2] - 0.001):
-    hu_up[2] = hu_ref[2]
-    movel(hu_up, a = a_l, v = v_l)
+  ha_ref = get_forward_kin(Standby_joint)
+  ha_p = get_actual_tool_flange_pose()
+  if (ha_p[0] > ha_ref[0] + 0.001):
+    ha_p[0] = ha_ref[0]
+    movel(ha_p, a = a_l, v = v_l)
+  end
+  ha_p = get_actual_tool_flange_pose()
+  if (ha_p[2] < ha_ref[2] - 0.001 or ha_p[2] > ha_ref[2] + 0.001):
+    ha_p[2] = ha_ref[2]
+    movel(ha_p, a = a_l, v = v_l)
   end
 end
 
@@ -64,7 +75,8 @@ write_port_register(290, 13)
 # 벽에 붙어 있을 수 있으니 먼저 툴 -Z 로 물러난다 — 최대 probe_dist, 스캔 대기
 # 위치보다 뒤로는 안 간다(dus5_mark_point 가 이미 물러났으면 남은 만큼만).
 hm_retreat(probe_dist * 0.001)
-hm_rise()
+# 대기 위치 선상(X · 높이)에 맞춘 뒤 대기 위치 -> 홈.
+hm_align()
 movej(Standby_joint, a = a_j, v = v_j)
 movej(Home_joint, a = a_j, v = v_j)
 write_port_register(290, 12)

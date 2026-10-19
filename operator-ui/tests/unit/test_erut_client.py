@@ -311,3 +311,12 @@ def test_saving_the_settings_retries_after_backing_off(qtbot):
     assert client.apply_config(client.config) is True
     assert calls == ["start"]
 
+
+
+def test_contact_without_a_job_leaves_out_job_id(qtbot):
+    """작업이 없으면 job_id 칸을 뺀다 — 빈 글자는 규격에 없는 값이다(if-0.10 Q-41)."""
+    client, paho = _client(qtbot)
+    client.publish_contact("detached", "")
+    assert paho.published[-1][1]["content"] == {"state": "detached"}
+    client.publish_contact("attached", "jb1")
+    assert paho.published[-1][1]["content"] == {"state": "attached", "job_id": "jb1"}

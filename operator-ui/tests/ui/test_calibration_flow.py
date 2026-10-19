@@ -171,7 +171,7 @@ def test_prepared_area_is_placed_on_the_whole_circumference(qtbot):
     window.erut_session.handle_request("start", {
         "req_id": "prep-3", "job_id": "jb-3", "surface": "outer",
         "area": {"start": {"x": 1160, "y": 0}, "end": {"x": 1760, "y": 800}},
-        "scan": {"pitch": 20, "speed": 100}})
+        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
 
     assert targets == [1460.0], "구역 가운데(start.x + 가로/2)"
     view = window.main_screen.orbit_view
@@ -200,7 +200,7 @@ def test_vehicle_goes_to_the_same_angle_on_its_own_track(qtbot):
     window.erut_session.handle_request("start", {
         "req_id": "prep-scale", "job_id": "jb-s", "surface": "outer",
         "area": {"start": {"x": 1000, "y": 0}, "end": {"x": 1600, "y": 800}},
-        "scan": {"pitch": 20, "speed": 100}})
+        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
 
     assert targets == [pytest.approx(1430.0)]
     window.close()
@@ -222,7 +222,7 @@ def test_vehicle_puts_the_robot_centre_on_the_section_centre(qtbot):
     window.erut_session.handle_request("start", {
         "req_id": "p-150", "job_id": "jb-150", "surface": "outer",
         "area": {"start": {"x": 0, "y": 0}, "end": {"x": 150, "y": 140}},
-        "scan": {"pitch": 20, "speed": 100}})
+        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
     assert targets == [75.0]
 
     window.sequencer.stop()
@@ -230,7 +230,7 @@ def test_vehicle_puts_the_robot_centre_on_the_section_centre(qtbot):
     window.erut_session.handle_request("start", {
         "req_id": "p-seam", "job_id": "jb-seam", "surface": "outer",
         "area": {"start": {"x": 5250, "y": 0}, "end": {"x": 5450, "y": 140}},
-        "scan": {"pitch": 20, "speed": 100}})
+        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
     assert targets[-1] == pytest.approx(5350.0 - 3.141592653589793 * 1690.0)
     window.close()
 
@@ -267,7 +267,7 @@ def _start_area(window, req_id, x0, y0):
     window.erut_session.handle_request("start", {
         "req_id": req_id, "job_id": req_id, "surface": "outer",
         "area": {"start": {"x": x0, "y": y0}, "end": {"x": x0 + 600, "y": y0 + 800}},
-        "scan": {"pitch": 20, "speed": 100}})
+        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
 
 
 def test_next_column_lowers_the_lift_and_frees_the_outrigger_before_driving(qtbot):
@@ -323,7 +323,7 @@ def test_section_taller_than_1200mm_is_refused_and_area_limit_carries_it(qtbot):
     window.erut_session.handle_request("prepare", {
         "req_id": "p-tall", "job_id": "jb-tall", "surface": "outer",
         "area": {"start": {"x": 0, "y": 0}, "end": {"x": 600, "y": 1300}},
-        "scan": {"pitch": 20, "speed": 100}})
+        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
 
     assert responses[-1]["status_code"] == 400
     assert (responses[-1]["error"]["code"], responses[-1]["error"]["max_height"]) == (
@@ -463,7 +463,7 @@ def test_prepare_moves_nothing_and_start_runs_vehicle_outrigger_lift_robot(qtbot
     window.erut_session.handle_request("prepare", {
         "req_id": "p-150", "job_id": "jb-150", "surface": "outer",
         "area": {"start": {"x": 0, "y": 0}, "end": {"x": 150, "y": 140}},
-        "scan": {"pitch": 20, "speed": 100}})
+        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
     qtbot.wait(300)
 
     assert moves == [], "prepare 에서 장비가 움직였다"
@@ -474,9 +474,66 @@ def test_prepare_moves_nothing_and_start_runs_vehicle_outrigger_lift_robot(qtbot
     window.erut_session.handle_request("start", {
         "req_id": "s-150", "job_id": "jb-150", "surface": "outer",
         "area": {"start": {"x": 0, "y": 0}, "end": {"x": 150, "y": 140}},
-        "scan": {"pitch": 20, "speed": 100}})
+        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
     # 로봇 단계(스캔)까지 간다.
     qtbot.waitUntil(lambda: window.sequencer.state.name == "SCANNING", timeout=10000)
 
     assert moves == [("amr", 75.0), ("outrigger", 1.0), ("lift", 0.0)]
+    window.close()
+
+
+def test_scan_pitch_caps_the_line_spacing(qtbot):
+    """ERUT scan.pitch(검사 줄 간격)는 줄 간격의 최대값이다(if-0.10 Q-39 가안).
+
+    탐촉자 유효 높이(5축 30)로 정하되 pitch 를 넘지 않게 줄을 늘린다.
+    """
+    from smr_operator_ui.services import GridPlan
+
+    window = _window(qtbot)
+    window._work_area_extra = {"radius_mm": 845.0, "thickness_mm": 10.0,
+                               "eoat_w_mm": 30.0, "eoat_h_mm": 30.0, "eoat_type": 5.0}
+    plan = window._fill_from_local_setup(GridPlan(
+        column_count=1, row_count=1, cell_width=140.0, cell_height=140.0,
+        line_pitch_max=10.0))
+    assert plan.eoat_size[1] == 10.0 and window._scan_band_mm(plan) == 10.0
+
+    wide = window._fill_from_local_setup(GridPlan(
+        column_count=1, row_count=1, cell_width=140.0, cell_height=140.0,
+        line_pitch_max=200.0))
+    assert wide.eoat_size[1] == 30.0               # 탐촉자 커버보다 크면 커버대로
+    window.close()
+
+
+def test_scan_errors_use_the_standard_probe_codes() -> None:
+    """스캔 중 접촉을 잃음 E3002 · 마킹 자리 접촉 실패 E3003 (if-0.10 Q-33)."""
+    messages = OperatorWindow._PROBE_ERROR_MESSAGES
+    assert messages[5][:2] == ("E3003", "MARKER_CONTACT_FAILED")
+    assert messages[6][:2] == ("E3002", "PROBE_CONTACT_LOST")
+    assert messages[5][3]["probe"] == messages[6][3]["probe"] == "center"
+
+
+def test_short_press_loss_is_ignored_but_a_long_one_raises_e3002(qtbot):
+    """스캔 중 눌림 센서가 잠깐 떨어지면 로봇이 다시 눌러 잡는다 — 장애가 아니다.
+
+    1초(PRESS_LOST_MS) 넘게 계속 떨어져 있을 때만 E3002 PROBE_CONTACT_LOST 를 낸다
+    (2026-10-19). 288 은 scan_arc(286~289)의 3번째 값이다.
+    """
+    window = _window(qtbot)
+    window.PRESS_LOST_MS = 150
+    raised: list[dict] = []
+    window.erut_session.raise_error = lambda fields: raised.append(dict(fields))
+
+    window.ros_status.scan_arc_changed.emit([100, 0, 2, 0])      # 떨어짐
+    qtbot.wait(60)
+    window.ros_status.scan_arc_changed.emit([120, 0, 1, 0])      # 다시 붙음
+    qtbot.wait(250)
+    assert raised == [], "잠깐 떨어진 것은 장애가 아니다"
+
+    window.ros_status.scan_arc_changed.emit([140, 0, 2, 0])      # 다시 떨어져
+    qtbot.waitUntil(lambda: bool(raised), timeout=2000)          # 오래 이어지면
+    error = raised[-1]
+    assert (error["code"], error["name"], error["level"]) == ("E3002", "PROBE_CONTACT_LOST", "stop")
+    assert error["probe"] == "center"
+    qtbot.wait(300)
+    assert len(raised) == 1, "떨어진 채로 있으면 한 번만 낸다"
     window.close()

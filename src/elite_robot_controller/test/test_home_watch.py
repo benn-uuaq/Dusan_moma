@@ -43,7 +43,7 @@ def _node(joints_rad, flag, task_state=3, home=HOME, pose_src=0, regs_310=None,
                   'home_src': {'address': 328, 'count': 1}},
     })
     node.robot_dash = FakeDash(home)
-    params = {'home_tol_j': 0.02, 'home_refresh_s': 60.0}
+    params = {'home_tol_j': 0.02, 'home_leave_tol_j': 0.05, 'home_refresh_s': 60.0}
     node.get_parameter = lambda name: FakeParam(params[name])
     node._last_codes = {'task_state': task_state}
     node._last_joint_mrad = [round(q * 1000) for q in joints_rad]
@@ -186,6 +186,10 @@ def test_move_home_goes_through_the_standby_then_home():
              script.index("movej(mh_sb"), script.index("movej(mh_home"),
              script.index("write_port_register(276, 1)")]
     assert order == sorted(order)
+    # 물러난 뒤 대기 위치 선상에 맞춘다 — 남은 만큼 X 를 뒤로, 높이는 올리거나 내린다.
+    assert "mh_up[0] = mh_ref[0]" in script
+    assert "mh_up[2] < mh_ref[2] - 0.001 or mh_up[2] > mh_ref[2] + 0.001" in script
+    assert script.index("mh_up[0] = mh_ref[0]") < script.index("mh_up[2] = mh_ref[2]")
     # 물러날 때 대기 위치 X 와 probe_dist 중 작은 쪽, 플랜지 기준.
     assert "get_forward_kin(mh_sb)" in script and "get_actual_tool_flange_pose()" in script
     assert "set_tcp([0, 0, 0, 0, 0, 0])" in script and "0.1):" in script
@@ -207,3 +211,28 @@ def test_move_home_without_a_standby_variable_uses_the_home():
     """태스크를 아직 안 올려 Standby_joint 가 없으면 홈을 대기 위치로 쓴다."""
     _node_, script = _home_script({"Home_joint": HOME, "probe_dist": 100.0})
     assert f"mh_sb = {HOME}" in script
+
+
+# ---- 이동 중 흔들림 (2026-10-19) --------------------------------------------------
+def _shifted(delta):
+    return [q + delta for q in HOME]
+
+
+def test_small_shake_keeps_the_home_flag():
+    """이미 홈이면 home_leave_tol_j(0.05 rad) 안의 흔들림은 홈으로 본다."""
+    node = _node(_shifted(0.03), flag=1)
+    node._watch_home()
+    assert node.robot_modbus.writes == []
+
+
+def test_leaving_beyond_the_wider_tolerance_clears_the_flag():
+    node = _node(_shifted(0.06), flag=1)
+    node._watch_home()
+    assert node.robot_modbus.writes == [(276, 0)]
+
+
+def test_entering_home_still_needs_the_tight_tolerance():
+    """홈이 아닌 데서 들어올 때는 예전처럼 home_tol_j(0.02 rad) 안이어야 한다."""
+    node = _node(_shifted(0.03), flag=0)
+    node._watch_home()
+    assert node.robot_modbus.writes == []

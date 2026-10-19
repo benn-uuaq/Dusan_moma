@@ -18,8 +18,13 @@ from typing import Any
 NAMES = {
     "E1002": "E_STOP",
     "E1003": "CALIBRATION_LOST",
+    "E1004": "CALIBRATION_FAILED",          # if-0.10 (예전 3S E9402)
     "E2001": "DRIVE_ERROR",
     "E2002": "HOME_FAILED",
+    "E2003": "HOME_LOST_WHILE_MOVING",      # if-0.10 (예전 3S E9303)
+    "E3001": "PROBE_CONTACT_FAILED",
+    "E3002": "PROBE_CONTACT_LOST",          # if-0.10 (예전 3S E9106)
+    "E3003": "MARKER_CONTACT_FAILED",       # if-0.10 (예전 3S E9105)
     "E4001": "INTERNAL_ERROR",
     "E5001": "LOW_BATTERY",
     "E6001": "BAD_REQUEST",

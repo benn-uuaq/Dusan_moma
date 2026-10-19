@@ -115,3 +115,5 @@ def test_mark_go_is_written_to_its_register():
     assert node.robot_modbus.writes == [(278, 1)]
     assert register_map.load().write_entry('mark_go').address == 278
     assert register_map.load().read_entry('scan_arc').address == 286
+    # 288/289(눌림 상태 · 보정량)까지 같이 읽는다(2026-10-19).
+    assert register_map.load().read_entry('scan_arc').count == 4

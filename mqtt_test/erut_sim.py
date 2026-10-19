@@ -82,6 +82,8 @@ class ErutSimApp:
         self.cell_w_var = tk.StringVar(value="600")
         self.cell_h_var = tk.StringVar(value="800")
         self.overlap_var = tk.StringVar(value="20")
+        # 검사 줄 간격(scan.pitch) — 로봇은 줄 간격의 최대값으로 쓴다(if-0.10 Q-39).
+        self.pitch_var = tk.StringVar(value="30")
         self.speed_var = tk.StringVar(value="100")
         # 마커는 ERUT 것이다 — 켜 두면 mark_ready 를 받자마자 쏜 셈 치고 mark_next.
         self.auto_mark_var = tk.BooleanVar(value=True)
@@ -123,6 +125,7 @@ class ErutSimApp:
             ("열 columns", self.columns_var), ("행 rows", self.rows_var),
             ("셀 가로 cell_width", self.cell_w_var), ("셀 세로 cell_height", self.cell_h_var),
             ("겹침 overlap", self.overlap_var), ("속도 speed mm/s", self.speed_var),
+            ("줄 간격 pitch", self.pitch_var),
         )
         for i, (label, var) in enumerate(fields):
             r, c = divmod(i, 3)
@@ -249,9 +252,10 @@ class ErutSimApp:
             #
             # 구간 하나 = job 하나. 지금 구간의 좌표를 area 로 준다.
             # 이웃 구간과 겹치게 좌표를 당겨 잡고(ERUT 화면의 타일 배치),
-            # 그 겹침 값을 scan.pitch 로 함께 보낸다 — scan.pitch 가 곧
-            # 격자끼리의 오버랩이다. 순서는 열 우선, 아래에서 위로
-            # (A-01 -> A-02 -> B-01 …) — ERUT 화면과 같다.
+            # 그 겹침 값을 scan.overlap 으로 함께 보낸다(if-0.10 — 예전에는
+            # scan.pitch 에 실었다). scan.pitch 는 검사 줄 간격이다. 모재 크기
+            # (diameter · height)도 calibrate 와 같은 값으로 싣는다(if-0.10).
+            # 순서는 열 우선, 아래에서 위로 (A-01 -> A-02 -> B-01 …) — ERUT 화면과 같다.
             w, h = float(self.cell_w_var.get()), float(self.cell_h_var.get())
             x0, y0 = self._cell_origin()
             c.update(
@@ -259,8 +263,11 @@ class ErutSimApp:
                 surface=self.surface_var.get().strip(),
                 area={"start": {"x": x0, "y": y0},
                       "end": {"x": x0 + w, "y": y0 + h}},
-                scan={"pitch": float(self.overlap_var.get()),
-                      "speed": float(self.speed_var.get())},
+                scan={"pitch": float(self.pitch_var.get()),
+                      "speed": float(self.speed_var.get()),
+                      "overlap": int(float(self.overlap_var.get()))},
+                diameter=int(self.diameter_var.get()),
+                height=int(self.height_var.get()),
             )
         elif action == "mark":
             c.update(method="paint", marker="erut",

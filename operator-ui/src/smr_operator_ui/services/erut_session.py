@@ -43,7 +43,7 @@ from smr_operator_ui.services.erut_errors import make_error
 from smr_operator_ui.services.job_sequencer import GridPlan, SequencerState, cell_label
 
 # ---- 자기소개 (탭8 evt/info) ------------------------------------------------
-INTERFACE_VERSION = "0.9"
+INTERFACE_VERSION = "0.10"
 VENDOR = "3S"
 MODEL = "SMR-UT-CS612"
 DEVICE_TYPE = "articulated_arm"
@@ -93,6 +93,12 @@ _ACTIVITY_MAP = {
     SequencerState.STOPPED: "idle",
 }
 _SEQ_IDLE = (SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED)
+#: 일하는 중 · 일시정지해 둔 때 — reset 은 200 으로 아무것도 하지 않는다(if-0.10 탭0 173행).
+_WORKING_ACTIVITIES = frozenset({"calibrating", "preparing", "running", "marking", "paused"})
+#: prepare · start 의 모재 지름이 원점을 잡을 때 받은 지름과 이만큼 넘게 다르면 지금
+#: 원점으로는 할 수 없다 — 409 E6104 [mm]. 원점(좌표계)은 차량이 바깥 둘레를 따라
+#: 한 바퀴 돌아 잡으므로 지름에만 기댄다. 높이는 견주지 않는다(if-0.10 탭11 Q-32).
+ORIGIN_DIAMETER_TOLERANCE_MM = 1.0
 
 #: 로봇이 동작 중이라 홈 요청을 받을 수 없을 때 보여 주는 문장.
 HOME_BUSY_TEXT = "현재 로봇이 동작 중이므로 홈 이동이 불가합니다."
@@ -108,7 +114,8 @@ E_CALIBRATION_LOST = ("E1003", "CALIBRATION_LOST")
 #: 3S 제조사 코드(E9xxx) 가운데 세션이 쓰는 것 — 완료(evt/complete)를 실패로
 #: 끝낼 때 까닭으로 싣는다. 장애(evt/error)로 끝났으면 그 장애의 번호를 쓴다.
 E_OPERATOR_STOPPED = ("E9401", "STOPPED_BY_OPERATOR")
-E_CALIBRATION_FAILED = ("E9402", "CALIBRATION_FAILED")
+# 원점을 잡지 못함 — if-0.10 표준 번호(예전 3S E9402, 탭11 Q-33).
+E_CALIBRATION_FAILED = ("E1004", "CALIBRATION_FAILED")
 E_MARK_FAILED = ("E9403", "MARK_FAILED")
 
 
@@ -185,6 +192,12 @@ class ErutSession(QObject):
         self._started_at = 0.0
         self._calibrate_req_id = ""
         self._calibrate_target = (0.0, 0.0)
+        # 지금 원점을 잡을 때 받은 모재 크기 (지름, 높이) [mm]. prepare · start 의
+        # diameter 와 견준다(if-0.10 — 다르면 409 E6104).
+        self._calibrated_size = (0.0, 0.0)
+        # abort 를 받고 장비가 다 서기를 기다리는 중 — 그동안 activity 는 running,
+        # 다 서면 idle(if-0.10 탭11 Q-35 — idle 은 「다 섰다」는 신호다).
+        self._stopping = False
         self._mark_req_id = ""
         self._mark_ids: list[str] = []
         self._home_req_id = ""
@@ -413,6 +426,10 @@ class ErutSession(QObject):
             return "estop"
         if "stop" in levels:
             return "error"
+        if self._stopping:
+            if not self.pause_settled():
+                return "running"
+            self._stopping = False
         if self._paused_work or self.sequencer.state is SequencerState.PAUSED:
             if self.pause_settled():
                 return "paused"
@@ -586,14 +603,38 @@ class ErutSession(QObject):
             return True
         return False
 
-    def _needs_calibration(self, req_id: str, action: str) -> bool:
-        """좌표계가 무효면 409 E6104 로 거절하고 True (탭4 D-4)."""
-        if self._calibrated:
+    def _needs_calibration(self, req_id: str, action: str, content: dict | None = None) -> bool:
+        """지금 원점으로 이 요청을 할 수 없으면 409 E6104 로 거절하고 True (탭4 D-4).
+
+        원점이 없거나(calibrated=false), 요청의 모재 지름이 원점을 잡을 때와 다를 때다
+        (if-0.10 탭5 157행 · 탭11 Q-32). 장비는 스스로 원점을 다시 잡지 않는다 —
+        브릿지가 이번 크기로 calibrate 를 보낸다. 지름 칸이 없는 요청(손으로 쓴 요청 ·
+        옛 브릿지)은 견주지 않는다. 둘레 범위 같은 원점 기준 검사보다 먼저 부른다.
+        """
+        if not self._calibrated:
+            self._refuse(req_id, action, E.CALIBRATION_REQUIRED, "원점을 먼저 잡아야 합니다")
+            self.activity.emit(
+                f"ERUT {action} 거절 — 캘리브레이션이 무효합니다(E6104). 재캘리브레이션이 필요합니다.")
+            return True
+        mismatch = self._origin_mismatch(content or {})
+        if not mismatch:
             return False
-        self._refuse(req_id, action, E.CALIBRATION_REQUIRED, "원점을 먼저 잡아야 합니다")
-        self.activity.emit(
-            f"ERUT {action} 거절 — 캘리브레이션이 무효합니다(E6104). 재캘리브레이션이 필요합니다.")
+        self._refuse(req_id, action, E.CALIBRATION_REQUIRED, mismatch)
+        self.activity.emit(f"ERUT {action} 거절(E6104) — {mismatch}. 원점을 다시 잡아야 합니다.")
         return True
+
+    def _origin_mismatch(self, content: dict) -> str:
+        """요청의 모재 지름이 원점을 잡을 때와 다르면 그 설명. 같거나 칸이 없으면 ""."""
+        if content.get("diameter") is None:
+            return ""
+        diameter = _mm(content.get("diameter"))
+        origin = float(self._calibrated_size[0] or 0.0)
+        if diameter <= 0 or origin <= 0:
+            return ""
+        if abs(diameter - origin) <= ORIGIN_DIAMETER_TOLERANCE_MM:
+            return ""
+        return (f"모재 지름 {diameter:g} mm 가 원점을 잡을 때의 {origin:g} mm 와 다릅니다"
+                f"(허용 ±{ORIGIN_DIAMETER_TOLERANCE_MM:g} mm)")
 
     def _drop_prepared(self) -> None:
         """준비해 둔 구간을 버린다(ready 에서 새 요청이 왔을 때 — 탭9)."""
@@ -690,6 +731,7 @@ class ErutSession(QObject):
             self.refresh_status()
             return
         self._calibrated = True
+        self._calibrated_size = tuple(self._calibrate_target)
         extra: dict[str, Any] = {
             # 좌표계의 원점이므로 그 자신은 (0, 0) 이다(탭5 x·y 정의).
             "origin": {"x": 0, "y": 0},
@@ -716,12 +758,15 @@ class ErutSession(QObject):
         바로 evt/ready 를 낸다(activity ready). start 를 받으면 그때 차량 이동 →
         아웃트리거 고정 → 리프트 → 로봇 순으로 간다.
         """
-        plan = self._validated_plan(req_id, "prepare", content)
+        plan = self._parsed_plan(req_id, "prepare", content)
         if plan is None:
             return
         if self._refuse_by_state(req_id, "prepare"):
             return
-        if self._needs_calibration(req_id, "prepare"):
+        # 원점 판정(E6104)이 둘레 범위 · 구역 한계 같은 원점 기준 검사보다 먼저다(if-0.10).
+        if self._needs_calibration(req_id, "prepare", content):
+            return
+        if not self._fits_origin(req_id, "prepare", plan):
             return
         self._drop_prepared()
         self._begin_job(content, plan)
@@ -747,15 +792,18 @@ class ErutSession(QObject):
         """
         job_id = str(content.get("job_id", "")).strip()
         same = self._prepared and (not job_id or job_id == self._job_id)
-        if same and not content.get("area"):
+        reuse = same and not content.get("area")
+        if reuse:
             plan = self._plan
         else:
-            plan = self._validated_plan(req_id, "start", content)
+            plan = self._parsed_plan(req_id, "start", content)
             if plan is None:
                 return
         if self._refuse_by_state(req_id, "start"):
             return
-        if self._needs_calibration(req_id, "start"):
+        if self._needs_calibration(req_id, "start", content):
+            return
+        if not reuse and not self._fits_origin(req_id, "start", plan):
             return
         if same:
             self._plan = plan
@@ -780,44 +828,15 @@ class ErutSession(QObject):
         self._contact = None           # 새 구역 — 접촉 상태는 모름에서 시작
         self._apply_speed(content)
 
-    def _validated_plan(self, req_id: str, action: str, content: dict) -> GridPlan | None:
-        """area·surface·speed 를 확인한다. 안 맞으면 400 + error 로 답하고 None."""
-        plan = self._read_plan(content)
+    def _parsed_plan(self, req_id: str, action: str, content: dict) -> GridPlan | None:
+        """요청 모양을 확인해 구간을 만든다 — 원점과 무관한 형식 검사만(400 E6001).
+
+        area · scan.overlap(필수, if-0.10) · surface · speed 를 본다. 원점에 기대는
+        검사(둘레 범위 · 구역 한계)는 원점 판정(E6104) 뒤에 `_fits_origin` 이 한다.
+        """
+        plan, reason = self._read_plan(content)
         if plan is None:
-            self._refuse(req_id, action, E.BAD_REQUEST,
-                         "area.start/end 의 x·y 가 없거나 구역 크기가 0 입니다")
-            return None
-        # 원통 이음매 (if-0.8 탭5 77행 · Q-25): start.x 는 0 이상 둘레 미만, 구역
-        # 가로는 둘레 이하. end.x 는 둘레를 넘어도 된다 — 이음매를 지나 0 부터 감긴
-        # 자리로 이어 훑는다(차량은 start.x 에 서고 팔이 이음매를 넘어 훑는다).
-        circumference = self._circumference()
-        if circumference > 0 and not (0 <= plan.origin_x < circumference
-                                      and plan.cell_width <= circumference):
-            self._refuse(req_id, action, E.BAD_REQUEST,
-                         f"구역 x {plan.origin_x:.0f}~{plan.origin_x + plan.cell_width:.0f} mm"
-                         f" — start.x 는 0 이상 둘레({circumference:.0f} mm) 미만,"
-                         " 가로는 둘레 이하여야 합니다")
-            return None
-        # 로봇은 좌우 현 700 mm 넘게 못 움직인다(호 1000 mm 를 받아 왼쪽 끝 자세의
-        # 역기구학이 안 풀려 멈춘 일이 있다 — 2026-10-02). 줄여서 하면 구간 일부를
-        # 안 훑은 채 끝나므로 거절하고 최대값을 알려 준다.
-        height_limit = float(self.max_area_height() or 0.0)
-        if height_limit > 0 and plan.cell_height > height_limit:
-            self.activity.emit(
-                f"ERUT {action}: 구간 세로 {plan.cell_height:.0f} mm 는 한 구간 최대"
-                f" {height_limit:.0f} mm 를 넘어 거절합니다.")
-            self._refuse(req_id, action, E.AREA_HEIGHT,
-                         f"구역 세로 {plan.cell_height:.0f} mm > 최대 {height_limit:.0f} mm",
-                         max_height=int(height_limit))
-            return None
-        limit = float(self.max_area_width() or 0.0)
-        if limit > 0 and plan.cell_width > limit:
-            self.activity.emit(
-                f"ERUT {action}: 구간 가로 {plan.cell_width:.0f} mm 는 로봇이 한 번에 훑을 수"
-                f" 있는 최대 {limit:.0f} mm 를 넘어 거절합니다.")
-            self._refuse(req_id, action, E.AREA_WIDTH,
-                         f"구역 가로 {plan.cell_width:.0f} mm > 최대 {limit:.0f} mm",
-                         max_width=int(limit))
+            self._refuse(req_id, action, E.BAD_REQUEST, reason)
             return None
         surface = str(content.get("surface", "")).strip()
         if surface and surface not in SURFACES:
@@ -831,6 +850,42 @@ class ErutSession(QObject):
                          max_speed=SCAN_SPEED_MAX)
             return None
         return plan
+
+    def _fits_origin(self, req_id: str, action: str, plan: GridPlan) -> bool:
+        """원점(모재 둘레 · 지름)에 기대는 값 검사. 안 맞으면 400 + error 로 답하고 False."""
+        # 원통 이음매 (if-0.8 탭5 77행 · Q-25): start.x 는 0 이상 둘레 미만, 구역
+        # 가로는 둘레 이하. end.x 는 둘레를 넘어도 된다 — 이음매를 지나 0 부터 감긴
+        # 자리로 이어 훑는다(차량은 start.x 에 서고 팔이 이음매를 넘어 훑는다).
+        circumference = self._circumference()
+        if circumference > 0 and not (0 <= plan.origin_x < circumference
+                                      and plan.cell_width <= circumference):
+            self._refuse(req_id, action, E.BAD_REQUEST,
+                         f"구역 x {plan.origin_x:.0f}~{plan.origin_x + plan.cell_width:.0f} mm"
+                         f" — start.x 는 0 이상 둘레({circumference:.0f} mm) 미만,"
+                         " 가로는 둘레 이하여야 합니다")
+            return False
+        # 로봇은 좌우 현 700 mm 넘게 못 움직인다(호 1000 mm 를 받아 왼쪽 끝 자세의
+        # 역기구학이 안 풀려 멈춘 일이 있다 — 2026-10-02). 줄여서 하면 구간 일부를
+        # 안 훑은 채 끝나므로 거절하고 최대값을 알려 준다.
+        height_limit = float(self.max_area_height() or 0.0)
+        if height_limit > 0 and plan.cell_height > height_limit:
+            self.activity.emit(
+                f"ERUT {action}: 구간 세로 {plan.cell_height:.0f} mm 는 한 구간 최대"
+                f" {height_limit:.0f} mm 를 넘어 거절합니다.")
+            self._refuse(req_id, action, E.AREA_HEIGHT,
+                         f"구역 세로 {plan.cell_height:.0f} mm > 최대 {height_limit:.0f} mm",
+                         max_height=int(height_limit))
+            return False
+        limit = float(self.max_area_width() or 0.0)
+        if limit > 0 and plan.cell_width > limit:
+            self.activity.emit(
+                f"ERUT {action}: 구간 가로 {plan.cell_width:.0f} mm 는 로봇이 한 번에 훑을 수"
+                f" 있는 최대 {limit:.0f} mm 를 넘어 거절합니다.")
+            self._refuse(req_id, action, E.AREA_WIDTH,
+                         f"구역 가로 {plan.cell_width:.0f} mm > 최대 {limit:.0f} mm",
+                         max_width=int(limit))
+            return False
+        return True
 
     # ---- 원점 도착 ------------------------------------------------------------
     def notify_at_origin(self) -> None:
@@ -1035,8 +1090,17 @@ class ErutSession(QObject):
         """
         self._answer(req_id, "abort", 200)
         self._forget_work()
+        # idle 은 「다 섰다」는 신호다 — 팔 · 차량 · 리프트가 모두 선 것을 본 뒤에
+        # 낸다(if-0.10 탭11 Q-35). 서는 동안은 running 이다(일시정지의 paused 와 같다).
+        self._stopping = True
         self.robot_stop_requested.emit()
         self.abort_requested.emit()
+        self.refresh_status()
+
+    @property
+    def stopping(self) -> bool:
+        """abort 뒤 아직 서는 중인가(다 서면 activity 가 idle 이 된다)."""
+        return self._stopping
 
     def _forget_work(self) -> None:
         self._prepare_req_id = self._start_req_id = ""
@@ -1098,6 +1162,16 @@ class ErutSession(QObject):
         한 번씩 내고 activity 가 idle 이 된다(비상정지 때 하던 구간은 이미
         끝난 것으로 처리했다 — if-0.4).
         """
+        # 일하는 중이거나 일시정지해 둔 때는 200 으로 아무것도 하지 않는다 — 걸린
+        # 장애가 있어도(경고 등) 하던 일을 그대로 둔다(if-0.10 탭0 173행 · 탭9).
+        activity = self.activity_state()
+        if activity in _WORKING_ACTIVITIES:
+            self._answer(req_id, "reset", 200)
+            self.activity.emit(f"ERUT 리셋 요청 — {activity} 중이라 하던 일을 그대로 둡니다")
+            return
+        # 장애로 선 때(error)는 풀고, 멈춰 둔 작업이 있으면 버린다(탭9 8~10행).
+        dropping = activity in ("error", "estop") and bool(
+            self._paused_work or self.sequencer.state is SequencerState.PAUSED)
         # home 기능이 있는 장비는 reset 으로 home 까지 거둔다 — 걸린 장애가 없어도
         # (if-0.8 탭5 47행). 돌거나 멈춰 둔 작업이 있으면 거두지 않는다(탭9).
         fold = self.home_state() != "home" and bool(self.can_fold())
@@ -1106,6 +1180,10 @@ class ErutSession(QObject):
             self.activity.emit("ERUT 리셋 요청 (해제할 장애 없음 · 이미 home)")
             return
         self._answer(req_id, "reset", 202)
+        if dropping:
+            self.activity.emit("ERUT 리셋 — 장애로 멈춰 둔 작업을 버립니다.")
+            self._forget_work()
+            self.abort_requested.emit()
         cleared = self.clear_errors()          # 풀리면 앱이 팔을 거둔다(errors_cleared)
         if cleared:
             self.activity.emit(f"ERUT 리셋 — 장애 해제: {', '.join(cleared)}")
@@ -1367,38 +1445,50 @@ class ErutSession(QObject):
         return math.pi * diameter
 
     # ------------------------------------------------------------ 도우미
-    def _read_plan(self, content: dict) -> GridPlan | None:
-        """요청의 `area` 로 구간 하나를 만든다 (탭1 7·8행).
+    def _read_plan(self, content: dict) -> tuple[GridPlan | None, str]:
+        """요청의 `area` · `scan` 으로 구간 하나를 만든다 (탭1 7·8행). (구간, 거절 까닭).
 
-            area : { start:{x,y}, end:{x,y} }   검사면 좌표 정수 mm
-            scan : { pitch, speed }
+            area : { start:{x,y}, end:{x,y} }   검사면 좌표 mm — end 가 start 보다 커야 한다
+            scan : { pitch, speed, overlap }
 
         **구간 하나 = job 하나.** 크기와 위치는 area 가 정한다. 반지름·두께·
         검사장비 종류는 규격에 없는 우리 장비 값이라 RCS 설정에서 채운다
-        (app.py `_fill_from_local_setup`). 예전 판의 `plan` 블록은 보지 않는다.
+        (app.py `_fill_from_local_setup`).
 
-        `scan.pitch` 는 **구역끼리의 겹침**이다(3S 회신 2026-09-23). 구역 안의 ㄹ자
-        줄 간격은 로봇이 프로브 커버(5축/8축)에 맞춰 스스로 정하고, 이 값은
-        차량 이동(가로)·리프트 상승(세로) 간격에 들어간다.
+        if-0.10 부터 이웃 구역끼리의 겹침은 `scan.overlap`(필수, 0 이상 정수 mm)이다
+        — 예전에는 scan.pitch 를 겹침으로 읽었다(탭11 Q-06 · Q-39). 차량 · 리프트는
+        구역 좌표로 옮기므로 겹침은 기록(레지스터 259)과 구역 번호 계산에만 쓴다.
+        `scan.pitch` 는 규격 뜻대로 **검사 줄 간격**이고, 줄 간격의 최대값으로 쓴다:
+        로봇은 탐촉자 유효 높이(scan_h)로 줄 간격을 자동으로 정하되 pitch 를 넘지
+        않게 줄을 늘린다(Q-39 가안, app.py `_fill_from_local_setup`).
+        크기가 0 이하인 구역(end 가 start 보다 크지 않음)은 400 이다(if-0.10).
         """
+        area = content.get("area")
+        scan = content.get("scan")
         try:
-            area = content.get("area") or {}
-            start, end = area.get("start", {}), area.get("end", {})
+            start, end = area["start"], area["end"]
             x0, y0 = float(start["x"]), float(start["y"])
             x1, y1 = float(end["x"]), float(end["y"])
-            scan = content.get("scan") or {}
-            overlap = float(scan.get("pitch", 0) or 0)
-        except (AttributeError, KeyError, TypeError, ValueError):
-            return None
-        width, height = abs(x1 - x0), abs(y1 - y0)
-        if width <= 0 or height <= 0 or overlap < 0:
-            return None
+        except (TypeError, KeyError, ValueError):
+            return None, "area.start/end 의 x·y 가 없습니다"
+        if x1 <= x0 or y1 <= y0:
+            return None, (f"구역 크기가 0 이하입니다 — end 가 start 보다 커야 합니다"
+                          f" (x {x0:g}→{x1:g}, y {y0:g}→{y1:g})")
+        if not isinstance(scan, dict) or scan.get("overlap") is None:
+            return None, "scan.overlap 이 없습니다 (if-0.10 필수 — 0 이상 정수 mm, 0 은 겹치지 않음)"
+        try:
+            overlap = float(scan["overlap"])
+            pitch = float(scan.get("pitch") or 0)
+        except (TypeError, ValueError):
+            return None, "scan.overlap · scan.pitch 가 숫자가 아닙니다"
+        if overlap < 0 or pitch < 0:
+            return None, "scan.overlap · scan.pitch 는 0 이상이어야 합니다"
         return GridPlan(
             column_count=1, row_count=1,
-            cell_width=width, cell_height=height,
+            cell_width=x1 - x0, cell_height=y1 - y0,
             scan_overlap=0.0, pitch_x=overlap, pitch_y=overlap,
-            origin_x=min(x0, x1), origin_y=min(y0, y1),
-        )
+            origin_x=x0, origin_y=y0, line_pitch_max=pitch,
+        ), ""
 
     def _apply_speed(self, content: dict) -> None:
         """scan.speed [mm/s] 를 로봇 속도 비율로 바꿔 건다.

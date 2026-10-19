@@ -269,7 +269,7 @@ def scenario_erut(h: Harness) -> list[str]:
     session.publish_info()
     info = tap.info[-1]
     log(f"\n[erut] 자기소개: 판 {info['interface_version']} · {', '.join(info['capabilities'])}")
-    if info["interface_version"] != "0.9" or "home" not in info["capabilities"]:
+    if info["interface_version"] != "0.10" or "home" not in info["capabilities"]:
         problems.append(f"[erut] 자기소개가 이상합니다: {info}")
 
     log("[erut] calibrate — 차량(AGV)이 모재를 따라 한 바퀴 돌며 좌표계를 잡는다")
@@ -302,7 +302,7 @@ def scenario_erut(h: Harness) -> list[str]:
     area = {"start": {"x": 580, "y": 0}, "end": {"x": 1180, "y": 800}}
     session.handle_request("prepare", {
         "req_id": "prep-1", "job_id": "jb-erut", "surface": "outer",
-        "area": area, "scan": {"pitch": 20, "speed": 100},
+        "area": area, "scan": {"pitch": 30, "speed": 100, "overlap": 20},
     })
     if not h.wait_until(lambda: tap.event("ready", "prepare"), timeout=90):
         return problems + ["[erut] 준비 완료(evt/ready)가 오지 않았습니다"]
@@ -318,7 +318,7 @@ def scenario_erut(h: Harness) -> list[str]:
     log("[erut] start — 차량 이동 → 아웃트리거 → 리프트 → 로봇 3점 측정 → 시작점(contact) → 적심 → 스캔")
     session.handle_request("start", {"req_id": "start-1", "job_id": "jb-erut",
                                      "surface": "outer", "area": area,
-                                     "scan": {"pitch": 20, "speed": 100}})
+                                     "scan": {"pitch": 30, "speed": 100, "overlap": 20}})
 
     # 줄 한가운데서 일시정지 → 재개: 태스크를 끝내지 않고 그 자리에 세웠다가
     # (pause, 500 = 2) 그 자리에서 잇는다(play). 3점 측정부터 다시 하면 안 된다.
@@ -394,7 +394,7 @@ def scenario_erut(h: Harness) -> list[str]:
                                      "surface": "outer",
                                      "area": {"start": {"x": 1160, "y": 0},
                                               "end": {"x": 1760, "y": 800}},
-                                     "scan": {"pitch": 20, "speed": 100}})
+                                     "scan": {"pitch": 30, "speed": 100, "overlap": 20}})
     if not h.wait_until(lambda: h.register(STATE_REG)[0] == 6
                         and h.register(SEGMENT_REG)[0] in (1, 3), timeout=180, poll=0.02):
         return problems + ["[erut] 두 번째 구간이 스캔에 들어가지 않았습니다"]
@@ -422,7 +422,7 @@ def scenario_erut(h: Harness) -> list[str]:
                                      "surface": "outer",
                                      "area": {"start": {"x": 1160, "y": 0},
                                               "end": {"x": 1760, "y": 800}},
-                                     "scan": {"pitch": 20, "speed": 100}})
+                                     "scan": {"pitch": 30, "speed": 100, "overlap": 20}})
     h.wait_until(lambda: window.sequencer.state.name == "SCANNING", timeout=60, poll=0.02)
     session.handle_request("pause", {"req_id": "pz-q19"})
     h.pump(0.5)
@@ -481,7 +481,7 @@ def scenario_erut(h: Harness) -> list[str]:
                                      "surface": "outer",
                                      "area": {"start": {"x": 1740, "y": 0},
                                               "end": {"x": 2340, "y": 800}},
-                                     "scan": {"pitch": 20, "speed": 100}})
+                                     "scan": {"pitch": 30, "speed": 100, "overlap": 20}})
     if not h.wait_until(lambda: h.register(STATE_REG)[0] == 6, timeout=180, poll=0.02):
         return problems + ["[erut] 세 번째 구간이 스캔에 들어가지 않았습니다"]
     session.raise_error({"code": "E1002", "name": "E_STOP", "level": "estop",

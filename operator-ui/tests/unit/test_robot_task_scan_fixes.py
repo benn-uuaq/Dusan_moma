@@ -370,12 +370,26 @@ def test_leaving_home_goes_to_the_standby_by_movej() -> None:
     main = _main(code)
     assert "movej(Standby_joint, a = a_j, v = v_j)" in main
     assert "Home_joint" not in main, "홈으로 가지 않는다 — 홈에서 대기 위치로 나간다"
-    # 홈이 아닌 데서 시작했으면 물러나고 올라간 뒤에 movej.
-    assert main.index("lh_retreat(") < main.index("lh_rise()") < main.index("movej(")
+    # 홈이 아닌 데서 시작했으면 물러나고 대기 위치 선상에 맞춘 뒤에 movej.
+    assert main.index("lh_retreat(") < main.index("lh_align()") < main.index("movej(")
     assert "Home_joint[lh_i]" in _func(code, "lh_at_home")
 
 
-@pytest.mark.parametrize("name, func", (("go_home", "gh_rise"), ("home", "hm_rise")))
+@pytest.mark.parametrize("name, func", (("go_home", "gh_align"), ("home", "hm_align"),
+                                        ("leave_home", "lh_align")))
+def test_standby_line_alignment_moves_back_and_up_or_down(name, func) -> None:
+    """물러난 뒤 대기 위치 **선상**에 맞춘다(2026-10-16): 아직 앞이면 대기 위치 X 까지
+    뒤로, 높이는 대기 위치 높이로 올리거나 **내린다**(예전에는 올라가기만 했다)."""
+    body = _func(_code(_script("dusan_task_v5", "scripts", name)), func)
+    p = {"gh_align": "ga", "hm_align": "ha", "lh_align": "la"}[func]   # 지역 변수 접두
+    assert "set_tcp([0, 0, 0, 0, 0, 0])" in body
+    assert f"if ({p}_p[0] > {p}_ref[0] + 0.001):" in body and f"{p}_p[0] = {p}_ref[0]" in body
+    assert f"{p}_p[2] < {p}_ref[2] - 0.001 or {p}_p[2] > {p}_ref[2] + 0.001" in body
+    # X(뒤로) 먼저, 높이는 그다음.
+    assert body.index(f"{p}_p[0] = {p}_ref[0]") < body.index(f"{p}_p[2] = {p}_ref[2]")
+
+
+@pytest.mark.parametrize("name, func", (("go_home", "gh_align"), ("home", "hm_align")))
 def test_going_home_passes_the_standby_by_movej(name, func) -> None:
     code = _code(_script("dusan_task_v5", "scripts", name))
     main = _main(code)
@@ -383,8 +397,8 @@ def test_going_home_passes_the_standby_by_movej(name, func) -> None:
              main.index("movej(Standby_joint, a = a_j, v = v_j)"),
              main.index("movej(Home_joint, a = a_j, v = v_j)")]
     assert order == sorted(order)
-    rise = _func(code, func)
-    assert "get_forward_kin(Standby_joint)" in rise and "movel(" in rise
+    align = _func(code, func)
+    assert "get_forward_kin(Standby_joint)" in align and "movel(" in align
     if name == "go_home":
         assert "write_port_register(290" not in code, "완료(290 = 5)는 finish 가 냈다"
 

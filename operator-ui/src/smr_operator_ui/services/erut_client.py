@@ -350,11 +350,15 @@ class ErutClient(QObject):
     def publish_contact(self, state: str, job_id: str) -> bool:
         """탐촉자 접촉 (탭2 12행, probe_contact). ERUT 가 이것으로 물을 켜고 끈다.
 
-        retain 이라 앞 구역 것이 남는다 — job_id 를 꼭 싣는다(받는 쪽이 견준다).
+        retain 이라 앞 구역 것이 남는다 — 작업 중이면 job_id 를 꼭 싣는다(받는 쪽이
+        견준다). 작업이 없으면 칸을 뺀다 — 빈 글자("")는 규격에 없는 값이다
+        (if-0.10 탭11 Q-41: 10/12 기록 1만 2,980건 중 7,161건이 "" 였다).
         """
+        content: dict[str, Any] = {"state": state}
+        if job_id:
+            content["job_id"] = job_id
         return self._publish(self.evt_topic("contact"), {
-            "timestamp": utc_ms(),
-            "content": {"state": state, "job_id": job_id},
+            "timestamp": utc_ms(), "content": content,
         }, qos=1, retain=True)
 
     def publish_home(self, state: str) -> bool:

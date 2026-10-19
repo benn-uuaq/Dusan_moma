@@ -119,6 +119,10 @@ class GridPlan:
     # (= 프로브 유효 세로 커버, 로봇 scan_h). RCS Cobot 설정에서 EOAT 종류별로
     # 넣는다(2026-10-12). 0 이면 PROBE_COVERAGE_MM 의 기본값을 쓴다.
     scan_rise_mm: float = 0.0
+    # 검사 줄 간격의 최대값 [mm] — ERUT scan.pitch(if-0.10 탭8 44행). 줄 간격은
+    # 탐촉자 유효 높이(scan_h)로 자동으로 정하되 이 값을 넘지 않게 줄을 늘린다
+    # (탭11 Q-39 가안). 0 이면 제한 없음(RCS '검사 시작').
+    line_pitch_max: float = 0.0
 
     @property
     def eoat_size(self) -> tuple[float, float]:

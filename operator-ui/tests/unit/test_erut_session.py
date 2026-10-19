@@ -92,7 +92,7 @@ def _req(action, **content):
 
 
 AREA = {"start": {"x": 0, "y": 0}, "end": {"x": 600, "y": 800}}
-SCAN = {"pitch": 20, "speed": 100}
+SCAN = {"pitch": 200, "speed": 100, "overlap": 20}
 
 
 def _prepare(s, req_id="p1", job_id="jb1", area=AREA, scan=SCAN, surface="outer", **extra):
@@ -203,7 +203,7 @@ def test_zero_size_area_is_400(session):
 def test_speed_above_the_robot_limit_is_refused(session):
     """낼 수 없는 속도는 분명히 거절한다(탭8 45행)."""
     s, client, _seq = session
-    _start(s, scan={"pitch": 20, "speed": 150})
+    _start(s, scan={"pitch": 200, "speed": 150, "overlap": 20})
 
     assert client.res[-1]["status_code"] == 400
 
@@ -214,7 +214,7 @@ def test_scan_speed_becomes_the_robot_speed_ratio(session):
     ratios: list[int] = []
     s.speed_requested.connect(ratios.append)
 
-    _prepare(s, scan={"pitch": 20, "speed": 40})
+    _prepare(s, scan={"pitch": 200, "speed": 40, "overlap": 20})
 
     assert ratios == [40]
 
@@ -541,7 +541,7 @@ def test_area_origin_and_overlap_make_the_grid_position(session):
     jobs: list = []
     s.job_requested.connect(jobs.append)
     _start(s, area={"start": {"x": 1160, "y": 780}, "end": {"x": 1760, "y": 1580}},
-           scan={"pitch": 20, "speed": 100})
+           scan={"pitch": 200, "speed": 100, "overlap": 20})
 
     plan = jobs[0]
     assert (plan.origin_x, plan.origin_y) == (1160, 780)
@@ -694,7 +694,7 @@ def test_info_introduces_the_device(session):
     s.publish_info()
 
     info = client.info[-1]
-    assert info["interface_version"] == INTERFACE_VERSION == "0.9"
+    assert info["interface_version"] == INTERFACE_VERSION == "0.10"
     assert info["vendor"] == "3S" and info["device_type"] == "articulated_arm"
     assert "probe_contact" in info["capabilities"]
     assert "mark_positioning" in info["capabilities"]
@@ -1229,7 +1229,7 @@ def test_area_limit_goes_into_info_once_the_diameter_is_known(session):
     s.finish_calibration(True, 0.0)
 
     assert infos[-1]["area_limit"] == {"diameter": 1690, "max_width": 721}
-    assert infos[-1]["interface_version"] == "0.9"
+    assert infos[-1]["interface_version"] == "0.10"
 
 
 def test_area_taller_than_the_limit_is_refused_with_area_height(session):
@@ -1353,3 +1353,130 @@ def test_error_extra_fields_ride_inside_the_error(session):
     s.handle_request(*_req("query", req_id="q-err"))
     assert client.res[-1]["errors"][0]["probe"] == "center"
 
+
+
+# ---- if-0.10 (2026-10-13) — 탭11 Q-32 ~ Q-41 ------------------------------------
+def test_overlap_is_required_and_pitch_becomes_the_line_spacing_limit(session):
+    """이웃 구역끼리의 겹침은 scan.overlap(필수), scan.pitch 는 검사 줄 간격(Q-39)."""
+    s, client, _seq = session
+    _prepare(s, req_id="p-no", scan={"pitch": 30, "speed": 100})
+    refused = client.res[-1]
+    assert refused["status_code"] == 400 and refused["error"]["code"] == "E6001"
+    assert "overlap" in refused["error"]["detail"]
+
+    _prepare(s, req_id="p-ok", scan={"pitch": 10, "speed": 100, "overlap": 15})
+    assert client.res[-1]["status_code"] == 202
+    assert s._plan.pitch_x == s._plan.pitch_y == 15        # 구역끼리 겹침
+    assert s._plan.line_pitch_max == 10                    # 줄 간격 최대값
+
+
+@pytest.mark.parametrize("area", (
+    {"start": {"x": 600, "y": 0}, "end": {"x": 0, "y": 800}},      # 거꾸로
+    {"start": {"x": 0, "y": 0}, "end": {"x": 0, "y": 800}},        # 가로 0
+    {"start": {"x": 0, "y": 800}, "end": {"x": 600, "y": 800}},    # 세로 0
+))
+def test_area_must_grow_from_start_to_end(session, area):
+    """크기가 0 이하인 구역은 400 E6001 이다(Q-39 ③) — 예전에는 거꾸로 온 것도 받았다."""
+    s, client, _seq = session
+    _prepare(s, area=area)
+    assert client.res[-1]["status_code"] == 400
+    assert client.res[-1]["error"]["code"] == "E6001"
+
+
+def test_calibrate_remembers_the_size_it_was_given(session):
+    s, client, _seq = session
+    s.handle_request(*_req("calibrate", req_id="c1", diameter=1669.2, height=1000))
+    s.finish_calibration(True, 0.1)
+    assert s._calibrated is True and s._calibrated_size == (1669.2, 1000.0)
+
+
+def test_a_different_diameter_needs_a_new_origin(session):
+    """원점을 잡을 때와 지름이 다르면 409 E6104 — 장비는 스스로 다시 잡지 않는다(Q-32)."""
+    s, client, _seq = session
+    s._calibrated_size = (140.0, 140.0)
+    _prepare(s, req_id="p1", diameter=1669.2, height=1000)
+    r = client.res[-1]
+    assert (r["status_code"], r["error"]["code"]) == (409, "E6104")
+    assert "1669.2" in r["error"]["detail"] and "140" in r["error"]["detail"]
+
+    # 허용 오차 안이면 받는다. 높이는 원점과 상관이 없어 견주지 않는다.
+    s._calibrated_size = (1669.2, 140.0)
+    _prepare(s, req_id="p2", diameter=1669.6, height=1000)
+    assert client.res[-1]["status_code"] == 202
+    # 크기 칸이 없는 요청(손으로 쓴 요청 · 옛 브릿지)은 견주지 않는다.
+    _prepare(s, req_id="p3", job_id="jb2")
+    assert client.res[-1]["status_code"] == 202
+
+
+def test_origin_check_comes_before_the_circumference_check(session):
+    """둘레 범위 같은 원점 기준 검사보다 E6104 가 먼저다(탭5 157행)."""
+    s, client, _seq = session
+    s._calibrated_size = (140.0, 140.0)
+    s.area_diameter = lambda: 140.0                      # 둘레 440 — 아래 구역은 둘레 밖
+    area = {"start": {"x": 1000, "y": 0}, "end": {"x": 1300, "y": 400}}
+    _prepare(s, req_id="p1", area=area, diameter=1669.2, height=1000)
+    assert client.res[-1]["error"]["code"] == "E6104"
+    # 크기가 같으면 그때 둘레 검사로 거절된다.
+    _prepare(s, req_id="p2", area=area, diameter=140, height=140)
+    assert client.res[-1]["error"]["code"] == "E6001"
+
+
+def test_start_with_a_different_diameter_is_refused_too(session):
+    s, client, _seq = session
+    s._calibrated_size = (140.0, 140.0)
+    _start(s, req_id="s1", diameter=1669.2, height=1000)
+    assert client.res[-1]["status_code"] == 409
+    assert client.res[-1]["error"]["code"] == "E6104"
+
+
+def test_abort_reports_idle_only_after_everything_stopped(session):
+    """idle 은 「다 섰다」는 신호다 — 서는 동안은 running(Q-35)."""
+    s, client, _seq = session
+    stopped = {"now": False}
+    s.pause_settled = lambda: stopped["now"]
+    s.handle_request(*_req("abort", req_id="a1"))
+    assert _codes(client, "abort") == [200]
+    assert s.stopping and s.activity_state() == "running"
+    stopped["now"] = True
+    assert s.activity_state() == "idle" and not s.stopping
+
+
+def test_reset_while_working_or_paused_does_nothing(session):
+    """일하는 중 · 일시정지해 둔 때 reset 은 200 으로 아무것도 하지 않는다(탭0 173행)."""
+    s, client, _seq = session
+    s.raise_error({"code": "E9201", "name": "ROBOT_ALARM", "level": "warning",
+                   "recovery": "auto"})
+    for activity in ("calibrating", "preparing", "running", "marking", "paused"):
+        s.activity_state = lambda a=activity: a
+        s.handle_request(*_req("reset", req_id=f"r-{activity}"))
+        assert client.res[-1]["status_code"] == 200
+        assert "E9201" in s._errors, f"{activity} 중에 장애를 풀었다"
+
+
+def test_failed_calibration_uses_the_standard_code(session):
+    """원점을 잡지 못함은 E1004 CALIBRATION_FAILED(Q-33, 예전 E9402)."""
+    s, client, _seq = session
+    s.handle_request(*_req("calibrate", req_id="c1", diameter=1669.2, height=1000))
+    s.finish_calibration(False, detail="차량 한 바퀴 실패")
+    name, complete = client.events[-1]
+    assert (name, complete["action"], complete["status_code"]) == ("complete", "calibrate", 500)
+    assert complete["error"]["code"] == "E1004"
+    assert complete["error"]["name"] == "CALIBRATION_FAILED"
+
+
+def test_calibrate_runs_again_for_every_new_request_even_when_calibrated(session):
+    """calibrate 에는 job_id 가 없다 — 새 req_id 면 calibrated=true 여도 다시 잡는다.
+
+    같은 req_id · 같은 내용이 30초 안에 다시 오면(브릿지 재전송) 다시 돌지 않고
+    앞 답만 되풀이한다(멱등). (2026-10-19 확인)
+    """
+    s, client, _seq = session
+    runs: list[tuple] = []
+    s.calibration_requested.connect(lambda d, h: runs.append((d, h)))
+    s.handle_request(*_req("calibrate", req_id="c1", diameter=1669.2, height=1000))
+    s.finish_calibration(True, 0.1)
+    s.handle_request(*_req("calibrate", req_id="c1", diameter=1669.2, height=1000))
+    assert len(runs) == 1 and _codes(client, "calibrate") == [202, 202]   # 재전송
+
+    s.handle_request(*_req("calibrate", req_id="c2", diameter=1669.2, height=1000))
+    assert len(runs) == 2 and s._calibrated is False     # 새 요청 — 다시 잡는 중

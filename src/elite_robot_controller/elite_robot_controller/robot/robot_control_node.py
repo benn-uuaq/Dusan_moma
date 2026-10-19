@@ -44,6 +44,11 @@ class RobotControlNode(Node):
         self.declare_parameter('jog_hold_time', 3.0)
         # 홈 판정 허용 오차 [rad]. 태스크의 home_tol_j 와 같은 값이다.
         self.declare_parameter('home_tol_j', 0.02)
+        # 이미 홈으로 본 뒤 **홈에서 벗어났다**고 볼 허용 오차 [rad] (2026-10-19).
+        # 차량 · 리프트가 움직이는 동안 팔이 조금 흔들려도 홈을 지키게, 들어올 때
+        # (home_tol_j)보다 넉넉하게 둔다 — 관절마다 약 3도. 이보다 크게 움직이면
+        # 펴진 것으로 보고 276 을 내린다(RCS 가 이동을 멈추고 E2003 을 낸다).
+        self.declare_parameter('home_leave_tol_j', 0.05)
         # 로봇의 Home_joint 를 29999 로 다시 읽어 오는 간격 [s].
         self.declare_parameter('home_refresh_s', 60.0)
         robot_ip = self.get_parameter('robot_ip').get_parameter_value().string_value
@@ -709,12 +714,16 @@ class RobotControlNode(Node):
         target = self._home_joint_target()
         if not target:
             return
-        tol = float(self.get_parameter('home_tol_j').value)
-        at_home = all(abs(q / 1000.0 - h) <= tol for q, h in zip(joints, target))
         entry = self.registers.read_entry('home_flag')
         if not entry.available:
             return
         current = self.robot_modbus.get_register(entry.address)
+        # 들어올 때는 home_tol_j, 이미 홈이면 home_leave_tol_j 까지 홈으로 본다 —
+        # 이동 중 흔들림으로 플래그가 깜박이지 않게(히스테리시스).
+        tol = float(self.get_parameter('home_tol_j').value)
+        if current == 1:
+            tol = max(tol, float(self.get_parameter('home_leave_tol_j').value))
+        at_home = all(abs(q / 1000.0 - h) <= tol for q, h in zip(joints, target))
         if current is not None and bool(current) != at_home:
             self.write_register('home_flag', 1 if at_home else 0)
 
@@ -779,7 +788,8 @@ class RobotControlNode(Node):
     def cb_move_home(self, req, res):
         """스캔 대기 위치를 거쳐 홈으로 간다(2026-10-16, 로봇 태스크와 같은 순서).
 
-            벽에서 물러남(대기 위치보다 뒤로는 안 감) -> 대기 위치 높이로 상승
+            벽에서 물러남(대기 위치보다 뒤로는 안 감) -> 대기 위치 선상에 맞춤
+            (남은 만큼 대기 위치 X 까지 뒤로, 높이는 올리거나 내림)
             -> movej 스캔 대기 위치 -> movej 홈
 
         이미 홈에 있으면 movej 홈만 한다.
@@ -861,9 +871,15 @@ class RobotControlNode(Node):
             "    if (mh_back > 0.001):\n"
             "      movel(pose_trans(mh_cur, [0, 0, -mh_back, 0, 0, 0]), a=0.4, v=0.1)\n"
             "    end\n"
-            # 대기 위치 높이까지 곧게 올라간다.
+            # 대기 위치 선상에 맞춘다 — 아직 앞(베이스 +X)이면 대기 위치 X 까지
+            # 곧게 물러나고, 높이를 대기 위치 높이로 올리거나 내린다.
             "    mh_up = get_actual_tool_flange_pose()\n"
-            "    if (mh_up[2] < mh_ref[2] - 0.001):\n"
+            "    if (mh_up[0] > mh_ref[0] + 0.001):\n"
+            "      mh_up[0] = mh_ref[0]\n"
+            "      movel(mh_up, a=0.4, v=0.1)\n"
+            "    end\n"
+            "    mh_up = get_actual_tool_flange_pose()\n"
+            "    if (mh_up[2] < mh_ref[2] - 0.001 or mh_up[2] > mh_ref[2] + 0.001):\n"
             "      mh_up[2] = mh_ref[2]\n"
             "      movel(mh_up, a=0.4, v=0.1)\n"
             "    end\n"
