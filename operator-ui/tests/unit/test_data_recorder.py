@@ -36,8 +36,8 @@ def rec(qtbot, tmp_path, monkeypatch):
 
 def _plan() -> GridPlan:
     return GridPlan(column_count=3, row_count=4, cell_width=721, cell_height=500,
-                    scan_overlap=0.0, pitch_x=20, pitch_y=20, radius=834.6,
-                    thickness=10, eoat_probes=8)
+                    scan_overlap=0.0, pitch_x=20, pitch_y=20, radius=844.6,
+                    eoat_probes=8)
 
 
 def _lines(path: Path) -> list[str]:

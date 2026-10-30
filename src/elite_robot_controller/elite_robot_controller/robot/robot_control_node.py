@@ -94,6 +94,10 @@ class RobotControlNode(Node):
         # 스캔 중 호 위 위치(286/287). ERUT 에 실제 검사 좌표를 알리는 데 쓴다.
         self.pub_scan_arc = self.create_publisher(
             Int32MultiArray, 'robot/status/scan_arc', 10)
+        # 스캔 구간(277: 0 없음 / 1 전진 / 2 줄 바꿈 / 3 후진). 태스크가 움직이기 전에
+        # 쓴다 — RCS 가 ERUT 에 이동 방향(evt/motion)을 미리 알리는 데 쓴다.
+        self.pub_scan_segment = self.create_publisher(
+            Int32MultiArray, 'robot/status/scan_segment', 10)
         # 로봇 컨트롤러가 주는 태스크 상태(1 실행 중, 2 일시 중지, 3 중지됨).
         # 29999로 물으면 매번 명령을 던져야 하므로 Modbus로 상시 읽는다.
         self.pub_task_state = self.create_publisher(Int32, 'robot/status/task_state', 10)
@@ -342,6 +346,7 @@ class RobotControlNode(Node):
         self.publish_pose('joint_position', self.pub_joint_position)
         self.publish_raw('scan_state', self.pub_scan_state)
         self.publish_raw('scan_arc', self.pub_scan_arc)
+        self.publish_raw('scan_segment', self.pub_scan_segment)
         self.publish_code('task_state', self.pub_task_state)
         self._watch_home()
         self.publish_code('home_flag', self.pub_home_flag)

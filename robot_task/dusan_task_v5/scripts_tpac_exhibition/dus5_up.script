@@ -1,0 +1,56 @@
+# =============================================================================
+#  dus5_up.script — dusan_v5 (tpac_exhibition)
+#  다음 줄로 한 피치만큼 옮긴다
+#
+#  전시판(시편을 바닥에 눕힘). 원 태스크의 「상승」(베이스 +Z)이 여기서는 작업 Z,
+#  곧 베이스 **+X(로봇에서 멀어지는 쪽, 곡면의 축)** 이다 — dus5_init 의
+#  「바닥판 작업 좌표계」. z_base 도 그 좌표계 값이다(dus5_probe_c).
+#
+#  펜던트에서 "9_up" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def up_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+def up_to_w(p):
+  # 베이스 -> 작업 좌표계(베이스를 Y 축으로 +90 도). dus5_init 의 ini_to_w 와 같다.
+  return pose_trans(pose_inv([0, 0, 0, 0, 1.57079633, 0]), p)
+end
+
+
+def up_to_b(p):
+  # 작업 좌표계 -> 베이스.
+  return pose_trans([0, 0, 0, 0, 1.57079633, 0], p)
+end
+
+
+# 목표 높이는 직전 위치가 아니라 원점(z_base) 기준 절대값으로 잡는다.
+# 상대값으로 쌓으면 구간마다의 정지 오차가 행 수만큼 누적된다.
+# 스캔 동작에 들어섰다고 알린다(6 = 스캔 중). 이 값이 6 인 동안에만
+# 제로점 기준 좌표(280~285)가 나간다 — dus5_init 의 pub_rel 참고.
+# 스캔 동작마다 세워 둬야, 사이클이 반복되며 goto_zero 를 다시 지나지
+# 않는 구성에서도 좌표가 끊기지 않는다.
+write_port_register(290, 6)
+# TPAC 동기 신호: 줄 바꿈 상승 구간 — 스캔 동결(DO[1] = 0) 유지.
+write_port_register(277, 2)
+
+# 작업 Z(= 베이스 X) 만 바꾼다 — 곡면의 축 방향이라 호 끝에서 판을 따라 곧게 간다.
+up_w = up_to_w(get_actual_tcp_pose())
+up_w[2] = z_base + row_idx * pitch * 0.001
+tgt_pose = up_to_b(up_w)
+movel(tgt_pose, a = a_scan, v = v_scan)
+
+path_len = path_len + pitch
+up_w1(297, path_len * 0.1)

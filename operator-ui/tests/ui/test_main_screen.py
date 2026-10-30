@@ -1,3 +1,5 @@
+import pytest
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
@@ -342,7 +344,7 @@ def test_grid_cell_updates_total_cells_and_row_floor(qtbot) -> None:
     plan = GridPlan(
         column_count=8, row_count=6, cell_width=1110.0, cell_height=500.0,
         scan_overlap=20.0, pitch_x=20.0, pitch_y=20.0,
-        radius=834.6, thickness=10.0, eoat_probes=5,
+        radius=834.6, eoat_probes=5,
     )
     window.sequencer.start(plan, 257.0)
 
@@ -358,15 +360,36 @@ def test_grid_cell_updates_total_cells_and_row_floor(qtbot) -> None:
     window.close()
 
 
-def test_orbit_view_diameter_excludes_thickness_shown_separately(qtbot) -> None:
-    """검사 대상 지름에는 두께를 섞지 않고 따로 보여줘야 한다
+def test_outer_diameter_alone_sets_the_robot_radius(qtbot) -> None:
+    """RCS 는 바깥 지름만 가지고 작업한다 — 두께는 쓰지 않는다(2026-10-19).
 
-    ("검사 대상의 지름에 두께 포함하지 말고. 두께를 따로 표기").
+    로봇 반지름(260) = 검사 대상 바깥 지름 / 2, 두께(261) = 0. 화면에서 바깥
+    지름을 고치면 로봇 반지름도 다시 보낸다.
     """
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
-    window._send_work_area(1110.0, 500.0, 257.0, 20.0, radius_mm=834.6, thickness_mm=10.0)
-    assert window.main_screen.orbit_view._target_thickness_mm == 10.0
+    pushed: list[tuple] = []
+    window._push_work_area_to_robot = lambda *values: pushed.append(values)
+    assert not hasattr(window.main_screen.orbit_view, "_target_thickness_mm")
+
+    window.main_screen.orbit_view.set_target_dimensions(1.69, 0.5)
+    window.main_screen.target_dimensions_changed.emit(1.69, 0.5)
+
+    assert window._outer_radius_mm() == pytest.approx(845.0)
+    # (가로, 세로, 스캐너 밴드, 겹침, 바깥 반지름, eoat_w, eoat_h, eoat_type)
+    assert pushed and pushed[-1][4] == pytest.approx(845.0)
+    window.close()
+
+
+def test_robot_gets_zero_thickness(qtbot) -> None:
+    """두께 레지스터(261)에는 늘 0 — 로봇은 받은 바깥 반지름 그대로 훑는다."""
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    _robot_ready(window)
+    sent: list[list] = []
+    window.ros_status.send_pose = lambda name, values: sent.append(list(values)) or True
+    window._send_work_area(721.0, 500.0, 30.0, 0.0, radius_mm=845.0)
+    assert sent[-1][4] == 8450 and sent[-1][5] == 0
     window.close()
 
 
@@ -379,7 +402,7 @@ def test_rect_view_gets_eoat_width_for_tcp_path_inset(qtbot) -> None:
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window._send_work_area(
-        721.0, 500.0, 30.0, 20.0, radius_mm=834.6, thickness_mm=10.0,
+        721.0, 500.0, 30.0, 20.0, radius_mm=834.6,
         eoat_w_mm=30.0, eoat_h_mm=30.0,
     )
     assert window.main_screen.rect_view._eoat_w_mm == 30.0
@@ -491,8 +514,9 @@ def test_oversized_work_length_is_clamped_and_alarmed(qtbot) -> None:
     window.erut_session.raise_error = lambda fields: raised.append(fields)
     window.erut_session.notify = lambda code, msg, text, **kw: notes.append((code, msg, text))
 
+    # 벽 바깥 반지름 844.6 이면 현 700 mm 가 되는 최대 호가 721 mm 다.
     window._send_work_area(1110.0, 500.0, 30.0, 20.0,
-                           radius_mm=834.6, thickness_mm=10.0, eoat_w_mm=30.0)
+                           radius_mm=844.6, eoat_w_mm=30.0)
 
     assert window.main_screen.rect_view.work_area()[0] == 721.0
     # 줄여서 진행하는 것은 장애가 아니다 — evt/error 로 내지 않는다. ERUT 가
@@ -501,7 +525,7 @@ def test_oversized_work_length_is_clamped_and_alarmed(qtbot) -> None:
     assert notes == []
     window.erut_session._prepare_req_id = "p1"
     window._send_work_area(1110.0, 500.0, 30.0, 20.0,
-                           radius_mm=834.6, thickness_mm=10.0, eoat_w_mm=30.0)
+                           radius_mm=844.6, eoat_w_mm=30.0)
     assert [n[0] for n in notes] == ["M2001"]
     assert "721" in notes[0][2]
     alarms = [window.cobot_manual_screen.alarm_list.item(i).text()
@@ -522,7 +546,7 @@ def test_safe_work_length_passes_through_without_alarm(qtbot) -> None:
 
     # 좌우 끝도 프로브 중심 기준이라 정수 한계는 721 이다 — 그대로 통과한다.
     window._send_work_area(721.0, 500.0, 30.0, 20.0,
-                           radius_mm=834.6, thickness_mm=10.0, eoat_w_mm=30.0)
+                           radius_mm=834.6, eoat_w_mm=30.0)
 
     assert window.main_screen.rect_view.work_area()[0] == 721.0
     assert raised == []
@@ -603,8 +627,7 @@ def test_stored_work_area_is_pushed_to_the_robot_on_load(qtbot) -> None:
     # 좌우 끝도 프로브 중심 기준이라 안전 최대 작업 호는 721 이다.
     window._apply_stored_settings("work_area", {
         "width_mm": 721.0, "height_mm": 500.0, "scan_h_mm": 30.0,
-        "overlap_mm": 0.0, "radius_mm": 834.6, "thickness_mm": 10.0,
-        "eoat_w_mm": 30.0, "eoat_h_mm": 30.0,
+        "overlap_mm": 0.0, "eoat_w_mm": 30.0, "eoat_h_mm": 30.0,
     })
 
     assert sent, "로봇으로 보내지 않았다"
@@ -634,7 +657,7 @@ def test_work_area_is_held_back_while_the_robot_task_runs(qtbot) -> None:
         lst = window.cobot_manual_screen.alarm_list
         return [lst.item(i).text() for i in range(lst.count())]
 
-    area = dict(radius_mm=834.6, thickness_mm=10.0,
+    area = dict(radius_mm=834.6,
                 eoat_w_mm=244.5, eoat_h_mm=244.5, eoat_type=5.0)
 
     # 연결이 없으면 못 보낸다 — 사유를 알린다.
@@ -703,7 +726,7 @@ def test_work_area_edited_on_screen_reaches_the_robot(qtbot) -> None:
 
     # 작업 영역 설정이 먼저 호 정보와 EOAT 를 준 상태.
     window._send_work_area(721.0, 500.0, 30.0, 0.0, radius_mm=834.6,
-                           thickness_mm=10.0, eoat_w_mm=30.0,
+                           eoat_w_mm=30.0,
                            eoat_h_mm=30.0, eoat_type=5.0)
     assert sent[-1][3] == 0.0
 
@@ -711,10 +734,12 @@ def test_work_area_edited_on_screen_reaches_the_robot(qtbot) -> None:
     window.main_screen.work_area_changed.emit(721.0, 500.0, 30.0, 20.0)
 
     assert sent[-1][3] == 20.0, "겹침이 로봇까지 가지 않았다"
-    # 다이얼로그가 안 묻는 값은 지워지지 않고 그대로 이어져야 한다.
-    assert sent[-1][4] == 8346          # 반지름 834.6 (0.1mm 단위)
+    # 다이얼로그가 안 묻는 값은 지워지지 않고 그대로 이어져야 한다. 반지름은
+    # 검사 대상 바깥 지름(기본 1.6692 m)의 절반, 두께(261)는 0 이다.
+    assert sent[-1][4] == 8346          # 바깥 반지름 834.6 (0.1mm 단위)
+    assert sent[-1][5] == 0             # 두께는 쓰지 않는다
     assert sent[-1][6:] == [300, 300, 5.0]   # 262/263 은 0.1mm (30.0mm)
-    assert "radius_mm" in saved[-1][1] and saved[-1][1]["radius_mm"] == 834.6
+    assert "thickness_mm" not in saved[-1][1] and "radius_mm" not in saved[-1][1]
     window.close()
 
 
@@ -1026,7 +1051,7 @@ def test_successful_robot_command_does_not_shout(qtbot) -> None:
 
 
 def test_erut_job_keeps_the_local_arc_and_probe_setup(qtbot) -> None:
-    """20260812 ERUT 요청에는 반지름·두께·EOAT 가 없다 — RCS 설정으로 채운다.
+    """ERUT 요청에는 반지름·EOAT 가 없다 — RCS 설정으로 채운다(반지름 = 바깥 지름 / 2).
 
     그대로 두면 0 이 되어 로봇이 굽은 벽을 평면으로 훑고, 그 0 이 설정에
     저장까지 되어 다음 작업에도 남았다.
@@ -1035,15 +1060,15 @@ def test_erut_job_keeps_the_local_arc_and_probe_setup(qtbot) -> None:
 
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
-    window._work_area_extra = {"radius_mm": 834.6, "thickness_mm": 10.0,
-                               "eoat_w_mm": 30.0, "eoat_h_mm": 30.0,
+    window._work_area_extra = {"eoat_w_mm": 30.0, "eoat_h_mm": 30.0,
                                "eoat_type": 5.0}
     bare = GridPlan(column_count=1, row_count=1,
                     cell_width=721.0, cell_height=500.0)
 
     filled = window._fill_from_local_setup(bare)
 
-    assert (filled.radius, filled.thickness, filled.eoat_probes) == (834.6, 10.0, 5)
+    assert (filled.radius, filled.eoat_probes) == (pytest.approx(834.6), 5)
+    assert not hasattr(filled, "thickness")
     window.close()
 
 
@@ -1053,15 +1078,13 @@ def test_values_sent_by_erut_win_over_the_local_setup(qtbot) -> None:
 
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
-    window._work_area_extra = {"radius_mm": 834.6, "thickness_mm": 10.0,
-                               "eoat_type": 5.0}
+    window._work_area_extra = {"eoat_type": 5.0}
     given = GridPlan(column_count=1, row_count=1, cell_width=721.0,
                      cell_height=500.0, radius=1200.0, eoat_probes=8)
 
     filled = window._fill_from_local_setup(given)
 
     assert (filled.radius, filled.eoat_probes) == (1200.0, 8)
-    assert filled.thickness == 10.0
     window.close()
 
 
@@ -1365,7 +1388,7 @@ def test_operation_records_follow_a_real_cell(qtbot, tmp_path, monkeypatch) -> N
     (book,) = (tmp_path / dr.JOBS).rglob("*.xlsx")
     rows = list(load_workbook(book).active.iter_rows(min_row=2, values_only=True))
     assert rows[0][4] == "RCS" and rows[0][6] == "1A" and rows[0][7] == "완료"
-    assert rows[0][16] == 2, "스캔 중 좌표 2개"
+    assert rows[0][15] == 2, "스캔 중 좌표 2개"   # 두께 열을 뺐다(2026-10-19)
     (scan,) = (tmp_path / dr.SCAN).rglob("*.txt")
     assert len(scan.read_text(encoding="utf-8").splitlines()) == 3 + 2
     events = next((tmp_path / dr.EVENTS).rglob("*.txt")).read_text(encoding="utf-8")
@@ -1445,4 +1468,73 @@ def test_stored_task_version_is_restored_without_loading(qtbot) -> None:
     window._apply_stored_settings("robot_task", {"task_version": "dusan_v9"})
     assert window.screens["cobot"].task_version() == "dusan_v5"
     assert window._task_paths()[0] == "Dusan/dusan_v5/dusan_v5.task"
+    window.close()
+
+
+def test_exhibition_task_is_listed_only_in_standalone(qtbot, monkeypatch) -> None:
+    """TPAC 전시판은 단독판 목록에만 있고, 고르면 dusan_v5 폴더의 그 태스크를 불러온다."""
+    from smr_operator_ui import edition
+
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    combo = window.screens["cobot"].task_version_combo
+    assert edition.EXHIBITION_TASK not in [combo.itemText(i) for i in range(combo.count())]
+    window.close()
+
+    monkeypatch.setattr(edition, "STANDALONE", True)
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    pushed, calls = _task_spy(window)
+    saved: list[tuple] = []
+    window.settings_service.save = lambda scope, values: saved.append((scope, dict(values)))
+    cobot = window.screens["cobot"]
+    combo = cobot.task_version_combo
+    names = [combo.itemText(i) for i in range(combo.count())]
+    assert names == ["dusan_v5", "dusan_v5_tpac_exhibition", "dusan_v4"]
+    assert cobot.task_version() == "dusan_v5"           # 기본값은 그대로
+
+    index = names.index(edition.EXHIBITION_TASK)
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)
+
+    assert pushed[-1] == ("Dusan/dusan_v5/dusan_v5_tpac_exhibition.task",
+                          "Dusan/dusan_v5/dusan_v5_nosensor_mark.task")
+    assert calls[-1] == "load_scan_task"
+    assert saved[-1] == ("robot_task", {"nosensor": False,
+                                        "task_version": "dusan_v5_tpac_exhibition"})
+    # 그 자체가 논센서판이다 — 판 체크는 막히고, 기록·3점 평가는 논센서로 본다.
+    assert not cobot.nosensor_check.isEnabled()
+    assert window._runs_nosensor() is True
+
+    # 다시 v5 로 돌아가면 판 체크가 살아난다. 저장된 값으로 불러올 때도 같다.
+    cobot.set_task_version("dusan_v5")
+    assert cobot.nosensor_check.isEnabled()
+    window._apply_stored_settings("robot_task", {"nosensor": False,
+                                                 "task_version": "dusan_v5_tpac_exhibition"})
+    assert cobot.task_version() == "dusan_v5_tpac_exhibition"
+    assert not cobot.nosensor_check.isEnabled()
+    window.close()
+
+
+def test_clock_does_not_put_korean_into_strftime(qtbot, monkeypatch) -> None:
+    """Windows strftime 은 형식을 시스템 로캘 코드페이지로 바꾼다 — 한국어가 아닌 PC 에서
+    「날짜」가 들어간 형식으로 RCS 가 켜지지 않았다(UnicodeEncodeError, 2026-10-27)."""
+    from datetime import datetime
+
+    import smr_operator_ui.app as app_module
+
+    class NonKoreanLocaleDatetime(datetime):
+        def strftime(self, fmt):
+            fmt.encode("ascii")          # 한글이 들어오면 그 PC 처럼 실패한다
+            return super().strftime(fmt)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 27, 14, 10, 5)
+
+    monkeypatch.setattr(app_module, "datetime", NonKoreanLocaleDatetime)
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    window.top_bar._update_clock()
+    assert window.top_bar.clock.text() == "날짜  2026-10-27 (Tue)\n시간  14:10:05"
     window.close()

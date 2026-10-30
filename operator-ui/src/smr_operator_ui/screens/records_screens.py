@@ -499,11 +499,11 @@ def describe_mode(snap: dict[str, Any]) -> str:
         probe = {5: "5축 십자", 8: "8축 직사각"}.get(int(float(area.get("eoat_type") or 0)), "-")
         lines.append(f"작업 영역: 호 {num(area.get('width_mm'))} × 높이 {num(area.get('height_mm'))} mm, "
                      f"격자간 겹침 {num(area.get('overlap_mm'))} mm")
-        lines.append(f"  반지름 {num(area.get('radius_mm'), 1)} mm, 두께 {num(area.get('thickness_mm'), 1)} mm, "
-                     f"프로브 {probe}")
+        # 반지름은 검사 대상 바깥 지름에서 구한다 — 두께는 쓰지 않는다(2026-10-19).
+        lines.append(f"  프로브 {probe}")
     target = snap.get("inspection_target") or {}
     if target:
-        lines.append(f"검사 대상: 지름 {num(target.get('diameter_m'), 3)} m × 높이 {num(target.get('height_m'), 3)} m"
+        lines.append(f"검사 대상: 바깥 지름 {num(target.get('diameter_m'), 3)} m × 높이 {num(target.get('height_m'), 3)} m"
                      + (f", 이동거리 {num(target.get('target_distance_m'), 2)} m"
                         if target.get("target_distance_m") else ""))
     cobot = snap.get("cobot") or {}

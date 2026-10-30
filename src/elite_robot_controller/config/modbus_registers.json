@@ -127,6 +127,11 @@
       "count": 4,
       "kind": "raw"
     },
+    "scan_segment": {
+      "address": 277,
+      "count": 1,
+      "kind": "raw"
+    },
     "home_flag": {
       "address": 276,
       "count": 1

@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from smr_operator_ui import edition
 from smr_operator_ui.components import ConnectionBadge
 from smr_operator_ui.components.rect_work_view import (
     MAX_PROBE_CHORD_MM, max_safe_arc_mm, probe_chord_mm,
@@ -67,6 +68,7 @@ from smr_operator_ui.services.erut_session import (
     HOME_BUSY_TEXT,
     MSG_AREA_APPLY_PENDING,
     MSG_ARC_LIMIT_CLAMPED,
+    MSG_HOLDER_MISMATCH,
 )
 from smr_operator_ui.services.ros_status_client import TASK_STATE_NAMES
 from smr_operator_ui.services.reference_poses import (
@@ -104,7 +106,12 @@ def robot_task_paths(version: str, nosensor: bool) -> tuple[str, str]:
       센서판   : <버전>.task,               <버전>_mark.task
       논센서판 : <버전>_nosensor_seq.task,  <버전>_nosensor_mark.task
     현장에서 실제 경로를 한 번 확인해야 한다(펜던트의 태스크 목록 기준).
+
+    TPAC 전시판(edition.EXHIBITION_TASK)은 버전이 아니라 dusan_v5 폴더의 태스크
+    하나다. 그 자체가 논센서판이라 판 체크와 상관없이 그 파일을 쓴다.
     """
+    if version == edition.EXHIBITION_TASK:
+        return (f"Dusan/dusan_v5/{version}.task", "Dusan/dusan_v5/dusan_v5_nosensor_mark.task")
     folder = f"Dusan/{version}"
     if nosensor:
         return (f"{folder}/{version}_nosensor_seq.task",
@@ -252,6 +259,7 @@ class TopBar(QFrame):
         battery.setObjectName("Product")
         layout.addWidget(battery)
         self._register_scalable(battery, 20)
+        self.battery = battery
         timer = QTimer(self)
         timer.timeout.connect(self._update_clock)
         timer.start(1000)
@@ -339,10 +347,20 @@ class TopBar(QFrame):
         except RuntimeError:
             return
 
+    #: 요일 표시. strftime 의 %a 는 PC 지역 설정마다 다르게 나와 고정해 둔다.
+    _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
     def _update_clock(self) -> None:
-        """운영자에게 표시되는 현재 날짜와 시각을 갱신한다."""
+        """운영자에게 표시되는 현재 날짜와 시각을 갱신한다.
+
+        한글은 strftime 형식 문자열에 넣지 않는다 — Windows 의 strftime 은 형식을
+        「유니코드를 지원하지 않는 프로그램용 언어」(시스템 로캘) 코드페이지로 바꾸는데,
+        그게 한국어가 아닌 PC 에서는 「날」을 못 바꿔 RCS 가 켜지지도 않았다
+        (UnicodeEncodeError: 'locale' codec, 2026-10-27 다른 PC 에서 확인).
+        """
         now = datetime.now()
-        self.clock.setText(now.strftime("날짜  %Y-%m-%d (%a)\n시간  %H:%M:%S"))
+        self.clock.setText(f"날짜  {now:%Y-%m-%d} ({self._WEEKDAYS[now.weekday()]})\n"
+                           f"시간  {now:%H:%M:%S}")
 
 
 class OperatorWindow(QMainWindow):
@@ -369,7 +387,8 @@ class OperatorWindow(QMainWindow):
         super().__init__()
         # 입력값은 클릭해서 키패드·키보드로만 바꾼다 — 휠로는 안 바뀐다.
         install_wheel_guard()
-        self.setWindowTitle("3S-Robotics | SMR Operator Console")
+        self.setWindowTitle("3S-Robotics | SMR Operator Console"
+                            + (" — 단독판 (로봇 · TPAC)" if edition.STANDALONE else ""))
         self.resize(self._UI_SCALE_REFERENCE_W, self._UI_SCALE_REFERENCE_H)
         self.setMinimumSize(self._UI_SCALE_REFERENCE_W, self._UI_SCALE_REFERENCE_H)
         self._base_qss = load_stylesheet()
@@ -438,11 +457,7 @@ class OperatorWindow(QMainWindow):
         self.main_screen.home_requested.connect(self._request_home)
         self.main_screen.alarm_reset_requested.connect(self._reset_alarms)
         self.main_screen.settings_requested.connect(lambda: self.navigate("settings"))
-        self.main_screen.target_dimensions_changed.connect(
-            lambda diameter, height: self.settings_service.save(
-                "inspection_target", {"diameter_m": diameter, "height_m": height}
-            )
-        )
+        self.main_screen.target_dimensions_changed.connect(self._on_target_dimensions)
         self.main_screen.speed_changed.connect(
             lambda percent: self._apply_speed_ratio(percent, source="속도 바")
         )
@@ -562,7 +577,15 @@ class OperatorWindow(QMainWindow):
         )
         # 화면을 열 때마다 손으로 새로고침을 누르게 하는 대신, 로봇이
         # 연결될 때 한 번 자동으로 물어 채워 둔다.
-        self.robot_node = RobotNodeSupervisor(self)
+        if edition.STANDALONE:
+            # 단독판: ROS 가 없어 로봇 제어 노드를 이 프로세스 안에서 돌린다 — 저장된
+            # 로봇 주소로 바로 붙는다(연결 설정에서 바꾸면 「연결」로 다시 붙는다).
+            from smr_operator_ui.standalone.inprocess_node import InProcessRobotNode
+            conn = self.screens["connection"]
+            self.robot_node = InProcessRobotNode(
+                self, endpoint=lambda: (conn.robot_ip(), conn.robot_port()))
+        else:
+            self.robot_node = RobotNodeSupervisor(self)
         self.robot_node.activity.connect(self.main_screen.show_activity)
         self.robot_node.duplicate_nodes.connect(self.cobot_manual_screen.add_alarm)
         self.ros_status.connected_changed.connect(
@@ -585,9 +608,16 @@ class OperatorWindow(QMainWindow):
         self.ros_status.error_occurred.connect(self._show_ros_error)
         if start_ros:
             self.ros_status.start()
-            # 프로그램 하나만 켜면 되도록 로봇 제어 노드도 UI 가 데리고 있는다.
-            # 이미 떠 있으면(터미널에서 따로 띄웠거나) 그대로 쓴다.
-            self.robot_node.start(already_running=self.ros_status.node_is_running())
+            if edition.STANDALONE:
+                # 단독판은 저장된 로봇 주소로 바로 붙는다 — 설정은 비동기로 불러오므로
+                # 연결 설정이 들어온 뒤에(안 오면 3초 뒤 기본값으로) 노드를 띄운다.
+                self._standalone_node_pending = True
+                self.settings_service.loaded.connect(self._start_standalone_node)
+                _call_later(self, 3000, lambda: self._start_standalone_node("connection", {}))
+            else:
+                # 프로그램 하나만 켜면 되도록 로봇 제어 노드도 UI 가 데리고 있는다.
+                # 이미 떠 있으면(터미널에서 따로 띄웠거나) 그대로 쓴다.
+                self.robot_node.start(already_running=self.ros_status.node_is_running())
 
         self._connect_sequencer()
         # 외부 통신은 ERUT(MQTT) 하나다 — 사내 MC MQTT 는 2026-10-07 에 뺐다.
@@ -597,9 +627,38 @@ class OperatorWindow(QMainWindow):
         self._setup_data_recorder()
         # 오류 로그·로그 파일·운전 모드 화면을 기록기와 설정에 잇는다.
         self._setup_record_screens()
+        if edition.STANDALONE:
+            self._apply_standalone_layout()
         # 상단바·요약 칸은 QSS 가 아니라 스스로 글자 크기를 잡는다 — 기준 배율을
         # 처음부터 넘겨 둔다(창이 기준 크기면 _apply_ui_scale 이 다시 부르지 않는다).
         self._apply_widget_scale(self._current_ui_scale)
+
+    def _start_standalone_node(self, scope: str, _values: dict) -> None:
+        """단독판 — 연결 설정을 불러온 뒤 로봇 제어 노드를 한 번만 띄운다."""
+        if scope != "connection" or not getattr(self, "_standalone_node_pending", False):
+            return
+        self._standalone_node_pending = False
+        self.robot_node.start()
+
+    #: 단독판에서 내지 않는 순회 알림 — 차량 · 리프트 · 아웃트리거 단계.
+    _STANDALONE_QUIET_WORDS = ("차량", "리프트", "아웃트리거", "안전 위치", "구역으로 이동")
+
+    def _show_standalone_activity(self, text: str) -> None:
+        if any(word in text for word in self._STANDALONE_QUIET_WORDS):
+            return
+        self.main_screen.show_activity(text)
+
+    def _apply_standalone_layout(self) -> None:
+        """단독판 — 쓰지 않는 장비(ERUT · 차량 · PLC)의 표시와 설정 칸을 감춘다."""
+        for name in ("PLC", "AMR", "ERUT"):
+            badge = self.top_bar.badges.get(name)
+            if badge is not None:
+                badge.hide()
+        self.top_bar.battery.hide()
+        conn = self.screens["connection"]
+        for section in ("차량용 PLC", "ERUT 접속"):
+            conn.hide_section(section)
+        self.main_screen.apply_standalone()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -681,6 +740,9 @@ class OperatorWindow(QMainWindow):
         self.erut_session.job_dropped.connect(self._drop_erut_job)
         self.ros_status.scan_arc_changed.connect(self._on_scan_arc)
         self.ros_status.scan_state_changed.connect(self._track_erut_contact)
+        # 로봇이 다음에 움직일 방향 → ERUT evt/motion (if-0.11). 홀더 채널 수는 견주기만.
+        self.ros_status.scan_segment_changed.connect(self._on_scan_segment)
+        self.erut_session.holder_reported.connect(self._check_holder_channels)
         self.ros_status.command_result.connect(self._on_home_command_result)
         self.ros_status.command_result.connect(self._on_pause_command_result)
         self.ros_status.command_result.connect(self._clear_home_pending_on_failure)
@@ -783,10 +845,10 @@ class OperatorWindow(QMainWindow):
         return h
 
     def _fill_from_local_setup(self, plan):
-        """ERUT 가 안 준 장비 값(반지름·두께·EOAT)을 RCS 설정으로 채운다.
+        """ERUT 가 안 준 장비 값(반지름·EOAT)을 RCS 설정으로 채운다.
 
         기준 규격 20260812 의 prepare/start 에는 area 와 scan 만 있다.
-        반지름·두께·검사장비 종류는 규격에 없는 **우리 쪽 장비 값**이라
+        반지름(바깥 지름 / 2)·검사장비 종류는 prepare/start 에 없는 **우리 쪽 장비 값**이라
         ERUT 가 보내지 않는다. 그대로 두면 0 이 되어 로봇이 굽은 벽을
         평면으로 보고 직선으로 훑고(반지름 0), 프로브 커버도 모른다
         (EOAT 0). 게다가 _send_work_area 가 그 0 을 **설정에 저장**까지
@@ -794,17 +856,13 @@ class OperatorWindow(QMainWindow):
         """
         extra = self._work_area_extra
         changes = {}
-        if plan.radius <= 0 and float(extra.get("radius_mm", 0) or 0) > 0:
-            changes["radius"] = float(extra["radius_mm"])
-        elif plan.radius <= 0:
-            # 반지름을 따로 넣지 않았으면 검사 대상 지름의 절반을 쓴다
-            # (ERUT calibrate 와 같은 규칙). 0 으로 보내면 로봇 태스크가
-            # "ARC IS ZERO" 로 멈춘다 — 평면 스캔은 없다.
-            diameter_m, _height_m = self.main_screen.orbit_view.target_dimensions()
-            if diameter_m > 0:
-                changes["radius"] = diameter_m * 500.0
-        if plan.thickness <= 0 and float(extra.get("thickness_mm", 0) or 0) > 0:
-            changes["thickness"] = float(extra["thickness_mm"])
+        if plan.radius <= 0:
+            # 벽 반지름은 검사 대상 **바깥 지름**의 절반 하나뿐이다(2026-10-19 — 두께는
+            # 쓰지 않는다). 0 으로 보내면 로봇 태스크가 "ARC IS ZERO" 로 멈춘다 —
+            # 평면 스캔은 없다.
+            radius = self._outer_radius_mm()
+            if radius > 0:
+                changes["radius"] = radius
         if plan.eoat_probes <= 0 and float(extra.get("eoat_type", 0) or 0) > 0:
             changes["eoat_probes"] = int(float(extra["eoat_type"]))
         # 스캔 상승 높이 제한은 Cobot 설정에서 EOAT 종류별로 넣은 값이다(2026-10-12).
@@ -875,13 +933,18 @@ class OperatorWindow(QMainWindow):
         나중에 실제 PLC/AMR이 생기면 더미 어댑터만 갈아끼우면 된다.
         """
         seq = self.sequencer
-        seq.activity.connect(self.main_screen.show_activity)
-        self.lift.activity.connect(self.main_screen.show_activity)
-        self.amr.activity.connect(self.main_screen.show_activity)
+        if edition.STANDALONE:
+            # 단독판에는 차량 · 리프트 · 아웃트리거가 없다 — 그 단계 알림은 내지 않는다
+            # (순서는 그대로 흐르고 더미가 바로 끝낸다). 로봇 · 스캔 알림만 보인다.
+            seq.activity.connect(self._show_standalone_activity)
+        else:
+            seq.activity.connect(self.main_screen.show_activity)
+            self.lift.activity.connect(self.main_screen.show_activity)
+            self.amr.activity.connect(self.main_screen.show_activity)
+            self.outrigger.activity.connect(self.main_screen.show_activity)
+            self.retractor.activity.connect(self.main_screen.show_activity)
         self.lift.position_changed.connect(self._show_motion_position)
         self.amr.position_changed.connect(self._show_motion_position)
-        self.outrigger.activity.connect(self.main_screen.show_activity)
-        self.retractor.activity.connect(self.main_screen.show_activity)
 
         # 이동 요청 → 더미 어댑터 → 도착 신호 → 시퀀서
         seq.lift_target_requested.connect(
@@ -1035,20 +1098,42 @@ class OperatorWindow(QMainWindow):
             "moved": round(self.amr.position, 1),
         }
 
+    def _on_target_dimensions(self, diameter_m: float, height_m: float) -> None:
+        """검사 대상 바깥 지름 · 높이가 바뀌었다 — 저장하고 로봇 반지름(260)도 맞춘다.
+
+        로봇 반지름은 바깥 지름의 절반 하나뿐이라(2026-10-19), 지름을 고치면 작업
+        영역을 다시 보낸다. 로봇과 끊겨 있거나 태스크가 돌면 붙은 뒤 · 끝난 뒤에 보낸다.
+        """
+        self.settings_service.save(
+            "inspection_target", {"diameter_m": diameter_m, "height_m": height_m})
+        width, height, scan_h, overlap = self.main_screen.rect_view.work_area()
+        self._send_work_area(width, height, scan_h, overlap, **self._work_area_extra)
+
+    def _set_target_dimensions(self, diameter_m: float, height_m: float) -> None:
+        """검사 대상 바깥 지름 · 높이를 바꾼다(ERUT calibrate 등) — 화면 · 저장 · 로봇."""
+        self.main_screen.orbit_view.set_target_dimensions(diameter_m, height_m)
+        self._on_target_dimensions(diameter_m, height_m)
+
+    def _outer_radius_mm(self) -> float:
+        """벽 바깥 반지름 [mm] = 검사 대상 **바깥 지름** / 2. 모르면 0.
+
+        2026-10-19 부터 RCS 는 바깥 지름 하나만 가지고 작업한다 — 두께는 쓰지 않는다.
+        로봇이 훑는 면이 바깥면이라 호 · 3점 측정 · 좌우 한계가 모두 이 반지름이다.
+        ERUT 의 diameter 도 외경이다(if-0.10 탭5 77행). 화면 「검사 대상」에서 고치거나
+        ERUT calibrate 가 오면 바뀐다.
+        """
+        diameter_m, _height_m = self.main_screen.orbit_view.target_dimensions()
+        return max(float(diameter_m), 0.0) * 500.0
+
     def _max_area_width(self) -> float:
         """로봇이 한 번에 훑을 수 있는 최대 구간 가로(호 길이) [mm]. 모르면 0.
 
-        현 한계(MAX_PROBE_CHORD_MM, 700 mm)와 벽 바깥면 반지름으로 정한다.
-        반지름은 작업 영역 값, 없으면 검사 대상 지름의 절반(캘리브레이션과 같다).
+        현 한계(MAX_PROBE_CHORD_MM, 700 mm)와 벽 바깥 반지름으로 정한다.
         """
-        extra = self._work_area_extra
-        radius = float(extra.get("radius_mm", 0) or 0)
-        if radius <= 0:
-            radius = self.main_screen.orbit_view.target_dimensions()[0] * 500.0
-        return max_safe_arc_mm(radius, float(extra.get("thickness_mm", 0) or 0))
+        return max_safe_arc_mm(self._outer_radius_mm())
 
     def _clamp_work_width(self, width_mm: float, radius_mm: float,
-                          thickness_mm: float, eoat_w_mm: float) -> float:
+                          eoat_w_mm: float) -> float:
         """호 길이를 충돌 안전 한계로 자르고, 잘렸으면 알린다.
 
         호를 길게 잡을수록 좌우 프로브 사이 **현**이 길어지는데, 굽은 벽에서
@@ -1059,11 +1144,11 @@ class OperatorWindow(QMainWindow):
         # 한계는 로봇 팔이 좌우로 갈 수 있는 현 길이다(700 mm) — EOAT 를
         # 골랐든 안 골랐든 같다. 예전에는 EOAT 가 없으면 자르지 않아, 호
         # 1000 mm 가 그대로 나가 로봇이 왼쪽 끝 자세를 못 풀고 멈췄다.
-        limit = max_safe_arc_mm(radius_mm, thickness_mm, eoat_w_mm)
+        limit = max_safe_arc_mm(radius_mm, eoat_w_mm)
         if limit <= 0 or width_mm <= limit:
             return width_mm
 
-        chord = probe_chord_mm(width_mm - eoat_w_mm, radius_mm, thickness_mm)
+        chord = probe_chord_mm(width_mm - eoat_w_mm, radius_mm)
         message = (f"작업 호 길이 {width_mm:.0f} mm 는 최대 작업 길이를 넘습니다 — "
                    f"로봇 좌우 이동 거리가 {chord:.0f} mm 로 한계"
                    f"({MAX_PROBE_CHORD_MM:.0f} mm)를 초과합니다. "
@@ -1081,43 +1166,42 @@ class OperatorWindow(QMainWindow):
 
     def _send_work_area(
         self, width_mm: float, height_mm: float, scan_h_mm: float,
-        overlap_mm: float, radius_mm: float = 0.0, thickness_mm: float = 0.0,
+        overlap_mm: float, radius_mm: float = 0.0,
         eoat_w_mm: float = 0.0, eoat_h_mm: float = 0.0,
         eoat_type: float = 0.0,
     ) -> None:
-        """셀 치수와 호 정보를 로봇(레지스터 256~261)과 저장소에 반영한다.
+        """셀 치수와 호 정보를 로봇(레지스터 256~264)과 저장소에 반영한다.
 
         `width_mm` 은 **호 길이**다(현이 아니다). 로봇이 반지름과 함께
-        현을 계산해 호 세 점을 만든다.
+        현을 계산해 호 세 점을 만든다. `radius_mm` 은 벽 바깥 반지름이고, 주지
+        않으면(0) 검사 대상 바깥 지름의 절반을 쓴다(`_outer_radius_mm`).
+        두께는 쓰지 않는다 — 로봇 261 에는 늘 0 이 간다(2026-10-19).
 
-        반지름·두께만 0.1mm 단위로 보낸다. 반지름이 834.6 처럼 소수라
+        반지름은 0.1mm 단위로 보낸다. 반지름이 834.6 처럼 소수라
         정수 mm 로는 호 모양이 눈에 띄게 틀어지기 때문이다. 레지스터는
         16bit 라 3276.7mm 까지 담긴다.
         """
-        # 다이얼로그는 너비/높이/스캐너/겹침만 묻는다. 나머지는 여기서
+        if radius_mm <= 0:
+            radius_mm = self._outer_radius_mm()
+        # 다이얼로그는 너비/높이/스캐너/겹침만 묻는다. EOAT 값은 여기서
         # 기억해 뒀다가 그때 이어 붙인다(_apply_work_area_edit 참고).
         self._work_area_extra = {
-            "radius_mm": radius_mm, "thickness_mm": thickness_mm,
             "eoat_w_mm": eoat_w_mm, "eoat_h_mm": eoat_h_mm,
             "eoat_type": eoat_type,
         }
         self._show_eoat_choice(eoat_type)
-        width_mm = self._clamp_work_width(width_mm, radius_mm, thickness_mm, eoat_w_mm)
+        width_mm = self._clamp_work_width(width_mm, radius_mm, eoat_w_mm)
         self.main_screen.set_work_area(width_mm, height_mm, scan_h_mm, overlap_mm,
-                                       eoat_w_mm, radius_mm, thickness_mm)
-        # 검사 대상 원(orbit_view)의 지름에는 두께를 안 섞고 따로 보여준다.
-        self.main_screen.orbit_view.set_target_thickness_mm(thickness_mm)
+                                       eoat_w_mm, radius_mm)
         self.settings_service.save(
             "work_area",
             {"width_mm": width_mm, "height_mm": height_mm,
              "scan_h_mm": scan_h_mm, "overlap_mm": overlap_mm,
-             "radius_mm": radius_mm, "thickness_mm": thickness_mm,
              "eoat_w_mm": eoat_w_mm, "eoat_h_mm": eoat_h_mm,
              "eoat_type": eoat_type},
         )
         self._push_work_area_to_robot(width_mm, height_mm, scan_h_mm, overlap_mm,
-                                      radius_mm, thickness_mm, eoat_w_mm, eoat_h_mm,
-                                      eoat_type)
+                                      radius_mm, eoat_w_mm, eoat_h_mm, eoat_type)
 
     # 로봇 컨트롤러가 주는 태스크 상태(레지스터 500). 1 = 실행 중.
     _TASK_STATE_RUNNING = 1
@@ -1125,9 +1209,9 @@ class OperatorWindow(QMainWindow):
     #: 29999 pause 로 세운 태스크. 팔은 벽에 붙은 채 그 자리에 서 있고, play 가
     #: 오면 거기서 잇는다 — 실행 중과 똑같이 취급한다(차량·리프트·홈 금지).
     _TASK_STATE_PAUSED = 2
-    # 작업 영역 중 다이얼로그가 안 묻는 값들. 화면에서 고칠 때 이어 붙인다.
+    # 작업 영역 중 다이얼로그가 안 묻는 값들(EOAT). 화면에서 고칠 때 이어 붙인다.
+    # 반지름은 여기 두지 않는다 — 늘 검사 대상 바깥 지름에서 구한다.
     _work_area_extra: dict = {
-        "radius_mm": 0.0, "thickness_mm": 0.0,
         "eoat_w_mm": 0.0, "eoat_h_mm": 0.0, "eoat_type": 0.0,
     }
 
@@ -1136,7 +1220,7 @@ class OperatorWindow(QMainWindow):
         """화면에서 고친 작업 영역을 저장하고 **로봇에도 보낸다**.
 
         예전에는 저장만 해서, 겹침을 바꿔도 로봇은 옛 값으로 계속 돌았다.
-        게다가 네 항목만 저장해 반지름·두께·EOAT 가 통째로 지워졌고, 다음에
+        게다가 네 항목만 저장해 반지름·EOAT 가 통째로 지워졌고, 다음에
         불러올 때 반지름 0(=평면)으로 로봇에 내려가 굽은 벽을 직선으로
         훑을 뻔했다. 다이얼로그가 안 묻는 값은 지금 값을 그대로 잇는다.
         """
@@ -1158,23 +1242,25 @@ class OperatorWindow(QMainWindow):
 
     def _push_work_area_to_robot(
         self, width_mm: float, height_mm: float, scan_h_mm: float,
-        overlap_mm: float, radius_mm: float, thickness_mm: float,
+        overlap_mm: float, radius_mm: float,
         eoat_w_mm: float, eoat_h_mm: float, eoat_type: float = 0.0,
     ) -> None:
         """작업 영역을 로봇 레지스터(256~264)에 쓰고 param_src(266)를 세운다.
 
         값은 **아홉 개**여야 한다 — 하나라도 모자라면 노드가 통째로
-        거부한다(레지스터 264 = EOAT 종류).
+        거부한다(레지스터 264 = EOAT 종류). 260 은 벽 바깥 반지름, 261(두께)은
+        늘 0 이다 — 로봇 태스크가 반지름에 두께를 더하므로 0 이어야 바깥
+        반지름 그대로 훑는다(2026-10-19, 바깥 지름만 쓴다).
 
         보낼 수 없는 상황이면(태스크 실행 중·연결 없음) 조용히 넘어가지 않고
         사유를 알린다. 안 그러면 화면 값과 로봇 값이 말없이 어긋난다.
         """
-        # 소수가 나오는 자리(스캐너 높이·반지름·두께·EOAT)는 0.1mm 단위로
+        # 소수가 나오는 자리(스캐너 높이·반지름·EOAT)는 0.1mm 단위로
         # 보낸다 — 커버 167.5, 반지름 834.6 처럼 정수 mm 로 반올림하면
         # 호 모양과 줄 간격이 눈에 띄게 틀어진다. 로봇 쪽 dus_init 이 같은
         # 자리에 0.1 을 곱해 되돌린다. 16bit 라 3276.7mm 까지 담긴다.
         values = [width_mm, height_mm, round(scan_h_mm * 10), overlap_mm,
-                  round(radius_mm * 10), round(thickness_mm * 10),
+                  round(radius_mm * 10), 0,
                   round(eoat_w_mm * 10), round(eoat_h_mm * 10), eoat_type]
         self._pending_work_area = values
         # 로봇이 다음 play 에서 읽을 값. 스캔 시작 전에 0 이 없는지 본다.
@@ -1234,6 +1320,11 @@ class OperatorWindow(QMainWindow):
         """지금 고른 버전·판의 (스캔, 마킹) 태스크 경로."""
         return robot_task_paths(getattr(self, "_task_version", DEFAULT_TASK_VERSION),
                                 bool(getattr(self, "_nosensor", False)))
+
+    def _runs_nosensor(self) -> bool:
+        """지금 도는 태스크가 논센서판인지. 전시판은 판 체크와 상관없이 논센서다."""
+        return (bool(getattr(self, "_nosensor", False))
+                or getattr(self, "_task_version", "") == edition.EXHIBITION_TASK)
 
     def _save_robot_task(self) -> None:
         """태스크 판·버전을 함께 저장한다.
@@ -1573,6 +1664,50 @@ class OperatorWindow(QMainWindow):
     def _on_scan_arc(self, values: list) -> None:
         self._scan_arc = [int(v) for v in values]
         self._watch_press(self._scan_arc)
+
+    # ---- ERUT 이동 방향 알림 (evt/motion · if-0.11) -------------------------------
+    def _on_scan_segment(self, segment: int) -> None:
+        """로봇 태스크가 다음 스캔 구간(277)을 세웠다 — 움직이기 전에 ERUT 에 알린다."""
+        self.erut_session.set_scan_segment(segment, self._segment_remain_mm(segment))
+
+    def _segment_remain_mm(self, segment: int) -> float | None:
+        """그 구간에서 움직일 남은 거리 [mm] (evt/motion remain_mm, 선택). 모르면 None.
+
+        줄(1 전진 · 3 후진)은 로봇에 보낸 호 길이(256)에서 지금 호 위치(286, 원점부터
+        0.1 mm)를 뺀다 — 전진은 원점에서 멀어지고 후진은 원점으로 온다. 줄 바꿈(2)은
+        로봇이 정한 줄 간격(296, 0.1 mm)이다.
+        """
+        if segment in (1, 3):
+            area = getattr(self, "_robot_work_area", None) or []
+            length = float(area[0]) if area else 0.0
+            if length <= 0:
+                return None
+            arc = getattr(self, "_scan_arc", None) or []
+            pos = min(max(arc[0] / 10.0, 0.0), length) if arc else (0.0 if segment == 1 else length)
+            return length - pos if segment == 1 else pos
+        if segment == 2:
+            state = getattr(self, "_last_scan_state", None) or []
+            pitch = state[6] / 10.0 if len(state) > 6 else 0.0
+            return pitch if pitch > 0 else None
+        return None
+
+    def _check_holder_channels(self, channels: int) -> None:
+        """ERUT 가 알린 홀더 채널 수(holder.channel_count)를 RCS 의 장착 EOAT 와 견준다.
+
+        로봇은 RCS 에서 고른 장착 EOAT(5축 · 8축)로 움직인다 — 채널 수로 바꾸지 않는다
+        (유효 높이 · 프로브 중심 오프셋이 EOAT 마다 다르다). 다르면 어느 한쪽 설정이
+        틀린 것이라 작업자에게 알리고, ERUT 에도 안내(evt/message)를 남긴다.
+        """
+        probes = int(float(self._work_area_extra.get("eoat_type") or 0))
+        if channels == probes:
+            return
+        mounted = f"{probes}축" if probes else "없음(툴 플랜지)"
+        text = (f"ERUT 홀더 채널 수 {channels} 가 RCS 의 장착 EOAT {mounted} 와 다릅니다 — "
+                f"로봇은 RCS 설정({mounted})으로 움직입니다. 홀더 설정을 확인하세요.")
+        self.main_screen.show_activity(text)
+        self.cobot_manual_screen.add_alarm(text)
+        self.erut_session.notify(*MSG_HOLDER_MISMATCH, text,
+                                 channel_count=channels, eoat_type=probes)
 
     # ---- 스캔 중 눌림 유지 (E3002) ---------------------------------------------------
     #: scan_arc(286~289)의 3번째 값 = 레지스터 288 — 스캔 중 눌림 상태.
@@ -2263,21 +2398,19 @@ class OperatorWindow(QMainWindow):
             keys = ("width_mm", "height_mm", "scan_h_mm", "overlap_mm")
             if all(k in values for k in keys):
                 eoat_w_mm = values.get("eoat_w_mm")
+                # 반지름은 저장값이 아니라 검사 대상 바깥 지름에서 구한다(옛 설정의
+                # radius_mm · thickness_mm 은 읽지 않는다 — 2026-10-19). 검사 대상은
+                # 작업 영역보다 먼저 불러온다.
+                radius_mm = self._outer_radius_mm()
                 self.main_screen.set_work_area(
                     *(float(values[k]) for k in keys),
                     eoat_w_mm=float(eoat_w_mm) if eoat_w_mm is not None else None,
-                    radius_mm=float(values["radius_mm"]) if values.get("radius_mm") is not None else None,
-                    thickness_mm=float(values["thickness_mm"]) if values.get("thickness_mm") is not None else None,
+                    radius_mm=radius_mm,
                 )
-                thickness_mm = values.get("thickness_mm")
-                if thickness_mm is not None:
-                    self.main_screen.orbit_view.set_target_thickness_mm(float(thickness_mm))
                 # 화면만 맞추면 로봇은 예전 레지스터 값으로 계속 돈다
                 # (겹침을 바꿨는데 로봇이 옛 행 수로 도는 원인이었다).
                 # 저장된 값을 로봇에도 그대로 밀어 준다.
                 self._work_area_extra = {
-                    "radius_mm": float(values.get("radius_mm") or 0.0),
-                    "thickness_mm": float(values.get("thickness_mm") or 0.0),
                     "eoat_w_mm": float(values.get("eoat_w_mm") or 0.0),
                     "eoat_h_mm": float(values.get("eoat_h_mm") or 0.0),
                     "eoat_type": float(values.get("eoat_type") or 0.0),
@@ -2286,8 +2419,7 @@ class OperatorWindow(QMainWindow):
                 self._push_work_area_to_robot(
                     float(values["width_mm"]), float(values["height_mm"]),
                     float(values["scan_h_mm"]), float(values["overlap_mm"]),
-                    float(values.get("radius_mm") or 0.0),
-                    float(values.get("thickness_mm") or 0.0),
+                    radius_mm,
                     float(values.get("eoat_w_mm") or 0.0),
                     float(values.get("eoat_h_mm") or 0.0),
                     float(values.get("eoat_type") or 0.0),
@@ -2445,7 +2577,8 @@ class OperatorWindow(QMainWindow):
 
         순회에 필요한 값은 RCS 가 가진 값으로 채운다.
           셀 크기·겹침  : 작업 영역 설정 (Modbus 256~259 로 나가는 값)
-          반지름·두께·EOAT : 작업 영역의 장비 값
+          반지름          : 검사 대상 바깥 지름 / 2 (두께는 쓰지 않는다)
+          EOAT            : 작업 영역의 장비 값
           열·행 수      : 검사 대상 원주 / 열 간격, 높이 / 행 간격 (올림)
                          — 12열, 6행으로 자른다.
         겹침은 격자끼리의 겹침이라 가로·세로 이동량에서 뺀다.
@@ -2469,13 +2602,15 @@ class OperatorWindow(QMainWindow):
         rows = int(ceil(target_h_m * 1000.0 / row_pitch))
         columns = min(max(columns, 1), self._MAX_COLUMNS)
         rows = min(max(rows, 1), self._MAX_ROWS)
+        if edition.STANDALONE:
+            # 단독판은 차량 · 리프트가 없다 — 작업 영역 한 구역만 스캔한다.
+            columns = rows = 1
         extra = self._work_area_extra
         grid = GridPlan(
             column_count=columns, row_count=rows,
             cell_width=width, cell_height=height,
             scan_overlap=0.0, pitch_x=overlap, pitch_y=overlap,
-            radius=float(extra.get("radius_mm", 0) or 0),
-            thickness=float(extra.get("thickness_mm", 0) or 0),
+            radius=self._outer_radius_mm(),
             eoat_probes=int(float(extra.get("eoat_type", 0) or 0)),
         )
         self.main_screen.show_activity(
@@ -3002,17 +3137,11 @@ class OperatorWindow(QMainWindow):
         """
         # 좌표계를 새로 잡는다 — 앞서 끝낸 구간 표시는 지운다.
         self._erut_done_sections = set()
-        radius_mm = float(diameter_mm) / 2.0
-        extra = dict(self._work_area_extra)
-        extra["radius_mm"] = radius_mm
-        # 저장은 비동기라 여기서 바로 반영해 둔다 — 로봇이 start 에서 이 반지름으로
-        # 3점 측정·호를 계산한다.
-        self._work_area_extra = extra
-        width_mm, cell_h_mm, scan_h_mm, overlap_mm = self.main_screen.rect_view.work_area()
-        self._send_work_area(width_mm, cell_h_mm, scan_h_mm, overlap_mm, **extra)
-        if height_mm > 0:
-            self.main_screen.orbit_view.set_target_dimensions(
-                float(diameter_mm) / 1000.0, float(height_mm) / 1000.0)
+        # ERUT 의 diameter 는 **바깥 지름**이다(if-0.10 탭5 77행). 검사 대상 바깥 지름을
+        # 바꾸면 로봇 반지름도 그 절반이 된다(_outer_radius_mm) — 두께는 쓰지 않는다.
+        _old_d, old_h = self.main_screen.orbit_view.target_dimensions()
+        height_m = float(height_mm) / 1000.0 if height_mm > 0 else old_h
+        self._set_target_dimensions(float(diameter_mm) / 1000.0, height_m)
         planned = math.pi * float(diameter_mm)
         self._calibration_lap = {"planned": planned, "start": self.amr.position,
                                  "target": self.amr.position + planned}
@@ -3110,14 +3239,13 @@ class OperatorWindow(QMainWindow):
             self._expected_wall_radius_mm(),
             # 논센서 판은 눌림 센서가 없어 접촉 수(305)가 늘 0 이다 — 계산한 접점을
             # 그대로 쓰므로 접촉 수는 보지 않는다.
-            None if getattr(self, "_nosensor", False) else getattr(self, "_probe_result", []),
+            None if self._runs_nosensor() else getattr(self, "_probe_result", []),
         )
         self.main_screen.show_activity(f"3점 측정 — {result.describe()}")
 
     def _expected_wall_radius_mm(self) -> float:
-        """로봇이 호를 그릴 때 쓰는 반지름 = 입력 반지름 + 두께."""
-        extra = self._work_area_extra
-        return float(extra.get("radius_mm") or 0.0) + float(extra.get("thickness_mm") or 0.0)
+        """로봇이 호를 그릴 때 쓰는 반지름 = 벽 바깥 반지름(바깥 지름 / 2)."""
+        return self._outer_radius_mm()
 
     def _handle_origin_wait(self, values: list) -> None:
         """로봇이 시작점(원점)에 붙어 서면 적심 → 스캔으로 넘어가게 풀어 준다.
@@ -3395,6 +3523,8 @@ class OperatorWindow(QMainWindow):
         아웃트리거 고정 + 차량 정지 + 리프트 정지, 셋을 다 본다. 실제
         차량이면 차량이 주는 상태로, 더미면 어댑터 상태로 판단한다.
         """
+        if edition.STANDALONE:
+            return True                     # 단독판에는 차량이 없다 — 늘 굳어 있다
         if any(m.moving for m in (self.amr, self.lift, self.outrigger)):
             return False
         if self.outrigger.position < 1:
@@ -3414,7 +3544,9 @@ class OperatorWindow(QMainWindow):
         self.ros_status.send_vehicle_ready(self._vehicle_secured(), force=force)
 
     def _vehicle_mode(self) -> str:
-        """설정값 — "auto" / "dummy" / "vehicle"."""
+        """설정값 — "auto" / "dummy" / "vehicle". 단독판은 늘 더미(차량 없음)."""
+        if edition.STANDALONE:
+            return "dummy"
         screen = self.screens["connection"]
         field = screen.field("차량 제어")
         return screen.VEHICLE_MODES.get(field.currentText(), "auto") if field else "auto"
@@ -3531,7 +3663,7 @@ class OperatorWindow(QMainWindow):
         self._vehicle_amr.totals = (total_d, total_h)
 
     def _record_job(self, source: str, job_id: str, plan) -> None:
-        self.data_recorder.begin_job(source, job_id, plan, nosensor=self._nosensor)
+        self.data_recorder.begin_job(source, job_id, plan, nosensor=self._runs_nosensor())
         self._set_vehicle_totals(plan)
         self._warn_vehicle_mode()
 
@@ -3541,6 +3673,8 @@ class OperatorWindow(QMainWindow):
         더미인 채로 작업을 돌리면 화면 순서는 다 흐르는데 차량은 가만히
         있는다 — 무엇이 잘못됐는지 알기 어려우므로 시작할 때 못박아 둔다.
         """
+        if edition.STANDALONE:
+            return                          # 단독판은 차량이 없는 것이 정상이다
         if self.amr.active != "vehicle":
             self.main_screen.show_activity(
                 "차량 제어가 '더미'입니다 — 차량·리프트·아웃트리거는 실제로 움직이지 않습니다"

@@ -12,7 +12,7 @@ import time
 import threading
 
 from .modbus_io import RobotModbus, ServerBridge
-from .scan_signals import COIL_BASE, LATCH_MS, STATUS_REGISTER, ScanSignalOutput
+from .scan_signals import COIL_BASE, LATCH_MS, STATE_SCAN, STATUS_REGISTER, ScanSignalOutput
 from .robot_map import (READ_BLOCKS, RobotData, OUT_FORMATS,
                         encode_payload, to_uint16, clamp_int16,
                         build_read_blocks)
@@ -471,6 +471,17 @@ class ExternalServer:
         except Exception:
             pass
 
+    def speed_live(self, data: RobotData) -> bool:
+        """속도 자리(410~415)에 값을 내도 되는가.
+
+        pose 자리(400)에 제로점 기준 스캔 좌표를 내는 동안(pose_source "scan")에는
+        그 좌표가 스캔 구간(290 = 6)에서만 살아 있다. 속도도 그때만 낸다 — 아니면
+        좌표는 0 인데 속도만 홈 -> 대기 위치 · 3점 측정 · 후퇴 이동을 그대로 내보낸다
+        (2026-10-27 전시회). 로봇은 스캔 플래그(277)를 세운 뒤에야 움직이므로, 스캔
+        플래그가 서기 전과 스캔이 끝난 뒤(290 = 5)에는 언제나 0 이다.
+        """
+        return self.pose_source != "scan" or data.scan_state == STATE_SCAN
+
     # ------------------------------------------------------------------
     def _write_mirror(self, data: RobotData):
         """
@@ -488,6 +499,8 @@ class ExternalServer:
         m = self.mirror_map
         self.bridge.set_hr(m["joint"], [to_uint16(v) for v in data.joint_raw])
         data.tcp_spd = self._calc_speed(pose, data)
+        if not self.speed_live(data):
+            data.tcp_spd = [0] * 6
 
         # 장치가 묻는 순서(pose → speed → offset)에 맞춰 값을 배치한다.
         # mirror_shift 만큼 돌려 넣으면 밀린 표시를 상쇄할 수 있다.

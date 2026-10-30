@@ -21,13 +21,11 @@ class OrbitView(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._state = CycleState()
-        # 시험용 외벽 기준. 검사 대상 자체의 지름(안쪽 면 기준, R834.6 ->
-        # 1.6692 m)과 두께(10mm)는 따로 표시한다 — 로봇이 훑는 바깥 면
-        # 반지름(834.6+10=844.6)은 로봇 경로 계산에만 쓰는 값이지 "검사
-        # 대상의 지름"이 아니다(예전엔 여기 합쳐서 보여줬다).
+        # 검사 대상의 **바깥 지름**(외경)과 높이. 로봇이 훑는 면이 바깥면이라
+        # 로봇 경로의 반지름도 이 지름의 절반이다 — 2026-10-19 부터 두께는 쓰지
+        # 않는다(ERUT 규격의 diameter 도 외경이다, if-0.10 탭5 77행).
         self._target_diameter_m = 1.6692
         self._target_height_m = 0.5
-        self._target_thickness_mm = 10.0
         # 지금 몇 번째 행(층)을 도는지. 열(구간)만으로는 알 수 없다.
         self._current_row = 1
         self._total_rows = 1
@@ -64,11 +62,6 @@ class OrbitView(QWidget):
         """중앙에 표시되는 검사 대상의 지름과 높이를 갱신한다."""
         self._target_diameter_m = diameter_m
         self._target_height_m = height_m
-        self.update()
-
-    def set_target_thickness_mm(self, thickness_mm: float) -> None:
-        """검사 대상의 두께를 지름과 별도로 갱신한다(단위 mm)."""
-        self._target_thickness_mm = thickness_mm
         self.update()
 
     def set_row_position(self, row: int, rows: int) -> None:
@@ -193,13 +186,11 @@ class OrbitView(QWidget):
         center, radius = self._geometry()
 
         target = self._target_rect()
-        # 지름에는 두께를 포함하지 않는다(검사 대상 자체의 크기) — 두께는
-        # 따로 표기한다. 행(층)은 열(구간) 진행만으로는 알 수 없는
-        # 정보라 같이 보여준다("몇층인지 알 수가 없음" 대응).
+        # 지름은 바깥 지름(외경)이다. 행(층)은 열(구간) 진행만으로는 알 수
+        # 없는 정보라 같이 보여준다("몇층인지 알 수가 없음" 대응).
         target_text = (
             "검사 대상\n"
-            f"Ø {self._target_diameter_m:.2f} m\n"
-            f"두께 {self._target_thickness_mm:.0f} mm\n"
+            f"바깥 Ø {self._target_diameter_m:.2f} m\n"
             f"H {self._target_height_m:.2f} m\n"
             f"{self._current_row} / {self._total_rows} 층"
         )

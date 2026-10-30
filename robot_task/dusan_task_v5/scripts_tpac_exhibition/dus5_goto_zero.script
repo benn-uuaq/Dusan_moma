@@ -1,0 +1,120 @@
+# =============================================================================
+#  dus5_goto_zero.script — dusan_v5 (tpac_exhibition)
+#
+#  TPAC 전시판. 논센서판(scripts_nosensor)과 같고 원점에서만 다르다:
+#    - 시작 신호(팝업 · 레지스터 267)를 기다리지 않고 바로 스캔에 들어간다.
+#    - 적심(좌우 비비기 wet_cycles 번)을 하지 않는다.
+#  이 파일의 이동은 모두 툴 기준이라 바닥판(시편을 눕힌 배치)에서도 그대로다.
+#  바닥판 때문에 좌표를 바꾼 노드는 이 폴더의 init · probe_c · probe_l · pass_r/l ·
+#  up · finish · go_home · leave_home 이다(dus5_init 의 「바닥판 작업 좌표계」).
+#  move_start · move_start_waypoint · probe_r 은 scripts_nosensor 의 것을 쓴다.
+#  측정이 끝난 뒤 원점(Y- 끝)으로 돌아가 스캔을 시작할 준비를 한다
+#
+#  펜던트에서 "6_goto_zero" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+# ---- 차량 고정 확인 (309) -------------------------------------------------
+# 스캔을 시작하기 전에 차량 쪽이 굳어 있는지 한 번 더 본다. 리프트가 서고,
+# 차량이 정지하고, 아웃트리거 고정이 끝나야 RCS 가 309 에 1 을 쓴다.
+# 움직이는 중이면 0 이므로 여기서 기다린다(290 = 14). 외부 제어(266 = 1)가
+# 아니면 차량이 없는 판이라 그냥 지나간다. dus5_init 의 ini_veh_wait 와
+# 같은 규칙이다 — 스크립트 노드마다 따로 돌아서 함수를 다시 둔다.
+def gz_veh_wait():
+  if (read_port_register(266, True) != 1):
+    return True
+  end
+  gz_vt = 0
+  while (read_port_register(309, True) != 1):
+    write_port_register(290, 14)
+    sync()
+    gz_vt = gz_vt + 1
+    if (gz_vt > veh_wait_cyc):
+      write_port_register(299, 8)
+      write_port_register(290, 9)
+      halt()
+    end
+  end
+  return True
+end
+
+
+def gz_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+def gz_w6(a, p):
+  gz_w1(a, p[0] * 10000)
+  gz_w1(a + 1, p[1] * 10000)
+  gz_w1(a + 2, p[2] * 10000)
+  gz_w1(a + 3, p[3] * 1000)
+  gz_w1(a + 4, p[4] * 1000)
+  gz_w1(a + 5, p[5] * 1000)
+end
+
+
+def gz_tip_movel(target, blend):
+  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
+  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
+  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
+  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
+  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
+  # 앞 노드(dus5_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
+  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
+  if (pose_dist(get_tcp_offset(), eoat_ofs) > 0.000001):
+    set_tcp(eoat_ofs)
+  end
+  movel(pose_trans(target, eoat_ofs), a = a_l, v = v_l, r = blend)
+end
+
+
+write_port_register(290, 3)
+
+# 현재 TCP 자세를 기준으로 가면 안 된다 — 직전 지점(p_r_pose)의 회전이
+# 그대로 남아 있어 zero_pose 의 회전과 다르고, 그 채로 위치만 옮기면
+# 볼록한 곡면을 가로질러 충돌한다. probe_l/r 과 같은 방식으로, zero_pose
+# 자세 그대로 TCP 기준 -Z(뒤로) 물러난 지점까지 먼저 이동한 뒤
+# 그 자세로 +Z(전진)해 들어간다.
+#
+# 지금 로봇은 dus5_probe_r 이 끝낸 자리(Y+ 끝)에 있고 z_stand 는 호 반대쪽
+# (원점, Y- 끝) 이라 호 전체 폭만큼 자세가 크게 돌아간다. 한때
+# movej(get_inverse_kin(...))로 바꿨었는데, 좌우 이동은 movel(직선)로
+# 가도록 되돌린다.
+z_stand = pose_trans(zero_pose, [0, 0, -probe_dist * 0.001, 0, 0, 0])
+gz_tip_movel(z_stand, 0)
+# 다음 계산(get_actual_tcp_pose · 접촉 탐색)은 플랜지 기준이다 — 선 뒤에 되돌린다.
+set_tcp([0, 0, 0, 0, 0, 0])
+# z_stand -> zero_pose 도 probe_dist 만큼밖에 안 되는 짧은 이동이지만,
+# 막 큰 자세 변화(movej)를 거친 직후라 그 근처는 여전히 movel 의 직선
+# 경로 역기구학이 빡빡할 수 있다(dus5_probe_r.script 에서 실제로 발생).
+# 센서판과 달리 접촉을 눌림으로 찾는 게 아니라 계산값으로 바로 들어가는
+# 것뿐이라 직선일 필요가 없다 — movej 로 바꾼다.
+movej(get_inverse_kin(zero_pose), a = a_j, v = v_j / 3.0)  # 접촉 위치 진입: 천천히
+
+gz_w6(270, zero_pose)      # 원점 pose (스캔 중 변하지 않는다)
+write_port_register(294, 1)
+path_len = 0
+
+# ---- 원점 도착 : 바로 스캔 ------------------------------------------------
+# 전시판은 원점에서 서지 않는다. 290 = 7(시작 신호 대기)과 8(적심)을 건너뛰고
+# 곧장 스캔(6)으로 간다 — 7 을 잠깐이라도 내면 RCS 가 "시작점에 붙었습니다
+# — 곧 적심" 을 띄우고 허가(267)를 보내려 한다. 267 은 이 판에서 읽지 않는다.
+
+# 차량·리프트가 굳어 있어야 스캔에 들어간다(외부 제어 266 = 1 일 때만 본다 —
+# RCS 단독판은 309 를 바로 세우고, 펜던트에서 혼자 돌리면 그냥 지나간다).
+gz_veh_wait()
+
+# 여기서부터 스캔 구간이다 — 호를 그리는 패스뿐 아니라 줄을 바꾸는
+# 상승(dus5_up)까지 포함한다. 이 구간에서만 제로점 기준 좌표(280~285)가
+# 살아 있고(dus5_init 의 pub_rel), RCS 도 state=6 으로 스캔 중을 안다.
+write_port_register(290, 6)

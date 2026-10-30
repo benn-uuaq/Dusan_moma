@@ -1,6 +1,6 @@
-"""ERUT 표준 인터페이스(if-0.9)의 검사로봇 쪽을 구현하는 프로토콜 계층.
+"""ERUT 표준 인터페이스(if-0.11)의 검사로봇 쪽을 구현하는 프로토콜 계층.
 
-규격은 `mqtt_test/MQTT_인터페이스/ERUT_검사로봇_MQTT_표준인터페이스_if-0.9.xlsx` 다.
+규격은 `mqtt_test/MQTT_인터페이스/ERUT_검사로봇_MQTT_표준인터페이스_if-0.11.xlsx` 다.
 3S 가 구현할 것은 탭1~5·8~10 이고, 탭6·7 은 ERUT 내부(클라이언트↔브릿지) 규격이라
 무관하다. 상대는 ERUT 의 Robot Service(로봇 브릿지)다.
 
@@ -21,7 +21,12 @@
     그 밖     → res 501 + error E6501 NOT_IMPLEMENTED
 
 상시 발행: evt/status(5초 + 바뀌면 바로) · evt/contact(2초 + 바뀌면 바로) ·
-evt/home(접속 시 + 바뀔 때만) · evt/info(접속 시) · evt/progress(작업 중 2초).
+evt/home(접속 시 + 바뀔 때만) · evt/info(접속 시) · evt/progress(작업 중 2초) ·
+evt/motion(구역 검사 중 방향이 바뀔 때 움직이기 전에 — if-0.11, 로봇 스캔 구간 277).
+
+if-0.11: 속도는 scan.speed_pct(%) · scan.speed_mm_s(mm/s) 두 칸으로 오고 로봇은
+speed_pct 를 쓴다(없으면 mm/s 를 100 mm/s = 100 % 로). holder.channel_count 는 형식만
+검사하고 이동에는 쓰지 않는다 — RCS 의 장착 EOAT 와 다르면 작업자에게 알린다.
 
 **아직 시험용·미구현**: 배터리·충전(차량 개발자에게 받기로 했다 — 그때까지는
 칸을 싣지 않는다. 규격이 0 으로 채우지 말라고 한다), 캘리브레이션의 총 둘레
@@ -43,23 +48,30 @@ from smr_operator_ui.services.erut_errors import make_error
 from smr_operator_ui.services.job_sequencer import GridPlan, SequencerState, cell_label
 
 # ---- 자기소개 (탭8 evt/info) ------------------------------------------------
-INTERFACE_VERSION = "0.10"
+INTERFACE_VERSION = "0.11"
 VENDOR = "3S"
 MODEL = "SMR-UT-CS612"
 DEVICE_TYPE = "articulated_arm"
 #: 지원하는 기능. battery·charging 은 차량 자료가 오면 넣는다(TODO).
 #: 마킹은 마커가 ERUT 것이라 marking 이 아니라 mark_positioning 이다(탭2 초안).
 #: home(if-0.5): 이동 안전 자세를 evt/home 으로 알린다 — 3S 가 요청한 기능.
+#: motion_direction(if-0.11): 구역 검사 중 움직이기 전에 방향을 evt/motion 으로 알린다.
 CAPABILITIES = (
     "core_control", "core_events", "calibration", "prepare",
     "probe_contact", "mark_positioning", "position_feedback", "home",
+    "motion_direction",
 )
 
 #: 합의한 검사면. 모르는 surface 는 400 으로 거절한다(탭4 E-1 11번) — 짐작으로
 #: 다른 면을 검사하면 보고서에는 요청한 면으로 적힌다.
 SURFACES = ("outer",)
-#: 낼 수 있는 최고 검사 속도 [mm/s]. 넘으면 거절한다(탭8 45행).
+#: 속도 비율 100 % 일 때의 스캔 속도 [mm/s] (evt/info timings.scan_speed_max_mm_s ·
+#: if-0.11 탭8 53행). 로봇 태스크의 스캔 속도 변수(v_scan_set)가 100 mm/s 이고 태스크가
+#: 그 위로는 자른다(dus5_init). 노트북은 이 값을 100 % 로 scan.speed_pct 를 계산한다.
 SCAN_SPEED_MAX = 100
+#: 로봇 속도 비율의 하한 [%] — RCS 속도 바 · 29999 `speed -v` 와 같다. 더 느리게는
+#: 못 가므로 거절한다(탭8 45행 「못 하면 400 E6001 로 분명히 거절」).
+SPEED_PCT_MIN = 2
 
 STATUS_PERIOD_MS = 5_000       # evt/status 재발행 (탭2 11행 「5초 안팎」)
 CONTACT_PERIOD_MS = 2_000      # evt/contact 재발행 (탭2 12행 「2초마다」)
@@ -107,6 +119,7 @@ HOME_BUSY_TEXT = "현재 로봇이 동작 중이므로 홈 이동이 불가합�
 MSG_HOME_NOT_ALLOWED = ("M1001", "HOME_NOT_ALLOWED")
 MSG_ARC_LIMIT_CLAMPED = ("M2001", "ARC_LIMIT_CLAMPED")
 MSG_AREA_APPLY_PENDING = ("M2002", "AREA_APPLY_PENDING")
+MSG_HOLDER_MISMATCH = ("M2003", "HOLDER_MISMATCH")
 
 #: 좌표계가 무효가 되는 순간 내는 장애 (탭2 10행).
 E_CALIBRATION_LOST = ("E1003", "CALIBRATION_LOST")
@@ -117,6 +130,14 @@ E_OPERATOR_STOPPED = ("E9401", "STOPPED_BY_OPERATOR")
 # 원점을 잡지 못함 — if-0.10 표준 번호(예전 3S E9402, 탭11 Q-33).
 E_CALIBRATION_FAILED = ("E1004", "CALIBRATION_FAILED")
 E_MARK_FAILED = ("E9403", "MARK_FAILED")
+
+
+def _number(value: Any) -> float | None:
+    """요청의 숫자 칸. 참거짓 · 글자 · null · 무한대면 None (if-0.11 탭8 76행)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
 
 
 def _mm(value: Any) -> float:
@@ -144,6 +165,9 @@ class ErutSession(QObject):
     resume_requested = pyqtSignal()
     abort_requested = pyqtSignal()
     speed_requested = pyqtSignal(int)
+    # ERUT 가 실어 보낸 홀더 장착 채널 수(holder.channel_count, if-0.11). 이동에는
+    # 쓰지 않는다 — app.py 가 RCS 의 장착 EOAT 와 견줘 다르면 작업자에게 알린다.
+    holder_reported = pyqtSignal(int)
     # 로봇을 세워 달라는 요청. 순회(시퀀서)와 별개로 나간다.
     robot_stop_requested = pyqtSignal()
     # 준비해 둔(또는 돌던) 작업을 버리라는 요청 — 홈으로 보내지 않고 순회만 접는다.
@@ -212,6 +236,11 @@ class ErutSession(QObject):
         self._moved_mm = 0
         self._contact: bool | None = None
         self._status_sig: tuple | None = None
+        # 이동 방향 알림(evt/motion). 마지막으로 낸 방향 · 그 구역의 seq · 로봇 스캔 구간.
+        self._motion_dir: str | None = None
+        self._motion_job = ""
+        self._motion_seq = 0
+        self._segment = 0
 
         # app.py 가 물려 주는 값들. 기본값은 장비 없이도 돌게 비워 둔다.
         # 차량·리프트 현재 값 {"lift_height", "moved"} (mm)
@@ -417,6 +446,42 @@ class ErutSession(QObject):
             return
         self.client.publish_contact(
             "attached" if self._contact else "detached", self._job_id)
+
+    # ------------------------------------------------------------ 이동 방향
+    #: 로봇 태스크의 스캔 구간(레지스터 277 — TPAC 동기 신호와 같은 값) → 구역 좌표의
+    #: 방향(탭2 49행 ① · 탭5 77행: +x 는 바깥에서 마주 볼 때 오른쪽, +y 는 위).
+    #: 1 전진 = 원점(구역 왼쪽 끝)에서 오른쪽으로 → +x, 3 후진 → -x, 2 줄 바꿈(위로) → +y.
+    #: 0(줄 끝 · 적심 · 3점 측정 · 끝)은 none 이다.
+    _MOTION_DIRS = {1: "+x", 3: "-x", 2: "+y"}
+
+    def set_scan_segment(self, segment: int, remain_mm: float | None = None) -> None:
+        """로봇이 다음에 움직일 스캔 구간을 알려 왔다 → evt/motion (if-0.11 탭2 48행).
+
+        로봇 태스크는 277 을 먼저 쓰고 sig_hold(0.25 s) 뒤에 움직이므로 움직이기
+        전에 나간다. 멈춰 둔(paused) 동안은 이미 none 을 냈다 — 재개할 때 다시 낸다.
+        """
+        self._segment = int(segment)
+        if self.activity_state() == "paused":
+            return
+        self._send_motion(self._MOTION_DIRS.get(self._segment, "none"), remain_mm)
+
+    def _send_motion(self, direction: str, remain_mm: float | None = None) -> None:
+        """방향이 바뀔 때만 한 번 보낸다. ERUT 가 시킨 구역 검사(start) 중에만.
+
+        seq 는 job_id 마다 1 부터 커진다 — 같은 job_id 를 다시 받아도 이어서 센다
+        (ERUT 는 앞서 받은 것보다 크지 않은 seq 를 늦게 온 옛 알림으로 버린다).
+        아직 움직이지 않은 구역에 none 은 보내지 않는다.
+        """
+        if not self._start_req_id or not self._job_id:
+            return
+        if self._job_id != self._motion_job:
+            self._motion_job, self._motion_seq, self._motion_dir = self._job_id, 0, None
+        if direction == self._motion_dir or (self._motion_dir is None and direction == "none"):
+            return
+        self._motion_dir = direction
+        self._motion_seq += 1
+        self.client.publish_motion(self._job_id, direction, self._motion_seq,
+                                   remain_mm if direction != "none" else None)
 
     # ------------------------------------------------------------ 활동 상태
     def activity_state(self) -> str:
@@ -808,6 +873,7 @@ class ErutSession(QObject):
         if same:
             self._plan = plan
             self._apply_speed(content)
+            self._take_holder(content)
             self._prepared = False
         else:
             self._drop_prepared()
@@ -827,6 +893,7 @@ class ErutSession(QObject):
         self._moved_mm = 0
         self._contact = None           # 새 구역 — 접촉 상태는 모름에서 시작
         self._apply_speed(content)
+        self._take_holder(content)
 
     def _parsed_plan(self, req_id: str, action: str, content: dict) -> GridPlan | None:
         """요청 모양을 확인해 구간을 만든다 — 원점과 무관한 형식 검사만(400 E6001).
@@ -843,11 +910,13 @@ class ErutSession(QObject):
             self._refuse(req_id, action, E.BAD_REQUEST,
                          f"합의하지 않은 surface: {surface} (지원: {', '.join(SURFACES)})")
             return None
-        speed = (content.get("scan") or {}).get("speed")
-        if speed is not None and _mm(speed) > SCAN_SPEED_MAX:
-            self._refuse(req_id, action, E.BAD_REQUEST,
-                         f"scan.speed {_mm(speed):g} mm/s > 최고 {SCAN_SPEED_MAX} mm/s",
-                         max_speed=SCAN_SPEED_MAX)
+        _percent, reason, fields = self._read_speed(content.get("scan") or {})
+        if reason:
+            self._refuse(req_id, action, E.BAD_REQUEST, reason, **fields)
+            return None
+        _channels, reason = self._read_holder(content)
+        if reason:
+            self._refuse(req_id, action, E.BAD_REQUEST, reason)
             return None
         return plan
 
@@ -984,6 +1053,7 @@ class ErutSession(QObject):
         """구간을 다 돌았다 (탭3 16번). 완료는 처음 start 의 req_id 로 낸다."""
         if not self._start_req_id:
             return
+        self._send_motion("none")
         req_id, self._start_req_id = self._start_req_id, ""
         self._progress = 100
         robot = self.position_state() or {}
@@ -1037,6 +1107,7 @@ class ErutSession(QObject):
             self.finish_home(False, "INTERRUPTED")
         elif self.sequencer.state not in _SEQ_IDLE:
             self.pause_requested.emit()
+        self._send_motion("none")          # 선다 — 재개하면 그 방향을 다시 낸다
         self._at_origin = False
 
     def _do_resume(self, req_id: str, content: dict) -> None:
@@ -1073,6 +1144,7 @@ class ErutSession(QObject):
                 return
             self._answer(req_id, "resume", 202)
             self.resume_requested.emit()
+            self._send_motion(self._MOTION_DIRS.get(self._segment, "none"))
             return
         activity = self.activity_state()
         if activity in ("error", "estop"):
@@ -1103,6 +1175,7 @@ class ErutSession(QObject):
         return self._stopping
 
     def _forget_work(self) -> None:
+        self._send_motion("none")          # 하던 구역이 끝났다(중단 · 장애)
         self._prepare_req_id = self._start_req_id = ""
         self._calibrate_req_id = self._mark_req_id = self._home_req_id = ""
         self._ready_sent = False
@@ -1427,10 +1500,15 @@ class ErutSession(QObject):
         return list(self._errors)
 
     def _fault_error(self) -> dict | None:
-        """작업을 멈추게 한 장애(stop · estop) — 완료의 까닭으로 싣는다. 없으면 None."""
+        """작업을 멈추게 한 장애(stop · estop) — 완료의 까닭으로 싣는다. 없으면 None.
+
+        어느 탐촉자인지(probe)도 함께 옮긴다 — complete 의 error 에도 같은 칸을
+        싣는다(if-0.10 탭2 6 · 8행).
+        """
         for entry in reversed(list(self._errors.values())):
             if entry.get("level") in ("stop", "estop"):
-                return make_error(entry["code"], entry["name"], entry.get("detail"))
+                return make_error(entry["code"], entry["name"], entry.get("detail"),
+                                  probe=entry.get("probe"))
         return None
 
     def _circumference(self) -> float:
@@ -1451,9 +1529,9 @@ class ErutSession(QObject):
             area : { start:{x,y}, end:{x,y} }   검사면 좌표 mm — end 가 start 보다 커야 한다
             scan : { pitch, speed, overlap }
 
-        **구간 하나 = job 하나.** 크기와 위치는 area 가 정한다. 반지름·두께·
-        검사장비 종류는 규격에 없는 우리 장비 값이라 RCS 설정에서 채운다
-        (app.py `_fill_from_local_setup`).
+        **구간 하나 = job 하나.** 크기와 위치는 area 가 정한다. 반지름(검사 대상
+        바깥 지름 / 2)·검사장비 종류는 RCS 설정에서 채운다(app.py
+        `_fill_from_local_setup`). 두께는 쓰지 않는다(2026-10-19).
 
         if-0.10 부터 이웃 구역끼리의 겹침은 `scan.overlap`(필수, 0 이상 정수 mm)이다
         — 예전에는 scan.pitch 를 겹침으로 읽었다(탭11 Q-06 · Q-39). 차량 · 리프트는
@@ -1476,11 +1554,16 @@ class ErutSession(QObject):
                           f" (x {x0:g}→{x1:g}, y {y0:g}→{y1:g})")
         if not isinstance(scan, dict) or scan.get("overlap") is None:
             return None, "scan.overlap 이 없습니다 (if-0.10 필수 — 0 이상 정수 mm, 0 은 겹치지 않음)"
+        raw = scan["overlap"]
+        # 정수 mm 다 — 소수 · 참거짓 · 글자면 400(if-0.10 탭10 45번). 20.0 처럼
+        # 소수점 아래가 0 인 수는 정수로 받는다.
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not float(raw).is_integer():
+            return None, f"scan.overlap 은 0 이상의 정수 mm 여야 합니다 (받은 값 {raw!r})"
         try:
-            overlap = float(scan["overlap"])
+            overlap = float(raw)
             pitch = float(scan.get("pitch") or 0)
         except (TypeError, ValueError):
-            return None, "scan.overlap · scan.pitch 가 숫자가 아닙니다"
+            return None, "scan.pitch 가 숫자가 아닙니다"
         if overlap < 0 or pitch < 0:
             return None, "scan.overlap · scan.pitch 는 0 이상이어야 합니다"
         return GridPlan(
@@ -1490,23 +1573,97 @@ class ErutSession(QObject):
             origin_x=x0, origin_y=y0, line_pitch_max=pitch,
         ), ""
 
-    def _apply_speed(self, content: dict) -> None:
-        """scan.speed [mm/s] 를 로봇 속도 비율로 바꿔 건다.
+    @staticmethod
+    def _read_speed(scan: dict) -> tuple[int | None, str, dict]:
+        """요청의 스캔 속도 → (로봇 속도 비율 %, 거절 까닭, error 에 덧붙일 칸).
 
-        로봇의 스캔 속도는 100 mm/s 고정이고(dus_init), 컨트롤러 비율(%)로만
-        줄일 수 있다. 그래서 40 mm/s 는 40 % 다. 100 을 넘는 값은 앞에서 400 으로
-        거절했다. `speed_ratio`(%)가 따로 오면 그 값을 쓴다(3S 확장).
+        if-0.11 부터 같은 속도를 두 칸으로 함께 싣는다(탭8 73~79행):
+          scan.speed_pct  [%]    0 < 값 ≤ 100 — 로봇은 비율로 움직이므로 **이 값을 쓴다**
+          scan.speed_mm_s [mm/s] 0 < 값 ≤ 100(SCAN_SPEED_MAX) — 비율이 없을 때만
+                                  100 mm/s = 100 % 로 바꿔 쓴다(로봇이 아는 자기 최고 속도)
+        두 값을 곱하거나 함께 걸지 않는다. 실린 칸은 쓰지 않는 쪽이라도 검사한다 —
+        잘못 실린 값은 다른 칸이 멀쩡해도 400 E6001(탭10 50번). 새 칸이 둘 다 없을
+        때만 옛 칸 scan.speed(0.10 브릿지 · mm/s)를 본다(탭8 79행). 셋 다 없으면 400.
+        비율은 정수 % 로 걸리므로 반올림하고, 2 % 보다 느리면 낼 수 없어 거절한다.
+        """
+        def bad_mm(key: str) -> tuple[float | None, str, dict]:
+            value = _number(scan[key])
+            if value is None or value <= 0:
+                return None, (f"scan.{key} 는 0 보다 큰 수(mm/s)여야 합니다 "
+                              f"(받은 값 {scan[key]!r})"), {}
+            if value > SCAN_SPEED_MAX:
+                return None, (f"scan.{key} {value:g} mm/s 가 최고 {SCAN_SPEED_MAX} mm/s 를 "
+                              f"넘습니다"), {"max_speed_mm_s": SCAN_SPEED_MAX}
+            return value, "", {}
+
+        percent: float | None = None
+        if "speed_pct" in scan:
+            percent = _number(scan["speed_pct"])
+            if percent is None or not 0 < percent <= 100:
+                return None, (f"scan.speed_pct 는 0 보다 크고 100 이하인 수(%)여야 합니다 "
+                              f"(받은 값 {scan['speed_pct']!r})"), {"max_speed_pct": 100}
+        if "speed_mm_s" in scan:
+            mm_s, reason, fields = bad_mm("speed_mm_s")
+            if reason:
+                return None, reason, fields
+            if percent is None:
+                percent = mm_s / SCAN_SPEED_MAX * 100
+        if percent is None:
+            if "speed" not in scan:
+                return None, ("스캔 속도가 없습니다 — scan.speed_pct(%) · scan.speed_mm_s(mm/s) "
+                              "가운데 하나는 있어야 합니다"), {}
+            mm_s, reason, fields = bad_mm("speed")
+            if reason:
+                return None, reason, fields
+            percent = mm_s / SCAN_SPEED_MAX * 100
+        whole = math.floor(percent + 0.5)
+        if whole < SPEED_PCT_MIN:
+            return None, (f"스캔 속도 {percent:g} % 는 장비 최저 {SPEED_PCT_MIN} % "
+                          f"({SPEED_PCT_MIN} mm/s) 보다 느립니다"), {"min_speed_pct": SPEED_PCT_MIN}
+        return whole, "", {}
+
+    def _apply_speed(self, content: dict) -> None:
+        """요청의 스캔 속도를 로봇 속도 비율(%)로 건다 — `_read_speed` 참고.
+
+        로봇의 스캔 속도는 100 mm/s 고정이고(dus5_init), 컨트롤러 비율로만 줄인다.
+        값 검사는 앞(`_parsed_plan`)에서 끝났다 — 여기서는 쓸 수 있는 값만 건다.
         """
         scan = content.get("scan")
         if not isinstance(scan, dict):
             return
-        if scan.get("speed_ratio") is not None:
-            percent = int(_mm(scan.get("speed_ratio")))
-        elif scan.get("speed") is not None:
-            percent = int(round(_mm(scan.get("speed")) / SCAN_SPEED_MAX * 100))
-        else:
-            return
-        self.speed_requested.emit(max(2, min(100, percent)))
+        percent, _reason, _fields = self._read_speed(scan)
+        if percent is not None:
+            self.speed_requested.emit(percent)
+
+    @staticmethod
+    def _read_holder(content: dict) -> tuple[int | None, str]:
+        """holder.channel_count — 홀더에 장착된 검사 채널 수 (if-0.11 탭5 160행, 선택).
+
+        holder 가 통째로 없으면 옛 요청이다 — 받고 개수를 짐작하지 않는다. 있으면
+        channel_count 는 양의 정수여야 한다(null · 참거짓 · 글자 · 소수 · 0 · 음수 ·
+        holder 가 null · 배열 · 빈 객체면 400 E6001, 탭10 59번). 5 · 8 로 막지 않는다.
+        8.0 처럼 소수점 아래가 0 인 수는 정수로 받는다(scan.overlap 과 같다).
+        """
+        if "holder" not in content:
+            return None, ""
+        holder = content["holder"]
+        if not isinstance(holder, dict) or "channel_count" not in holder:
+            return None, (f"holder 는 {{channel_count}} 객체여야 합니다 (받은 값 {holder!r})")
+        count = _number(holder["channel_count"])
+        if count is None or not count.is_integer() or count < 1:
+            return None, (f"holder.channel_count 는 1 이상의 정수여야 합니다 "
+                          f"(받은 값 {holder['channel_count']!r})")
+        return int(count), ""
+
+    def _take_holder(self, content: dict) -> None:
+        """받은 구역의 홀더 채널 수를 알린다 — 이동 · 줄 간격에는 쓰지 않는다.
+
+        줄 간격은 받은 scan.pitch 를 넘지 않게 장착 EOAT 의 유효 높이로 정한다 —
+        채널 수로 pitch 를 다시 계산하거나 겹침을 또 빼지 않는다(탭5 161행).
+        """
+        channels, _reason = self._read_holder(content)
+        if channels is not None:
+            self.holder_reported.emit(channels)
 
     def _after(self, delay_ms: int, callback) -> None:
         """지연 후 한 번 실행. 타이머를 붙잡아 두어 중간에 사라지지 않게 한다."""

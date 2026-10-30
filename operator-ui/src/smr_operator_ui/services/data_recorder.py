@@ -55,7 +55,7 @@ JOB_COLUMNS = (
     ("날짜", 11), ("시작", 10), ("종료", 10), ("소요[s]", 8), ("출처", 7),
     ("job_id", 14), ("구간", 7), ("결과", 8), ("비고", 30),
     ("호 길이[mm]", 11), ("격자 높이[mm]", 12), ("격자간 겹침[mm]", 14),
-    ("반지름[mm]", 10), ("두께[mm]", 9), ("프로브", 11), ("태스크", 9),
+    ("바깥 반지름[mm]", 14), ("프로브", 11), ("태스크", 9),
     ("좌표 수", 8), ("스캔 좌표 파일", 42),
 )
 
@@ -85,6 +85,7 @@ def resolve_data_root(value: str, in_wsl: bool | None = None) -> Path:
     * `SMR_DATA_DIR` 환경변수가 있으면 그것이 우선이다(시험·현장 고정용).
     * "D:/SMR/Data" 같은 Windows 경로는 WSL 에서 /mnt/d/SMR/Data 로 쓴다.
       WSL 이 아닌 리눅스에서는 쓸 수 없으므로 ~/SMR/Data 로 대신한다.
+      Windows 에서 바로 돌면 그대로 쓰고, 그 드라이브가 없으면 ~/SMR/Data 다.
     * "//wsl.localhost/<배포판>/home/..." (Windows 창에서 WSL 폴더를 고른
       경우)는 /home/... 로 바꾼다.
     """
@@ -101,6 +102,11 @@ def resolve_data_root(value: str, in_wsl: bool | None = None) -> Path:
         return Path(rest or "/")
     drive = _WIN_DRIVE.match(value)
     if drive:
+        if os.name == "nt":
+            # Windows 에서 바로 돌 때(단독판) — 그 경로를 그대로 쓴다. 드라이브가
+            # 없으면(예: D 드라이브 없는 PC) 홈 폴더로 대신한다.
+            exists = Path(f"{drive.group(1)}:/").exists()
+            return Path(value) if exists else fallback
         if in_wsl is None:
             in_wsl = _in_wsl()
         if not in_wsl:
@@ -216,8 +222,8 @@ class DataRecorder(QObject):
             "width": getattr(plan, "cell_width", ""),
             "height": getattr(plan, "cell_height", ""),
             "overlap": getattr(plan, "pitch_y", ""),
+            # 벽 바깥 반지름(바깥 지름 / 2) — 두께는 쓰지 않는다(2026-10-19).
             "radius": getattr(plan, "radius", ""),
-            "thickness": getattr(plan, "thickness", ""),
             "probe": {5: "5축 십자", 8: "8축 직사각"}.get(probes, "-"),
             "task": "" if nosensor is None else ("논센서판" if nosensor else "센서판"),
         }
@@ -276,7 +282,7 @@ class DataRecorder(QObject):
             job.get("source", ""), job.get("job_id", ""), cell["label"], result,
             "; ".join(cell["notes"]),
             job.get("width", ""), job.get("height", ""), job.get("overlap", ""),
-            job.get("radius", ""), job.get("thickness", ""),
+            job.get("radius", ""),
             job.get("probe", ""), job.get("task", ""),
             cell["points"],
             str(scan_path.relative_to(self._root)) if scan_path else "",

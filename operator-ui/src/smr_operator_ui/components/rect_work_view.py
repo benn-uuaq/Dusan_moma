@@ -13,24 +13,24 @@ from smr_operator_ui.styles.tokens import COLORS
 
 # 로봇이 좌우로 실제 이동하는 **현(弦)** 길이의 한계 [mm]. 호를 길게 잡을수록
 # 양 끝 사이 직선거리가 멀어지는데, 이 값을 넘으면 굽은 벽에서 닿는다.
-# 현은 벽 **바깥면**(반지름 + 두께) 기준으로 잰다.
+# 현은 벽 **바깥면** 반지름(바깥 지름 / 2) 기준으로 잰다. 두께는 쓰지 않는다
+# — 2026-10-19 부터 RCS 는 바깥 지름만 가지고 작업한다(ERUT 규격의 지름도 외경).
 MAX_PROBE_CHORD_MM = 700.0
 
 
 
-def probe_chord_mm(arc_run_mm: float, radius_mm: float, thickness_mm: float) -> float:
+def probe_chord_mm(arc_run_mm: float, radius_mm: float) -> float:
     """TCP 가 호를 따라 arc_run 만큼 갔을 때 양 끝 사이의 실제 직선거리.
 
-    프로브는 벽 **바깥면**(반지름 + 두께)을 타므로 그 반지름으로 잰다.
+    프로브는 벽 **바깥면**을 타므로 바깥 반지름(radius_mm)으로 잰다.
     """
-    r = radius_mm + thickness_mm
+    r = radius_mm
     if r <= 0 or arc_run_mm <= 0:
         return 0.0
     return 2.0 * r * sin(arc_run_mm / (2.0 * r))
 
 
-def max_safe_arc_mm(radius_mm: float, thickness_mm: float,
-                    eoat_w_mm: float = 0.0) -> float:
+def max_safe_arc_mm(radius_mm: float, eoat_w_mm: float = 0.0) -> float:
     """현이 안전 한계를 넘지 않는 최대 호 길이(작업 영역 폭) [mm].
 
     chord = 2R·sin(arc_run / 2R) <= 한계  =>  arc_run <= 2R·asin(한계 / 2R).
@@ -40,9 +40,9 @@ def max_safe_arc_mm(radius_mm: float, thickness_mm: float,
     안쪽만 지난다고 보고 EOAT 폭을 더했지만 이제는 더하지 않는다
     (`eoat_w_mm` 은 옛 호출부 호환용으로 받기만 하고 쓰지 않는다).
 
-    반지름을 모르면(0) 한계를 두지 않는다.
+    radius_mm 은 벽 바깥 반지름이다. 반지름을 모르면(0) 한계를 두지 않는다.
     """
-    r = radius_mm + thickness_mm
+    r = radius_mm
     if r <= 0:
         return 0.0
     ratio = MAX_PROBE_CHORD_MM / (2.0 * r)
@@ -54,7 +54,7 @@ def max_safe_arc_mm(radius_mm: float, thickness_mm: float,
 
 def plan_dimensions(
     width_mm: float, height_mm: float, scan_h_mm: float, overlap_mm: float,
-    eoat_w_mm: float = 0.0, radius_mm: float = 0.0, thickness_mm: float = 0.0,
+    eoat_w_mm: float = 0.0, radius_mm: float = 0.0,
 ) -> dict:
     """로봇 태스크(dus_init.script)와 같은 규칙으로 피치·행수를 계산한다.
 
@@ -103,7 +103,7 @@ def plan_dimensions(
     # 로봇이 내보내는 가로 좌표는 호 길이가 아니라 **현**(두 끝점 사이
     # 직선거리 = cur-zero 의 Y 변위)이다. 굽은 벽을 폈을 때의 길이가
     # 아니라서 호보다 짧다(721 -> 699.3).
-    chord = probe_chord_mm(arc_run, radius_mm, thickness_mm) or arc_run
+    chord = probe_chord_mm(arc_run, radius_mm) or arc_run
     # 그림은 격자 폭을 꽉 채워 그린다. 로봇 좌표는 현 기준이므로 화면에
     # 얹을 때 width/chord 로 늘려 준다 — TPAC 이 호를 평면으로 펴서 보는
     # 것과 같은 그림이다. 값 계산·전달은 그대로 두고 그림만 맞춘다.
@@ -117,7 +117,7 @@ def plan_dimensions(
 
 def ideal_path(
     width_mm: float, height_mm: float, scan_h_mm: float, overlap_mm: float,
-    eoat_w_mm: float = 0.0, radius_mm: float = 0.0, thickness_mm: float = 0.0,
+    eoat_w_mm: float = 0.0, radius_mm: float = 0.0,
 ):
     """원점(0,0) 기준 이상적인 ㄹ자 경로 [(가로 mm, 세로 mm), ...] 를 만든다.
     가로 값 자체는 원점(0)에서 잰 거리일 뿐이고, 화면에 그릴 때 어느 쪽이
@@ -129,7 +129,7 @@ def ideal_path(
     중심 기준이라 TCP 가 직접 거기까지 간다.
     """
     p = plan_dimensions(width_mm, height_mm, scan_h_mm, overlap_mm, eoat_w_mm,
-                        radius_mm, thickness_mm)
+                        radius_mm)
     margin = p["arc_margin"]
     # 세로는 **가운데 프로브**가 지나는 높이다. 맨 아랫줄은 ㅗ 자세로
     # 밑면을 직접 훑으므로 바닥(0)에서 시작하고, 맨 윗줄은 ㅜ 자세로
@@ -155,7 +155,7 @@ class RectWorkView(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        # 시험용 외벽 한 장을 격자 하나로 본다 (R834.6 / 호 978 / 높이 500 / 두께 10).
+        # 시험용 외벽 한 장을 격자 하나로 본다 (바깥 R834.6 / 호 978 / 높이 500).
         # 가로는 **호 길이**다 — 로봇이 movec 로 호를 따라가므로 실제 이동
         # 거리이기도 하다. 예전엔 1110(현 1031.8)이었는데 양 끝점이 너무
         # 벌어져 충돌 위험이 있어 줄였다 — 좌우 끝점 사이 실제 현이 700mm
@@ -173,8 +173,8 @@ class RectWorkView(QWidget):
         # 기준이다) 값만 들고 있는다.
         self._eoat_w_mm = 30.0
         # 경로를 **현** 으로 그리는 데 쓴다(plan_dimensions 의 draw_run 참고).
+        # 벽 바깥 반지름 = 바깥 지름 / 2.
         self._radius_mm = 834.6
-        self._thickness_mm = 10.0
         self._pos_h_mm = 0.0
         self._pos_v_mm = 0.0
         self._has_position = False
@@ -190,7 +190,7 @@ class RectWorkView(QWidget):
     def set_work_area(
         self, width_mm: float, height_mm: float, scan_h_mm: float, overlap_mm: float,
         eoat_w_mm: float | None = None,
-        radius_mm: float | None = None, thickness_mm: float | None = None,
+        radius_mm: float | None = None,
     ) -> None:
         """작업 영역 치수를 갱신한다. 단위는 mm이며 Modbus 256~259와 같다.
 
@@ -206,8 +206,6 @@ class RectWorkView(QWidget):
             self._eoat_w_mm = eoat_w_mm
         if radius_mm is not None:
             self._radius_mm = radius_mm
-        if thickness_mm is not None:
-            self._thickness_mm = thickness_mm
         self.update()
 
     def work_area(self) -> tuple[float, float, float, float]:
@@ -274,7 +272,7 @@ class RectWorkView(QWidget):
 
         _pts, plan = ideal_path(
             self._width_mm, self._height_mm, self._scan_h_mm, self._overlap_mm,
-            self._eoat_w_mm, self._radius_mm, self._thickness_mm)
+            self._eoat_w_mm, self._radius_mm)
         rect = self._plot_rect()
         # 가로세로 축척이 다르다. 칸을 꽉 채우려는 것이라 의도한 것이다.
         # 밴드는 격자 위아래로 scan_h/2 씩 넘어가지만 사각형은 격자

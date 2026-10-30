@@ -24,6 +24,8 @@ QScrollArea에 담는다 — 이 화면은 다른 720px 고정 화면과 달리 
 
 from __future__ import annotations
 
+import errno
+import os
 import time
 
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
@@ -48,6 +50,20 @@ TPAC_LINK_TIMEOUT_S = 5.0
 # UR 주소 매핑의 기본 자리. bridge_core.MIRROR_UR 과 같다 — 라벨 표시용으로만 쓴다.
 _UR_HINT = (f"관절 {MIRROR_UR['joint']} / pose {MIRROR_UR['pose']} / "
            f"속도 {MIRROR_UR['speed']} / offset {MIRROR_UR['offset']}")
+
+
+def _port_taken(err) -> bool:
+    """서버 시작 실패가 '그 포트를 이미 누가 쓰고 있다'는 뜻인지.
+
+    pyModbusTCP 는 OSError 를 NetworkError 로 한 번 싸서 던진다. Windows 는
+    사용 중이면 10048, 다른 프로세스가 독점(IP Helper 포트프록시 등)했거나
+    예약 범위면 10013 을 낸다.
+    """
+    if err is not None and err.args and isinstance(err.args[0], OSError):
+        err = err.args[0]
+    code = getattr(err, "winerror", None) or getattr(err, "errno", None)
+    return code in (errno.EADDRINUSE, 10048, 10013)
+
 
 
 class _BridgeSignals(QObject):
@@ -490,9 +506,13 @@ class TpacBridgeScreen(BaseScreen):
         400~405로 실제 속도를 직접 주므로 그걸로 덮어쓴다 — 추정값은
         폴링 주기·통신 지연에 따라 흔들리지만 실제값은 그렇지 않다.
         `server.update(data)` 다음에 불려야 한다.
+
+        스캔 좌표를 내는 동안에는 스캔 구간(290 = 6)이 아니면 0 이다 —
+        `ExternalServer.speed_live` 참고.
         """
         addr = self.server.mirror_map["speed"]
-        self.server.bridge.set_hr(addr, [to_uint16(v) for v in data.tcp_spd_real])
+        speed = data.tcp_spd_real if self.server.speed_live(data) else [0] * 6
+        self.server.bridge.set_hr(addr, [to_uint16(v) for v in speed])
 
     def _write_plane_block(self, data) -> None:
         """작업 평면(제로점 기준 스캔 좌표) 위치를 420~425에 낸다.
@@ -550,6 +570,25 @@ class TpacBridgeScreen(BaseScreen):
         # 로더가 LD_LIBRARY_PATH를 무시해 버려 ROS 2가 라이브러리를 못
         # 찾고 깨진다(ImportError: librcl_action.so). authbind로 이
         # 프로세스 하나에만 권한을 줘야 한다 — operator-ui/README.md 참고.
+        if not ok and _port_taken(getattr(self.server.bridge, "last_error", None)):
+            port = self.srv_port.value()
+            self.srv_status.setText(f"● 시작 실패 — 포트 {port} 사용 중")
+            if os.name == "nt":
+                # WSL 의 RCS 로 TPAC 을 넘기려고 걸어 둔 포트프록시가 남아 있는
+                # 경우가 흔하다 — svchost(IP Helper)가 502 를 잡고 있다.
+                self._append_log(
+                    f"[안내] 포트 {port} 를 이 PC 의 다른 프로그램이 쓰고 있습니다. "
+                    f"확인: netstat -ano | findstr :{port} — WSL 로 넘기는 포트프록시"
+                    f"(svchost · IP Helper)면 관리자 PowerShell 에서 "
+                    f"'netsh interface portproxy delete v4tov4 listenport={port} "
+                    f"listenaddress=0.0.0.0' 로 지운 뒤 [서버 시작]을 누르세요."
+                )
+            else:
+                self._append_log(
+                    f"[안내] 포트 {port} 를 다른 프로그램이 쓰고 있습니다 — 다른 RCS 나 "
+                    f"TPAC 브리지가 떠 있는지 확인하세요: ss -ltnp 'sport = :{port}'"
+                )
+            return
         permission_denied = "Errno 13" in message or "허가 거부" in message or "Permission denied" in message
         if not ok and permission_denied and self.srv_port.value() < 1024:
             self._append_log(

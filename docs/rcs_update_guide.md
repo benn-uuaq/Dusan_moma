@@ -139,7 +139,7 @@ authbind --deep python3 -m smr_operator_ui
 |---|---|---|
 | 로봇 연결 | RCS 상단 Cobot 표시 | 연결됨 |
 | ERUT 연결 | RCS 상단 ERUT 표시 · 알림 | 「연결됨」. 접속 주소 · 장치 ID 를 비워 두면 붙지 않고 「연결 안 됨」(RCS 단독) |
-| 규격 판 번호 | MQTT Explorer `erut/robot1/evt/info` | `interface_version` 이 지금 규격 판(예: `"0.10"`) |
+| 규격 판 번호 | MQTT Explorer `erut/robot1/evt/info` | `interface_version` 이 지금 규격 판(예: `"0.11"`) |
 | 시각 | RCS 알림 | 「ERUT 브릿지와 시각이 … 어긋납니다」 경고가 없을 것(10초 넘게 어긋나면 ERUT 가 메시지를 버린다) |
 | 홈 상태 | MQTT Explorer `erut/robot1/evt/home` | 팔이 접혀 있으면 `home` |
 | 홈 · 스캔 대기 위치 | 설정 → Cobot 조그 / 위치 저장 | 「스캔 대기 위치」에 예전 홈 값이 옮겨져 있다(옛 「홈 위치 저장」 값). 「홈 위치」는 접힌 자세로 옮긴 뒤 **새로 저장**한다(322~327). 저장 전에는 펜던트 `Home_joint` 를 쓴다 |

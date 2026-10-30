@@ -146,13 +146,13 @@ def test_work_area_is_sent_once_for_whole_job(qtbot) -> None:
     # 로봇에 가는 겹침(레지스터 259)은 **격자끼리**의 세로 겹침(pitch_y)이다.
     # 격자 안 ㄹ자 줄 겹침(scan_overlap=10)이 아니다 — 그건 로봇이 프로브
     # 커버로 스스로 정한다.
-    # 뒤 두 개는 호 계산용 반지름·두께 (여기서는 안 줬으므로 0 = 평면).
-    # 마지막 값은 EOAT 종류(레지스터 264). 안 고르면 0 이다.
-    assert h.work_areas == [(600.0, 800.0, 150.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0)]
+    # 다섯 번째는 호 계산용 벽 바깥 반지름(여기서는 안 줬으므로 0 = 평면) —
+    # 두께는 빠졌다(2026-10-19). 마지막 값은 EOAT 종류(레지스터 264). 안 고르면 0.
+    assert h.work_areas == [(600.0, 800.0, 150.0, 20.0, 0.0, 0.0, 0.0, 0.0)]
 
 
 def test_arc_geometry_reaches_the_robot(qtbot) -> None:
-    """반지름·두께는 로봇이 호를 직접 계산하는 데 필요하다.
+    """반지름(벽 바깥 반지름)은 로봇이 호를 직접 계산하는 데 필요하다.
 
     셀 가로는 **호 길이**로 넘어간다(현이 아니다). 로봇이 반지름과 함께
     현을 계산하므로, 이 두 값이 빠지면 호를 못 그리고 직선으로 훑는다.
@@ -160,14 +160,14 @@ def test_arc_geometry_reaches_the_robot(qtbot) -> None:
     plan = GridPlan(column_count=1, row_count=1,
                     cell_width=1214.0, cell_height=500.0,
                     scan_overlap=20.0, pitch_y=30.0,
-                    radius=834.6, thickness=10.0)
+                    radius=844.6)
     h = Harness(plan)
     h.start()
     h.settle()
 
     # 네 번째 값은 격자간 세로 겹침(pitch_y=30)이다. scan_overlap(20)이 아니다.
     assert h.work_areas == [
-        (1214.0, 500.0, 150.0, 30.0, 834.6, 10.0, 0.0, 0.0, 0.0)]
+        (1214.0, 500.0, 150.0, 30.0, 844.6, 0.0, 0.0, 0.0)]
 
 
 def test_eoat_size_reaches_the_robot(qtbot) -> None:
@@ -181,14 +181,14 @@ def test_eoat_size_reaches_the_robot(qtbot) -> None:
     for probes, (w, h) in ((5, (30.0, 30.0)), (8, (75.0, 167.5))):
         plan = GridPlan(column_count=1, row_count=1,
                         cell_width=1110.0, cell_height=500.0,
-                        scan_overlap=20.0, radius=834.6, thickness=10.0,
+                        scan_overlap=20.0, radius=844.6,
                         eoat_probes=probes)
         assert plan.eoat_size == (w, h)
         seq = Harness(plan)
         seq.start()
         seq.settle()
         # 가로, 세로에 이어 종류(레지스터 264)까지 간다.
-        assert seq.work_areas[0][6:] == (w, h, float(probes))
+        assert seq.work_areas[0][5:] == (w, h, float(probes))
 
 
 def test_unknown_eoat_falls_back_to_no_tool(qtbot) -> None:

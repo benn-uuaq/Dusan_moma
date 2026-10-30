@@ -1,0 +1,125 @@
+# =============================================================================
+#  dus5_leave_home.script — dusan_v5 (tpac_exhibition)
+#
+#  전시판(시편을 바닥에 눕힘). 대기 위치 「선상」 맞추기를 작업 좌표계(dus5_init 의
+#  「바닥판 작업 좌표계」)에서 한다 — 원 태스크의 「베이스 X(벽 쪽)」는 작업 X =
+#  베이스 -Z(아래), 「높이(베이스 Z)」는 작업 Z = 베이스 +X(줄 진행)다. 그래서
+#    1) 대기 위치보다 낮으면 먼저 **곧게 위로** 대기 위치 높이까지 올라가고,
+#    2) 그 높이에서 **베이스 X 만** 대기 위치에 맞춘 뒤(앞뒤로),
+#  movej 로 대기 위치에 간다.
+#  홈에서 스캔 대기 위치로 moveJ 로 간다 (작업 시작)
+#
+#  펜던트에서 "2 move_home" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  다음 노드(move_start)가 스캔 대기 위치에서 시작 위치로 간다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  홈과 작업 자리 사이는 **언제나 스캔 대기 위치를 거친다**(2026-10-15):
+#    시작 : 홈 --movej--> 스캔 대기 위치 --> 시작 위치(start_pose)
+#    끝   : 스캔 완료 자리 --> (대기 위치 기준) 물러나고 --> 대기 위치 선상(X · 높이)에
+#           맞추고 --movej--> 스캔 대기 위치 --movej--> 홈
+#  스캔 대기 위치(Standby_joint) = 예전의 「홈」. RCS 「스캔 대기 위치 저장」(레지스터
+#  310~315, 308 = 1) 또는 펜던트 변수. 홈(Home_joint)은 RCS 「홈 위치 저장」(레지스터
+#  322~327, 328 = 1) 또는 펜던트에서 티칭한 변수(dus5_init 참고).
+#
+#  홈이 아닌 자리에서 시작했으면(작업 도중 멈춘 뒤 다시 튼 경우 등) 곧장 movej 하지
+#  않고 벽에서 물러나(대기 위치 기준) 대기 위치 선상(X · 높이)에 맞춘 뒤 movej 한다.
+# =============================================================================
+
+def lh_to_w(p):
+  # 베이스 -> 작업 좌표계(베이스를 Y 축으로 +90 도). dus5_init 의 ini_to_w 와 같다.
+  return pose_trans(pose_inv([0, 0, 0, 0, 1.57079633, 0]), p)
+end
+
+
+def lh_to_b(p):
+  # 작업 좌표계 -> 베이스.
+  return pose_trans([0, 0, 0, 0, 1.57079633, 0], p)
+end
+
+
+def lh_retreat(limit):
+  # 벽에서 물러나되 **스캔 대기 위치(Standby_joint)보다 뒤로는 가지 않는다.**
+  #   - 기준점은 Standby_joint 의 플랜지 자세(get_forward_kin)다. Standby_pose 변수는
+  #     안 쓴다 — 펜던트에 옛 값이 남아 있을 수 있다.
+  #   - 지금 자리도 플랜지로 본다. EOAT 끝점 TCP(eoat_ofs)가 남아 있으면 끝점이
+  #     245 mm 앞이라 남은 거리가 그만큼 크게 잡혔다. 그래서 먼저 TCP 를 플랜지로.
+  #   - 방향은 툴 -Z(벽 법선 반대)다. 호 끝처럼 툴이 돌아가 있어도 벽에서 곧게 뗀다.
+  #   - 거리는 limit [m] 과 「대기 위치 X 까지 남은 거리」 중 작은 쪽. 툴 -Z 로 d 만큼
+  #     가면 베이스 X 는 d * cz 만큼 준다(cz = 툴 Z 의 베이스 X 성분). 이미 대기
+  #     위치보다 뒤면 물러나지 않는다.
+  #   - 툴이 벽(+X) 쪽을 보고 있지 않으면(cz <= 0.2, 약 78 도 넘게 돌아감) 벽에
+  #     붙은 자세가 아니다 — 엉뚱한 쪽으로 가지 않게 물러나지 않는다.
+  #   - (전시판) 위 「베이스 X」는 모두 작업 X(= 베이스 -Z)로 읽는다: 대기 위치
+  #     높이까지 남은 만큼, 툴이 아래(판)를 보고 있을 때만 위로 뗀다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  lr_ref = lh_to_w(get_forward_kin(Standby_joint))
+  lr_base = get_actual_tool_flange_pose()
+  lr_cur = lh_to_w(lr_base)
+  lr_cz = pose_trans(lr_cur, [0, 0, 1, 0, 0, 0])[0] - lr_cur[0]
+  lr_back = 0
+  if (lr_cz > 0.2):
+    lr_back = (lr_cur[0] - lr_ref[0]) / lr_cz
+    if (lr_back > limit):
+      lr_back = limit
+    end
+  end
+  if (lr_back > 0.001):
+    movel(pose_trans(lr_base, [0, 0, -lr_back, 0, 0, 0]), a = a_l, v = v_l)
+  end
+end
+
+
+def lh_align():
+  # 스캔 대기 위치 **선상**에 맞춘다(플랜지 기준, 2026-10-16):
+  #   1) 아직 대기 위치보다 앞(베이스 +X, 벽 쪽)이면 베이스 -X 로 곧게 물러나
+  #      대기 위치 X 에 선다. 벽에서는 앞 동작(_retreat · dus5_finish)이 이미
+  #      툴 -Z 로 떨어졌다 — 여기서는 남은 만큼 뒤로만 간다.
+  #   2) 높이(베이스 Z)를 대기 위치 높이로 **올리거나 내린다.** 위 줄에서 끝나
+  #      대기 위치보다 높으면 내려온다(예전에는 올라가기만 했다).
+  # Y 와 자세는 그대로 둔다 — 남은 것은 다음 movej(대기 위치)가 맞춘다.
+  # 이미 대기 위치보다 뒤에 있으면 앞으로 나가지 않는다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  # (전시판) 아래 [0] · [2] 는 작업 좌표계 값이다 — [0] 이 클수록 낮다(판 쪽),
+  # [2] 는 베이스 X(줄 진행)다.
+  la_ref = lh_to_w(get_forward_kin(Standby_joint))
+  la_p = lh_to_w(get_actual_tool_flange_pose())
+  if (la_p[0] > la_ref[0] + 0.001):
+    la_p[0] = la_ref[0]
+    movel(lh_to_b(la_p), a = a_l, v = v_l)
+  end
+  la_p = lh_to_w(get_actual_tool_flange_pose())
+  if (la_p[2] < la_ref[2] - 0.001 or la_p[2] > la_ref[2] + 0.001):
+    la_p[2] = la_ref[2]
+    movel(lh_to_b(la_p), a = a_l, v = v_l)
+  end
+end
+
+
+def lh_at_home():
+  # 관절이 홈(Home_joint)에서 home_tol_j [rad] 안이면 홈이다(dus5_init 의 hm_flag 와
+  # 같은 기준).
+  lh_q = get_actual_joint_positions()
+  lh_i = 0
+  while (lh_i < 6):
+    lh_d = lh_q[lh_i] - Home_joint[lh_i]
+    if (lh_d < 0):
+      lh_d = -lh_d
+    end
+    if (lh_d > home_tol_j):
+      return False
+    end
+    lh_i = lh_i + 1
+  end
+  return True
+end
+
+
+set_tcp([0, 0, 0, 0, 0, 0])
+if (lh_at_home() == False):
+  lh_retreat(probe_dist * 0.001)
+  lh_align()
+end
+movej(Standby_joint, a = a_j, v = v_j)

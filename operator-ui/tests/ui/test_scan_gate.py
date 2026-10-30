@@ -50,13 +50,13 @@ def test_zero_radius_is_refused_before_play(qtbot) -> None:
     window.ros_status.call_command = lambda name: commands.append(name) or True
     window.erut_session.raise_error = errors.append
 
-    window._push_work_area_to_robot(600, 800, 30, 20, 0, 10, 0, 0, 0)
+    window._push_work_area_to_robot(600, 800, 30, 20, 0, 0, 0, 0)
     window._start_robot_scan()
 
     assert commands == []
     assert errors and errors[0]["code"] == "E9304"
 
-    window._push_work_area_to_robot(600, 800, 30, 20, 845, 10, 0, 0, 0)
+    window._push_work_area_to_robot(600, 800, 30, 20, 845, 0, 0, 0)
     window._start_robot_scan()
     assert commands[:2] == ["remote_control_on", "stop"]
     window.close()

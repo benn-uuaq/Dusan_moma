@@ -335,6 +335,7 @@ class ServerBridge:
         self.server = None
         self.handler = None
         self.running = False
+        self.last_error = None              # 마지막 start() 실패 원인 (화면 안내용)
         self._lock = threading.Lock()
 
     @property
@@ -360,9 +361,11 @@ class ServerBridge:
             self.server.start()
         except Exception as e:                          # noqa: BLE001
             self.running = False
+            self.last_error = e
             self._log(f"서버 시작 실패: {e}")
             return False
         self.running = True
+        self.last_error = None
         self._log(f"서버 시작 {host}:{port}")
         return True
 

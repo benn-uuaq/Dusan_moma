@@ -102,11 +102,10 @@ class GridPlan:
     scan_overlap: float = 0.0   # area 안 ㄹ자 줄 겹침 → 로봇으로 전달
     pitch_x: float = 0.0        # area 끼리 가로 겹침 → AMR 이동
     pitch_y: float = 0.0        # area 끼리 세로 겹침 → 리프트 상승
-    # 로봇이 호를 직접 계산하는 데 쓴다 (레지스터 260/261).
+    # 로봇이 호를 직접 계산하는 데 쓴다 (레지스터 260 — 벽 바깥 반지름).
     # cell_width 는 **호 길이**다 — 현이 아니다. 로봇이 반지름과 함께
     # 현을 계산한다. 반지름 0 이면 평면으로 보고 직선으로 훑는다.
     radius: float = 0.0         # 훑는 면의 반지름 [mm]
-    thickness: float = 0.0      # 제품 두께 [mm] — UT 기록용
     # 검사장비(EOAT) 종류. 프로브 축 수로 고른다 (5 = 십자형, 8 = 직사각).
     # 0 이면 EOAT 를 안 쓰는 것으로 보고 로봇이 격자 전체를 훑는다.
     eoat_probes: int = 0
@@ -229,10 +228,11 @@ class JobSequencer(QObject):
     # 로봇을 안전 위치로 물리라는 요청. 더미 어댑터가 받는다.
     retract_requested = pyqtSignal()
     # 작업 영역(셀 치수)을 로봇에 써 달라는 요청. 작업 시작 때 한 번만 나간다.
-    # 셀 치수 + 호 정보. 순서는 레지스터 256~264 와 같다:
-    #   호 길이, 격자 높이, 스캐너 높이, 겹침, 반지름, 두께,
+    # 셀 치수 + 호 정보. 순서는 레지스터 256~264 와 같다(두께 261 은 빼고 —
+    # 바깥 지름만 쓴다, 2026-10-19):
+    #   호 길이, 격자 높이, 스캐너 높이, 겹침, 바깥 반지름,
     #   EOAT 가로, EOAT 세로, EOAT 종류(0/5/8)
-    work_area_requested = pyqtSignal(float, float, float, float, float, float,
+    work_area_requested = pyqtSignal(float, float, float, float, float,
                                      float, float, float)
     job_complete = pyqtSignal()
     # 구간 자리에 섰고 로봇 시작을 기다린다(hold_before_scan 으로 시작했을 때).
@@ -336,7 +336,7 @@ class JobSequencer(QObject):
         eoat_w, eoat_h = plan.eoat_size
         self.work_area_requested.emit(
             plan.cell_width, plan.cell_height, scan_h_mm, plan.pitch_y,
-            plan.radius, plan.thickness, eoat_w, eoat_h,
+            plan.radius, eoat_w, eoat_h,
             float(plan.eoat_probes),
         )
         if move_first:

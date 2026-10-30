@@ -25,6 +25,7 @@ class FakeClient:
         self.contact: list[dict] = []
         self.info: list[dict] = []
         self.home: list[str] = []
+        self.motion: list[dict] = []
         self.is_connected = True
 
     class _Sig:
@@ -67,6 +68,11 @@ class FakeClient:
         self.home.append(state)
         return True
 
+    def publish_motion(self, job_id, direction, seq, remain_mm=None):
+        self.motion.append({"job_id": job_id, "dir": direction, "seq": seq,
+                            **({"remain_mm": remain_mm} if remain_mm is not None else {})})
+        return True
+
     def publish_message(self, code, name, text, **extra):
         self.messages.append({"code": code, "name": name, "text": text, **extra})
         return True
@@ -92,7 +98,7 @@ def _req(action, **content):
 
 
 AREA = {"start": {"x": 0, "y": 0}, "end": {"x": 600, "y": 800}}
-SCAN = {"pitch": 200, "speed": 100, "overlap": 20}
+SCAN = {"pitch": 200, "speed_mm_s": 100, "speed_pct": 100, "overlap": 20}
 
 
 def _prepare(s, req_id="p1", job_id="jb1", area=AREA, scan=SCAN, surface="outer", **extra):
@@ -201,22 +207,100 @@ def test_zero_size_area_is_400(session):
 
 
 def test_speed_above_the_robot_limit_is_refused(session):
-    """낼 수 없는 속도는 분명히 거절한다(탭8 45행)."""
+    """낼 수 없는 속도는 분명히 거절한다(탭8 45 · 53행) — 상한과 단위를 함께 알린다."""
     s, client, _seq = session
-    _start(s, scan={"pitch": 200, "speed": 150, "overlap": 20})
+    _start(s, scan={"pitch": 200, "speed_mm_s": 150, "speed_pct": 100, "overlap": 20})
 
     assert client.res[-1]["status_code"] == 400
+    error = client.res[-1]["error"]
+    assert error["max_speed_mm_s"] == 100 and "mm/s" in error["detail"]
 
 
-def test_scan_speed_becomes_the_robot_speed_ratio(session):
-    """스캔은 100 mm/s 고정이라 40 mm/s 는 40 % 로 건다."""
-    s, _client, _seq = session
+# ---- 속도 두 칸 (if-0.11 탭8 73~79행 · 탭10 47~51 · 56번) --------------------------
+def _ratios(s):
     ratios: list[int] = []
     s.speed_requested.connect(ratios.append)
+    return ratios
 
-    _prepare(s, scan={"pitch": 200, "speed": 40, "overlap": 20})
 
-    assert ratios == [40]
+def test_speed_pct_is_the_robot_speed_ratio(session):
+    """로봇은 비율로 움직인다 — 두 칸이 함께 오면 speed_pct 를 쓴다(곱하지 않는다)."""
+    s, client, _seq = session
+    ratios = _ratios(s)
+
+    _prepare(s, scan={"pitch": 200, "speed_mm_s": 40, "speed_pct": 40, "overlap": 20})
+
+    assert client.res[-1]["status_code"] == 202 and ratios == [40]
+
+
+@pytest.mark.parametrize("scan, ratio", [
+    ({"speed_pct": 37.5}, 38),               # 비율만 — 소수는 반올림해 정수 % 로 건다
+    ({"speed_mm_s": 25}, 25),                # mm/s 만 — 100 mm/s = 100 %
+    ({"speed": 40}, 40),                     # 0.10 브릿지의 옛 칸(mm/s)
+    ({"speed_pct": 60, "speed": 10}, 60),    # 새 칸이 있으면 옛 칸은 보지 않는다
+])
+def test_one_speed_field_is_enough(session, scan, ratio):
+    s, client, _seq = session
+    ratios = _ratios(s)
+
+    _prepare(s, scan={"pitch": 200, "overlap": 20, **scan})
+
+    assert client.res[-1]["status_code"] == 202 and ratios == [ratio]
+
+
+@pytest.mark.parametrize("scan", [
+    {},                                                  # 속도 없음
+    {"speed_pct": None}, {"speed_pct": ""}, {"speed_pct": 0}, {"speed_pct": -5},
+    {"speed_pct": 120}, {"speed_pct": True},
+    {"speed_mm_s": None}, {"speed_mm_s": "40"}, {"speed_mm_s": 0},
+    {"speed_pct": 40, "speed_mm_s": 0},                  # 다른 칸이 멀쩡해도 잘못된 값은 400
+    {"speed_pct": 1},                                    # 장비 최저 2 % 보다 느리다
+])
+def test_missing_or_bad_speed_is_400(session, scan):
+    s, client, _seq = session
+    starts: list = []
+    s.job_requested.connect(starts.append)
+
+    _start(s, scan={"pitch": 200, "overlap": 20, **scan})
+
+    assert client.res[-1]["status_code"] == 400
+    assert client.res[-1]["error"]["code"] == "E6001"
+    assert starts == []
+
+
+# ---- 홀더 장착 채널 수 (if-0.11 탭5 160행 · 탭10 57~59번) ------------------------------
+def test_holder_channel_count_is_passed_on_not_used_for_motion(session):
+    s, client, _seq = session
+    holders: list[int] = []
+    s.holder_reported.connect(holders.append)
+
+    _start(s, holder={"channel_count": 17})          # 5 · 8 로 막지 않는다
+
+    assert client.res[-1]["status_code"] == 202 and holders == [17]
+
+
+def test_request_without_holder_is_accepted(session):
+    """holder 가 통째로 없는 옛 요청은 받는다 — 개수를 짐작하지 않는다."""
+    s, client, _seq = session
+    holders: list[int] = []
+    s.holder_reported.connect(holders.append)
+
+    _start(s)
+
+    assert client.res[-1]["status_code"] == 202 and holders == []
+
+
+@pytest.mark.parametrize("holder", [
+    None, [], {}, {"channel_count": None}, {"channel_count": True},
+    {"channel_count": "8"}, {"channel_count": 2.5}, {"channel_count": 0}, {"channel_count": -8},
+])
+def test_bad_holder_is_400(session, holder):
+    s, client, _seq = session
+
+    _start(s, holder=holder)
+
+    assert client.res[-1]["status_code"] == 400
+    assert client.res[-1]["error"]["code"] == "E6001"
 
 
 def test_unknown_fields_are_ignored(session):
@@ -694,11 +778,14 @@ def test_info_introduces_the_device(session):
     s.publish_info()
 
     info = client.info[-1]
-    assert info["interface_version"] == INTERFACE_VERSION == "0.10"
+    assert info["interface_version"] == INTERFACE_VERSION == "0.11"
     assert info["vendor"] == "3S" and info["device_type"] == "articulated_arm"
     assert "probe_contact" in info["capabilities"]
     assert "mark_positioning" in info["capabilities"]
     assert "home" in info["capabilities"]
+    assert "motion_direction" in info["capabilities"]
+    # 100 % 일 때의 스캔 속도(mm/s) — 노트북이 speed_pct 를 계산하는 기준(탭8 53행).
+    assert info["timings"]["scan_speed_max_mm_s"] == 100
     # 마커는 ERUT 것이고 배터리 자료는 아직 없다.
     assert "marking" not in CAPABILITIES
     assert "battery" not in CAPABILITIES and "charging" not in CAPABILITIES
@@ -1229,7 +1316,7 @@ def test_area_limit_goes_into_info_once_the_diameter_is_known(session):
     s.finish_calibration(True, 0.0)
 
     assert infos[-1]["area_limit"] == {"diameter": 1690, "max_width": 721}
-    assert infos[-1]["interface_version"] == "0.10"
+    assert infos[-1]["interface_version"] == "0.11"
 
 
 def test_area_taller_than_the_limit_is_refused_with_area_height(session):
@@ -1480,3 +1567,81 @@ def test_calibrate_runs_again_for_every_new_request_even_when_calibrated(session
 
     s.handle_request(*_req("calibrate", req_id="c2", diameter=1669.2, height=1000))
     assert len(runs) == 2 and s._calibrated is False     # 새 요청 — 다시 잡는 중
+
+
+@pytest.mark.parametrize("overlap, code", ((0, 202), (20, 202), (20.0, 202),
+                                          (20.5, 400), (-1, 400), ("20", 400), (True, 400)))
+def test_overlap_must_be_a_whole_number_of_mm(session, overlap, code):
+    """scan.overlap 은 0 이상 정수 mm — 소수 · 음수 · 글자면 400 E6001(탭10 45번)."""
+    s, client, _seq = session
+    _prepare(s, scan={"pitch": 30, "speed": 100, "overlap": overlap})
+    assert client.res[-1]["status_code"] == code
+
+
+def test_completion_error_carries_the_probe(session):
+    """complete 의 error 에도 어느 탐촉자인지(probe)를 싣는다(if-0.10 탭2 6 · 8행)."""
+    s, _client, _seq = session
+    s.raise_error({"code": "E3002", "name": "PROBE_CONTACT_LOST", "level": "stop",
+                   "recovery": "manual", "probe": "center", "detail": "눌림 1초 넘게 떨어짐"})
+    error = s._fault_error()
+    assert error["code"] == "E3002" and error["probe"] == "center"
+
+
+# ---- 이동 방향 알림 (if-0.11 evt/motion · 탭2 46~49행) ---------------------------------
+def test_motion_follows_the_robot_scan_segment(session):
+    """줄을 훑는 방향 · 줄 바꿈을 움직이기 전에, 바뀔 때만 알린다. seq 는 1 부터."""
+    s, client, _seq = session
+    _start(s)
+
+    s.set_scan_segment(1, remain_mm=600)     # 전진(오른쪽)
+    s.set_scan_segment(1, remain_mm=600)     # 그대로 — 다시 보내지 않는다
+    s.set_scan_segment(0)                    # 줄 끝
+    s.set_scan_segment(2, remain_mm=28.6)    # 줄 바꿈(위로)
+    s.set_scan_segment(3, remain_mm=600)     # 후진(왼쪽)
+
+    assert [(m["dir"], m["seq"]) for m in client.motion] == [
+        ("+x", 1), ("none", 2), ("+y", 3), ("-x", 4)]
+    assert all(m["job_id"] == "jb1" for m in client.motion)
+    assert client.motion[0]["remain_mm"] == 600 and "remain_mm" not in client.motion[1]
+
+
+def test_no_motion_outside_an_erut_section(session):
+    """구역 검사(start)가 없으면 보내지 않는다 — 준비 · 원점 잡기 · RCS 단독 작업."""
+    s, client, _seq = session
+    s.set_scan_segment(1)
+    _prepare(s)
+    s.set_scan_segment(3)
+
+    assert client.motion == []
+
+
+def test_motion_none_on_pause_again_on_resume_and_none_at_the_end(session):
+    s, client, seq = session
+    s.pause_requested.connect(seq.pause)
+    s.resume_requested.connect(seq.resume)
+    _start(s)
+    seq._plan = seq.plan or s._plan
+    seq._set_state(SequencerState.SCANNING)
+    s.set_scan_segment(1)
+
+    s.handle_request(*_req("pause", req_id="pz"))
+    s.set_scan_segment(1)                    # 멈춘 동안은 다시 보내지 않는다
+    s.handle_request(*_req("resume", req_id="rz"))
+    s.on_job_complete()
+
+    assert [m["dir"] for m in client.motion] == ["+x", "none", "+x", "none"]
+    assert [m["seq"] for m in client.motion] == [1, 2, 3, 4]
+
+
+def test_motion_seq_keeps_growing_for_the_same_job_id(session):
+    """같은 job_id 를 다시 받아도 seq 를 1 로 되돌리지 않는다 — ERUT 가 옛 알림으로 버린다."""
+    s, client, _seq = session
+    _start(s, req_id="s1")
+    s.set_scan_segment(1)
+    s.handle_request(*_req("abort", req_id="ab"))
+    s._stopping = False
+    _start(s, req_id="s2")
+    s.set_scan_segment(1)
+
+    assert [(m["dir"], m["seq"]) for m in client.motion] == [("+x", 1), ("none", 2), ("+x", 3)]
+

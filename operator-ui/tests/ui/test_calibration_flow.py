@@ -17,8 +17,7 @@ from smr_operator_ui.services import calibration
 def _window(qtbot):
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
-    window._work_area_extra = {"radius_mm": 0.0, "thickness_mm": 10.0,
-                               "eoat_w_mm": 0.0, "eoat_h_mm": 0.0, "eoat_type": 0.0}
+    window._work_area_extra = {"eoat_w_mm": 0.0, "eoat_h_mm": 0.0, "eoat_type": 0.0}
     return window
 
 
@@ -139,8 +138,9 @@ def test_three_point_fit_is_logged_when_the_robot_reaches_the_start(qtbot):
     """로봇 3점 측정은 start 안에서 한다 — 시작점에 서면 잰 벽을 알림에 남긴다."""
     window = _window(qtbot)
     _tap(window)
-    window._work_area_extra = {"radius_mm": 845.0, "thickness_mm": 10.0,
-                               "eoat_w_mm": 0.0, "eoat_h_mm": 0.0, "eoat_type": 0.0}
+    # 벽 바깥 반지름 855 = 바깥 지름 1.71 m 의 절반(두께는 쓰지 않는다).
+    window.main_screen.orbit_view.set_target_dimensions(1.71, 6.0)
+    window._work_area_extra = {"eoat_w_mm": 0.0, "eoat_h_mm": 0.0, "eoat_type": 0.0}
     said: list[str] = []
     window.main_screen.activity_shown.connect(said.append)
     window.erut_session._start_req_id = "s1"
@@ -239,12 +239,10 @@ def test_max_area_width_follows_the_700mm_chord(qtbot):
     """지름 1690 (반지름 845) 이면 현 700 mm 가 되는 호는 약 721 mm."""
     window = _window(qtbot)
     window.main_screen.orbit_view.set_target_dimensions(1.69, 6.0)
-    window._work_area_extra["radius_mm"] = 0.0
-    window._work_area_extra["thickness_mm"] = 0.0
 
     assert 715 <= window._max_area_width() <= 725
     # EOAT 를 안 골라도 자른다 — 한계는 팔이 갈 수 있는 거리다.
-    assert window._clamp_work_width(1000.0, 845.0, 0.0, 0.0) <= 725
+    assert window._clamp_work_width(1000.0, 845.0, 0.0) <= 725
     window.close()
 
 
@@ -363,8 +361,7 @@ def test_scan_rise_limit_per_eoat_comes_from_cobot_settings(qtbot):
     cobot = window.screens["cobot"]
     assert cobot.scan_rise_mm(5) == 30.0 and cobot.scan_rise_mm(8) == 167.5
     cobot.field("스캔 상승 높이 제한 8축").setValue(120.0)
-    window._work_area_extra = {"radius_mm": 845.0, "thickness_mm": 10.0,
-                               "eoat_w_mm": 75.0, "eoat_h_mm": 167.5, "eoat_type": 8.0}
+    window._work_area_extra = {"eoat_w_mm": 75.0, "eoat_h_mm": 167.5, "eoat_type": 8.0}
 
     plan = window._fill_from_local_setup(GridPlan(column_count=1, row_count=1,
                                                   cell_width=600.0, cell_height=800.0))
@@ -378,16 +375,15 @@ def test_saving_the_scan_rise_limit_sends_it_to_the_robot_when_idle(qtbot):
     window = _window(qtbot)
     pushed: list[tuple] = []
     window._push_work_area_to_robot = lambda *values: pushed.append(values)
-    window._work_area_extra = {"radius_mm": 845.0, "thickness_mm": 10.0,
-                               "eoat_w_mm": 30.0, "eoat_h_mm": 30.0, "eoat_type": 5.0}
+    window._work_area_extra = {"eoat_w_mm": 30.0, "eoat_h_mm": 30.0, "eoat_type": 5.0}
     cobot = window.screens["cobot"]
     cobot.field("스캔 상승 높이 제한 5축").setValue(28.0)
 
     cobot.save_requested.emit("cobot", cobot.values())
 
     assert pushed, "저장했는데 로봇에 보내지 않았다"
-    # (가로, 세로, 스캐너 밴드, 겹침, 반지름, 두께, eoat_w, eoat_h, eoat_type)
-    assert pushed[-1][2] == 28.0 and pushed[-1][7] == 28.0
+    # (가로, 세로, 스캐너 밴드, 겹침, 바깥 반지름, eoat_w, eoat_h, eoat_type)
+    assert pushed[-1][2] == 28.0 and pushed[-1][6] == 28.0
     window.close()
 
 
@@ -409,16 +405,16 @@ def test_eoat_choice_in_cobot_settings_reaches_the_robot(qtbot):
     cobot.eoat_combo.activated.emit(2)                     # 8축 직사각
 
     assert window._work_area_extra["eoat_type"] == 8.0
-    # (가로, 세로, 스캐너 밴드, 겹침, 반지름, 두께, eoat_w, eoat_h, eoat_type)
-    assert pushed and pushed[-1][8] == 8.0
-    assert pushed[-1][6] == 75.0 and pushed[-1][7] == 167.5 and pushed[-1][2] == 167.5
+    # (가로, 세로, 스캐너 밴드, 겹침, 바깥 반지름, eoat_w, eoat_h, eoat_type)
+    assert pushed and pushed[-1][7] == 8.0
+    assert pushed[-1][5] == 75.0 and pushed[-1][6] == 167.5 and pushed[-1][2] == 167.5
     plan = window._fill_from_local_setup(GridPlan(column_count=1, row_count=1,
                                                   cell_width=600.0, cell_height=800.0))
     assert plan.eoat_probes == 8
 
     cobot.eoat_combo.setCurrentIndex(1)
     cobot.eoat_combo.activated.emit(1)                     # 5축 십자형 — 상승 제한 30
-    assert pushed[-1][8] == 5.0 and pushed[-1][7] == 30.0
+    assert pushed[-1][7] == 5.0 and pushed[-1][6] == 30.0
     window.close()
 
 
@@ -490,8 +486,7 @@ def test_scan_pitch_caps_the_line_spacing(qtbot):
     from smr_operator_ui.services import GridPlan
 
     window = _window(qtbot)
-    window._work_area_extra = {"radius_mm": 845.0, "thickness_mm": 10.0,
-                               "eoat_w_mm": 30.0, "eoat_h_mm": 30.0, "eoat_type": 5.0}
+    window._work_area_extra = {"eoat_w_mm": 30.0, "eoat_h_mm": 30.0, "eoat_type": 5.0}
     plan = window._fill_from_local_setup(GridPlan(
         column_count=1, row_count=1, cell_width=140.0, cell_height=140.0,
         line_pitch_max=10.0))

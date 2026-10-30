@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from smr_operator_ui import edition
 from smr_operator_ui.components import MetricRow
 from smr_operator_ui.folder_picker import FolderPathEdit
 from smr_operator_ui.keypad import (
@@ -729,6 +730,10 @@ class SettingsMenuScreen(BaseScreen):
         self.setObjectName("SettingsScreen")
         grid=QGridLayout(); grid.setSpacing(14); self.body.addLayout(grid,1)
         items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","로봇·PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·ERUT"),("system","시스템 설정","장비·기록 위치·보존 기간"),("cobot","Cobot 설정","검사 작업 슬롯"),("tpac_bridge","TPAC 설정 / TCP 인코딩","로봇 값을 외부 Modbus로 중계"),("errors","오류 로그","활성 오류 해제·과거 기록"),("logs","로그 파일","기록 파일 보기·내보내기·삭제"),("modes","운전 모드 저장","작업 조건 묶음 저장·불러오기"))
+        if edition.STANDALONE:
+            # 단독판에는 차량 · 리프트 · 아웃트리거 · PLC · ERUT 가 없다.
+            items = tuple((k, t, "협동로봇" if k == "connection" else d)
+                          for k, t, d in items if k != "manual")
         for i,(key,title,desc) in enumerate(items):
             # key를 기본 인자로 고정한다. 그렇지 않으면 모든 lambda가
             # 반복문의 마지막 key만 참조하게 된다.
@@ -898,6 +903,8 @@ class FormScreen(BaseScreen):
         self.settings_scope = scope
         self._fields: dict[str, QWidget] = {}
         self._saved_values: dict[str, object] = {}
+        # 구역 제목 → 그 구역의 위젯들(제목 · 항목 이름 · 입력칸). hide_section 이 쓴다.
+        self._sections: dict[str, list[QWidget]] = {}
         self.setObjectName("SettingsScreen")
         surface,layout=self.surface("설정값")
 
@@ -920,8 +927,10 @@ class FormScreen(BaseScreen):
         for index,(section_title,entries) in enumerate(groups):
             if index % per_column == 0:
                 column=QVBoxLayout(); column.setSpacing(8); columns_layout.addLayout(column,1)
+            members = self._sections.setdefault(section_title, [])
             if section_title:
                 section=QLabel(section_title); section.setObjectName("SectionTitle"); column.addWidget(section)
+                members.append(section)
             form=QFormLayout(); form.setSpacing(16 if columns == 1 else 10)
             for label,widget in entries:
                 field_label = QLabel(self.DISPLAY_LABELS.get(label, label))
@@ -929,6 +938,7 @@ class FormScreen(BaseScreen):
                 widget.setObjectName("SettingsInput")
                 self._fields[label] = widget
                 form.addRow(field_label,widget)
+                members += [field_label, widget]
             column.addLayout(form)
         for i in range(columns_layout.count()):
             item=columns_layout.itemAt(i)
@@ -967,6 +977,14 @@ class FormScreen(BaseScreen):
 
         self.body.addWidget(surface,1)
         self._saved_values = self.values()
+
+    def hide_section(self, title: str) -> None:
+        """구역(제목과 그 항목들)을 화면에서 숨긴다 — 값은 그대로 저장된다.
+
+        Windows 단독판이 쓰지 않는 장비(차량용 PLC · ERUT)의 칸을 감춘다.
+        """
+        for widget in self._sections.get(title, []):
+            widget.hide()
 
     def field(self, name: str):
         """이름으로 입력 위젯을 돌려준다.
@@ -1119,7 +1137,12 @@ class CobotSettingsScreen(FormScreen):
         # 들어가 두 곳 값이 어긋날 수 있어서, 줄 위젯으로 감싸 폼이 모으지
         # 않게 한다 — 값은 태스크 판과 함께 robot_task 설정에만 둔다.
         self.task_version_combo = TouchComboBox()
-        self.task_version_combo.addItems(self.TASK_VERSIONS)
+        versions = self.TASK_VERSIONS
+        if edition.STANDALONE:
+            # TPAC 전시판은 단독판 목록에만 둔다 — 현장판(ERUT)에서 원점 신호를
+            # 기다리지 않는 태스크를 고를 수 있으면 안 된다.
+            versions = (versions[0], edition.EXHIBITION_TASK, *versions[1:])
+        self.task_version_combo.addItems(versions)
         self.task_version_combo.setCurrentIndex(0)
         version_row = QWidget()
         version_layout = QHBoxLayout(version_row)
@@ -1164,6 +1187,7 @@ class CobotSettingsScreen(FormScreen):
         )
         refresh.clicked.connect(self.task_refresh_requested)
         self.nosensor_check.toggled.connect(self.nosensor_changed)
+        self.task_version_combo.activated.connect(lambda _index: self._sync_nosensor_check())
         self.task_version_combo.activated.connect(
             lambda index: self.task_version_changed.emit(self.task_version_combo.itemText(index)))
         self.eoat_combo.activated.connect(
@@ -1208,6 +1232,11 @@ class CobotSettingsScreen(FormScreen):
         self.task_version_combo.blockSignals(True)
         self.task_version_combo.setCurrentIndex(index if index >= 0 else 0)
         self.task_version_combo.blockSignals(False)
+        self._sync_nosensor_check()
+
+    def _sync_nosensor_check(self) -> None:
+        """전시판은 그 자체가 논센서판이라 판 체크가 뜻이 없다 — 막아 둔다."""
+        self.nosensor_check.setEnabled(self.task_version() != edition.EXHIBITION_TASK)
 
     def set_nosensor(self, on: bool) -> None:
         """저장된 값으로 체크 상태를 맞춘다. 신호는 내지 않는다(불러오기용)."""

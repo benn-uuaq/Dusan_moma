@@ -139,6 +139,8 @@
 - [ ] 로봇 태스크 `dus5_init`(v5·논센서 판 포함): `arc_run = app_arc` 가 `app_arc <= 0 → 1000` 기본값보다 **먼저** 와서 기본값이 호 계산에 안 쓰인다. RCS 가 0 을 막으니 급하진 않지만 순서를 바로잡을 것
 - [ ] 차량·리프트 위치 정확도 — 차량 개발 완료 후 확정(로봇은 1/100 mm 수준)
 - [x] **ERUT if-0.10 반영** (2026-10-19) — 판 0.10 · prepare/start 의 `diameter` 가 원점 때와 1 mm 넘게 다르면 409 E6104(둘레 · 한계 검사보다 먼저) · `scan.overlap` 필수(겹침, 없으면 400) · `scan.pitch` = 검사 줄 간격 최대값(가안) · 크기 0 이하 구역 400 · 새 표준 번호 E3002 · E3003 · E2003 · E1004(예전 E9106 · E9105 · E9303 · E9402) · abort 뒤 다 서면 idle · 일하는/일시정지 중 reset 은 200 · 작업 없는 evt/contact 는 job_id 칸 뺌. 탭11 Q-32~Q-41 답(Q-38 은 장비 구성이라 직접 작성)
+- [x] **ERUT if-0.11 반영** (2026-10-29) — 판 0.11 · 속도 두 칸(`scan.speed_pct` 를 비율로 씀, 없으면 `speed_mm_s` 를 100 mm/s = 100 % 로, 둘 다 없으면 옛 칸 `scan.speed`(mm/s) · 셋 다 없거나 잘못된 값 · 2 % 미만은 400 E6001) · `holder.channel_count` 형식 검사(이동에는 안 씀, 장착 EOAT 와 다르면 화면 경고 + evt/message M2003) · 이동 방향 알림 `evt/motion`(capability motion_direction — 로봇 노드가 277 을 읽는다, remain_mm 포함) · `timings.scan_speed_max_mm_s` = 100 % 일 때 100 mm/s. 탭11 Q-42~Q-46 답
+- [ ] 센서판 태스크의 접촉 실패: 펜던트 확인 창(popup blocking)을 띄운 **뒤에** 299 · 290 을 써서, 확인을 누르기 전까지 RCS · ERUT 는 running · 진행률 0 으로만 본다(ERUT Q-43 ② 오전 15분). 오류 레지스터를 먼저 쓰고 창을 띄우도록 바꿀 것 — probe_c/l/r 등
 - [ ] ERUT 에 회신: 3S 확장 칸(`location`·`at_home`·`req/home`·`evt/message`)과 E9xxx 코드표, 위치 정확도 (`scan.pitch`/겹침은 if-0.10 Q-39 로 정리됨)
 - [ ] 장애 수집 실제화 — 지금은 로봇 태스크(299)·로봇 알람·차량 실패만 올라간다. 비상정지 버튼 등 안전 신호 경로는 실물 연결 후
 - [ ] **겹침 계산 확정 대기** — 마지막 행/열 나머지 처리(설계안 C: 천장 맞춤), `pitch_scan` 부호, `surface_length` 의미. 스캔업체 회신 후 적용

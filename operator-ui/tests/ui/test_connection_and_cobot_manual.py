@@ -336,3 +336,26 @@ def test_brake_release_waits_for_idle_and_guides_each_step(qtbot) -> None:
     window.ros_status.connected_changed.emit(False)
     assert brake.isEnabled() and "모릅니다" in screen.power_guide.text()
     window.close()
+
+
+def test_tpac_server_explains_port_in_use(qtbot) -> None:
+    """502 를 다른 프로그램(WSL 포트프록시 등)이 잡고 있으면 '시작 실패'만 보이지 않고 이유를 알린다."""
+    import socket
+
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    tpac = window.screens["tpac_bridge"]
+    holder = socket.socket()
+    holder.bind(("127.0.0.1", 0))
+    holder.listen(1)
+    try:
+        tpac.srv_bind_ip.setText("127.0.0.1")
+        tpac.srv_port.setValue(holder.getsockname()[1])
+        tpac._start_server()
+        assert tpac.server.running is False
+        assert "사용 중" in tpac.srv_status.text()
+        logs = [tpac.log_list.item(i).text() for i in range(tpac.log_list.count())]
+        assert any(line.startswith("[안내] 포트") for line in logs)
+    finally:
+        holder.close()
+        window.close()

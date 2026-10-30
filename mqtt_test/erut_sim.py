@@ -84,7 +84,13 @@ class ErutSimApp:
         self.overlap_var = tk.StringVar(value="20")
         # 검사 줄 간격(scan.pitch) — 로봇은 줄 간격의 최대값으로 쓴다(if-0.10 Q-39).
         self.pitch_var = tk.StringVar(value="30")
+        # 스캔 속도(%) — if-0.11 은 같은 속도를 speed_pct(%) · speed_mm_s(mm/s)로 함께
+        # 싣는다. 노트북처럼 장비가 알린 최고 속도(timings.scan_speed_max_mm_s)를 100 % 로
+        # 보고 mm/s 를 계산한다(모르면 100 mm/s).
         self.speed_var = tk.StringVar(value="100")
+        # 홀더 장착 채널 수(holder.channel_count, if-0.11). 비우면 holder 를 싣지 않는다.
+        self.channels_var = tk.StringVar(value="5")
+        self._scan_speed_max = 100.0
         # 마커는 ERUT 것이다 — 켜 두면 mark_ready 를 받자마자 쏜 셈 치고 mark_next.
         self.auto_mark_var = tk.BooleanVar(value=True)
 
@@ -124,8 +130,8 @@ class ErutSimApp:
             ("지름 diameter", self.diameter_var), ("높이 height", self.height_var),
             ("열 columns", self.columns_var), ("행 rows", self.rows_var),
             ("셀 가로 cell_width", self.cell_w_var), ("셀 세로 cell_height", self.cell_h_var),
-            ("겹침 overlap", self.overlap_var), ("속도 speed mm/s", self.speed_var),
-            ("줄 간격 pitch", self.pitch_var),
+            ("겹침 overlap", self.overlap_var), ("속도 speed_pct %", self.speed_var),
+            ("줄 간격 pitch", self.pitch_var), ("홀더 채널 수", self.channels_var),
         )
         for i, (label, var) in enumerate(fields):
             r, c = divmod(i, 3)
@@ -247,7 +253,7 @@ class ErutSimApp:
                      height=int(self.height_var.get()))
         elif action in ("prepare", "start"):
             # 규격 **20260812** 탭3 9·12번 그대로 보낸다: area + scan 만.
-            # plan 블록은 0812 판에 없다. 반지름·두께·EOAT 같은 장비 값은
+            # plan 블록은 0812 판에 없다. 반지름(바깥 지름 / 2)·EOAT 같은 장비 값은
             # RCS 가 자기 설정으로 채운다.
             #
             # 구간 하나 = job 하나. 지금 구간의 좌표를 area 로 준다.
@@ -258,17 +264,22 @@ class ErutSimApp:
             # 순서는 열 우선, 아래에서 위로 (A-01 -> A-02 -> B-01 …) — ERUT 화면과 같다.
             w, h = float(self.cell_w_var.get()), float(self.cell_h_var.get())
             x0, y0 = self._cell_origin()
+            pct = float(self.speed_var.get())
             c.update(
                 action=action, job_id=self._cell_job_id(),
                 surface=self.surface_var.get().strip(),
                 area={"start": {"x": x0, "y": y0},
                       "end": {"x": x0 + w, "y": y0 + h}},
                 scan={"pitch": float(self.pitch_var.get()),
-                      "speed": float(self.speed_var.get()),
+                      "speed_pct": pct,
+                      "speed_mm_s": round(pct / 100 * self._scan_speed_max, 3),
                       "overlap": int(float(self.overlap_var.get()))},
                 diameter=int(self.diameter_var.get()),
                 height=int(self.height_var.get()),
             )
+            channels = self.channels_var.get().strip()
+            if channels:
+                c.update(holder={"channel_count": int(channels)})
         elif action == "mark":
             c.update(method="paint", marker="erut",
                      points=[{"id": "p1", "x": 350, "y": 1200},
@@ -422,6 +433,17 @@ class ErutSimApp:
             if line != getattr(self, "_last_contact_line", ""):
                 self._last_contact_line = line
                 self._log(line + ("  → 물 켜기" if c.get("state") == "attached" else "  → 물 끄기"))
+            return
+        if tail == "evt/info" and isinstance(payload, dict):
+            # 노트북처럼 장비가 알린 100 % 속도로 speed_mm_s 를 계산한다(if-0.11 탭8 53행).
+            timings = (payload.get("content") or {}).get("timings") or {}
+            if timings.get("scan_speed_max_mm_s"):
+                self._scan_speed_max = float(timings["scan_speed_max_mm_s"])
+        if tail == "evt/motion":
+            c = (payload or {}).get("content", {}) if isinstance(payload, dict) else {}
+            remain = c.get("remain_mm")
+            self._log(f"[이동 방향] {c.get('dir')} · seq {c.get('seq')} · job={c.get('job_id')}"
+                      + (f" · 남은 {remain} mm" if remain is not None else ""))
             return
         if tail == "evt/progress":
             c = (payload or {}).get("content", {}) if isinstance(payload, dict) else {}

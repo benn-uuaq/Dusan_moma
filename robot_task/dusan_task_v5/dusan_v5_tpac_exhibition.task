@@ -1,0 +1,2218 @@
+<EliTask name="dusan_v5_tpac_exhibition" installationName="dusan_v5" robotType="CS612" toolType="0" createdVersion="2.15.0.477" lastSavedVersion="2.16.0.964" robotSN="11111111111111" savedTime="2026-08-28 15:49:45" directory="Dusan/dusan_v5" installationDirectory="/Dusan/dusan_v5" typeName="로봇 메인 작업">
+  <InitVariables typeName="변수 값 초기화"/>
+  <MainTask isTaskAlwaysLoops="true" hasBeforeStart="false" hasInitVariables="true" typeName="로봇 메인 작업">
+    <FolderNode display="1 [스크립트파일] dus5_init.script" isHideSubtree="false" typeName="폴더">
+      <ScriptNode scriptType="FILE_TYPE" typeName="스크립트">
+        <cachedFileContents># =============================================================================
+#  dus5_init.script — dusan_v5 (tpac_exhibition)
+#
+#  TPAC 전시판 — 시편을 **바닥에 눕혀** 놓는다(볼록면이 위, 줄은 로봇에서
+#  멀어지는 +X 로). 논센서판과 같고, 발행 스레드(pub_rel)가 원점 기준 좌표와
+#  호 위 위치를 베이스가 아니라 아래 「작업 좌표계」에서 잰다.
+#  파라미터를 읽고 피치·행수를 계산한다. 실시간 발행 스레드를 띄운다
+#
+#  펜던트에서 "1_init" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def ini_w1(a, v):
+  if (v &gt; 32000):
+    v = 32000
+  end
+  if (v &lt; -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+# 로봇 자체 레지스터 384~389 와 같은 단위.  길이 0.1mm, 회전 mRad
+def ini_w6(a, p):
+  ini_w1(a, p[0] * 10000)
+  ini_w1(a + 1, p[1] * 10000)
+  ini_w1(a + 2, p[2] * 10000)
+  ini_w1(a + 3, p[3] * 1000)
+  ini_w1(a + 4, p[4] * 1000)
+  ini_w1(a + 5, p[5] * 1000)
+end
+
+
+# ---- TCP 는 플랜지(설치 TCP 0)에서 시작한다 -----------------------------
+# 프로브 사이 이동(dus5_move_start · probe_l/r · goto_zero · mark_point)은 그
+# 동안만 TCP 를 EOAT 끝점(eoat_ofs)으로 바꾼다. 그 중간에 태스크가 멈췄으면
+# 끝점 TCP 가 남아 있을 수 있어, 매 작업 시작에 플랜지로 되돌린다.
+set_tcp([0, 0, 0, 0, 0, 0])
+
+
+# ---- 홈 위치 플래그 (276) -------------------------------------------------
+# 로봇이 **홈 관절자세**(또는 홈 pose)에 있으면 276 = 1, 벗어나면 0 이다.
+# 발행 스레드가 제어주기마다 다시 판단하므로 홈을 떠나는 순간 0 이 된다.
+# RCS 는 이 값과 태스크 상태(500)를 **둘 다** 확인한 뒤에야 차량·리프트를
+# 움직인다 — 완료 플래그(290 = 5)만 보면 로봇이 아직 홈으로 가는 중에
+# 발판이 올라간다.
+#
+# 관절값으로 먼저 보고(홈은 관절로 티칭한 자세다), 관절이 달라도 TCP 가
+# 홈 pose 자리에 있으면 홈으로 본다(같은 자리를 다른 해로 잡은 경우).
+def hm_flag():
+  hm_q = get_actual_joint_positions()
+  hm_i = 0
+  hm_far = 0
+  while (hm_i &lt; 6):
+    hm_dq = hm_q[hm_i] - Home_joint[hm_i]
+    if (hm_dq &lt; 0):
+      hm_dq = -hm_dq
+    end
+    if (hm_dq &gt; hm_far):
+      hm_far = hm_dq
+    end
+    hm_i = hm_i + 1
+  end
+  if (hm_far &lt;= home_tol_j):
+    write_port_register(276, 1)
+    return True
+  end
+  # 관절이 달라도 TCP 가 홈 자리에 있으면 홈으로 본다(같은 자리를 다른
+  # 해로 잡은 경우). x, y, z 를 하나씩 본다 — pose_dist 는 회전까지
+  # 섞어 재기 때문에(스크립트 매뉴얼 3.2.27) mm 로 다루기 어렵다.
+  hm_p = get_actual_tool_flange_pose()   # 끝점 TCP 로 옮기는 중에도 플랜지로 본다
+  hm_i = 0
+  hm_far = 0
+  while (hm_i &lt; 3):
+    hm_dq = hm_p[hm_i] - Home_pose[hm_i]
+    if (hm_dq &lt; 0):
+      hm_dq = -hm_dq
+    end
+    if (hm_dq &gt; hm_far):
+      hm_far = hm_dq
+    end
+    hm_i = hm_i + 1
+  end
+  if (hm_far &lt;= home_tol_p * 0.001):
+    write_port_register(276, 1)
+    return True
+  end
+  write_port_register(276, 0)
+  return False
+end
+
+
+# ---- 차량 고정 확인 (309) -------------------------------------------------
+# 로봇이 움직이기 전에 **차량 쪽이 굳어 있는지** 확인한다. 리프트가 서고,
+# 차량이 정지하고, 아웃트리거 고정이 끝난 것을 RCS 가 확인해서 309 에 1 을
+# 쓴다(움직이기 시작하면 다시 0). 1 이 될 때까지 기다린다 — 290 = 14 로
+# 왜 서 있는지 알린다.
+#
+# 외부 제어(266 = 1)일 때만 본다. 펜던트 변수값으로 로봇만 단독으로
+# 돌리는 판에는 차량도 RCS 도 없어서 영영 1 이 되지 않는다.
+# veh_wait_cyc 회(제어주기 기준 약 2 분) 안에 안 되면 299 = 8 로 알리고
+# 멈춘다 — 말없이 매달려 있으면 원인을 알 수 없다.
+def ini_veh_wait():
+  if (read_port_register(266, True) != 1):
+    return True
+  end
+  ini_vt = 0
+  while (read_port_register(309, True) != 1):
+    write_port_register(290, 14)
+    sync()
+    ini_vt = ini_vt + 1
+    if (ini_vt &gt; veh_wait_cyc):
+      write_port_register(299, 8)
+      write_port_register(290, 9)
+      halt()
+    end
+  end
+  write_port_register(290, 0)
+  return True
+end
+
+
+# ---- 바닥판 작업 좌표계 -----------------------------------------------------
+# 원 태스크는 시편이 **세워져** 있다(곡면의 축 = 베이스 Z, 호는 수평면, 줄은 위로).
+# 전시판은 그 벽을 로봇 앞(+X)으로 눕힌 배치라, 베이스를 Y 축으로 +90 도 돌린
+# 좌표계에서 보면 원 태스크와 똑같다:
+#   작업 X = 베이스 -Z  (판으로 들어가는 쪽 = 프로브 전진 방향, 원래의 벽 쪽 +X)
+#   작업 Y = 베이스 +Y  (호가 지나는 좌우 — 원 태스크와 같다)
+#   작업 Z = 베이스 +X  (줄 진행 = 곡면의 축, 원래의 위쪽 +Z)
+# 그래서 원 태스크에서 「베이스 X/Y/Z」로 계산하던 자리를 모두 이 좌표계로 옮겨
+# 계산하고, 로봇에 줄 목표만 베이스로 되돌린다. 곡률 중심(arc_ox, arc_oy)과 줄
+# 기준 높이(z_base)도 이 좌표계 값이다(dus5_probe_c · dus5_probe_l).
+# 다른 스크립트 노드도 같은 변환을 쓴다 — 노드마다 따로 돌아서 함수를 다시 둔다.
+def ini_to_w(p):
+  return pose_trans(pose_inv([0, 0, 0, 0, 1.57079633, 0]), p)
+end
+
+
+# 절대 TCP 는 컨트롤러가 384~389 에 늘 채우므로 태스크가 따로 내보내지
+# 않는다(260~265 는 RCS 입력 칸이다 — 아래 pub_rel 의 주석 참고).
+# 원점기준 상대좌표(280~285)와 호
+# 위치(286/287)는 원점(zero_pose)이 잡혀 있으면(zero_ok/arc_ok) 항상
+# 내보낸다 — TPAC 의 "Plane" 이 실제 TCP 이동거리를 보여줘야 하므로 ㄹ자
+# 스캔 중(state=4)만이 아니라 3점측정 후 원점복귀·다음 줄 이동 중에도
+# 값이 살아 있어야 한다. 원점이 아직 없으면(zero_ok==False) [0,0,0,0,0,0]
+# 을 쏜다.
+#
+# 위치는 베이스 좌표계 그대로 빼서 쓴다(cur - zero). 원래는
+# pose_trans(zero_inv, cur_pose)로 툴 좌표계 기준값을 냈는데, 툴이
+# 벽을 비스듬히 보고 있으면 베이스 Z+ 로 올라가도 이 값의 Z 성분이
+# 음수로 커지는 문제가 있었다. register_map.txt 4항의 역변환 공식
+# base = R_zero * rel_tcp 은 rel_tcp = R_zero^T * (cur-zero) 이므로
+# 결국 cur - zero 와 정확히 같다(회전행렬을 걸었다 다시 푸는 셈).
+# 그러니 처음부터 베이스 좌표계로 빼면 회전행렬 없이 같은 결과이고,
+# 세로(Z)가 위로 갈수록 커지도록 직관과도 맞는다.
+def pub_rel():
+  global cur_pose
+  global rel_pose
+  global alive
+  global arc_s
+  # 플랜지 pose 로 읽는다 — 프로브 사이 이동 동안 TCP 를 EOAT 끝점으로 바꿔 두므로
+  # get_actual_tcp_pose 는 그동안 eoat_ofs 만큼 튄다(아래 계산은 플랜지 기준).
+  cur_pose = get_actual_tool_flange_pose()
+  # ※ 260~265 에는 **쓰지 않는다.** 그 자리는 RCS 가 작업을 시작하기 전에
+  #   반지름(260)·두께(261)·프로브 커버(262/263)·EOAT 종류(264)를 써 넣는
+  #   입력 칸이다. 여기에 매 제어주기마다 TCP 를 덮어쓰면, 다음 셀에서
+  #   dus_init 이 그 자리를 다시 읽을 때 **TCP 좌표를 반지름·두께로 읽는다.**
+  #   (1A 는 멀쩡하고 1B 부터 호 각도가 커져 특이점까지 갔던 원인 —
+  #    RCS 는 작업 시작에 한 번만 256~264 를 쓴다.)
+  #   절대 TCP 는 컨트롤러가 항상 채우는 384~389 를 읽으면 된다.
+  # 스캔 구간인지는 **상태 레지스터 290** 하나로만 판단한다(6 = 스캔 중).
+  # 예전에는 scan_on 이라는 스크립트 변수를 썼는데, 값을 켜는 곳(다른 스크립트
+  # 노드)과 읽는 곳(이 발행 스레드)이 달라 전달을 신뢰할 수 없었다.
+  # 레지스터는 로봇 안에 하나뿐이라 그런 문제가 없고, RCS 도 같은 값을 본다.
+  # ※ 스캔 끝(290 = 5)부터 다음 작업 시작(dus5_init 이 290 = 0)까지는 280~287 을
+  #   **고치지 않는다** — 마지막 스캔 값이 그대로 남는다. dus5_finish 가 마지막
+  #   스캔 좌표에서 5 를 쓰고 나서 물러나므로, 후퇴·홈 이동 중에 좌표가 움직이거나
+  #   0,0,0 으로 떨어져 TPAC 스캔 데이터에 섞이지 않는다(2026-10-15).
+  pub_st = read_port_register(290, True)
+  if (pub_st != 5):
+    # 스캔 좌표는 **EOAT(프로브) 중심** 기준이다. 툴 플랜지에서 eoat_ofs
+    # (툴 로컬, dus5_init 이 eoat5_offset / eoat8_offset 으로 계산)만큼 옮긴
+    # 점을 쓴다. 원점도 같은 방식으로 옮겨야 원점에서 0 이 나온다.
+    # 오프셋이 0 이면 pose_trans 는 그대로라 예전 값과 똑같다.
+    scan_pose = pose_trans(cur_pose, eoat_ofs)
+    if (zero_ok == True and pub_st == 6):
+      # 작업 좌표계에서 뺀다 — 그래야 TPAC 이 받는 축의 뜻이 세운 벽 때와 같다
+      # (y' = 호를 따라 훑는 쪽, z' = 줄 진행, x' = 판 바깥쪽). 베이스로 빼면
+      # 줄 진행이 X 로, 판 높이가 Z 로 나가 TPAC 설정을 바꿔야 한다.
+      scan_w = ini_to_w(scan_pose)
+      zero_w = ini_to_w(pose_trans(zero_pose, eoat_ofs))
+      rel_pose = [scan_w[0] - zero_w[0],
+            scan_w[1] - zero_w[1],
+            scan_w[2] - zero_w[2],
+            scan_w[3] - zero_w[3],
+            scan_w[4] - zero_w[4],
+            scan_w[5] - zero_w[5]]
+      #
+      # 여기서 **Rz 180 도**로 뒤집어 내보낸다. 반시계 방향으로 훑도록
+      # 바꾸면서 원점이 베이스 Y 가 큰 쪽 끝이 되었는데, 그대로 빼면
+      # Y 가 계속 음수로 나간다. 제로점 좌표계를 180 도 돌려 놓으면
+      # 훑는 방향이 반대여도 Y 는 0 에서 + 로만 커진다.
+      #   x' = -x,  y' = -y,  z' = z   (Z 축 회전이라 높이는 그대로)
+      # (전시판: 위 x, y, z 는 작업 좌표계 — x' = 판 위쪽, y' = 훑는 쪽, z' = 줄 진행)
+      rel_pose[0] = -rel_pose[0]
+      rel_pose[1] = -rel_pose[1]
+      ini_w6(280, rel_pose)
+    else:
+      ini_w6(280, [0, 0, 0, 0, 0, 0])
+    end
+    # ---- 호 위 위치 (TPAC 스캔 축) ----------------------------------
+    # 좌표를 그대로 주면 현(1031.8)으로 7% 눌리고 호 위치에 비례하지도
+    # 않는다. 원점부터 호를 따라 실제로 지난 거리를 계산해서 내보낸다.
+    #   286 = 이번 줄의 호 위 거리 [0.1mm]  (0 ~ 11100)
+    #   287 = 완료된 줄까지 더한 누적 [mm]
+    if (arc_ok == True):
+      # 곡률 중심(arc_ox, arc_oy)은 작업 좌표계 값이다 — 방위각도 거기서 잰다.
+      scan_w = ini_to_w(scan_pose)
+      adx = scan_w[0] - arc_ox
+      ady = scan_w[1] - arc_oy
+      # 원점 방위각도 프로브 중심 기준으로 잰다(오프셋 0 이면 arc_phi0 와 같다).
+      zero_w = ini_to_w(pose_trans(zero_pose, eoat_ofs))
+      aph = atan2(ady, adx) - atan2(zero_w[1] - arc_oy, zero_w[0] - arc_ox)
+      # atan2 는 ±pi 로 감기므로 한 바퀴 보정한다
+      if (aph &gt; 3.14159265):
+        aph = aph - 6.28318531
+      end
+      if (aph &lt; -3.14159265):
+        aph = aph + 6.28318531
+      end
+      if (aph &lt; 0):
+        aph = -aph
+      end
+      arc_s = aph * scan_radius
+      ini_w1(286, arc_s * 10)
+      ini_w1(287, path_len + arc_s)
+    else:
+      arc_s = 0
+      ini_w1(286, 0)
+      ini_w1(287, path_len)
+    end
+  end
+
+  alive = alive + 1
+  if (alive &gt; 30000):
+    alive = 0
+  end
+  write_port_register(293, alive)
+  hm_flag()
+end
+
+
+# 제어주기마다 도는 발행 스레드. 이 뒤로는 평범한 movel 을 써도
+# 이동 중 좌표가 계속 나간다.
+def pub_thread():
+  while (True):
+    pub_rel()
+    sync()
+  end
+end
+
+
+# ------------------------------------------------------------------ 본문
+# 266 = 1 이면 외부(Modbus)가 준 값을, 0 이면 펜던트 변수값을 쓴다
+#   256 호 길이 [mm]      257 격자 높이 [mm]   258 스캐너 높이 [0.1mm]
+#   259 격자간 겹침 [mm]  260 반지름 [0.1mm]   261 두께 [0.1mm]
+#   262 프로브 유효 가로 [0.1mm]  263 프로브 유효 세로 [0.1mm]
+#   264 그리퍼 종류(eoat_type) — 0=없음, 5=5축, 8=8축
+# 258/260/261/262/263 이 0.1mm 인 이유: 반지름 834.6, 유효 커버 167.5
+# 처럼 소수가 나오는 값들이라 정수 mm 로 반올림하면 호 모양과 줄 간격이
+# 눈에 띄게 틀어진다. 호 길이·격자 높이·겹침은 1mm 로 충분하다.
+if (read_port_register(266, True) == 1):
+  app_arc = read_port_register(256, True)
+  app_height = read_port_register(257, True)
+  scan_h = read_port_register(258, True) * 0.1
+  overlap = read_port_register(259, True)   # 격자끼리의 겹침. 기록용
+  app_radius = read_port_register(260, True) * 0.1
+  app_thick = read_port_register(261, True) * 0.1
+  eoat_w = read_port_register(262, True) * 0.1
+  eoat_h = read_port_register(263, True) * 0.1
+  eoat_type = read_port_register(264, True)
+end
+
+# ---- 프로브 유효 커버 -----------------------------------------------------
+# 262/263 으로 받는 값은 EOAT 몸통 크기가 아니라 **한 번 지날 때 실제로
+# 검사되는 커버**(가로합/세로합)다. 좌우 끝과 상승 모두 **가운데 프로브
+# 중심**을 기준으로 잡으므로, TCP 는 작업 영역 좌우 끝까지 그대로 간다 —
+# 예전처럼 EOAT 폭의 절반씩 안쪽으로 물리지 않는다.
+#   5축 십자형 : 가로 30    세로 30     (가운데 프로브 센서 지름)
+#   8축 직사각 : 가로 75    세로 167.5  (좌우합 / 상하합)
+# 세로값(eoat_h)이 곧 한 줄이 덮는 밴드 높이이자 ㄹ자 up 동작의 **최대
+# 상승량**이다. 나중에 십자의 위·아래 프로브까지 유효로 치기로 하면
+# RCS 쪽 상수(PROBE_COVERAGE_MM)의 세로값만 167.5 로 고치면 된다.
+if (eoat_h &gt; 0):
+  scan_h = eoat_h
+end
+arc_run = app_arc
+
+if (app_arc &lt;= 0):
+  app_arc = 1000
+end
+if (app_radius &lt; 0):
+  app_radius = 0
+end
+
+# ---- 훑는 면의 반지름 -----------------------------------------------------
+# 도면 반지름은 안쪽(오목) 면 기준이고 로봇은 바깥(볼록) 면을 훑으므로
+# 두께를 더해야 실제로 손이 닿는 면의 반지름이 된다 (834.6 + 10 = 844.6).
+# **결과를 app_radius 에 덮어쓰면 안 된다.** 이 스크립트는 사이클마다 다시
+# 도는데(루프판), 그때마다 두께가 또 더해져 값이 계속 커진다
+# (834.6 -&gt; 844.6 -&gt; 854.6 ...). app_radius 는 받은 도면값 그대로 두고,
+# 훑는 면 반지름은 scan_radius 에 따로 담는다.
+if (app_radius &gt; 0):
+  scan_radius = app_radius + app_thick
+else:
+  scan_radius = 0
+end
+
+# ---- 호 기하 --------------------------------------------------------------
+# 받은 값은 **호 길이**다(현이 아니다). 반각 t = L/(2R), 현 c = 2R*sin(t).
+#   시험 벽: L=1110, R=844.6 -&gt; t=0.6571 rad(37.6deg), c=1031.8
+# 로봇이 실제로 지나는 길이는 servoj 호가 따라가는 호 길이(1110) 다.
+if (scan_radius &gt; 0):
+  arc_half = arc_run / (2.0 * scan_radius)
+  app_width = 2.0 * scan_radius * sin(arc_half)
+else:
+  arc_half = 0
+  app_width = arc_run
+end
+
+if (app_height &lt; 0):
+  app_height = 0
+end
+if (scan_h &lt;= 0):
+  scan_h = 200
+end
+if (overlap &lt; 0):
+  overlap = 0
+end
+
+# ---- 속도/가속도 : 전역 변수로 관리한다 ----------------------------------
+#   movel(스캔 제외)       : a_l, v_l
+#   movej(홈 복귀 등)      : a_j, v_j
+#   스캔 servoj 호·up movel: a_scan, v_scan  (스펙 100 mm/s / 400 mm/s^2, 호는 307 비율을 곱한다)
+# 필요하면 각 스크립트가 그 자리에서 값을 바꿔 써도 된다 — 예를 들어
+# 접촉 위치 진입처럼 더 천천히 움직여야 할 때는 v_l 을 따로 두지 않고
+# `v_l / 3.0` 처럼 그 movel 호출 하나에만 적용한다(전역값 자체는 안 바뀜).
+#
+# 안전 규정: 스캔 외 동작도 100 mm/s(가속도 400 mm/s^2)를 넘으면 안 된다. 관절 이동의
+# 각속도도 여기에 맞춰 조그와 같은 상한(0.50 rad/s)을 넘지 않게 자른다.
+# 306 = 작업 속도 [mm/s]. v_l 로 쓴다. 0 이면 펜던트 기준값(v_l_set)을 쓴다.
+# 307 = 로봇 속도 비율 [%]. 여기(init)서는 쓰지 않는다(아래 ※). 스캔 호(servoj)만
+#       dus5_pass_r/l 이 줄마다 읽어 그 줄의 속도에 건다(아래 ※※).
+#
+# ※ 속도에 비율을 **스크립트에서 곱하지 않는다.** 예전에는
+#     v_l = v_l * 비율 / 100,  v_scan = v_scan * 비율 / 100
+#   처럼 자기 자신에 곱했는데, 이 스크립트는 셀마다 다시 돌고(RCS 가
+#   stop -&gt; play 로 한 셀씩 돌린다) 펜던트의 "Init Variables Value" 노드도
+#   비어 있어 값이 되돌아가지 않는다. 그래서 비율이 100 % 가 아니면 셀을
+#   지날수록 0.1 -&gt; 0.05 -&gt; 0.025 ... 로 계속 줄었다. 비율은 RCS 가 보낼 때만
+#   레지스터에 들어가므로 **태스크만 돌리면 멀쩡하고 RCS 로 돌리면 느려졌다.**
+#   게다가 비율은 컨트롤러가 이미 적용한다(RCS 가 29999 'speed -v N' 으로
+#   보내고, 펜던트 슬라이더와 같은 값이다) — 스크립트에서 또 곱하면 두 번
+#   걸린다(50 % 면 실제 25 %).
+#
+# ※※ 단, servoj 는 예외다. 컨트롤러 비율은 movel·movej 같은 계획 동작에만
+#   걸리고, 매 주기 위치를 직접 찍어 보내는 servoj 에는 걸리지 않는다 — 비율
+#   15 % 에서 다른 동작은 15 mm/s 인데 스캔 좌우만 100 mm/s 로 돌았다
+#   (2026-10-14). 그래서 dus5_pass_r/l 의 호 함수가 307 을 읽어
+#   v_scan * 비율 / 100 을 **그 호의 지역값**으로만 쓴다. 전역 v_scan 은 그대로라
+#   위의 누적 문제는 없고, 두 번 걸리지도 않는다(servoj 에는 컨트롤러 비율이 없다).
+#   307 은 RCS 가 비율을 바꿀 때 써 두는 값이라, 펜던트만으로 돌릴 때는 RCS 가
+#   마지막에 쓴 값(비어 있으면 100 %)을 따른다 — 펜던트 슬라이더는 스캔에 안 먹는다.
+#
+# 그래서 속도는 **매번 기준값(*_set)에서 새로 정한다.** 이미 줄어든 값이
+# 로봇에 남아 있어도 다음 시작에서 바로 돌아온다.
+v_l = v_l_set
+spd_in = read_port_register(306, True)
+if (spd_in &gt; 0):
+  v_l = spd_in / 1000.0
+end
+v_j = v_j_set
+v_scan = v_scan_set
+
+v_l_limit = 0.100
+if (v_l &gt; v_l_limit):
+  v_l = v_l_limit
+end
+v_j_limit = 0.50
+if (v_j &gt; v_j_limit):
+  v_j = v_j_limit
+end
+# 직선 동작 가속도도 운영 기준(400 mm/s^2)으로 자른다 — 스캔 밖 movel(a_l)과
+# 스캔(a_scan) 모두. 펜던트 변수가 더 크게 남아 있어도 여기서 줄어든다.
+a_lin_limit = 0.400
+if (a_l &gt; a_lin_limit):
+  a_l = a_lin_limit
+end
+if (a_scan &gt; a_lin_limit):
+  a_scan = a_lin_limit
+end
+# 스캔은 고정 스펙(100 mm/s). 값이 비었으면 스펙으로 되돌리고, 펜던트
+# 변수(v_scan_set)가 더 크게 남아 있어도 100 mm/s 로 자른다 — 작업 속도
+# (v_l)와 같은 상한이다. 예전에는 위로는 막지 않았다.
+if (v_scan &lt;= 0):
+  v_scan = 0.1
+end
+if (v_scan &gt; v_l_limit):
+  v_scan = v_l_limit
+end
+
+# ---- 기준 위치 (RCS 「위치 저장」) ----------------------------------------
+#   308 = 1 : 310~315 **스캔 대기 위치** 관절값 [mRad] — RCS 「스캔 대기 위치 저장」
+#             (예전 「홈 위치 저장」 자리, 2026-10-15 부터 대기 위치)
+#             316~321 그리퍼 기준점 pose(길이 0.1mm, 회전 mRad) — RCS 「시작 포즈 저장」.
+#             작업면에 붙였을 때의 툴 플랜지 pose 다(티칭한 그대로).
+#   328 = 1 : 322~327 **홈** 관절값 [mRad] — RCS 「홈 위치 저장」(2026-10-16)
+# 플래그가 0 이면 펜던트 변수 값을 그대로 쓴다. 홈과 작업 자리 사이는 언제나
+# 대기 위치를 거친다(dus5_leave_home · dus5_go_home · dus5_home).
+# 플래그가 1 이어도 칸이 전부 0 이면 **저장한 적이 없는 칸**이다(308 하나가
+# 대기 위치와 그리퍼 기준점을 같이 세운다) — 그 칸은 읽지 않는다. 0 으로
+# movej 하면 엉뚱한 자세로 간다.
+# EOAT 중심 오프셋은 시작 자세에는 쓰지 않는다 — 호 계산과 스캔 좌표에 쓴다(아래 참고).
+def ini_regs_set(a):
+  ini_k = 0
+  while (ini_k &lt; 6):
+    if (read_port_register(a + ini_k, True) != 0):
+      return True
+    end
+    ini_k = ini_k + 1
+  end
+  return False
+end
+
+
+def ini_joints(a):
+  return [read_port_register(a, True) / 1000.0,
+         read_port_register(a + 1, True) / 1000.0,
+         read_port_register(a + 2, True) / 1000.0,
+         read_port_register(a + 3, True) / 1000.0,
+         read_port_register(a + 4, True) / 1000.0,
+         read_port_register(a + 5, True) / 1000.0]
+end
+
+
+if (read_port_register(308, True) == 1):
+  if (ini_regs_set(310)):
+    Standby_joint = ini_joints(310)
+  end
+  if (ini_regs_set(316)):
+    gripper_target_pose = [read_port_register(316, True) / 10000.0,
+           read_port_register(317, True) / 10000.0,
+           read_port_register(318, True) / 10000.0,
+           read_port_register(319, True) / 1000.0,
+           read_port_register(320, True) / 1000.0,
+           read_port_register(321, True) / 1000.0]
+  end
+end
+if (read_port_register(328, True) == 1):
+  if (ini_regs_set(322)):
+    Home_joint = ini_joints(322)
+  end
+end
+# pose 는 **언제나 관절값에서** 다시 계산한다(플랜지 기준 — 위에서 TCP 를 0 으로
+# 돌려 두었다). 예전에는 308 = 1 일 때만 계산해, 펜던트 변수로 돌리면 옛 값이
+# 남아 관절값과 어긋날 수 있었다. 홈 판정(hm_flag · 276)은 Home_pose 를 쓴다.
+Home_pose = get_forward_kin(Home_joint)
+Standby_pose = get_forward_kin(Standby_joint)
+
+# ---- EOAT(프로브) 중심점 오프셋 --------------------------------------------
+# 툴 플랜지에서 프로브 중심까지의 거리. **펜던트 변수에서 입력한다**:
+#   eoat5_offset = [x, y, z]   5축 십자형  [mm]
+#   eoat8_offset = [x, y, z]   8축 직사각  [mm]
+# 좌표는 툴 플랜지 로컬 기준이다(+Z = 벽으로 다가가는 방향).
+# 264(eoat_type) 로 어느 쪽을 쓸지 고른다. 0 이면 오프셋 없음.
+#
+# ※ 이 값으로 **벽 위 실제 호 길이 = C-scan 거리**가 되게 계산한다.
+#   - 곡률 중심을 프로브 중심에서 잡는다(dus5_probe_l 의 al_arc·곡률 중심,
+#     dus5_mark_point). 플랜지는 그 중심 둘레로 돌고, 프로브 중심은 벽(반지름 R)
+#     위를 정확히 app_arc 만큼 지난다. 플랜지에서 잡으면 오프셋 z 만큼 중심이
+#     어긋나 호가 app_arc*(R-z)/R 로 짧아지고 양 끝이 벽을 파고들었다.
+#   - 발행하는 280~285(원점 기준 좌표)·286/287(호 위치)·297(누적 거리)도 프로브
+#     중심 기준이다 — TPAC 이 좌표로 계산하는 거리와 같다.
+#   - 홈·시작 자세(티칭한 플랜지 pose)는 그대로다. 프로브 좌우 접근 지점과 스캔
+#     경로는 위 중심으로 계산되므로 오프셋만큼 바뀐다(그래야 벽에 맞는다).
+#   - 플랜지 속도가 v_scan 이라 프로브 중심은 v_scan*R/(R+z) 로 조금 느리다.
+if (eoat_type == 8):
+  eoat_ofs = [eoat8_offset[0] * 0.001, eoat8_offset[1] * 0.001, eoat8_offset[2] * 0.001, 0, 0, 0]
+elif (eoat_type == 5):
+  eoat_ofs = [eoat5_offset[0] * 0.001, eoat5_offset[1] * 0.001, eoat5_offset[2] * 0.001, 0, 0, 0]
+else:
+  eoat_ofs = [0, 0, 0, 0, 0, 0]
+end
+# ---- 프로브 중심 오프셋 알리기 (347~349) ----------------------------------
+# RCS 가 캘리브레이션 오차를 계산하려면 접촉점(플랜지 pose, 330/340/350)을
+# 프로브 중심으로 옮겨야 한다. 그 오프셋은 펜던트 변수라 RCS 가 알 수 없어서
+# 여기서 내보낸다. 단위는 다른 좌표와 같은 0.1mm 다(툴 로컬 x, y, z).
+write_port_register(347, floor(eoat_ofs[0] * 10000 + 0.5))
+write_port_register(348, floor(eoat_ofs[1] * 10000 + 0.5))
+write_port_register(349, floor(eoat_ofs[2] * 10000 + 0.5))
+# 시작 자세는 티칭한 pose 그대로 쓴다(오프셋을 빼지 않는다 — 위 ※ 참고).
+gripper_touch_flange = gripper_target_pose
+
+# ---- 그리퍼를 작업면에 딱 붙인 티칭 지점에서 물러난 곳이 start_pose ------
+# gripper_target_pose 는 그리퍼를 작업면 중앙에 접촉시켜 놓고 티칭한
+# 값이다(gripper_touch_flange 는 그 순간의 플랜지 pose). 거기 그대로
+# 두면 각 프로브 사이 이동 때마다 작업면에 닿아 있는 자세라 위험하니,
+# probe_l/r/goto_zero 의 대기 지점(l_stand/r_stand/z_stand)과 같은 방식
+# 으로 TCP 기준 -Z 로 probe_dist 만큼 물러난 지점을 실제 start_pose 로
+# 쓴다(다음엔 그 자리에서 TCP +Z 로 전진해 다시 붙이면 된다).
+start_pose = pose_trans(gripper_touch_flange, [0, 0, -probe_dist * 0.001, 0, 0, 0])
+
+# ---- 상승 피치와 줄 수 -----------------------------------------------------
+# 십자(+) 프로브는 **가운데 프로브**가 검사면을 훑는다. 그래서 맨 아랫줄은
+# ㅗ 자세로 밑면(높이 0)을, 맨 윗줄은 ㅜ 자세로 윗면(app_height)을 가운데
+# 프로브가 직접 지나가야 한다. 줄 위치는 0..app_height 를 균등 분할한
+# 자리로 먼저 정해지고, **겹침은 그 결과로 나온다**.
+#
+# 피치(= ㄹ자 up 동작의 상승 높이)는 프로브 유효 세로 커버(scan_h) 를
+# **넘을 수 없다** — 넘으면 줄과 줄 사이에 검사 안 된 띠가 남는다.
+#   5축 십자 : scan_h 30    -&gt; 500mm 샘플이면 17칸 -&gt; 18줄, 피치 29.4
+#   8축 직사 : scan_h 167.5 -&gt; 500mm 샘플이면  3칸 -&gt;  4줄, 피치 166.7
+# **259 로 받은 겹침은 여기에 안 쓴다.** 그 값은 격자 **안**의 줄 겹침이
+# 아니라 **격자끼리**의 겹침 허용도다 — 이 격자와 다음 격자가 얼마나
+# 겹치는지, 즉 리프트가 다음 줄로 올라갈 때 얼마를 덜 올라가는지다.
+# 그건 RCS 가 리프트 상승량에서 빼서 처리하고, 로봇은 자기 격자 안만
+# 책임진다. 그래서 격자 안 피치는 프로브 유효 커버(scan_h) 하나로 정한다.
+# (예전에는 259 를 격자 안 최소 겹침으로 써서, 바깥에서 20 을 주면
+#  격자 안 줄이 쓸데없이 촘촘해졌다.)
+
+if (app_height &lt;= 0):
+  rows = 1
+  pitch = 0
+else:
+  gaps = ceil(app_height * 1.0 / scan_h)
+  if (gaps &lt; 1):
+    gaps = 1
+  end
+  rows = gaps + 1
+  pitch = app_height * 1.0 / gaps
+end
+
+# 격자 **안**의 줄 겹침은 계산 결과다(화면/기록용).
+# 259 로 받은 격자간 겹침과는 다른 값이라 여기서 덮어쓴다.
+overlap = scan_h - pitch
+if (overlap &lt; 0):
+  overlap = 0
+end
+if (rows &gt; 400):
+  popup(s = "ROWS OVER LIMIT(400). CHECK HEIGHT/SCAN_H/OVERLAP", title = "dusan_v5", blocking = True)
+  write_port_register(290, 9)
+  halt()
+end
+
+row_idx = 0
+dir_sign = 1
+# 호 기준은 probe_l 이 매 사이클 다시 잡는다. 여기서 내려두지 않으면
+# 지난 사이클 값(arc_ox/arc_oy/arc_phi0)으로 286/287 이 계속 나간다.
+arc_ok = False
+pass_done = 0
+path_len = 0
+alive = 0
+zero_ok = False
+n_probe = 0
+n_hit = 0
+qa = 0
+qb = 0
+qc = 0
+
+# 288 = 스캔 중 눌림 상태(0 감시 안 함, 1 적정, 2 덜 눌림, 3 너무 눌림)
+# 289 = 한 줄 동안의 눌림 보정량 [0.01mm] — dus5_pass_r/l 이 채운다
+write_port_register(277, 0)   # TPAC 동기 신호 구간(0 없음/1 전진/2 줄 바꿈/3 후진)
+write_port_register(288, 0)
+write_port_register(289, 0)
+write_port_register(290, 0)
+write_port_register(291, 0)
+ini_w1(292, rows)
+write_port_register(293, 0)
+write_port_register(294, 0)
+write_port_register(295, 0)
+# 296 = 줄 간격 [0.1 mm]. 정수 mm 로 보내면 29.6 이 30 이 되어, RCS 가
+# 줄 번호 x 피치로 내는 세로 위치가 줄마다 0.4 mm 씩 위로 밀렸다(28줄이면 11 mm).
+ini_w1(296, pitch * 10)
+write_port_register(297, 0)
+write_port_register(298, 0)
+write_port_register(299, 0)  # 0=정상, 1/2/3=probe_c/l/r 접촉 실패, 4=호 없음, 5=마킹 접촉 실패, 6=스캔 중 눌림 유지 실패, 7=호 경로 역기구학 해 없음
+write_port_register(304, 0)
+write_port_register(305, 0)
+hm_flag()        # 276 = 지금 홈에 있는가
+
+# 실시간 발행 스레드 기동
+# 발행 스레드는 태스크 한 번에 **하나만** 띄운다.
+# 이 스크립트는 Robot Main Task 가 반복될 때마다 다시 실행되는데(루프판),
+# 그때마다 새로 띄우면 pub_thread 가 while(True) 라 끝나지 않고 detached 라
+# 회수도 안 되어 스레드가 쌓인다 -&gt; 20 번째 사이클에서
+# "Thread over the max size: 20" 으로 태스크가 멈춘다.
+# pub_started 는 "Init Variables Value" 가 시작마다 0 으로 되돌려 주는
+# 것을 전제로 한다. 그런데 그 노드가 비어 있으면(태스크 XML 의
+# &lt;InitVariables/&gt; 에 항목이 없으면) 값이 1 로 남고, 스레드는 죽었는데
+# 다시 띄우지 않아 **260~285 가 전부 멈춘다**. 펜던트 설정에 기대지
+# 말고 워치독(293)으로 직접 확인한다 — 스레드가 살아 있으면 제어주기
+# 마다 alive 를 올려 쓰므로, 두 주기 동안 값이 그대로면 죽은 것이다.
+# (293 은 바로 위에서 0 으로 지웠다. 살아 있으면 곧 큰 값으로 덮인다.)
+pub_a = read_port_register(293, True)
+sync()
+sync()
+pub_b = read_port_register(293, True)
+if (pub_a == pub_b):
+  pub_started = 0
+end
+
+if (pub_started == 0):
+  pub_h = start_thread(pub_thread, (), detach_mode = True)
+  pub_started = 1
+end
+
+# ---- 차량 고정을 확인하고 나서 움직인다 -----------------------------------
+# 이 다음 노드(dus5_leave_home)부터 로봇이 실제로 움직인다. 그 전에 차량·리프트가
+# 굳어 있는지 확인한다.
+ini_veh_wait()
+</cachedFileContents>
+        <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_tpac_exhibition/dus5_init.script"/>
+      </ScriptNode>
+    </FolderNode>
+    <FolderNode display="2 [스크립트파일] dus5_leave_home.script" isHideSubtree="false" typeName="Folder">
+      <ScriptNode scriptType="FILE_TYPE" typeName="Script">
+        <cachedFileContents># =============================================================================
+#  dus5_leave_home.script — dusan_v5 (tpac_exhibition)
+#
+#  전시판(시편을 바닥에 눕힘). 대기 위치 「선상」 맞추기를 작업 좌표계(dus5_init 의
+#  「바닥판 작업 좌표계」)에서 한다 — 원 태스크의 「베이스 X(벽 쪽)」는 작업 X =
+#  베이스 -Z(아래), 「높이(베이스 Z)」는 작업 Z = 베이스 +X(줄 진행)다. 그래서
+#    1) 대기 위치보다 낮으면 먼저 **곧게 위로** 대기 위치 높이까지 올라가고,
+#    2) 그 높이에서 **베이스 X 만** 대기 위치에 맞춘 뒤(앞뒤로),
+#  movej 로 대기 위치에 간다.
+#  홈에서 스캔 대기 위치로 moveJ 로 간다 (작업 시작)
+#
+#  펜던트에서 "2 move_home" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#  다음 노드(move_start)가 스캔 대기 위치에서 시작 위치로 간다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  홈과 작업 자리 사이는 **언제나 스캔 대기 위치를 거친다**(2026-10-15):
+#    시작 : 홈 --movej--&gt; 스캔 대기 위치 --&gt; 시작 위치(start_pose)
+#    끝   : 스캔 완료 자리 --&gt; (대기 위치 기준) 물러나고 --&gt; 대기 위치 선상(X · 높이)에
+#           맞추고 --movej--&gt; 스캔 대기 위치 --movej--&gt; 홈
+#  스캔 대기 위치(Standby_joint) = 예전의 「홈」. RCS 「스캔 대기 위치 저장」(레지스터
+#  310~315, 308 = 1) 또는 펜던트 변수. 홈(Home_joint)은 RCS 「홈 위치 저장」(레지스터
+#  322~327, 328 = 1) 또는 펜던트에서 티칭한 변수(dus5_init 참고).
+#
+#  홈이 아닌 자리에서 시작했으면(작업 도중 멈춘 뒤 다시 튼 경우 등) 곧장 movej 하지
+#  않고 벽에서 물러나(대기 위치 기준) 대기 위치 선상(X · 높이)에 맞춘 뒤 movej 한다.
+# =============================================================================
+
+def lh_to_w(p):
+  # 베이스 -&gt; 작업 좌표계(베이스를 Y 축으로 +90 도). dus5_init 의 ini_to_w 와 같다.
+  return pose_trans(pose_inv([0, 0, 0, 0, 1.57079633, 0]), p)
+end
+
+
+def lh_to_b(p):
+  # 작업 좌표계 -&gt; 베이스.
+  return pose_trans([0, 0, 0, 0, 1.57079633, 0], p)
+end
+
+
+def lh_retreat(limit):
+  # 벽에서 물러나되 **스캔 대기 위치(Standby_joint)보다 뒤로는 가지 않는다.**
+  #   - 기준점은 Standby_joint 의 플랜지 자세(get_forward_kin)다. Standby_pose 변수는
+  #     안 쓴다 — 펜던트에 옛 값이 남아 있을 수 있다.
+  #   - 지금 자리도 플랜지로 본다. EOAT 끝점 TCP(eoat_ofs)가 남아 있으면 끝점이
+  #     245 mm 앞이라 남은 거리가 그만큼 크게 잡혔다. 그래서 먼저 TCP 를 플랜지로.
+  #   - 방향은 툴 -Z(벽 법선 반대)다. 호 끝처럼 툴이 돌아가 있어도 벽에서 곧게 뗀다.
+  #   - 거리는 limit [m] 과 「대기 위치 X 까지 남은 거리」 중 작은 쪽. 툴 -Z 로 d 만큼
+  #     가면 베이스 X 는 d * cz 만큼 준다(cz = 툴 Z 의 베이스 X 성분). 이미 대기
+  #     위치보다 뒤면 물러나지 않는다.
+  #   - 툴이 벽(+X) 쪽을 보고 있지 않으면(cz &lt;= 0.2, 약 78 도 넘게 돌아감) 벽에
+  #     붙은 자세가 아니다 — 엉뚱한 쪽으로 가지 않게 물러나지 않는다.
+  #   - (전시판) 위 「베이스 X」는 모두 작업 X(= 베이스 -Z)로 읽는다: 대기 위치
+  #     높이까지 남은 만큼, 툴이 아래(판)를 보고 있을 때만 위로 뗀다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  lr_ref = lh_to_w(get_forward_kin(Standby_joint))
+  lr_base = get_actual_tool_flange_pose()
+  lr_cur = lh_to_w(lr_base)
+  lr_cz = pose_trans(lr_cur, [0, 0, 1, 0, 0, 0])[0] - lr_cur[0]
+  lr_back = 0
+  if (lr_cz &gt; 0.2):
+    lr_back = (lr_cur[0] - lr_ref[0]) / lr_cz
+    if (lr_back &gt; limit):
+      lr_back = limit
+    end
+  end
+  if (lr_back &gt; 0.001):
+    movel(pose_trans(lr_base, [0, 0, -lr_back, 0, 0, 0]), a = a_l, v = v_l)
+  end
+end
+
+
+def lh_align():
+  # 스캔 대기 위치 **선상**에 맞춘다(플랜지 기준, 2026-10-16):
+  #   1) 아직 대기 위치보다 앞(베이스 +X, 벽 쪽)이면 베이스 -X 로 곧게 물러나
+  #      대기 위치 X 에 선다. 벽에서는 앞 동작(_retreat · dus5_finish)이 이미
+  #      툴 -Z 로 떨어졌다 — 여기서는 남은 만큼 뒤로만 간다.
+  #   2) 높이(베이스 Z)를 대기 위치 높이로 **올리거나 내린다.** 위 줄에서 끝나
+  #      대기 위치보다 높으면 내려온다(예전에는 올라가기만 했다).
+  # Y 와 자세는 그대로 둔다 — 남은 것은 다음 movej(대기 위치)가 맞춘다.
+  # 이미 대기 위치보다 뒤에 있으면 앞으로 나가지 않는다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  # (전시판) 아래 [0] · [2] 는 작업 좌표계 값이다 — [0] 이 클수록 낮다(판 쪽),
+  # [2] 는 베이스 X(줄 진행)다.
+  la_ref = lh_to_w(get_forward_kin(Standby_joint))
+  la_p = lh_to_w(get_actual_tool_flange_pose())
+  if (la_p[0] &gt; la_ref[0] + 0.001):
+    la_p[0] = la_ref[0]
+    movel(lh_to_b(la_p), a = a_l, v = v_l)
+  end
+  la_p = lh_to_w(get_actual_tool_flange_pose())
+  if (la_p[2] &lt; la_ref[2] - 0.001 or la_p[2] &gt; la_ref[2] + 0.001):
+    la_p[2] = la_ref[2]
+    movel(lh_to_b(la_p), a = a_l, v = v_l)
+  end
+end
+
+
+def lh_at_home():
+  # 관절이 홈(Home_joint)에서 home_tol_j [rad] 안이면 홈이다(dus5_init 의 hm_flag 와
+  # 같은 기준).
+  lh_q = get_actual_joint_positions()
+  lh_i = 0
+  while (lh_i &lt; 6):
+    lh_d = lh_q[lh_i] - Home_joint[lh_i]
+    if (lh_d &lt; 0):
+      lh_d = -lh_d
+    end
+    if (lh_d &gt; home_tol_j):
+      return False
+    end
+    lh_i = lh_i + 1
+  end
+  return True
+end
+
+
+set_tcp([0, 0, 0, 0, 0, 0])
+if (lh_at_home() == False):
+  lh_retreat(probe_dist * 0.001)
+  lh_align()
+end
+movej(Standby_joint, a = a_j, v = v_j)
+</cachedFileContents>
+        <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_tpac_exhibition/dus5_leave_home.script"/>
+      </ScriptNode>
+    </FolderNode>
+    <FolderNode display="2 move_start" isHideSubtree="false" typeName="폴더">
+      <ScriptNode scriptType="FILE_TYPE" typeName="스크립트">
+        <cachedFileContents># =============================================================================
+#  dus5_move_start.script — dusan_v5
+#  각 프로브 동작 사이의 대기 자세로 이동한다 (Home_joint 이 아니라 start_pose)
+#
+#  펜던트에서 "2 move_home" 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
+#  파일(File) 모드로 넣고 지정한다. 펜던트의 Move/Waypoint 노드를 쓰지 않고
+#  스크립트로 두는 이유는, 티칭 값이 태스크 XML 안에 숨지 않고 설정 변수
+#  (start_pose, a_l, v_l, r_l)로 한곳에 모이기 때문이다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  start_pose 는 로봇 툴플렌지 기준이 아니라 실제 장착된 그리퍼(5축/8축)
+#  기준으로 맞춰지도록 dus5_init.script 가 매 작업마다 계산해 둔 값이다
+#  (eoat_type + eoat5/8_offset_x/y/z 참고). 여기서는 그 결과만 쓴다.
+#
+#  move_home 과 같은 이유로 두 단계로 나눈다: 먼저 현재 위치에서 Z 만
+#  start_pose 높이까지 올린 뒤(자세는 그대로 두고 벽/바닥을 스치지
+#  않게), 그다음 start_pose 자세로 재배치한다. 좌우 이동은 movel(직선)로
+#  가도록 한다.
+#
+#  이 판은 **블렌드 없이** 정확히 start_pose 에 선다. 홈에서 처음 들어올
+#  때와 probe_c 로 넘어갈 때처럼, 다음 동작이 접촉 탐색이라 시작점이
+#  흔들리면 안 되는 자리에 쓴다. 블렌드가 필요한 자리는
+#  dus5_move_start_waypoint.script 를 쓴다.
+def ms_tip_movel(target, blend):
+  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
+  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
+  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
+  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
+  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
+  # 앞 노드(dus5_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
+  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
+  if (pose_dist(get_tcp_offset(), eoat_ofs) &gt; 0.000001):
+    set_tcp(eoat_ofs)
+  end
+  movel(pose_trans(target, eoat_ofs), a = a_l, v = v_l, r = blend)
+end
+
+
+if (get_actual_tcp_pose()[2] &lt; start_pose[2] - 0.001):
+  z_up = get_actual_tcp_pose()
+  z_up[2] = start_pose[2]
+  movel(z_up, a = a_l, v = v_l)
+end
+ms_tip_movel(start_pose, 0)
+# 다음 계산(get_actual_tcp_pose · 접촉 탐색)은 플랜지 기준이다 — 선 뒤에 되돌린다.
+set_tcp([0, 0, 0, 0, 0, 0])
+</cachedFileContents>
+        <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_nosensor/dus5_move_start.script"/>
+      </ScriptNode>
+    </FolderNode>
+    <FolderNode display="3 [스크립트파일] dus5_probe_c.script" isHideSubtree="false" typeName="폴더">
+      <ScriptNode scriptType="FILE_TYPE" typeName="스크립트">
+        <cachedFileContents># =============================================================================
+#  dus5_probe_c.script — dusan_v5 (tpac_exhibition)
+#
+#  전시판(시편을 바닥에 눕힘). 논센서판과 같고, 줄 기준 높이(z_base)를
+#  작업 좌표계의 Z(= 베이스 +X, 줄 진행 방향)로 잡는다 — dus5_init 참고.
+#  중앙에서 전진해 벽을 찾고 pose 를 기록한 뒤 후퇴한다
+#
+#  펜던트에서 "3_probe_center" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def pc_w1(a, v):
+  if (v &gt; 32000):
+    v = 32000
+  end
+  if (v &lt; -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+# 로봇 자체 레지스터 384~389 와 같은 단위.  길이 0.1mm, 회전 mRad
+def pc_w6(a, p):
+  pc_w1(a, p[0] * 10000)
+  pc_w1(a + 1, p[1] * 10000)
+  pc_w1(a + 2, p[2] * 10000)
+  pc_w1(a + 3, p[3] * 1000)
+  pc_w1(a + 4, p[4] * 1000)
+  pc_w1(a + 5, p[5] * 1000)
+end
+
+def pc_to_w(p):
+  # 베이스 -&gt; 작업 좌표계(베이스를 Y 축으로 +90 도). dus5_init 의 ini_to_w 와 같다.
+  return pose_trans(pose_inv([0, 0, 0, 0, 1.57079633, 0]), p)
+end
+
+
+write_port_register(290, 2)
+# 줄 기준(첫 줄)은 작업 좌표계 값이다 — 작업 Y = 베이스 Y(좌우), 작업 Z = 베이스 X
+# (줄 진행). dus5_up 이 줄마다 z_base + 줄 번호 x 피치 자리로 간다.
+y_c = pc_to_w(get_actual_tcp_pose())[1]
+z_base = pc_to_w(get_actual_tcp_pose())[2]
+
+# 정렬 기준 자세 : 측정점 사이를 이동할 때(probe_l/r, goto_zero) 이 회전으로
+# 되돌아온다. 움직이기 전에 남겨 둔다 (센서판 probe_c 와 같은 역할).
+x_start = get_actual_tcp_pose()
+probe_rot = x_start
+
+# 중앙점 접근  [임시판 : 센서가 없으니 정해진 거리만 전진]
+# 센서판과 달리 눌림을 못 재므로 probe_dist 를 그대로 믿는다.
+# 전진은 TCP +Z (호를 그리며 손 방향이 바뀌므로 베이스 기준이면 안 된다).
+movel(pose_trans(x_start, [0, 0, probe_dist * 0.001, 0, 0, 0]),
+      a = a_l, v = v_l / 3.0)  # 접촉 위치 진입: 천천히
+
+n_probe = n_probe + 1
+write_port_register(304, n_probe)
+write_port_register(305, n_hit)
+
+# 호의 중앙점으로 쓸 pose 전체를 남긴다(곡률 중심을 여기서 잡는다)
+p_c_pose = get_actual_tcp_pose()
+p_cx = p_c_pose[0]
+write_port_register(300, floor(p_cx * 10000 + 0.5))
+pc_w6(330, p_c_pose)
+
+# 벽에서 물러난다 (온 만큼 그대로 되돌아간다)
+movel(x_start, a = a_l, v = v_l)
+</cachedFileContents>
+        <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_tpac_exhibition/dus5_probe_c.script"/>
+      </ScriptNode>
+    </FolderNode>
+    <FolderNode display="2 move_start" isHideSubtree="false" typeName="폴더">
+      <ScriptNode scriptType="FILE_TYPE" typeName="스크립트">
+        <cachedFileContents># =============================================================================
+#  dus5_move_start.script — dusan_v5
+#  각 프로브 동작 사이의 대기 자세로 이동한다 (Home_joint 이 아니라 start_pose)
+#
+#  펜던트에서 "2 move_home" 다음 자리(각 프로브 동작 앞)에 스크립트 노드를
+#  파일(File) 모드로 넣고 지정한다. 펜던트의 Move/Waypoint 노드를 쓰지 않고
+#  스크립트로 두는 이유는, 티칭 값이 태스크 XML 안에 숨지 않고 설정 변수
+#  (start_pose, a_l, v_l, r_l)로 한곳에 모이기 때문이다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  start_pose 는 로봇 툴플렌지 기준이 아니라 실제 장착된 그리퍼(5축/8축)
+#  기준으로 맞춰지도록 dus5_init.script 가 매 작업마다 계산해 둔 값이다
+#  (eoat_type + eoat5/8_offset_x/y/z 참고). 여기서는 그 결과만 쓴다.
+#
+#  move_home 과 같은 이유로 두 단계로 나눈다: 먼저 현재 위치에서 Z 만
+#  start_pose 높이까지 올린 뒤(자세는 그대로 두고 벽/바닥을 스치지
+#  않게), 그다음 start_pose 자세로 재배치한다. 좌우 이동은 movel(직선)로
+#  가도록 한다.
+#
+#  이 판은 **블렌드 없이** 정확히 start_pose 에 선다. 홈에서 처음 들어올
+#  때와 probe_c 로 넘어갈 때처럼, 다음 동작이 접촉 탐색이라 시작점이
+#  흔들리면 안 되는 자리에 쓴다. 블렌드가 필요한 자리는
+#  dus5_move_start_waypoint.script 를 쓴다.
+def ms_tip_movel(target, blend):
+  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
+  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
+  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
+  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
+  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
+  # 앞 노드(dus5_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
+  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
+  if (pose_dist(get_tcp_offset(), eoat_ofs) &gt; 0.000001):
+    set_tcp(eoat_ofs)
+  end
+  movel(pose_trans(target, eoat_ofs), a = a_l, v = v_l, r = blend)
+end
+
+
+if (get_actual_tcp_pose()[2] &lt; start_pose[2] - 0.001):
+  z_up = get_actual_tcp_pose()
+  z_up[2] = start_pose[2]
+  movel(z_up, a = a_l, v = v_l)
+end
+ms_tip_movel(start_pose, 0)
+# 다음 계산(get_actual_tcp_pose · 접촉 탐색)은 플랜지 기준이다 — 선 뒤에 되돌린다.
+set_tcp([0, 0, 0, 0, 0, 0])
+</cachedFileContents>
+        <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_nosensor/dus5_move_start.script"/>
+      </ScriptNode>
+    </FolderNode>
+    <FolderNode display="4 [스크립트파일] dus5_probe_l.script" isHideSubtree="false" typeName="폴더">
+      <ScriptNode scriptType="FILE_TYPE" typeName="스크립트">
+        <cachedFileContents># =============================================================================
+#  dus5_probe_l.script — dusan_v5 (tpac_exhibition)
+#
+#  전시판(시편을 바닥에 눕힘, 볼록면이 위). 논센서판과 같고, 호·곡률 중심을
+#  베이스가 아니라 작업 좌표계에서 계산한다 — dus5_init 의 「바닥판 작업 좌표계」.
+#  곡면의 축은 베이스 +X(줄 진행)이고 호는 그와 수직인 세로면(베이스 YZ) 안에 있다.
+#  Y- 로 너비/2 이동해 측정한다. 이 점이 원점이 된다
+#
+#  펜던트에서 "4_probe_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+
+def pl_to_w(p):
+  # 베이스 -&gt; 작업 좌표계(베이스를 Y 축으로 +90 도). dus5_init 의 ini_to_w 와 같다.
+  return pose_trans(pose_inv([0, 0, 0, 0, 1.57079633, 0]), p)
+end
+
+
+def pl_to_b(p):
+  # 작업 좌표계 -&gt; 베이스.
+  return pose_trans([0, 0, 0, 0, 1.57079633, 0], p)
+end
+
+
+def nl_arc(mid_b, th):
+  # 중앙 접점 mid_b(베이스)에서 호를 따라 th [rad] 만큼 돌아간 점(자세 포함, 베이스).
+  # 센서판(dus5_probe_l)과 같은 계산을 **작업 좌표계**에서 한다.
+  #
+  # 원통의 축이 작업 Z(= 베이스 +X)이므로 호는 작업 XY 면(베이스 YZ 세로면) 안에 있다.
+  #   (1) 곡률 중심 O 는 접점에서 '전진 방향(TCP +Z)의 작업 XY 성분'으로 R.
+  #       바닥판이면 프로브가 아래를 보므로 O 는 판 **아래**에 있다.
+  #   (2) 회전은 O 를 지나는 작업 Z 축(베이스 X 와 나란한 축)으로 한다.
+  # 자세도 같이 돌아가므로 각 점에서 손이 그 자리의 법선을 본다.
+  if (scan_radius &lt;= 0):
+    return mid_b
+  end
+  mid = pl_to_w(mid_b)
+  fwd = pose_trans(mid, [0, 0, 1.0, 0, 0, 0])
+  dx = fwd[0] - mid[0]
+  dy = fwd[1] - mid[1]
+  n = sqrt(dx * dx + dy * dy)
+  if (n &lt; 0.0001):
+    return mid_b
+  end
+  r = scan_radius * 0.001
+  # 곡률 중심은 **프로브 중심**(툴 플랜지 + EOAT 오프셋 eoat_ofs)에서 R 이다.
+  # 플랜지에서 잡으면 오프셋 z 만큼 중심이 어긋나, 벽 위로 훑는 호가 L*(R-z)/R 로
+  # 짧아지고 양 끝이 벽을 파고든다. 플랜지 pose 를 이 중심으로 돌리면 프로브
+  # 중심도 같이 돌아 벽(반지름 R) 위에 그대로 남는다.
+  tip = pose_trans(mid, eoat_ofs)
+  o_t = [tip[0] + dx / n * r, tip[1] + dy / n * r, 0, 0, 0, 0]
+  return pl_to_b(pose_trans(o_t, pose_trans([0, 0, 0, 0, 0, th], pose_trans(pose_inv(o_t), mid))))
+end
+
+
+def nl_tip_movel(target, blend):
+  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
+  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
+  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
+  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
+  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
+  # 앞 노드(dus5_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
+  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
+  if (pose_dist(get_tcp_offset(), eoat_ofs) &gt; 0.000001):
+    set_tcp(eoat_ofs)
+  end
+  movel(pose_trans(target, eoat_ofs), a = a_l, v = v_l, r = blend)
+end
+
+
+write_port_register(290, 3)
+
+# 양 끝을 계산해 베이스 Y 가 작은 쪽을 Y-(원점), 큰 쪽을 Y+ 로 나눈다.
+# 손이 어느 방향을 보느냐에 따라 +t 가 어느 쪽으로 갈지 달라지므로
+# 부호를 미리 못 박지 않고 실제 좌표로 가른다.
+# 호가 0 이면(반지름 0 또는 arc_run 0) nl_arc 가 중앙점을 그대로 돌려줘
+# 양 끝이 중앙과 겹친다. 그 상태로 진행하면 나중에 dus5_pass_r 의 servoj 호가
+# "Target pose ... coincident with auxiliary pose" 로 죽는데, 그 문구만
+# 보고는 원인을 알 수 없다. 여기서 값을 짚어 멈춘다.
+if (scan_radius &lt;= 0 or arc_half == 0):
+  popup(s = "ARC IS ZERO: check radius(260) and arc length(256)",
+        title = "dusan_v5", blocking = True)
+  write_port_register(299, 4)
+  write_port_register(290, 9)
+  halt()
+end
+
+end_a = nl_arc(p_c_pose, arc_half)
+end_b = nl_arc(p_c_pose, -arc_half)
+# 작업 Y 는 베이스 Y 와 같아서 원 태스크처럼 베이스 Y 로 가른다.
+# 반시계 방향으로 훑는다. 원점은 베이스 Y 가 **큰** 쪽 끝이고, 거기서
+# Y 가 줄어드는 방향으로 한 줄을 지난다. (예전에는 반대였다.) 발행 좌표는
+# dus5_init 의 pub_rel 이 Rz 180 도로 뒤집으므로 Y 는 계속 + 로만 커진다.
+if (end_a[1] &gt;= end_b[1]):
+  zero_pose = end_a
+  p_r_pose = end_b
+else:
+  zero_pose = end_b
+  p_r_pose = end_a
+end
+
+# 이 자리가 원점이자 호의 시작점이다 (회전값 포함)
+p_lx = zero_pose[0]
+write_port_register(301, floor(p_lx * 10000 + 0.5))
+zero_inv = pose_inv(zero_pose)
+zero_ok = True
+
+# ---- 호 위 위치를 실시간으로 내보내기 위한 기준 ---------------------------
+# TPAC 은 스캔 축 위치로 **호 길이**를 받아야 한다. 좌표를 그대로 주면
+# 현(1031.8)으로 7% 눌리고, 게다가 호 위치에 비례하지 않아 1/4·3/4 지점에서
+# 14.6mm 씩 어긋난다(C-scan 이 앞뒤로 밀려 찍힌다).
+# 곡률 중심과 원점의 방위각을 남겨 두면, 발행 스레드가 매 주기
+#   s = R * |현재각 - 원점각|
+# 으로 호 위 실제 거리를 계산할 수 있다.
+# 곡률 중심(arc_ox, arc_oy)과 원점 방위각은 **작업 좌표계** 값이다 — 발행
+# 스레드(dus5_init)와 스캔 호(dus5_pass_r/l)가 같은 좌표계에서 쓴다.
+if (scan_radius &gt; 0):
+  pc_w = pl_to_w(p_c_pose)
+  fwd0 = pose_trans(pc_w, [0, 0, 1.0, 0, 0, 0])
+  d0x = fwd0[0] - pc_w[0]
+  d0y = fwd0[1] - pc_w[1]
+  n0 = sqrt(d0x * d0x + d0y * d0y)
+  if (n0 &gt; 0.0001):
+    # 곡률 중심·원점 방위각도 프로브 중심 기준(eoat_ofs) — 호 계산과 같은 점이어야
+    # 286/287 의 호 위 거리가 벽 위 실제 호 길이와 같다.
+    c_tip = pose_trans(pc_w, eoat_ofs)
+    z_tip = pose_trans(pl_to_w(zero_pose), eoat_ofs)
+    arc_ox = c_tip[0] + d0x / n0 * scan_radius * 0.001
+    arc_oy = c_tip[1] + d0y / n0 * scan_radius * 0.001
+    arc_phi0 = atan2(z_tip[1] - arc_oy, z_tip[0] - arc_ox)
+    arc_ok = True
+  end
+end
+
+# 회전각이 다른 채로 벽 쪽 목표로 바로 가면 볼록한 곡면을 가로질러
+# 충돌한다. 목표 자세(zero_pose 의 회전) 그대로 뒤로 물러난 지점까지
+# 먼저 이동한 뒤, 그 자세로 곧장 전진해 들어간다.
+#
+# 여기 오기 전 위치(중앙, p_c_pose)에서 l_stand 까지는 호의 절반 가까이
+# 자세가 크게 돌아간다. 한때 movej(get_inverse_kin(...))로 바꿨었는데,
+# 좌우 이동은 movel(직선)로 가도록 되돌린다.
+l_stand = pose_trans(zero_pose, [0, 0, -probe_dist * 0.001, 0, 0, 0])
+nl_tip_movel(l_stand, 0)
+# 다음 계산(get_actual_tcp_pose · 접촉 탐색)은 플랜지 기준이다 — 선 뒤에 되돌린다.
+set_tcp([0, 0, 0, 0, 0, 0])
+# l_stand -&gt; zero_pose 도 probe_dist 만큼밖에 안 되는 짧은 이동이지만,
+# 막 큰 자세 변화(movej)를 거친 직후라 그 근처는 여전히 movel 의 직선
+# 경로 역기구학이 빡빡할 수 있다(실제로 dus5_probe_r.script 에서 발생).
+# 센서판과 달리 접촉을 눌림으로 찾는 게 아니라 계산값으로 바로 들어가는
+# 것뿐이라 직선일 필요가 없다 — 여기도 movej 로 바꾼다.
+movej(get_inverse_kin(zero_pose), a = a_j, v = v_j / 3.0)  # 접촉 위치 진입: 천천히
+
+n_probe = n_probe + 1
+write_port_register(304, n_probe)
+write_port_register(305, n_hit)
+
+# 다음 동작(probe_r)으로 넘어가기 전에 다시 물러난다 — 좌우 이동은
+# movel(직선)로 간다.
+movel(l_stand, a = a_l, v = v_l)</cachedFileContents>
+        <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_tpac_exhibition/dus5_probe_l.script"/>
+      </ScriptNode>
+    </FolderNode>
+    <FolderNode display="2-1 move_start_waypoint" isHideSubtree="false" typeName="Folder">
+      <ScriptNode scriptType="FILE_TYPE" typeName="Script">
+        <cachedFileContents># =============================================================================
+#  dus5_move_start_waypoint.script — dusan_v5
+#  dus5_move_start.script 와 같되 **블렌드 반경(r_l)** 을 걸고 지나간다
+#
+#  펜던트의 Waypoint(경유점) 기능 대신 쓰는 스크립트다. 마지막 movel 에
+#  r = r_l 을 주면 로봇이 start_pose 에 정확히 서지 않고 반경 r_l 안에서
+#  둥글게 스치며 다음 동작으로 이어진다 — 프로브 사이를 오갈 때 매번
+#  완전히 정지했다 다시 가속하는 것을 없애 사이클이 짧아진다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  블렌드를 걸면 **그 자리에 정확히 서지 않는다**. 그래서 다음 동작이
+#  접촉 탐색(probe_c)처럼 시작점 정밀도를 요구하는 자리에는 쓰지 않고,
+#  프로브 사이 이동처럼 지나가기만 하면 되는 자리에만 쓴다.
+#  Z 올림(첫 movel)은 벽·바닥을 피하는 동작이라 블렌드를 걸지 않는다.
+def mw_tip_movel(target, blend):
+  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
+  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
+  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
+  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
+  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
+  # 앞 노드(dus5_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
+  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
+  if (pose_dist(get_tcp_offset(), eoat_ofs) &gt; 0.000001):
+    set_tcp(eoat_ofs)
+  end
+  movel(pose_trans(target, eoat_ofs), a = a_l, v = v_l, r = blend)
+end
+
+
+if (get_actual_tcp_pose()[2] &lt; start_pose[2] - 0.001):
+  z_up = get_actual_tcp_pose()
+  z_up[2] = start_pose[2]
+  movel(z_up, a = a_l, v = v_l)
+end
+mw_tip_movel(start_pose, r_l)
+</cachedFileContents>
+        <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_nosensor/dus5_move_start_waypoint.script"/>
+      </ScriptNode>
+    </FolderNode>
+    <FolderNode display="5 [스크립트파일] dus5_probe_r.script" isHideSubtree="false" typeName="폴더">
+      <ScriptNode scriptType="FILE_TYPE" typeName="스크립트">
+        <cachedFileContents># =============================================================================
+#  dus5_probe_r.script — dusan_v5
+#  Y+ 끝으로 이동해 측정한다. 3점이 호의 시작/중앙/끝이 된다
+#
+#  펜던트에서 "5_probe_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def pr_w1(a, v):
+  if (v &gt; 32000):
+    v = 32000
+  end
+  if (v &lt; -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+# 로봇 자체 레지스터 384~389 와 같은 단위.  길이 0.1mm, 회전 mRad
+def pr_w6(a, p):
+  pr_w1(a, p[0] * 10000)
+  pr_w1(a + 1, p[1] * 10000)
+  pr_w1(a + 2, p[2] * 10000)
+  pr_w1(a + 3, p[3] * 1000)
+  pr_w1(a + 4, p[4] * 1000)
+  pr_w1(a + 5, p[5] * 1000)
+end
+
+
+def pr_tip_movel(target, blend):
+  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
+  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
+  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
+  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
+  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
+  # 앞 노드(dus5_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
+  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
+  if (pose_dist(get_tcp_offset(), eoat_ofs) &gt; 0.000001):
+    set_tcp(eoat_ofs)
+  end
+  movel(pose_trans(target, eoat_ofs), a = a_l, v = v_l, r = blend)
+end
+
+
+p_rx = p_r_pose[0]
+write_port_register(302, floor(p_rx * 10000 + 0.5))
+pr_w6(340, p_r_pose)
+
+# probe_l 과 같은 이유로, 뒤로 물러난 지점을 거쳐 목표 자세 그대로 전진한다.
+#
+# 지금 로봇은 dus5_probe_l 이 끝낸 자리(Y- 끝)에 있고 r_stand 는 호 반대쪽
+# (Y+ 끝) 이라, 호 전체 폭만큼 자세가 크게 돌아간다. 한때
+# movej(get_inverse_kin(...))로 바꿨었는데, 좌우 이동은 movel(직선)로
+# 가도록 되돌린다.
+r_stand = pose_trans(p_r_pose, [0, 0, -probe_dist * 0.001, 0, 0, 0])
+pr_tip_movel(r_stand, 0)
+# 다음 계산(get_actual_tcp_pose · 접촉 탐색)은 플랜지 기준이다 — 선 뒤에 되돌린다.
+set_tcp([0, 0, 0, 0, 0, 0])
+# r_stand -&gt; p_r_pose 도 probe_dist 만큼밖에 안 되는 짧은 이동이지만,
+# 막 큰 자세 변화(movej)를 거친 직후라 그 근처는 여전히 movel 의 직선
+# 경로 역기구학이 빡빡할 수 있다 — 실제로 여기서 "요청된 포즈에 도달할
+# 수 없음" 이 발생했다. 센서판과 달리 접촉을 눌림으로 찾는 게 아니라
+# 계산값으로 바로 들어가는 것뿐이라 직선일 필요가 없다 — movej 로 바꾼다.
+movej(get_inverse_kin(p_r_pose), a = a_j, v = v_j / 3.0)  # 접촉 위치 진입: 천천히
+
+n_probe = n_probe + 1
+write_port_register(304, n_probe)
+write_port_register(305, n_hit)
+
+# goto_zero 로 넘어가기 전에 다시 물러난다 — 좌우 이동은 movel(직선)로 간다.
+movel(r_stand, a = a_l, v = v_l)
+
+# 세 점이 그대로 호의 시작(원점) / 중앙 / 끝(Y+) 이 된다.
+write_port_register(346, arc_mode)</cachedFileContents>
+        <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_nosensor/dus5_probe_r.script"/>
+      </ScriptNode>
+    </FolderNode>
+    <FolderNode display="2-1 move_start_waypoint" isHideSubtree="false" typeName="Folder">
+      <ScriptNode scriptType="FILE_TYPE" typeName="Script">
+        <cachedFileContents># =============================================================================
+#  dus5_move_start_waypoint.script — dusan_v5
+#  dus5_move_start.script 와 같되 **블렌드 반경(r_l)** 을 걸고 지나간다
+#
+#  펜던트의 Waypoint(경유점) 기능 대신 쓰는 스크립트다. 마지막 movel 에
+#  r = r_l 을 주면 로봇이 start_pose 에 정확히 서지 않고 반경 r_l 안에서
+#  둥글게 스치며 다음 동작으로 이어진다 — 프로브 사이를 오갈 때 매번
+#  완전히 정지했다 다시 가속하는 것을 없애 사이클이 짧아진다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  블렌드를 걸면 **그 자리에 정확히 서지 않는다**. 그래서 다음 동작이
+#  접촉 탐색(probe_c)처럼 시작점 정밀도를 요구하는 자리에는 쓰지 않고,
+#  프로브 사이 이동처럼 지나가기만 하면 되는 자리에만 쓴다.
+#  Z 올림(첫 movel)은 벽·바닥을 피하는 동작이라 블렌드를 걸지 않는다.
+def mw_tip_movel(target, blend):
+  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
+  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
+  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
+  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
+  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
+  # 앞 노드(dus5_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
+  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
+  if (pose_dist(get_tcp_offset(), eoat_ofs) &gt; 0.000001):
+    set_tcp(eoat_ofs)
+  end
+  movel(pose_trans(target, eoat_ofs), a = a_l, v = v_l, r = blend)
+end
+
+
+if (get_actual_tcp_pose()[2] &lt; start_pose[2] - 0.001):
+  z_up = get_actual_tcp_pose()
+  z_up[2] = start_pose[2]
+  movel(z_up, a = a_l, v = v_l)
+end
+mw_tip_movel(start_pose, r_l)
+</cachedFileContents>
+        <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_nosensor/dus5_move_start_waypoint.script"/>
+      </ScriptNode>
+    </FolderNode>
+    <FolderNode display="6 [스크립트파일] dus5_goto_zero.script" isHideSubtree="false" typeName="폴더">
+      <ScriptNode scriptType="FILE_TYPE" typeName="스크립트">
+        <cachedFileContents># =============================================================================
+#  dus5_goto_zero.script — dusan_v5 (tpac_exhibition)
+#
+#  TPAC 전시판. 논센서판(scripts_nosensor)과 같고 원점에서만 다르다:
+#    - 시작 신호(팝업 · 레지스터 267)를 기다리지 않고 바로 스캔에 들어간다.
+#    - 적심(좌우 비비기 wet_cycles 번)을 하지 않는다.
+#  이 파일의 이동은 모두 툴 기준이라 바닥판(시편을 눕힌 배치)에서도 그대로다.
+#  바닥판 때문에 좌표를 바꾼 노드는 이 폴더의 init · probe_c · probe_l · pass_r/l ·
+#  up · finish · go_home · leave_home 이다(dus5_init 의 「바닥판 작업 좌표계」).
+#  move_start · move_start_waypoint · probe_r 은 scripts_nosensor 의 것을 쓴다.
+#  측정이 끝난 뒤 원점(Y- 끝)으로 돌아가 스캔을 시작할 준비를 한다
+#
+#  펜던트에서 "6_goto_zero" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+# ---- 차량 고정 확인 (309) -------------------------------------------------
+# 스캔을 시작하기 전에 차량 쪽이 굳어 있는지 한 번 더 본다. 리프트가 서고,
+# 차량이 정지하고, 아웃트리거 고정이 끝나야 RCS 가 309 에 1 을 쓴다.
+# 움직이는 중이면 0 이므로 여기서 기다린다(290 = 14). 외부 제어(266 = 1)가
+# 아니면 차량이 없는 판이라 그냥 지나간다. dus5_init 의 ini_veh_wait 와
+# 같은 규칙이다 — 스크립트 노드마다 따로 돌아서 함수를 다시 둔다.
+def gz_veh_wait():
+  if (read_port_register(266, True) != 1):
+    return True
+  end
+  gz_vt = 0
+  while (read_port_register(309, True) != 1):
+    write_port_register(290, 14)
+    sync()
+    gz_vt = gz_vt + 1
+    if (gz_vt &gt; veh_wait_cyc):
+      write_port_register(299, 8)
+      write_port_register(290, 9)
+      halt()
+    end
+  end
+  return True
+end
+
+
+def gz_w1(a, v):
+  if (v &gt; 32000):
+    v = 32000
+  end
+  if (v &lt; -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+def gz_w6(a, p):
+  gz_w1(a, p[0] * 10000)
+  gz_w1(a + 1, p[1] * 10000)
+  gz_w1(a + 2, p[2] * 10000)
+  gz_w1(a + 3, p[3] * 1000)
+  gz_w1(a + 4, p[4] * 1000)
+  gz_w1(a + 5, p[5] * 1000)
+end
+
+
+def gz_tip_movel(target, blend):
+  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
+  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
+  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
+  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
+  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
+  # 앞 노드(dus5_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
+  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
+  if (pose_dist(get_tcp_offset(), eoat_ofs) &gt; 0.000001):
+    set_tcp(eoat_ofs)
+  end
+  movel(pose_trans(target, eoat_ofs), a = a_l, v = v_l, r = blend)
+end
+
+
+write_port_register(290, 3)
+
+# 현재 TCP 자세를 기준으로 가면 안 된다 — 직전 지점(p_r_pose)의 회전이
+# 그대로 남아 있어 zero_pose 의 회전과 다르고, 그 채로 위치만 옮기면
+# 볼록한 곡면을 가로질러 충돌한다. probe_l/r 과 같은 방식으로, zero_pose
+# 자세 그대로 TCP 기준 -Z(뒤로) 물러난 지점까지 먼저 이동한 뒤
+# 그 자세로 +Z(전진)해 들어간다.
+#
+# 지금 로봇은 dus5_probe_r 이 끝낸 자리(Y+ 끝)에 있고 z_stand 는 호 반대쪽
+# (원점, Y- 끝) 이라 호 전체 폭만큼 자세가 크게 돌아간다. 한때
+# movej(get_inverse_kin(...))로 바꿨었는데, 좌우 이동은 movel(직선)로
+# 가도록 되돌린다.
+z_stand = pose_trans(zero_pose, [0, 0, -probe_dist * 0.001, 0, 0, 0])
+gz_tip_movel(z_stand, 0)
+# 다음 계산(get_actual_tcp_pose · 접촉 탐색)은 플랜지 기준이다 — 선 뒤에 되돌린다.
+set_tcp([0, 0, 0, 0, 0, 0])
+# z_stand -&gt; zero_pose 도 probe_dist 만큼밖에 안 되는 짧은 이동이지만,
+# 막 큰 자세 변화(movej)를 거친 직후라 그 근처는 여전히 movel 의 직선
+# 경로 역기구학이 빡빡할 수 있다(dus5_probe_r.script 에서 실제로 발생).
+# 센서판과 달리 접촉을 눌림으로 찾는 게 아니라 계산값으로 바로 들어가는
+# 것뿐이라 직선일 필요가 없다 — movej 로 바꾼다.
+movej(get_inverse_kin(zero_pose), a = a_j, v = v_j / 3.0)  # 접촉 위치 진입: 천천히
+
+gz_w6(270, zero_pose)      # 원점 pose (스캔 중 변하지 않는다)
+write_port_register(294, 1)
+path_len = 0
+
+# ---- 원점 도착 : 바로 스캔 ------------------------------------------------
+# 전시판은 원점에서 서지 않는다. 290 = 7(시작 신호 대기)과 8(적심)을 건너뛰고
+# 곧장 스캔(6)으로 간다 — 7 을 잠깐이라도 내면 RCS 가 "시작점에 붙었습니다
+# — 곧 적심" 을 띄우고 허가(267)를 보내려 한다. 267 은 이 판에서 읽지 않는다.
+
+# 차량·리프트가 굳어 있어야 스캔에 들어간다(외부 제어 266 = 1 일 때만 본다 —
+# RCS 단독판은 309 를 바로 세우고, 펜던트에서 혼자 돌리면 그냥 지나간다).
+gz_veh_wait()
+
+# 여기서부터 스캔 구간이다 — 호를 그리는 패스뿐 아니라 줄을 바꾸는
+# 상승(dus5_up)까지 포함한다. 이 구간에서만 제로점 기준 좌표(280~285)가
+# 살아 있고(dus5_init 의 pub_rel), RCS 도 state=6 으로 스캔 중을 안다.
+write_port_register(290, 6)
+</cachedFileContents>
+        <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_tpac_exhibition/dus5_goto_zero.script"/>
+      </ScriptNode>
+    </FolderNode>
+    <LoopNode type="LOOP_X_TIMES" loopCount="200" isCheckConditionInSeparateThread="false" isPostTestLoop="false" typeName="루프">
+      <TaskVariable name="Loop_1" type="Loop" prefersPersistentValue="false" favorite="false" describe=""/>
+      <Expression/>
+      <children>
+        <ScriptNode scriptType="LINE_TYPE" typeName="스크립트">
+          <Expression>
+            <ExpressionCharCell char="p"/>
+            <ExpressionCharCell char="a"/>
+            <ExpressionCharCell char="s"/>
+            <ExpressionCharCell char="s"/>
+            <ExpressionCharCell char="_"/>
+            <ExpressionCharCell char="d"/>
+            <ExpressionCharCell char="o"/>
+            <ExpressionCharCell char="n"/>
+            <ExpressionCharCell char="e"/>
+            <ExpressionCharCell char="="/>
+            <ExpressionCharCell char="0"/>
+          </Expression>
+        </ScriptNode>
+        <IfNode checkExpressionContinuous="false" typeName="If">
+          <Expression>
+            <ExpressionCharCell char="r"/>
+            <ExpressionCharCell char="o"/>
+            <ExpressionCharCell char="w"/>
+            <ExpressionCharCell char="_"/>
+            <ExpressionCharCell char="i"/>
+            <ExpressionCharCell char="d"/>
+            <ExpressionCharCell char="x"/>
+            <ExpressionCharCell char="&lt;"/>
+            <ExpressionCharCell char="r"/>
+            <ExpressionCharCell char="o"/>
+            <ExpressionCharCell char="w"/>
+            <ExpressionCharCell char="s"/>
+            <ExpressionCharCell char=" "/>
+            <ExpressionCharCell char="a"/>
+            <ExpressionCharCell char="n"/>
+            <ExpressionCharCell char="d"/>
+            <ExpressionCharCell char=" "/>
+            <ExpressionCharCell char="d"/>
+            <ExpressionCharCell char="i"/>
+            <ExpressionCharCell char="r"/>
+            <ExpressionCharCell char="_"/>
+            <ExpressionCharCell char="s"/>
+            <ExpressionCharCell char="i"/>
+            <ExpressionCharCell char="g"/>
+            <ExpressionCharCell char="n"/>
+            <ExpressionCharCell char="&gt;"/>
+            <ExpressionCharCell char="0"/>
+            <ExpressionCharCell char=" "/>
+            <ExpressionCharCell char="a"/>
+            <ExpressionCharCell char="n"/>
+            <ExpressionCharCell char="d"/>
+            <ExpressionCharCell char=" "/>
+            <ExpressionCharCell char="p"/>
+            <ExpressionCharCell char="a"/>
+            <ExpressionCharCell char="s"/>
+            <ExpressionCharCell char="s"/>
+            <ExpressionCharCell char="_"/>
+            <ExpressionCharCell char="d"/>
+            <ExpressionCharCell char="o"/>
+            <ExpressionCharCell char="n"/>
+            <ExpressionCharCell char="e"/>
+            <ExpressionCharCell char="="/>
+            <ExpressionCharCell char="="/>
+            <ExpressionCharCell char="0"/>
+          </Expression>
+          <children>
+            <FolderNode display="7 [스크립트파일] dus5_pass_r.script" isHideSubtree="false" typeName="폴더">
+              <ScriptNode scriptType="FILE_TYPE" typeName="스크립트">
+                <cachedFileContents># =============================================================================
+#  dus5_pass_r.script — dusan_v5 (tpac_exhibition)
+#
+#  전시판(시편을 바닥에 눕힘, 볼록면이 위). 논센서판과 같고, 호를 베이스가
+#  아니라 **작업 좌표계**(dus5_init 의 「바닥판 작업 좌표계」)에서 그린다 —
+#  곡률 중심(arc_ox, arc_oy)이 그 좌표계 값이고, 회전축은 작업 Z(= 베이스 +X,
+#  곡면의 축)다. 로봇에 주는 목표만 베이스로 되돌린다.
+#  원점에서 반대쪽 끝으로 한 줄. servoj 로 호를 따라가며 눌림을 계속 확인한다
+#
+#  펜던트에서 "7_pass_right" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  [논센서판] 접촉 센서가 없는 시험용이다. v5 의 servoj 호 경로는 센서판과
+#  같지만 **눌림 보정은 하지 않는다**(288 = 0 그대로). 경로·속도·역기구학을
+#  센서 없이 먼저 확인하는 용도다.
+#
+#  호는 dus5_probe_l 이 잡은 곡률 중심(arc_ox, arc_oy)을 지나는 **작업 Z 축**
+#  둘레의 회전이다(al_arc 와 같은 방식) — 자세도 같이 돌아 손이 늘 그
+#  자리의 법선을 본다. 작업 Z(줄 위치, 베이스 X)는 그대로다.
+# =============================================================================
+
+def nr_w1(a, v):
+  if (v &gt; 32000):
+    v = 32000
+  end
+  if (v &lt; -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+def nr_wrap(a):
+  if (a &gt; 3.14159265):
+    a = a - 6.28318531
+  end
+  if (a &lt; -3.14159265):
+    a = a + 6.28318531
+  end
+  return a
+end
+
+
+def nr_to_w(p):
+  # 베이스 -&gt; 작업 좌표계(베이스를 Y 축으로 +90 도). dus5_init 의 ini_to_w 와 같다.
+  return pose_trans(pose_inv([0, 0, 0, 0, 1.57079633, 0]), p)
+end
+
+
+def nr_to_b(p):
+  # 작업 좌표계 -&gt; 베이스.
+  return pose_trans([0, 0, 0, 0, 1.57079633, 0], p)
+end
+
+
+def nr_rot(o_t, rel, phi):
+  # 곡률 중심 o_t 를 지나는 작업 Z 축으로 rel 을 phi [rad] 만큼 돌린 자세(작업 좌표계).
+  return pose_trans(o_t, pose_trans([0, 0, 0, 0, 0, phi], rel))
+end
+
+
+def nr_fail(code, msg):
+  stopj(2.0)
+  write_port_register(288, 0)
+  write_port_register(299, code)
+  write_port_register(290, 9)
+  popup(s = msg, title = "dusan_v5", blocking = True)
+  halt()
+end
+
+
+def nr_servo_arc(end_pose):
+  # 지금 자세에서 end_pose 의 방위각까지 호를 그린다. 반환: 호 길이 [mm].
+  # 곡률 중심이 안 잡혔으면(dus5_probe_l 실패·반지름 0) 지난 사이클 값으로
+  # 엉뚱한 호를 그리게 된다. 그리지 않고 멈춘다.
+  if (arc_ok == False):
+    nr_fail(4, "SCAN ARC: NO ARC CENTER (radius 260 / arc 256)")
+  end
+  # 계산은 전부 작업 좌표계에서 한다(p0w · end_w · o_t · rel). 베이스로 되돌리는
+  # 건 역기구학에 넣는 목표뿐이다.
+  p0 = get_actual_tcp_pose()
+  p0w = nr_to_w(p0)
+  end_w = nr_to_w(end_pose)
+  o_t = [arc_ox, arc_oy, 0, 0, 0, 0]
+  rel = pose_trans(pose_inv(o_t), p0w)
+  rx = p0w[0] - arc_ox
+  ry = p0w[1] - arc_oy
+  r_path = sqrt(rx * rx + ry * ry)
+  dphi = nr_wrap(atan2(end_w[1] - arc_oy, end_w[0] - arc_ox) - atan2(ry, rx))
+  sgn = 1
+  if (dphi &lt; 0):
+    sgn = -1
+  end
+  sv_tot = dphi * sgn * r_path
+
+  # 가는 길에 역기구학 해가 없으면 도중에 알람으로 서 버린다. 미리 본다.
+  sv_q = get_actual_joint_positions()
+  p_mid = nr_to_b(nr_rot(o_t, rel, dphi * 0.5))
+  p_end = nr_to_b(nr_rot(o_t, rel, dphi))
+  if (get_inverse_kin_has_solution(p_mid, qnear = sv_q) == False or get_inverse_kin_has_solution(p_end, qnear = sv_q) == False):
+    nr_fail(7, "SCAN ARC: NO IK SOLUTION")
+  end
+
+  sv_s = 0
+  sv_v = 0
+  sv_set = 0
+  # 끝점에 닿은 뒤에도 lookahead 만큼 따라오는 중이다. 두 배를 기다린다.
+  sv_nset = ceil(sv_look * 2.0 / sv_dt)
+  # 진행량은 **실제로 흐른 시간**으로 계산한다. servoj(t = sv_dt) 는 최소
+  # sv_dt 만큼 막히지만, 컨트롤러 주기가 더 길거나(예: 8 ms) 루프 안의
+  # 역기구학·센서·레지스터 일이 더해지면 한 바퀴가 sv_dt 보다 길어진다.
+  # 그런데도 sv_dt 만큼씩만 전진시키면 목표점이 그만큼 늦게 나가 실제
+  # 속도가 v_scan 보다 한참 느려진다. 컨트롤러 시각(controller_timestamp)
+  # 으로 한 바퀴 걸린 시간을 재서 쓴다. 값이 이상하면(0 이하·50 ms 초과)
+  # 예전처럼 sv_dt 를 쓴다.
+  # 속도 비율(307, %)은 **이 호에만 여기서 건다.** movel·movej 는 컨트롤러가
+  # 비율(펜던트 슬라이더 = RCS 의 29999 'speed -v N')로 줄여 주지만, servoj 는
+  # 매 주기 위치를 우리가 직접 찍어 보내는 것이라 비율이 걸리지 않는다 — 그래서
+  # 비율 15 % 에서 다른 동작은 15 mm/s 인데 스캔 좌우만 100 mm/s 로 돌았다
+  # (2026-10-14). RCS 는 비율을 바꿀 때 307 에도 같이 써 둔다.
+  # 전역 v_scan 에 곱하지 않고 이 호의 지역값(sv_vmax)만 쓴다 — 셀마다 다시
+  # 곱해져 계속 줄어들던 예전 문제(dus5_init ※)를 되풀이하지 않게.
+  # 307 이 비었거나(0) 2~100 밖이면 100 % 로 본다.
+  sv_ratio = read_port_register(307, True)
+  if (sv_ratio &lt; 2 or sv_ratio &gt; 100):
+    sv_ratio = 100
+  end
+  sv_vmax = v_scan * sv_ratio / 100.0
+  sv_tp = controller_timestamp()
+  while (sv_set &lt; sv_nset):
+    sv_tn = controller_timestamp()
+    sv_h = sv_tn - sv_tp
+    sv_tp = sv_tn
+    if (sv_h &lt;= 0 or sv_h &gt; 0.05):
+      sv_h = sv_dt
+    end
+    # 1) 진행 — 사다리꼴 속도(a_scan, sv_vmax). 남은 거리로 감속한다.
+    if (sv_s &lt; sv_tot):
+      v_top = sqrt(2.0 * a_scan * (sv_tot - sv_s))
+      if (v_top &gt; sv_vmax):
+        v_top = sv_vmax
+      end
+      if (v_top &lt; 0.002):
+        v_top = 0.002
+      end
+      sv_v = sv_v + a_scan * sv_h
+      if (sv_v &gt; v_top):
+        sv_v = v_top
+      end
+      sv_s = sv_s + sv_v * sv_h
+      if (sv_tot - sv_s &lt; 0.0002):
+        sv_s = sv_tot
+      end
+    else:
+      sv_set = sv_set + 1
+    end
+
+    # 3) 목표 자세 -&gt; 관절 -&gt; servoj (sv_dt 동안 막힌다 = 루프 주기)
+    tgt = nr_to_b(nr_rot(o_t, rel, sgn * sv_s / r_path))
+    sv_q = get_inverse_kin(tgt, qnear = sv_q)
+    servoj(sv_q, t = sv_dt, lookahead_time = sv_look, gain = sv_gain)
+  end
+  stopj(2.0)
+  write_port_register(288, 0)
+  # 로봇은 플랜지 기준으로 v_scan 으로 돌지만, 기록할 길이(297·287)는 **프로브 중심이
+  # 벽 위로 지난 호**다 — 같은 각도를 프로브 중심 반지름으로 곱한다.
+  tp = pose_trans(p0w, eoat_ofs)
+  r_tip = sqrt((tp[0] - arc_ox) * (tp[0] - arc_ox) + (tp[1] - arc_oy) * (tp[1] - arc_oy))
+  return dphi * sgn * r_tip * 1000.0
+end
+
+
+# 원점 -&gt; p_r_pose 방위각까지 한 줄.
+# 반시계 방향으로 바뀌면서 베이스 Y 는 **줄어드는** 쪽이다.
+# 발행 좌표는 pub_rel 이 Rz 180 도로 뒤집어 + 로 내보낸다.
+# 스캔 동작에 들어섰다고 알린다(6 = 스캔 중). 이 값이 6 인 동안에만
+# 제로점 기준 좌표(280~285)가 나간다 — dus5_init 의 pub_rel 참고.
+write_port_register(290, 6)
+
+# ---- TPAC 동기 신호 --------------------------------------------------------
+# 277 = 지금 도는 스캔 구간. RCS 브리지가 이 값을 TPAC 엔코더 보드의 DO 신호
+# (Coil 16~18 / Reg 1)로 바꿔 보낸다 — 1 전진 스캔, 2 줄 바꿈(동결), 3 후진 스캔.
+# 브리지가 값을 읽고(100 ms 주기) 방향 -&gt; 스캔 순서로 신호를 50 ms 이상씩
+# 붙잡아 둘 시간을 주고 나서 움직인다(sig_hold). 안 기다리면 줄 앞부분이
+# 펄스 없이 지나가 TPAC 이 그만큼을 못 센다.
+write_port_register(277, 1)
+sleep(sig_hold)
+pass_len = nr_servo_arc(p_r_pose)
+# 끝점 도착 — 스캔 동결(277 = 0 -&gt; DO[1] = 0). 동결이 TPAC 에 닿은 뒤에
+# 다음 동작(줄 바꿈 상승)으로 간다.
+write_port_register(277, 0)
+sleep(sig_hold)
+
+row_idx = row_idx + 1
+dir_sign = -1
+pass_done = 1
+# 총 작업 거리는 TCP 가 실제로 지난 호 길이다(pass_len, mm).
+path_len = path_len + pass_len
+write_port_register(291, row_idx)
+nr_w1(297, path_len * 0.1)
+nr_w1(298, row_idx * 100.0 / rows)
+</cachedFileContents>
+                <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_tpac_exhibition/dus5_pass_r.script"/>
+              </ScriptNode>
+            </FolderNode>
+          </children>
+        </IfNode>
+        <IfNode checkExpressionContinuous="false" typeName="If">
+          <Expression>
+            <ExpressionCharCell char="r"/>
+            <ExpressionCharCell char="o"/>
+            <ExpressionCharCell char="w"/>
+            <ExpressionCharCell char="_"/>
+            <ExpressionCharCell char="i"/>
+            <ExpressionCharCell char="d"/>
+            <ExpressionCharCell char="x"/>
+            <ExpressionCharCell char="&lt;"/>
+            <ExpressionCharCell char="r"/>
+            <ExpressionCharCell char="o"/>
+            <ExpressionCharCell char="w"/>
+            <ExpressionCharCell char="s"/>
+            <ExpressionCharCell char=" "/>
+            <ExpressionCharCell char="a"/>
+            <ExpressionCharCell char="n"/>
+            <ExpressionCharCell char="d"/>
+            <ExpressionCharCell char=" "/>
+            <ExpressionCharCell char="d"/>
+            <ExpressionCharCell char="i"/>
+            <ExpressionCharCell char="r"/>
+            <ExpressionCharCell char="_"/>
+            <ExpressionCharCell char="s"/>
+            <ExpressionCharCell char="i"/>
+            <ExpressionCharCell char="g"/>
+            <ExpressionCharCell char="n"/>
+            <ExpressionCharCell char="&lt;"/>
+            <ExpressionCharCell char="0"/>
+            <ExpressionCharCell char=" "/>
+            <ExpressionCharCell char="a"/>
+            <ExpressionCharCell char="n"/>
+            <ExpressionCharCell char="d"/>
+            <ExpressionCharCell char=" "/>
+            <ExpressionCharCell char="p"/>
+            <ExpressionCharCell char="a"/>
+            <ExpressionCharCell char="s"/>
+            <ExpressionCharCell char="s"/>
+            <ExpressionCharCell char="_"/>
+            <ExpressionCharCell char="d"/>
+            <ExpressionCharCell char="o"/>
+            <ExpressionCharCell char="n"/>
+            <ExpressionCharCell char="e"/>
+            <ExpressionCharCell char="="/>
+            <ExpressionCharCell char="="/>
+            <ExpressionCharCell char="0"/>
+          </Expression>
+          <children>
+            <FolderNode display="8 [스크립트파일] dus5_pass_l.script" isHideSubtree="false" typeName="폴더">
+              <ScriptNode scriptType="FILE_TYPE" typeName="스크립트">
+                <cachedFileContents># =============================================================================
+#  dus5_pass_l.script — dusan_v5 (tpac_exhibition)
+#
+#  전시판(시편을 바닥에 눕힘, 볼록면이 위). 논센서판과 같고, 호를 베이스가
+#  아니라 **작업 좌표계**(dus5_init 의 「바닥판 작업 좌표계」)에서 그린다 —
+#  곡률 중심(arc_ox, arc_oy)이 그 좌표계 값이고, 회전축은 작업 Z(= 베이스 +X,
+#  곡면의 축)다. 로봇에 주는 목표만 베이스로 되돌린다.
+#  반대쪽 끝에서 원점으로 한 줄. servoj 로 호를 따라가며 눌림을 계속 확인한다
+#
+#  펜던트에서 "8_pass_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  [논센서판] 접촉 센서가 없는 시험용이다. v5 의 servoj 호 경로는 센서판과
+#  같지만 **눌림 보정은 하지 않는다**(288 = 0 그대로). 경로·속도·역기구학을
+#  센서 없이 먼저 확인하는 용도다.
+#
+#  호는 dus5_probe_l 이 잡은 곡률 중심(arc_ox, arc_oy)을 지나는 **작업 Z 축**
+#  둘레의 회전이다(al_arc 와 같은 방식) — 자세도 같이 돌아 손이 늘 그
+#  자리의 법선을 본다. 작업 Z(줄 위치, 베이스 X)는 그대로다.
+# =============================================================================
+
+def nl_w1(a, v):
+  if (v &gt; 32000):
+    v = 32000
+  end
+  if (v &lt; -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+def nl_wrap(a):
+  if (a &gt; 3.14159265):
+    a = a - 6.28318531
+  end
+  if (a &lt; -3.14159265):
+    a = a + 6.28318531
+  end
+  return a
+end
+
+
+def nl_to_w(p):
+  # 베이스 -&gt; 작업 좌표계(베이스를 Y 축으로 +90 도). dus5_init 의 ini_to_w 와 같다.
+  return pose_trans(pose_inv([0, 0, 0, 0, 1.57079633, 0]), p)
+end
+
+
+def nl_to_b(p):
+  # 작업 좌표계 -&gt; 베이스.
+  return pose_trans([0, 0, 0, 0, 1.57079633, 0], p)
+end
+
+
+def nl_rot(o_t, rel, phi):
+  # 곡률 중심 o_t 를 지나는 작업 Z 축으로 rel 을 phi [rad] 만큼 돌린 자세(작업 좌표계).
+  return pose_trans(o_t, pose_trans([0, 0, 0, 0, 0, phi], rel))
+end
+
+
+def nl_fail(code, msg):
+  stopj(2.0)
+  write_port_register(288, 0)
+  write_port_register(299, code)
+  write_port_register(290, 9)
+  popup(s = msg, title = "dusan_v5", blocking = True)
+  halt()
+end
+
+
+def nl_servo_arc(end_pose):
+  # 지금 자세에서 end_pose 의 방위각까지 호를 그린다. 반환: 호 길이 [mm].
+  # 곡률 중심이 안 잡혔으면(dus5_probe_l 실패·반지름 0) 지난 사이클 값으로
+  # 엉뚱한 호를 그리게 된다. 그리지 않고 멈춘다.
+  if (arc_ok == False):
+    nl_fail(4, "SCAN ARC: NO ARC CENTER (radius 260 / arc 256)")
+  end
+  # 계산은 전부 작업 좌표계에서 한다(p0w · end_w · o_t · rel). 베이스로 되돌리는
+  # 건 역기구학에 넣는 목표뿐이다.
+  p0 = get_actual_tcp_pose()
+  p0w = nl_to_w(p0)
+  end_w = nl_to_w(end_pose)
+  o_t = [arc_ox, arc_oy, 0, 0, 0, 0]
+  rel = pose_trans(pose_inv(o_t), p0w)
+  rx = p0w[0] - arc_ox
+  ry = p0w[1] - arc_oy
+  r_path = sqrt(rx * rx + ry * ry)
+  dphi = nl_wrap(atan2(end_w[1] - arc_oy, end_w[0] - arc_ox) - atan2(ry, rx))
+  sgn = 1
+  if (dphi &lt; 0):
+    sgn = -1
+  end
+  sv_tot = dphi * sgn * r_path
+
+  # 가는 길에 역기구학 해가 없으면 도중에 알람으로 서 버린다. 미리 본다.
+  sv_q = get_actual_joint_positions()
+  p_mid = nl_to_b(nl_rot(o_t, rel, dphi * 0.5))
+  p_end = nl_to_b(nl_rot(o_t, rel, dphi))
+  if (get_inverse_kin_has_solution(p_mid, qnear = sv_q) == False or get_inverse_kin_has_solution(p_end, qnear = sv_q) == False):
+    nl_fail(7, "SCAN ARC: NO IK SOLUTION")
+  end
+
+  sv_s = 0
+  sv_v = 0
+  sv_set = 0
+  # 끝점에 닿은 뒤에도 lookahead 만큼 따라오는 중이다. 두 배를 기다린다.
+  sv_nset = ceil(sv_look * 2.0 / sv_dt)
+  # 진행량은 **실제로 흐른 시간**으로 계산한다. servoj(t = sv_dt) 는 최소
+  # sv_dt 만큼 막히지만, 컨트롤러 주기가 더 길거나(예: 8 ms) 루프 안의
+  # 역기구학·센서·레지스터 일이 더해지면 한 바퀴가 sv_dt 보다 길어진다.
+  # 그런데도 sv_dt 만큼씩만 전진시키면 목표점이 그만큼 늦게 나가 실제
+  # 속도가 v_scan 보다 한참 느려진다. 컨트롤러 시각(controller_timestamp)
+  # 으로 한 바퀴 걸린 시간을 재서 쓴다. 값이 이상하면(0 이하·50 ms 초과)
+  # 예전처럼 sv_dt 를 쓴다.
+  # 속도 비율(307, %)은 **이 호에만 여기서 건다.** movel·movej 는 컨트롤러가
+  # 비율(펜던트 슬라이더 = RCS 의 29999 'speed -v N')로 줄여 주지만, servoj 는
+  # 매 주기 위치를 우리가 직접 찍어 보내는 것이라 비율이 걸리지 않는다 — 그래서
+  # 비율 15 % 에서 다른 동작은 15 mm/s 인데 스캔 좌우만 100 mm/s 로 돌았다
+  # (2026-10-14). RCS 는 비율을 바꿀 때 307 에도 같이 써 둔다.
+  # 전역 v_scan 에 곱하지 않고 이 호의 지역값(sv_vmax)만 쓴다 — 셀마다 다시
+  # 곱해져 계속 줄어들던 예전 문제(dus5_init ※)를 되풀이하지 않게.
+  # 307 이 비었거나(0) 2~100 밖이면 100 % 로 본다.
+  sv_ratio = read_port_register(307, True)
+  if (sv_ratio &lt; 2 or sv_ratio &gt; 100):
+    sv_ratio = 100
+  end
+  sv_vmax = v_scan * sv_ratio / 100.0
+  sv_tp = controller_timestamp()
+  while (sv_set &lt; sv_nset):
+    sv_tn = controller_timestamp()
+    sv_h = sv_tn - sv_tp
+    sv_tp = sv_tn
+    if (sv_h &lt;= 0 or sv_h &gt; 0.05):
+      sv_h = sv_dt
+    end
+    # 1) 진행 — 사다리꼴 속도(a_scan, sv_vmax). 남은 거리로 감속한다.
+    if (sv_s &lt; sv_tot):
+      v_top = sqrt(2.0 * a_scan * (sv_tot - sv_s))
+      if (v_top &gt; sv_vmax):
+        v_top = sv_vmax
+      end
+      if (v_top &lt; 0.002):
+        v_top = 0.002
+      end
+      sv_v = sv_v + a_scan * sv_h
+      if (sv_v &gt; v_top):
+        sv_v = v_top
+      end
+      sv_s = sv_s + sv_v * sv_h
+      if (sv_tot - sv_s &lt; 0.0002):
+        sv_s = sv_tot
+      end
+    else:
+      sv_set = sv_set + 1
+    end
+
+    # 3) 목표 자세 -&gt; 관절 -&gt; servoj (sv_dt 동안 막힌다 = 루프 주기)
+    tgt = nl_to_b(nl_rot(o_t, rel, sgn * sv_s / r_path))
+    sv_q = get_inverse_kin(tgt, qnear = sv_q)
+    servoj(sv_q, t = sv_dt, lookahead_time = sv_look, gain = sv_gain)
+  end
+  stopj(2.0)
+  write_port_register(288, 0)
+  # 로봇은 플랜지 기준으로 v_scan 으로 돌지만, 기록할 길이(297·287)는 **프로브 중심이
+  # 벽 위로 지난 호**다 — 같은 각도를 프로브 중심 반지름으로 곱한다.
+  tp = pose_trans(p0w, eoat_ofs)
+  r_tip = sqrt((tp[0] - arc_ox) * (tp[0] - arc_ox) + (tp[1] - arc_oy) * (tp[1] - arc_oy))
+  return dphi * sgn * r_tip * 1000.0
+end
+
+
+# p_r_pose 쪽 끝 -&gt; 원점(zero_pose) 방위각까지 한 줄.
+# 반시계 방향이라 베이스 Y 는 **늘어나는** 쪽이다.
+# 스캔 동작에 들어섰다고 알린다(6 = 스캔 중). 이 값이 6 인 동안에만
+# 제로점 기준 좌표(280~285)가 나간다 — dus5_init 의 pub_rel 참고.
+write_port_register(290, 6)
+
+# ---- TPAC 동기 신호 --------------------------------------------------------
+# 277 = 지금 도는 스캔 구간. RCS 브리지가 이 값을 TPAC 엔코더 보드의 DO 신호
+# (Coil 16~18 / Reg 1)로 바꿔 보낸다 — 1 전진 스캔, 2 줄 바꿈(동결), 3 후진 스캔.
+# 브리지가 값을 읽고(100 ms 주기) 방향 -&gt; 스캔 순서로 신호를 50 ms 이상씩
+# 붙잡아 둘 시간을 주고 나서 움직인다(sig_hold). 안 기다리면 줄 앞부분이
+# 펄스 없이 지나가 TPAC 이 그만큼을 못 센다.
+write_port_register(277, 3)
+sleep(sig_hold)
+pass_len = nl_servo_arc(zero_pose)
+# 끝점 도착 — 스캔 동결(277 = 0 -&gt; DO[1] = 0). 동결이 TPAC 에 닿은 뒤에
+# 다음 동작(줄 바꿈 상승)으로 간다.
+write_port_register(277, 0)
+sleep(sig_hold)
+
+row_idx = row_idx + 1
+dir_sign = 1
+pass_done = 1
+# 총 작업 거리는 TCP 가 실제로 지난 호 길이다(pass_len, mm).
+path_len = path_len + pass_len
+write_port_register(291, row_idx)
+nl_w1(297, path_len * 0.1)
+nl_w1(298, row_idx * 100.0 / rows)
+</cachedFileContents>
+                <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_tpac_exhibition/dus5_pass_l.script"/>
+              </ScriptNode>
+            </FolderNode>
+          </children>
+        </IfNode>
+        <IfNode checkExpressionContinuous="false" typeName="If">
+          <Expression>
+            <ExpressionCharCell char="r"/>
+            <ExpressionCharCell char="o"/>
+            <ExpressionCharCell char="w"/>
+            <ExpressionCharCell char="_"/>
+            <ExpressionCharCell char="i"/>
+            <ExpressionCharCell char="d"/>
+            <ExpressionCharCell char="x"/>
+            <ExpressionCharCell char="&lt;"/>
+            <ExpressionCharCell char="r"/>
+            <ExpressionCharCell char="o"/>
+            <ExpressionCharCell char="w"/>
+            <ExpressionCharCell char="s"/>
+          </Expression>
+          <children>
+            <FolderNode display="9 [스크립트파일] dus5_up.script" isHideSubtree="false" typeName="폴더">
+              <ScriptNode scriptType="FILE_TYPE" typeName="스크립트">
+                <cachedFileContents># =============================================================================
+#  dus5_up.script — dusan_v5 (tpac_exhibition)
+#  다음 줄로 한 피치만큼 옮긴다
+#
+#  전시판(시편을 바닥에 눕힘). 원 태스크의 「상승」(베이스 +Z)이 여기서는 작업 Z,
+#  곧 베이스 **+X(로봇에서 멀어지는 쪽, 곡면의 축)** 이다 — dus5_init 의
+#  「바닥판 작업 좌표계」. z_base 도 그 좌표계 값이다(dus5_probe_c).
+#
+#  펜던트에서 "9_up" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def up_w1(a, v):
+  if (v &gt; 32000):
+    v = 32000
+  end
+  if (v &lt; -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+def up_to_w(p):
+  # 베이스 -&gt; 작업 좌표계(베이스를 Y 축으로 +90 도). dus5_init 의 ini_to_w 와 같다.
+  return pose_trans(pose_inv([0, 0, 0, 0, 1.57079633, 0]), p)
+end
+
+
+def up_to_b(p):
+  # 작업 좌표계 -&gt; 베이스.
+  return pose_trans([0, 0, 0, 0, 1.57079633, 0], p)
+end
+
+
+# 목표 높이는 직전 위치가 아니라 원점(z_base) 기준 절대값으로 잡는다.
+# 상대값으로 쌓으면 구간마다의 정지 오차가 행 수만큼 누적된다.
+# 스캔 동작에 들어섰다고 알린다(6 = 스캔 중). 이 값이 6 인 동안에만
+# 제로점 기준 좌표(280~285)가 나간다 — dus5_init 의 pub_rel 참고.
+# 스캔 동작마다 세워 둬야, 사이클이 반복되며 goto_zero 를 다시 지나지
+# 않는 구성에서도 좌표가 끊기지 않는다.
+write_port_register(290, 6)
+# TPAC 동기 신호: 줄 바꿈 상승 구간 — 스캔 동결(DO[1] = 0) 유지.
+write_port_register(277, 2)
+
+# 작업 Z(= 베이스 X) 만 바꾼다 — 곡면의 축 방향이라 호 끝에서 판을 따라 곧게 간다.
+up_w = up_to_w(get_actual_tcp_pose())
+up_w[2] = z_base + row_idx * pitch * 0.001
+tgt_pose = up_to_b(up_w)
+movel(tgt_pose, a = a_scan, v = v_scan)
+
+path_len = path_len + pitch
+up_w1(297, path_len * 0.1)
+</cachedFileContents>
+                <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_tpac_exhibition/dus5_up.script"/>
+              </ScriptNode>
+            </FolderNode>
+          </children>
+        </IfNode>
+        <IfNode checkExpressionContinuous="false" typeName="If">
+          <Expression>
+            <ExpressionCharCell char="r"/>
+            <ExpressionCharCell char="o"/>
+            <ExpressionCharCell char="w"/>
+            <ExpressionCharCell char="_"/>
+            <ExpressionCharCell char="i"/>
+            <ExpressionCharCell char="d"/>
+            <ExpressionCharCell char="x"/>
+            <ExpressionCharCell char="&gt;"/>
+            <ExpressionCharCell char="="/>
+            <ExpressionCharCell char="r"/>
+            <ExpressionCharCell char="o"/>
+            <ExpressionCharCell char="w"/>
+            <ExpressionCharCell char="s"/>
+          </Expression>
+          <children>
+            <FolderNode display="10 [스크립트파일] dus5_finish.script" isHideSubtree="false" typeName="폴더">
+              <ScriptNode scriptType="FILE_TYPE" typeName="스크립트">
+                <cachedFileContents># =============================================================================
+#  dus5_finish.script — dusan_v5 (tpac_exhibition)
+#  판에서 후퇴하고 완료 플래그를 낸다
+#
+#  전시판(시편을 바닥에 눕힘). 원 태스크의 「벽 쪽 = 베이스 +X」가 여기서는 작업 X,
+#  곧 베이스 **-Z(아래, 판 쪽)** 다 — dus5_init 의 「바닥판 작업 좌표계」. 그래서
+#  「대기 위치 X 보다 뒤로 안 간다」가 「대기 위치 **높이**보다 위로 안 간다」가 된다.
+#
+#  펜던트에서 "10_finish" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def fn_to_w(p):
+  # 베이스 -&gt; 작업 좌표계(베이스를 Y 축으로 +90 도). dus5_init 의 ini_to_w 와 같다.
+  return pose_trans(pose_inv([0, 0, 0, 0, 1.57079633, 0]), p)
+end
+
+
+def fn_retreat(limit):
+  # 벽에서 물러나되 **스캔 대기 위치(Standby_joint)보다 뒤로는 가지 않는다.**
+  #   - 기준점은 Standby_joint 의 플랜지 자세(get_forward_kin)다. Standby_pose 변수는
+  #     안 쓴다 — 펜던트에 옛 값이 남아 있을 수 있다.
+  #   - 지금 자리도 플랜지로 본다. EOAT 끝점 TCP(eoat_ofs)가 남아 있으면 끝점이
+  #     245 mm 앞이라 남은 거리가 그만큼 크게 잡혔다. 그래서 먼저 TCP 를 플랜지로.
+  #   - 방향은 툴 -Z(벽 법선 반대)다. 호 끝처럼 툴이 돌아가 있어도 벽에서 곧게 뗀다.
+  #   - 거리는 limit [m] 과 「대기 위치 X 까지 남은 거리」 중 작은 쪽. 툴 -Z 로 d 만큼
+  #     가면 베이스 X 는 d * cz 만큼 준다(cz = 툴 Z 의 베이스 X 성분). 이미 대기
+  #     위치보다 뒤면 물러나지 않는다.
+  #   - 툴이 벽(+X) 쪽을 보고 있지 않으면(cz &lt;= 0.2, 약 78 도 넘게 돌아감) 벽에
+  #     붙은 자세가 아니다 — 엉뚱한 쪽으로 가지 않게 물러나지 않는다.
+  #   - (전시판) 위 「베이스 X」는 모두 작업 X(= 베이스 -Z)로 읽는다: 대기 위치
+  #     높이까지 남은 만큼, 툴이 아래(판)를 보고 있을 때만 위로 뗀다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  fn_ref = fn_to_w(get_forward_kin(Standby_joint))
+  fn_base = get_actual_tool_flange_pose()
+  fn_cur = fn_to_w(fn_base)
+  fn_cz = pose_trans(fn_cur, [0, 0, 1, 0, 0, 0])[0] - fn_cur[0]
+  fn_back = 0
+  if (fn_cz &gt; 0.2):
+    fn_back = (fn_cur[0] - fn_ref[0]) / fn_cz
+    if (fn_back &gt; limit):
+      fn_back = limit
+    end
+  end
+  if (fn_back &gt; 0.001):
+    movel(pose_trans(fn_base, [0, 0, -fn_back, 0, 0, 0]), a = a_l, v = v_l)
+  end
+end
+
+
+# ---- 스캔 끝을 먼저 알린다 (마지막 스캔 좌표에서, 물러나기 전) ---------------
+# 290 이 6(스캔 중)인 동안은 발행 스레드가 제로점 좌표(280~285)와 호 위치
+# (286/287)를 계속 내보낸다. 예전에는 6 인 채로 물러난 뒤에야 5 를 써서, 후퇴
+# 경로와 그 뒤 0,0,0 으로 떨어지는 값까지 TPAC 스캔 데이터에 들어갔다
+# (2026-10-15). 그래서 여기 마지막 스캔 좌표에서
+#   277 = 0  스캔 플래그 끔(DO[1] = 0)
+#   290 = 5  스캔 끝 — 발행 스레드가 280~287 을 마지막 스캔 값 그대로 붙잡아
+#            둔다(dus5_init 의 pub_rel). 브리지는 리셋(DO[2] = 1)으로 구분한다.
+# 을 먼저 쓰고, 브리지가 읽어 TPAC 에 닿을 때까지(sig_hold) 서 있다가 물러난다.
+# 완료(290 = 5 · 295 = 1)를 받은 RCS 는 홈 플래그(276)를 본 뒤에야 차량·리프트를
+# 움직이므로, 물러나기 전에 써도 된다(예전에도 홈 이동 전에 썼다).
+write_port_register(277, 0)
+write_port_register(290, 5)
+write_port_register(291, row_idx)
+write_port_register(295, 1)
+write_port_register(298, 100)
+sleep(sig_hold)
+
+# 벽에서 물러난다 — 최대 back_off, 스캔 대기 위치보다 뒤로는 안 간다. 예전에는
+# 베이스 -X 로 back_off 만큼 무조건 물러나 기준 자세보다 뒤로 갈 수 있었다
+# (2026-10-15). 다음 노드(dus5_go_home)가 남은 만큼 대기 위치 X 까지 물러나고
+# 높이를 대기 위치에 맞춘(올리거나 내림) 뒤 대기 위치를 거쳐 홈으로 간다.
+fn_retreat(back_off * 0.001)
+</cachedFileContents>
+                <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_tpac_exhibition/dus5_finish.script"/>
+              </ScriptNode>
+            </FolderNode>
+            <FolderNode display="11 [스크립트파일] dus5_go_home.script" isHideSubtree="false" typeName="Folder">
+      <ScriptNode scriptType="FILE_TYPE" typeName="Script">
+        <cachedFileContents># =============================================================================
+#  dus5_go_home.script — dusan_v5 (tpac_exhibition)
+#
+#  전시판(시편을 바닥에 눕힘). 대기 위치 「선상」 맞추기를 작업 좌표계(dus5_init 의
+#  「바닥판 작업 좌표계」)에서 한다 — 원 태스크의 「베이스 X(벽 쪽)」는 작업 X =
+#  베이스 -Z(아래), 「높이(베이스 Z)」는 작업 Z = 베이스 +X(줄 진행)다. 그래서
+#    1) 대기 위치보다 낮으면 먼저 **곧게 위로** 대기 위치 높이까지 올라가고,
+#    2) 그 높이에서 **베이스 X 만** 대기 위치에 맞춘 뒤(앞뒤로),
+#  movej 로 대기 위치에 간다.
+#  스캔을 마친 뒤 스캔 대기 위치를 거쳐 홈으로 간다 (작업 끝)
+#
+#  펜던트에서 스캔 태스크 마지막 "move_home" 자리(dus5_finish 다음)에 스크립트
+#  노드를 파일(File) 모드로 넣고 지정한다. 벽에서 물러나는 것은 바로 앞의
+#  dus5_finish 가 이미 했다(대기 위치 기준, 최대 back_off).
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  홈과 작업 자리 사이는 **언제나 스캔 대기 위치를 거친다**(2026-10-15):
+#    시작 : 홈 --movej--&gt; 스캔 대기 위치 --&gt; 시작 위치(start_pose)
+#    끝   : 스캔 완료 자리 --&gt; (대기 위치 기준) 물러나고 --&gt; 대기 위치 선상(X · 높이)에
+#           맞추고 --movej--&gt; 스캔 대기 위치 --movej--&gt; 홈
+#  스캔 대기 위치(Standby_joint) = 예전의 「홈」. RCS 「스캔 대기 위치 저장」(레지스터
+#  310~315, 308 = 1) 또는 펜던트 변수. 홈(Home_joint)은 RCS 「홈 위치 저장」(레지스터
+#  322~327, 328 = 1) 또는 펜던트에서 티칭한 변수(dus5_init 참고).
+#
+#  완료 표시(290 = 5)는 dus5_finish 가 이미 냈다 — 여기서는 상태 레지스터를
+#  건드리지 않는다. 홈에 닿았는지는 발행 스레드가 276 으로 알린다.
+# =============================================================================
+
+def gh_to_w(p):
+  # 베이스 -&gt; 작업 좌표계(베이스를 Y 축으로 +90 도). dus5_init 의 ini_to_w 와 같다.
+  return pose_trans(pose_inv([0, 0, 0, 0, 1.57079633, 0]), p)
+end
+
+
+def gh_to_b(p):
+  # 작업 좌표계 -&gt; 베이스.
+  return pose_trans([0, 0, 0, 0, 1.57079633, 0], p)
+end
+
+
+def gh_align():
+  # 스캔 대기 위치 **선상**에 맞춘다(플랜지 기준, 2026-10-16):
+  #   1) 아직 대기 위치보다 앞(베이스 +X, 벽 쪽)이면 베이스 -X 로 곧게 물러나
+  #      대기 위치 X 에 선다. 벽에서는 앞 동작(_retreat · dus5_finish)이 이미
+  #      툴 -Z 로 떨어졌다 — 여기서는 남은 만큼 뒤로만 간다.
+  #   2) 높이(베이스 Z)를 대기 위치 높이로 **올리거나 내린다.** 위 줄에서 끝나
+  #      대기 위치보다 높으면 내려온다(예전에는 올라가기만 했다).
+  # Y 와 자세는 그대로 둔다 — 남은 것은 다음 movej(대기 위치)가 맞춘다.
+  # 이미 대기 위치보다 뒤에 있으면 앞으로 나가지 않는다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  # (전시판) 아래 [0] · [2] 는 작업 좌표계 값이다 — [0] 이 클수록 낮다(판 쪽),
+  # [2] 는 베이스 X(줄 진행)다.
+  ga_ref = gh_to_w(get_forward_kin(Standby_joint))
+  ga_p = gh_to_w(get_actual_tool_flange_pose())
+  if (ga_p[0] &gt; ga_ref[0] + 0.001):
+    ga_p[0] = ga_ref[0]
+    movel(gh_to_b(ga_p), a = a_l, v = v_l)
+  end
+  ga_p = gh_to_w(get_actual_tool_flange_pose())
+  if (ga_p[2] &lt; ga_ref[2] - 0.001 or ga_p[2] &gt; ga_ref[2] + 0.001):
+    ga_p[2] = ga_ref[2]
+    movel(gh_to_b(ga_p), a = a_l, v = v_l)
+  end
+end
+
+
+gh_align()
+movej(Standby_joint, a = a_j, v = v_j)
+movej(Home_joint, a = a_j, v = v_j)
+</cachedFileContents>
+        <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v5/scripts_tpac_exhibition/dus5_go_home.script"/>
+      </ScriptNode>
+    </FolderNode>
+            <HaltNode typeName="중지"/>
+          </children>
+        </IfNode>
+      </children>
+    </LoopNode>
+    <HaltNode typeName="중지"/>
+  </MainTask>
+</EliTask>

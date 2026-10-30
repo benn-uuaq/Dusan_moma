@@ -92,6 +92,8 @@ class MainScreen(QWidget):
         hero.addWidget(progress_box, 1)
         hero.addWidget(phase_box, 2)
         content.addLayout(hero)
+        # 단독판(차량 없음)에서 숨기는 칸 — apply_standalone() 참고.
+        self._vehicle_widgets: list[QWidget] = [segment_box, row_box, progress_box]
 
         sequence_label = QLabel("안전 순서 (구간마다 반복)")
         sequence_label.setObjectName("SectionTitle")
@@ -105,6 +107,7 @@ class MainScreen(QWidget):
             self.steps.append(step)
             sequence.addWidget(step, 1)
         content.addLayout(sequence)
+        self._vehicle_widgets += [sequence_label, *self.steps]
 
         workspace = QHBoxLayout()
         self.orbit_view = OrbitView()
@@ -201,7 +204,7 @@ class MainScreen(QWidget):
         diameter_m, height_m = self.orbit_view.target_dimensions()
 
         diameter_input = TouchDoubleSpinBox()
-        diameter_input.dialog_title = "검사 대상 지름 입력"
+        diameter_input.dialog_title = "검사 대상 바깥 지름 입력"
         diameter_input.setRange(0.10, 100.00)
         diameter_input.setDecimals(2)
         diameter_input.setSingleStep(0.10)
@@ -216,7 +219,7 @@ class MainScreen(QWidget):
         height_input.setSuffix(" m")
         height_input.setValue(height_m)
 
-        form.addRow("지름", diameter_input)
+        form.addRow("바깥 지름", diameter_input)
         form.addRow("높이", height_input)
         layout.addLayout(form)
 
@@ -291,15 +294,16 @@ class MainScreen(QWidget):
     def set_work_area(
         self, width_mm: float, height_mm: float, scan_h_mm: float, overlap_mm: float,
         eoat_w_mm: float | None = None,
-        radius_mm: float | None = None, thickness_mm: float | None = None,
+        radius_mm: float | None = None,
     ) -> None:
         """외부 설정 또는 사용자 입력으로 작업 영역 치수를 변경한다.
 
-        반지름·두께는 그림에서 경로를 **현**으로 그리는 데 쓴다 — 로봇이
-        내보내는 가로 좌표가 현 기준이라 그래야 마커가 경로 위에 놓인다.
+        반지름(벽 바깥 반지름 = 바깥 지름 / 2)은 그림에서 경로를 **현**으로 그리는
+        데 쓴다 — 로봇이 내보내는 가로 좌표가 현 기준이라 그래야 마커가 경로 위에
+        놓인다.
         """
         self.rect_view.set_work_area(width_mm, height_mm, scan_h_mm, overlap_mm,
-                                     eoat_w_mm, radius_mm, thickness_mm)
+                                     eoat_w_mm, radius_mm)
 
     def apply_wall_position(self, horizontal_mm: float, vertical_mm: float) -> None:
         """원점 기준 상대좌표(가로/세로)를 사각형 작업 모델에 표시한다."""
@@ -317,6 +321,13 @@ class MainScreen(QWidget):
         self.row_label.setText(f"{row:02d}")
         self._refresh_hero_totals()
         self.orbit_view.set_row_position(row, rows)
+
+    def apply_standalone(self) -> None:
+        """Windows 단독판(차량 · 리프트 없음) — 구간 · 행 · 원주 진행률 타일과
+        안전 순서(정지·고정 → … → 다음 구간 이동)를 감춘다. 작업 영역 한 구역만
+        스캔하므로 이 값들은 뜻이 없다. 원통 그림은 바깥 지름을 넣는 곳이라 둔다."""
+        for widget in self._vehicle_widgets:
+            widget.hide()
 
     def set_global_scale(self, scale: float) -> None:
         """창 배율을 받아 요약 칸 글자 기준 크기에 반영한다.

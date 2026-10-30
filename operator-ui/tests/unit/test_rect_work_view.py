@@ -120,17 +120,17 @@ def test_max_safe_arc_matches_the_configured_limit() -> None:
     """안전 한계 계산이 로봇 config 의 app_arc(721)와 같아야 한다.
 
     현 = 2R·sin(arc_run / 2R) 가 700mm 를 넘지 않는 최대 정수 호 길이다.
-    프로브는 벽 바깥면(반지름 + 두께)을 타므로 그 반지름으로 잰다.
+    프로브는 벽 바깥면을 타므로 바깥 반지름으로 잰다(두께는 쓰지 않는다).
     """
-    assert max_safe_arc_mm(834.6, 10.0) == 721.0
+    assert max_safe_arc_mm(844.6) == 721.0
     # 경계 확인 — 721 은 안전하고 722 는 넘는다.
-    assert probe_chord_mm(721, 834.6, 10.0) < MAX_PROBE_CHORD_MM
-    assert probe_chord_mm(722, 834.6, 10.0) > MAX_PROBE_CHORD_MM
+    assert probe_chord_mm(721, 844.6) < MAX_PROBE_CHORD_MM
+    assert probe_chord_mm(722, 844.6) > MAX_PROBE_CHORD_MM
 
 
 def test_no_limit_when_radius_is_unknown() -> None:
     """반지름을 모르면(평면으로 보는 경우) 한계를 두지 않는다."""
-    assert max_safe_arc_mm(0.0, 0.0, 257.0) == 0.0
+    assert max_safe_arc_mm(0.0, 257.0) == 0.0
 
 
 def test_rise_segment_follows_the_path_vertically() -> None:
@@ -152,14 +152,14 @@ def test_rise_segment_follows_the_path_vertically() -> None:
 
 
 def test_max_safe_arc_uses_outer_surface_radius() -> None:
-    """한계는 벽 **바깥면**(반지름 + 두께) 기준으로 잰다.
+    """한계는 벽 **바깥면** 반지름(바깥 지름 / 2) 기준으로 잰다 — 두께는 쓰지 않는다.
 
-    도면 R834.6 에 두께 10 이면 훑는 면은 R844.6 이고, 로봇이 좌우로
-    실제 이동하는 현이 700mm 를 넘지 않는 최대 작업 호가 721mm 다.
+    바깥 R844.6 이면 로봇이 좌우로 실제 이동하는 현이 700mm 를 넘지 않는
+    최대 작업 호가 721mm 다.
     """
-    assert max_safe_arc_mm(834.6, 10.0) == 721.0
-    assert probe_chord_mm(721, 834.6, 10.0) < MAX_PROBE_CHORD_MM
-    assert probe_chord_mm(722, 834.6, 10.0) > MAX_PROBE_CHORD_MM
+    assert max_safe_arc_mm(844.6) == 721.0
+    assert probe_chord_mm(721, 844.6) < MAX_PROBE_CHORD_MM
+    assert probe_chord_mm(722, 844.6) > MAX_PROBE_CHORD_MM
 
 
 def test_plan_reports_the_chord_the_robot_will_publish() -> None:
@@ -171,11 +171,11 @@ def test_plan_reports_the_chord_the_robot_will_publish() -> None:
     로 펴서 얹는다 — TPAC 이 호를 평면화해 보는 것과 같은 그림이다.
     """
     plan = plan_dimensions(721.0, 500.0, 30.0, 0.0,
-                           radius_mm=834.6, thickness_mm=10.0)
+                           radius_mm=844.6)
 
     assert plan["arc_run"] == 721.0            # 로봇이 실제로 훑는 호 길이
     assert plan["draw_run"] == 721.0           # 그림은 격자 폭 전체
-    assert plan["chord"] == probe_chord_mm(721.0, 834.6, 10.0)
+    assert plan["chord"] == probe_chord_mm(721.0, 844.6)
     assert plan["chord"] < plan["arc_run"]
 
 
@@ -192,7 +192,7 @@ def test_path_starts_at_the_origin_corner_and_runs_outward() -> None:
     경로 값 자체는 늘 원점에서 잰 거리라 0 에서 폭까지 오간다.
     """
     pts, plan = ideal_path(721.0, 500.0, 30.0, 0.0,
-                           radius_mm=834.6, thickness_mm=10.0)
+                           radius_mm=844.6)
     hs = [h for h, _v in pts]
     assert min(hs) == 0.0
     assert max(hs) == plan["width"]

@@ -92,8 +92,8 @@ def evaluate(probe_poses: list[int], expected_radius_mm: float,
              probe_result: list[int] | None = None) -> CalibrationResult:
     """레지스터 값으로 캘리브레이션 결과를 만든다.
 
-    `probe_poses` 는 330~355 한 벌, `expected_radius_mm` 은 입력한 반지름
-    + 두께(로봇이 호를 그릴 때 쓰는 값)다. `probe_result` 를 주면 접촉
+    `probe_poses` 는 330~355 한 벌, `expected_radius_mm` 은 벽 바깥 반지름
+    (검사 대상 바깥 지름 / 2 — 로봇이 호를 그릴 때 쓰는 값)이다. `probe_result` 를 주면 접촉
     횟수(305)로 세 점을 다 찾았는지까지 본다.
     """
     if not probe_poses or len(probe_poses) < POSE_LENGTH:

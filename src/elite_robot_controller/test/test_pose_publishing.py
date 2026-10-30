@@ -561,7 +561,7 @@ def _linked_node(fail_reads):
                  "pub_tcp_pose_zero", "pub_joint_position", "pub_scan_state", "pub_task_state",
                  "pub_home_flag", "pub_speed_scale", "pub_digital_in",
                  "pub_digital_out", "pub_probe_result", "pub_probe_poses",
-                 "pub_scan_arc", "pub_alarm"):
+                 "pub_scan_arc", "pub_scan_segment", "pub_alarm"):
         setattr(node, name, FakePublisher())
     node.alarm_mgr = type("M", (), {"process": lambda self, a: False})()
     node.robot_primary.get_data = lambda: None

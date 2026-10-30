@@ -361,6 +361,21 @@ class ErutClient(QObject):
             "timestamp": utc_ms(), "content": content,
         }, qos=1, retain=True)
 
+    def publish_motion(self, job_id: str, direction: str, seq: int,
+                       remain_mm: float | None = None) -> bool:
+        """이동 방향 (if-0.11 탭2 48행, motion_direction). 방향이 바뀔 때 움직이기 전에
+        한 번 — 주기 재전송 없음, QoS 1 · retain 없음.
+
+        dir 은 +x · -x · +y · -y · none, seq 는 job_id 마다 1 부터. remain_mm(그 방향으로
+        남은 거리, 정수 mm)은 알 때만 싣는다.
+        """
+        content: dict[str, Any] = {"job_id": job_id, "dir": direction, "seq": int(seq)}
+        if remain_mm is not None and remain_mm > 0:
+            content["remain_mm"] = int(round(remain_mm))
+        return self._publish(self.evt_topic("motion"), {
+            "timestamp": utc_ms(), "content": content,
+        }, qos=1, retain=False)
+
     def publish_home(self, state: str) -> bool:
         """이동 안전 자세 (if-0.5 탭2 14행). home / deployed.
 
