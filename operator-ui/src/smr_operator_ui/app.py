@@ -15,7 +15,7 @@ from math import ceil, pi
 from typing import Any
 
 from PyQt6.QtCore import QObject, QTimer, Qt
-from PyQt6.QtGui import QFontDatabase
+from PyQt6.QtGui import QFontDatabase, QGuiApplication
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
@@ -27,7 +27,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from smr_operator_ui import edition
 from smr_operator_ui.components import ConnectionBadge
 from smr_operator_ui.components.rect_work_view import (
     MAX_PROBE_CHORD_MM, max_safe_arc_mm, probe_chord_mm,
@@ -106,12 +105,7 @@ def robot_task_paths(version: str, nosensor: bool) -> tuple[str, str]:
       센서판   : <버전>.task,               <버전>_mark.task
       논센서판 : <버전>_nosensor_seq.task,  <버전>_nosensor_mark.task
     현장에서 실제 경로를 한 번 확인해야 한다(펜던트의 태스크 목록 기준).
-
-    TPAC 전시판(edition.EXHIBITION_TASK)은 버전이 아니라 dusan_v5 폴더의 태스크
-    하나다. 그 자체가 논센서판이라 판 체크와 상관없이 그 파일을 쓴다.
     """
-    if version == edition.EXHIBITION_TASK:
-        return (f"Dusan/dusan_v5/{version}.task", "Dusan/dusan_v5/dusan_v5_nosensor_mark.task")
     folder = f"Dusan/{version}"
     if nosensor:
         return (f"{folder}/{version}_nosensor_seq.task",
@@ -259,7 +253,6 @@ class TopBar(QFrame):
         battery.setObjectName("Product")
         layout.addWidget(battery)
         self._register_scalable(battery, 20)
-        self.battery = battery
         timer = QTimer(self)
         timer.timeout.connect(self._update_clock)
         timer.start(1000)
@@ -377,6 +370,19 @@ class OperatorWindow(QMainWindow):
     # 하되 창 배수보다 완만하게 따라가도록 눌러 준다.
     _UI_SCALE_DAMPING = 0.45
     _UI_SCALE_MAX = 1.35
+    # 창 안쪽이 기준보다 작으면(제목 표시줄 · 작업 표시줄을 빼면 1024x768 이 안 남는
+    # 화면) 그 비율만큼 그대로 줄여 화면 아래가 잘리지 않게 한다(2026-11-03). 글자가
+    # 읽기 어렵게 작아지지 않도록 기준의 이 비율까지만 줄인다.
+    _UI_SCALE_MIN = 0.8
+    # 창 안쪽의 최소 크기. 모든 화면이 잘리지 않는 것을 재서 정했다 — 1024x768 모니터에서
+    # 최대화하면 안쪽이 1024 x 690~700 정도 남는다(Windows 작업 표시줄 · GNOME 상단 막대).
+    # 폭은 테두리가 있는 창(1024 - 16)까지, 높이는 그보다 넉넉히 낮게.
+    _MIN_WIDTH = 1008
+    _MIN_HEIGHT = 640
+    # 창 크기(resize)는 안쪽 크기다. 제목 표시줄(최소화 · 전체화면 · 닫기)과 테두리가
+    # 이만큼 더 붙는다고 보고, 화면이 그만큼을 못 담으면 최대화로 띄운다(show_fitted).
+    _FRAME_ALLOWANCE_W = 16
+    _FRAME_ALLOWANCE_H = 48
 
     def __init__(
         self,
@@ -387,10 +393,11 @@ class OperatorWindow(QMainWindow):
         super().__init__()
         # 입력값은 클릭해서 키패드·키보드로만 바꾼다 — 휠로는 안 바뀐다.
         install_wheel_guard()
-        self.setWindowTitle("3S-Robotics | SMR Operator Console"
-                            + (" — 단독판 (로봇 · TPAC)" if edition.STANDALONE else ""))
+        self.setWindowTitle("3S-Robotics | SMR Operator Console")
         self.resize(self._UI_SCALE_REFERENCE_W, self._UI_SCALE_REFERENCE_H)
-        self.setMinimumSize(self._UI_SCALE_REFERENCE_W, self._UI_SCALE_REFERENCE_H)
+        # 최소 크기를 1024x768 로 묶으면 그 크기의 모니터에서는 제목 표시줄 · 작업
+        # 표시줄만큼 아래가 화면 밖으로 잘렸다. 줄어든 만큼 UI 배율을 낮춰 맞춘다.
+        self.setMinimumSize(self._MIN_WIDTH, self._MIN_HEIGHT)
         self._base_qss = load_stylesheet()
         # 지금 적용된 배율. create_application 이 기준 배율로 QSS 를 걸어 둔다.
         self._current_ui_scale = UI_BASE_SCALE
@@ -577,15 +584,7 @@ class OperatorWindow(QMainWindow):
         )
         # 화면을 열 때마다 손으로 새로고침을 누르게 하는 대신, 로봇이
         # 연결될 때 한 번 자동으로 물어 채워 둔다.
-        if edition.STANDALONE:
-            # 단독판: ROS 가 없어 로봇 제어 노드를 이 프로세스 안에서 돌린다 — 저장된
-            # 로봇 주소로 바로 붙는다(연결 설정에서 바꾸면 「연결」로 다시 붙는다).
-            from smr_operator_ui.standalone.inprocess_node import InProcessRobotNode
-            conn = self.screens["connection"]
-            self.robot_node = InProcessRobotNode(
-                self, endpoint=lambda: (conn.robot_ip(), conn.robot_port()))
-        else:
-            self.robot_node = RobotNodeSupervisor(self)
+        self.robot_node = RobotNodeSupervisor(self)
         self.robot_node.activity.connect(self.main_screen.show_activity)
         self.robot_node.duplicate_nodes.connect(self.cobot_manual_screen.add_alarm)
         self.ros_status.connected_changed.connect(
@@ -608,16 +607,9 @@ class OperatorWindow(QMainWindow):
         self.ros_status.error_occurred.connect(self._show_ros_error)
         if start_ros:
             self.ros_status.start()
-            if edition.STANDALONE:
-                # 단독판은 저장된 로봇 주소로 바로 붙는다 — 설정은 비동기로 불러오므로
-                # 연결 설정이 들어온 뒤에(안 오면 3초 뒤 기본값으로) 노드를 띄운다.
-                self._standalone_node_pending = True
-                self.settings_service.loaded.connect(self._start_standalone_node)
-                _call_later(self, 3000, lambda: self._start_standalone_node("connection", {}))
-            else:
-                # 프로그램 하나만 켜면 되도록 로봇 제어 노드도 UI 가 데리고 있는다.
-                # 이미 떠 있으면(터미널에서 따로 띄웠거나) 그대로 쓴다.
-                self.robot_node.start(already_running=self.ros_status.node_is_running())
+            # 프로그램 하나만 켜면 되도록 로봇 제어 노드도 UI 가 데리고 있는다.
+            # 이미 떠 있으면(터미널에서 따로 띄웠거나) 그대로 쓴다.
+            self.robot_node.start(already_running=self.ros_status.node_is_running())
 
         self._connect_sequencer()
         # 외부 통신은 ERUT(MQTT) 하나다 — 사내 MC MQTT 는 2026-10-07 에 뺐다.
@@ -627,38 +619,9 @@ class OperatorWindow(QMainWindow):
         self._setup_data_recorder()
         # 오류 로그·로그 파일·운전 모드 화면을 기록기와 설정에 잇는다.
         self._setup_record_screens()
-        if edition.STANDALONE:
-            self._apply_standalone_layout()
         # 상단바·요약 칸은 QSS 가 아니라 스스로 글자 크기를 잡는다 — 기준 배율을
         # 처음부터 넘겨 둔다(창이 기준 크기면 _apply_ui_scale 이 다시 부르지 않는다).
         self._apply_widget_scale(self._current_ui_scale)
-
-    def _start_standalone_node(self, scope: str, _values: dict) -> None:
-        """단독판 — 연결 설정을 불러온 뒤 로봇 제어 노드를 한 번만 띄운다."""
-        if scope != "connection" or not getattr(self, "_standalone_node_pending", False):
-            return
-        self._standalone_node_pending = False
-        self.robot_node.start()
-
-    #: 단독판에서 내지 않는 순회 알림 — 차량 · 리프트 · 아웃트리거 단계.
-    _STANDALONE_QUIET_WORDS = ("차량", "리프트", "아웃트리거", "안전 위치", "구역으로 이동")
-
-    def _show_standalone_activity(self, text: str) -> None:
-        if any(word in text for word in self._STANDALONE_QUIET_WORDS):
-            return
-        self.main_screen.show_activity(text)
-
-    def _apply_standalone_layout(self) -> None:
-        """단독판 — 쓰지 않는 장비(ERUT · 차량 · PLC)의 표시와 설정 칸을 감춘다."""
-        for name in ("PLC", "AMR", "ERUT"):
-            badge = self.top_bar.badges.get(name)
-            if badge is not None:
-                badge.hide()
-        self.top_bar.battery.hide()
-        conn = self.screens["connection"]
-        for section in ("차량용 PLC", "ERUT 접속"):
-            conn.hide_section(section)
-        self.main_screen.apply_standalone()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -676,9 +639,14 @@ class OperatorWindow(QMainWindow):
         if width <= 0 or height <= 0:
             return
         raw = min(width / self._UI_SCALE_REFERENCE_W, height / self._UI_SCALE_REFERENCE_H)
-        # 창 배수를 그대로 쓰지 않고 눌러서 반영한다(_UI_SCALE_DAMPING 참고).
-        scale = 1.0 + (raw - 1.0) * self._UI_SCALE_DAMPING
-        scale = max(1.0, min(scale, self._UI_SCALE_MAX)) * UI_BASE_SCALE
+        if raw >= 1.0:
+            # 창 배수를 그대로 쓰지 않고 눌러서 반영한다(_UI_SCALE_DAMPING 참고).
+            scale = min(1.0 + (raw - 1.0) * self._UI_SCALE_DAMPING, self._UI_SCALE_MAX)
+        else:
+            # 기준보다 작은 창은 그 비율 그대로 줄인다 — 눌러서 반영하면 내용이 창보다
+            # 커져 아래가 잘린다(_UI_SCALE_MIN 참고).
+            scale = max(raw, self._UI_SCALE_MIN)
+        scale *= UI_BASE_SCALE
         if abs(scale - self._current_ui_scale) < 0.02:
             return
         self._current_ui_scale = scale
@@ -686,6 +654,29 @@ class OperatorWindow(QMainWindow):
         if app is not None:
             app.setStyleSheet(_scale_stylesheet(self._base_qss, scale))
         self._apply_widget_scale(scale)
+
+    def show_fitted(self) -> None:
+        """제목 표시줄과 작업 표시줄까지 넣어 화면 안에 들어오게 띄운다.
+
+        창 크기 1024x768 은 **안쪽** 크기라, 그 크기의 모니터에서는 제목 표시줄
+        (최소화 · 전체화면 · 닫기)과 작업 표시줄만큼 아래가 화면 밖으로 잘렸다
+        (2026-11-03). 쓸 수 있는 영역(작업 표시줄 제외)이 1024x768 과 창 테두리를
+        못 담으면 최대화로 띄운다 — 창 전체가 그 영역에 들어오고, UI 는 남은 크기에
+        맞춰 줄어든다(_apply_ui_scale). 여유가 있으면 1024x768 그대로 가운데에 둔다.
+        """
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            self.show()
+            return
+        area = screen.availableGeometry()
+        need_w = self._UI_SCALE_REFERENCE_W + self._FRAME_ALLOWANCE_W
+        need_h = self._UI_SCALE_REFERENCE_H + self._FRAME_ALLOWANCE_H
+        if area.width() < need_w or area.height() < need_h:
+            self.showMaximized()
+            return
+        self.move(area.x() + (area.width() - need_w) // 2,
+                  area.y() + (area.height() - need_h) // 2)
+        self.show()
 
     def _apply_widget_scale(self, scale: float) -> None:
         """QSS 밖에서 글자 크기를 직접 잡는 위젯에 배율을 넘긴다."""
@@ -933,16 +924,11 @@ class OperatorWindow(QMainWindow):
         나중에 실제 PLC/AMR이 생기면 더미 어댑터만 갈아끼우면 된다.
         """
         seq = self.sequencer
-        if edition.STANDALONE:
-            # 단독판에는 차량 · 리프트 · 아웃트리거가 없다 — 그 단계 알림은 내지 않는다
-            # (순서는 그대로 흐르고 더미가 바로 끝낸다). 로봇 · 스캔 알림만 보인다.
-            seq.activity.connect(self._show_standalone_activity)
-        else:
-            seq.activity.connect(self.main_screen.show_activity)
-            self.lift.activity.connect(self.main_screen.show_activity)
-            self.amr.activity.connect(self.main_screen.show_activity)
-            self.outrigger.activity.connect(self.main_screen.show_activity)
-            self.retractor.activity.connect(self.main_screen.show_activity)
+        seq.activity.connect(self.main_screen.show_activity)
+        self.lift.activity.connect(self.main_screen.show_activity)
+        self.amr.activity.connect(self.main_screen.show_activity)
+        self.outrigger.activity.connect(self.main_screen.show_activity)
+        self.retractor.activity.connect(self.main_screen.show_activity)
         self.lift.position_changed.connect(self._show_motion_position)
         self.amr.position_changed.connect(self._show_motion_position)
 
@@ -1320,11 +1306,6 @@ class OperatorWindow(QMainWindow):
         """지금 고른 버전·판의 (스캔, 마킹) 태스크 경로."""
         return robot_task_paths(getattr(self, "_task_version", DEFAULT_TASK_VERSION),
                                 bool(getattr(self, "_nosensor", False)))
-
-    def _runs_nosensor(self) -> bool:
-        """지금 도는 태스크가 논센서판인지. 전시판은 판 체크와 상관없이 논센서다."""
-        return (bool(getattr(self, "_nosensor", False))
-                or getattr(self, "_task_version", "") == edition.EXHIBITION_TASK)
 
     def _save_robot_task(self) -> None:
         """태스크 판·버전을 함께 저장한다.
@@ -2602,9 +2583,6 @@ class OperatorWindow(QMainWindow):
         rows = int(ceil(target_h_m * 1000.0 / row_pitch))
         columns = min(max(columns, 1), self._MAX_COLUMNS)
         rows = min(max(rows, 1), self._MAX_ROWS)
-        if edition.STANDALONE:
-            # 단독판은 차량 · 리프트가 없다 — 작업 영역 한 구역만 스캔한다.
-            columns = rows = 1
         extra = self._work_area_extra
         grid = GridPlan(
             column_count=columns, row_count=rows,
@@ -3239,7 +3217,7 @@ class OperatorWindow(QMainWindow):
             self._expected_wall_radius_mm(),
             # 논센서 판은 눌림 센서가 없어 접촉 수(305)가 늘 0 이다 — 계산한 접점을
             # 그대로 쓰므로 접촉 수는 보지 않는다.
-            None if self._runs_nosensor() else getattr(self, "_probe_result", []),
+            None if getattr(self, "_nosensor", False) else getattr(self, "_probe_result", []),
         )
         self.main_screen.show_activity(f"3점 측정 — {result.describe()}")
 
@@ -3523,8 +3501,6 @@ class OperatorWindow(QMainWindow):
         아웃트리거 고정 + 차량 정지 + 리프트 정지, 셋을 다 본다. 실제
         차량이면 차량이 주는 상태로, 더미면 어댑터 상태로 판단한다.
         """
-        if edition.STANDALONE:
-            return True                     # 단독판에는 차량이 없다 — 늘 굳어 있다
         if any(m.moving for m in (self.amr, self.lift, self.outrigger)):
             return False
         if self.outrigger.position < 1:
@@ -3544,9 +3520,7 @@ class OperatorWindow(QMainWindow):
         self.ros_status.send_vehicle_ready(self._vehicle_secured(), force=force)
 
     def _vehicle_mode(self) -> str:
-        """설정값 — "auto" / "dummy" / "vehicle". 단독판은 늘 더미(차량 없음)."""
-        if edition.STANDALONE:
-            return "dummy"
+        """설정값 — "auto" / "dummy" / "vehicle"."""
         screen = self.screens["connection"]
         field = screen.field("차량 제어")
         return screen.VEHICLE_MODES.get(field.currentText(), "auto") if field else "auto"
@@ -3663,7 +3637,7 @@ class OperatorWindow(QMainWindow):
         self._vehicle_amr.totals = (total_d, total_h)
 
     def _record_job(self, source: str, job_id: str, plan) -> None:
-        self.data_recorder.begin_job(source, job_id, plan, nosensor=self._runs_nosensor())
+        self.data_recorder.begin_job(source, job_id, plan, nosensor=self._nosensor)
         self._set_vehicle_totals(plan)
         self._warn_vehicle_mode()
 
@@ -3673,8 +3647,6 @@ class OperatorWindow(QMainWindow):
         더미인 채로 작업을 돌리면 화면 순서는 다 흐르는데 차량은 가만히
         있는다 — 무엇이 잘못됐는지 알기 어려우므로 시작할 때 못박아 둔다.
         """
-        if edition.STANDALONE:
-            return                          # 단독판은 차량이 없는 것이 정상이다
         if self.amr.active != "vehicle":
             self.main_screen.show_activity(
                 "차량 제어가 '더미'입니다 — 차량·리프트·아웃트리거는 실제로 움직이지 않습니다"
@@ -3850,5 +3822,5 @@ def main() -> int:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = create_application()
     window = OperatorWindow()
-    window.show()
+    window.show_fitted()
     return app.exec()

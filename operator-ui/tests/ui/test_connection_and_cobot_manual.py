@@ -1,5 +1,5 @@
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QPushButton
+from PyQt6.QtWidgets import QApplication, QPushButton
 
 from smr_operator_ui.app import OperatorWindow
 
@@ -281,6 +281,10 @@ def test_settings_fields_never_overlap_at_any_scale(qtbot) -> None:
         window.resize(*size)
         window.show()
         window.navigate("connection")
+        # 배율을 바꾸면 높이가 먼저 바뀌고 자리는 레이아웃 이벤트에서 다시 잡힌다 —
+        # 화면에 그려지는 때(이벤트 처리 뒤)의 모습을 본다.
+        for _ in range(3):
+            QApplication.processEvents()
         spans = []
         for name in names:
             widget = conn.field(name)

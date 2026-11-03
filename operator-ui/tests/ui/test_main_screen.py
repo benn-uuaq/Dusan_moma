@@ -434,7 +434,9 @@ def test_window_scales_whole_ui_and_topbar_with_window_size(qtbot) -> None:
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     window.show()
-    assert window.minimumSize().width() == 1024 and window.minimumSize().height() == 768
+    # 최소 크기는 1024x768 모니터에서 제목 표시줄 · 작업 표시줄을 빼고도 들어가게
+    # 그보다 작다(2026-11-03) — 기준 크기 1024x768 에서는 기준 배율 그대로다.
+    assert (window.minimumSize().width(), window.minimumSize().height()) == (1008, 640)
     assert window._current_ui_scale == UI_BASE_SCALE < 1.0
     assert window.top_bar._global_scale == UI_BASE_SCALE
 
@@ -1470,52 +1472,6 @@ def test_stored_task_version_is_restored_without_loading(qtbot) -> None:
     assert window._task_paths()[0] == "Dusan/dusan_v5/dusan_v5.task"
     window.close()
 
-
-def test_exhibition_task_is_listed_only_in_standalone(qtbot, monkeypatch) -> None:
-    """TPAC 전시판은 단독판 목록에만 있고, 고르면 dusan_v5 폴더의 그 태스크를 불러온다."""
-    from smr_operator_ui import edition
-
-    window = OperatorWindow(start_ros=False, start_erut=False)
-    qtbot.addWidget(window)
-    combo = window.screens["cobot"].task_version_combo
-    assert edition.EXHIBITION_TASK not in [combo.itemText(i) for i in range(combo.count())]
-    window.close()
-
-    monkeypatch.setattr(edition, "STANDALONE", True)
-    window = OperatorWindow(start_ros=False, start_erut=False)
-    qtbot.addWidget(window)
-    pushed, calls = _task_spy(window)
-    saved: list[tuple] = []
-    window.settings_service.save = lambda scope, values: saved.append((scope, dict(values)))
-    cobot = window.screens["cobot"]
-    combo = cobot.task_version_combo
-    names = [combo.itemText(i) for i in range(combo.count())]
-    assert names == ["dusan_v5", "dusan_v5_tpac_exhibition", "dusan_v4"]
-    assert cobot.task_version() == "dusan_v5"           # 기본값은 그대로
-
-    index = names.index(edition.EXHIBITION_TASK)
-    combo.setCurrentIndex(index)
-    combo.activated.emit(index)
-
-    assert pushed[-1] == ("Dusan/dusan_v5/dusan_v5_tpac_exhibition.task",
-                          "Dusan/dusan_v5/dusan_v5_nosensor_mark.task")
-    assert calls[-1] == "load_scan_task"
-    assert saved[-1] == ("robot_task", {"nosensor": False,
-                                        "task_version": "dusan_v5_tpac_exhibition"})
-    # 그 자체가 논센서판이다 — 판 체크는 막히고, 기록·3점 평가는 논센서로 본다.
-    assert not cobot.nosensor_check.isEnabled()
-    assert window._runs_nosensor() is True
-
-    # 다시 v5 로 돌아가면 판 체크가 살아난다. 저장된 값으로 불러올 때도 같다.
-    cobot.set_task_version("dusan_v5")
-    assert cobot.nosensor_check.isEnabled()
-    window._apply_stored_settings("robot_task", {"nosensor": False,
-                                                 "task_version": "dusan_v5_tpac_exhibition"})
-    assert cobot.task_version() == "dusan_v5_tpac_exhibition"
-    assert not cobot.nosensor_check.isEnabled()
-    window.close()
-
-
 def test_clock_does_not_put_korean_into_strftime(qtbot, monkeypatch) -> None:
     """Windows strftime 은 형식을 시스템 로캘 코드페이지로 바꾼다 — 한국어가 아닌 PC 에서
     「날짜」가 들어간 형식으로 RCS 가 켜지지 않았다(UnicodeEncodeError, 2026-10-27)."""
@@ -1537,4 +1493,57 @@ def test_clock_does_not_put_korean_into_strftime(qtbot, monkeypatch) -> None:
     qtbot.addWidget(window)
     window.top_bar._update_clock()
     assert window.top_bar.clock.text() == "날짜  2026-10-27 (Tue)\n시간  14:10:05"
+    window.close()
+
+
+# ---- 화면에 맞춰 띄우기 — 제목 표시줄 · 작업 표시줄까지 (2026-11-03) ---------------------
+class _FakeScreen:
+    def __init__(self, width, height):
+        from PyQt6.QtCore import QRect
+        self._area = QRect(0, 0, width, height)
+
+    def availableGeometry(self):
+        return self._area
+
+
+def test_small_screen_opens_maximized_so_the_bottom_is_not_cut(qtbot, monkeypatch) -> None:
+    """1024x768 모니터(작업 표시줄 40px)는 1024x768 안쪽 + 제목 표시줄을 못 담는다."""
+    from PyQt6.QtCore import Qt
+
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "screen", lambda: _FakeScreen(1024, 728))
+
+    window.show_fitted()
+
+    assert window.windowState() & Qt.WindowState.WindowMaximized
+    assert window.minimumWidth() <= 1024 and window.minimumHeight() <= 690
+    window.close()
+
+
+def test_large_screen_keeps_1024x768_centred(qtbot, monkeypatch) -> None:
+    from PyQt6.QtCore import Qt
+
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "screen", lambda: _FakeScreen(1920, 1040))
+
+    window.show_fitted()
+
+    assert not window.windowState() & Qt.WindowState.WindowMaximized
+    assert (window.width(), window.height()) == (1024, 768)
+    assert window.x() == (1920 - 1024 - 16) // 2
+    window.close()
+
+
+def test_short_window_shrinks_the_ui_instead_of_cutting_it(qtbot) -> None:
+    """안쪽이 768 보다 낮으면 그 비율만큼 글자 · 여백을 줄인다(키우는 쪽만 완만하게)."""
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    window.show()
+
+    window.resize(1024, 689)
+
+    assert abs(window._current_ui_scale - 0.8 * 689 / 768) < 0.01
+    assert window.centralWidget().minimumSizeHint().height() <= window.height()
     window.close()

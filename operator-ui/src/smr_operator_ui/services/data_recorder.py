@@ -85,7 +85,6 @@ def resolve_data_root(value: str, in_wsl: bool | None = None) -> Path:
     * `SMR_DATA_DIR` 환경변수가 있으면 그것이 우선이다(시험·현장 고정용).
     * "D:/SMR/Data" 같은 Windows 경로는 WSL 에서 /mnt/d/SMR/Data 로 쓴다.
       WSL 이 아닌 리눅스에서는 쓸 수 없으므로 ~/SMR/Data 로 대신한다.
-      Windows 에서 바로 돌면 그대로 쓰고, 그 드라이브가 없으면 ~/SMR/Data 다.
     * "//wsl.localhost/<배포판>/home/..." (Windows 창에서 WSL 폴더를 고른
       경우)는 /home/... 로 바꾼다.
     """
@@ -102,11 +101,6 @@ def resolve_data_root(value: str, in_wsl: bool | None = None) -> Path:
         return Path(rest or "/")
     drive = _WIN_DRIVE.match(value)
     if drive:
-        if os.name == "nt":
-            # Windows 에서 바로 돌 때(단독판) — 그 경로를 그대로 쓴다. 드라이브가
-            # 없으면(예: D 드라이브 없는 PC) 홈 폴더로 대신한다.
-            exists = Path(f"{drive.group(1)}:/").exists()
-            return Path(value) if exists else fallback
         if in_wsl is None:
             in_wsl = _in_wsl()
         if not in_wsl:

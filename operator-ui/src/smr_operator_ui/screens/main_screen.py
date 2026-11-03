@@ -92,8 +92,6 @@ class MainScreen(QWidget):
         hero.addWidget(progress_box, 1)
         hero.addWidget(phase_box, 2)
         content.addLayout(hero)
-        # 단독판(차량 없음)에서 숨기는 칸 — apply_standalone() 참고.
-        self._vehicle_widgets: list[QWidget] = [segment_box, row_box, progress_box]
 
         sequence_label = QLabel("안전 순서 (구간마다 반복)")
         sequence_label.setObjectName("SectionTitle")
@@ -107,7 +105,6 @@ class MainScreen(QWidget):
             self.steps.append(step)
             sequence.addWidget(step, 1)
         content.addLayout(sequence)
-        self._vehicle_widgets += [sequence_label, *self.steps]
 
         workspace = QHBoxLayout()
         self.orbit_view = OrbitView()
@@ -321,13 +318,6 @@ class MainScreen(QWidget):
         self.row_label.setText(f"{row:02d}")
         self._refresh_hero_totals()
         self.orbit_view.set_row_position(row, rows)
-
-    def apply_standalone(self) -> None:
-        """Windows 단독판(차량 · 리프트 없음) — 구간 · 행 · 원주 진행률 타일과
-        안전 순서(정지·고정 → … → 다음 구간 이동)를 감춘다. 작업 영역 한 구역만
-        스캔하므로 이 값들은 뜻이 없다. 원통 그림은 바깥 지름을 넣는 곳이라 둔다."""
-        for widget in self._vehicle_widgets:
-            widget.hide()
 
     def set_global_scale(self, scale: float) -> None:
         """창 배율을 받아 요약 칸 글자 기준 크기에 반영한다.
