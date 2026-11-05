@@ -323,7 +323,9 @@ class CobotManualScreen(BaseScreen):
     # robot/dashboard/* 서비스 이름과 일치시켜 이후 연결을 단순하게 만든다.
     _POWER = (("전원 ON", "power_on"), ("전원 OFF", "power_off"), ("브레이크 해제", "brake_release"))
     _PROGRAM = (("재생", "play"), ("일시정지", "pause"), ("정지", "stop"))
-    _MOTION = (("홈 이동", "home"),)
+    # 홈 이동은 메인 화면에 있다. 여기엔 홀더·EOAT 탈착용 조립 위치 이동만
+    # 둔다(2026-11-05) — 홈에서 movej 로 가고, 돌아올 때는 메인 「로봇 홈」.
+    _MOTION = (("조립 위치 이동", "move_assembly"),)
 
     # 알람은 계속 쌓이므로 표시 개수를 제한한다.
     MAX_ALARMS = 50
@@ -372,7 +374,7 @@ class CobotManualScreen(BaseScreen):
 
         motion,mo=self.surface("이동")
         mo.addLayout(self._button_row(self._MOTION))
-        mo.addWidget(self._note("경로 확인 후 실행"))
+        mo.addWidget(self._note("홈에서만 실행\nEOAT 탈착용"))
         mo.addStretch()
         top.addWidget(motion,0,3)
 
@@ -571,7 +573,9 @@ class CobotJogScreen(BaseScreen):
     # 로봇은 홈과 작업 자리 사이를 언제나 스캔 대기 위치를 거쳐 오간다.
     _SAVE = (("홈 위치 저장", "save_home_pose"),
              ("스캔 대기 위치 저장", "save_standby_pose"),
-             ("시작 포즈 저장", "save_start_pose"))
+             ("시작 포즈 저장", "save_start_pose"),
+             # 홀더·EOAT 탈착 자세(2026-11-05). 수동 제어 「조립 위치 이동」이 쓴다.
+             ("조립 위치 저장", "save_assembly_pose"))
 
     def __init__(self) -> None:
         super().__init__("Cobot 조그 / 위치 저장",
@@ -604,14 +608,21 @@ class CobotJogScreen(BaseScreen):
         self.saved_labels: dict[str, QLabel] = {}
         for text, command in self._SAVE:
             card, cl = self.surface(text.replace(" 저장", ""))
+            # 「저장」 버튼은 제목 줄 오른쪽에 둔다 — 카드가 넷(조립 위치 추가,
+            # 2026-11-05)이어도 768 보다 낮은 창에서 잘리지 않게 카드를 낮춘다.
+            heading = cl.takeAt(0).widget()
+            row = QHBoxLayout(); row.setSpacing(8)
+            row.addWidget(heading, 1)
+            button = QPushButton("저장"); button.setMinimumHeight(44); button.setMinimumWidth(80)
+            button.setToolTip(text)
+            button.clicked.connect(lambda _, key=command, label=text: self._request(key, label))
+            self.save_buttons[command] = button
+            row.addWidget(button)
+            cl.addLayout(row)
             saved = QLabel("저장된 값 없음")
             saved.setObjectName("Muted"); saved.setWordWrap(True)
             self.saved_labels[command] = saved
             cl.addWidget(saved)
-            button = QPushButton(text); button.setMinimumHeight(52)
-            button.clicked.connect(lambda _, key=command, label=text: self._request(key, label))
-            self.save_buttons[command] = button
-            cl.addWidget(button)
             cl.addStretch()
             right.addWidget(card, 1)
 
@@ -905,6 +916,8 @@ class FormScreen(BaseScreen):
         self.settings_scope = scope
         self._fields: dict[str, QWidget] = {}
         self._saved_values: dict[str, object] = {}
+        # 구역 제목 -> 그 구역 입력칸 폼. 하위 화면이 입력칸 아래에 버튼을 붙인다.
+        self._section_forms: dict[str, QFormLayout] = {}
         self.setObjectName("SettingsScreen")
         surface,layout=self.surface("설정값")
 
@@ -936,6 +949,7 @@ class FormScreen(BaseScreen):
                 widget.setObjectName("SettingsInput")
                 self._fields[label] = widget
                 form.addRow(field_label,widget)
+            self._section_forms[section_title] = form
             column.addLayout(form)
         for i in range(columns_layout.count()):
             item=columns_layout.itemAt(i)
@@ -1276,6 +1290,8 @@ class ConnectionSettingsScreen(FormScreen):
 
     connect_requested = pyqtSignal()
     disconnect_requested = pyqtSignal()
+    #: 「로봇 VNC 열기」 — 이 로봇엔 티치 펜던트를 달지 않아 화면을 VNC 로 본다.
+    vnc_requested = pyqtSignal()
 
     def __init__(self):
         plc_protocol=TouchComboBox(); plc_protocol.addItems(["KEYENCE MC Protocol","Modbus TCP"])
@@ -1315,6 +1331,11 @@ class ConnectionSettingsScreen(FormScreen):
             columns=3,
         )
         self._build_connection_controls()
+        # 로봇 화면(티치 펜던트 대신) — Modbus 칸 바로 아래(2026-11-05). 입력칸의
+        # IP 를 그대로 쓴다(저장 전 값이어도).
+        self.vnc_btn=QPushButton("로봇 VNC 열기"); self.vnc_btn.setObjectName("SettingsButton")
+        self.vnc_btn.clicked.connect(self.vnc_requested.emit)
+        self._section_forms["협동로봇"].addRow(QLabel(""), self.vnc_btn)
 
     def _build_connection_controls(self) -> None:
         """저장과는 별개로 지금 바로 연결/해제를 걸 수 있는 조작부."""

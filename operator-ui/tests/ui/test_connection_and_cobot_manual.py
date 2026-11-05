@@ -67,10 +67,12 @@ def test_cobot_manual_buttons_emit_dashboard_commands(qtbot) -> None:
         ("전원 ON", "power_on"),
         ("브레이크 해제", "brake_release"),
         ("정지", "stop"),
-        ("홈 이동", "home"),
+        ("조립 위치 이동", "move_assembly"),
     ):
         qtbot.mouseClick(by_text[label], Qt.MouseButton.LeftButton)
         assert received[-1] == command
+    # 홈 이동은 메인 화면에만 있다(2026-11-05).
+    assert "홈 이동" not in by_text
     window.close()
 
 
@@ -363,3 +365,26 @@ def test_tpac_server_explains_port_in_use(qtbot) -> None:
     finally:
         holder.close()
         window.close()
+
+
+def test_robot_vnc_button_sits_under_modbus_and_uses_the_ip_field(qtbot) -> None:
+    """「로봇 VNC 열기」 — 펜던트가 없는 로봇의 화면을 연다(2026-11-05)."""
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    window.show()
+    screen = window.screens["connection"]
+    opened: list[str] = []
+    window._vnc_opener = lambda ip: (opened.append(ip) or True, f"열었음 {ip}")
+
+    button = screen.vnc_btn
+    assert button.text() == "로봇 VNC 열기"
+    form = screen._section_forms["협동로봇"]
+    modbus_row, _role = form.getWidgetPosition(screen.field("Modbus 포트"))
+    button_row, _role = form.getWidgetPosition(button)
+    assert button_row == modbus_row + 1, "Modbus 칸 바로 아래"
+
+    screen.field("협동로봇 IP").setText("192.168.1.101")
+    qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
+    assert opened == ["192.168.1.101"]
+    assert "열었음 192.168.1.101" in screen.save_status.text()
+    window.close()

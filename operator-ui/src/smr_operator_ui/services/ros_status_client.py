@@ -76,6 +76,8 @@ class RosTopics:
     # 스캔 대기 위치(레지스터 310~315, 예전의 홈 자리). 홈은 322~327 이다.
     STANDBY_JOINT = "robot/command/standby_joint"
     START_POSE = "robot/command/start_pose"
+    # 조립 위치(홀더·EOAT 탈착 자세) 관절값 [mrad]. 레지스터 없이 노드가 기억한다.
+    ASSEMBLY_JOINT = "robot/command/assembly_joint"
     WORK_AREA = "robot/command/work_area"
     JOG_JOINT = "robot/command/jog_joint"
     # 스캔 시작 허가(레지스터 267). 로봇이 원점에서 기다리는 것을 푼다.
@@ -92,6 +94,8 @@ class RosTopics:
     DIGITAL_OUT_CMD = "robot/command/digital_out"
 
     MOVE_HOME = "robot/command/move_home"
+    # 홈 -> 조립 위치 movej (노드가 홈에서만 받는다).
+    MOVE_ASSEMBLY = "robot/command/move_assembly"
 
 
 # 레지스터 원값을 운영자가 읽을 수 있는 문구로 바꾼다. 값 구분은
@@ -178,6 +182,7 @@ class RosStatusClient(QObject):
         "pause": (f"{RosTopics.DASHBOARD}/pause", None),
         "stop": (f"{RosTopics.DASHBOARD}/stop", None),
         "home": (RosTopics.MOVE_HOME, None),
+        "move_assembly": (RosTopics.MOVE_ASSEMBLY, None),
         # 태스크는 펜던트/로봇 쪽에서 고정이라 여기서 고르지 않는다 —
         # 지금 뭐가 올라가 있는지만 29999 "task -s"로 물어 보여준다.
         "task_status": (f"{RosTopics.DASHBOARD}/task_status", None),
@@ -341,6 +346,8 @@ class RosStatusClient(QObject):
                     Float32MultiArray, RosTopics.STANDBY_JOINT, 10),
                 "start_pose": self._node.create_publisher(
                     Float32MultiArray, RosTopics.START_POSE, 10),
+                "assembly_joint": self._node.create_publisher(
+                    Float32MultiArray, RosTopics.ASSEMBLY_JOINT, 10),
                 "work_area": self._node.create_publisher(
                     Float32MultiArray, RosTopics.WORK_AREA, 10),
                 "mark_target": self._node.create_publisher(
@@ -454,13 +461,16 @@ class RosStatusClient(QObject):
             "digital_out", True, f"DO{int(index)} {'ON' if on else 'OFF'} 전송")
         return True
 
+    #: 레지스터 없이 노드가 기억만 하는 기준 위치 — 주소 검사를 건너뛴다.
+    NODE_ONLY_POSES = frozenset({"assembly_joint"})
+
     def send_pose(self, name: str, values: list) -> bool:
         """기준 위치 6개 성분을 로봇 레지스터에 쓰도록 보낸다."""
         publisher = self._pose_publishers.get(name)
         if publisher is None:
             self.command_result.emit(name, False, "ROS 2에 연결되어 있지 않습니다.")
             return False
-        if not self.writable(name):
+        if name not in self.NODE_ONLY_POSES and not self.writable(name):
             self.command_result.emit(name, False, "Modbus 주소가 설정되지 않았습니다.")
             return False
         publisher.publish(Float32MultiArray(data=[float(v) for v in values]))

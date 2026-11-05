@@ -71,6 +71,7 @@ from smr_operator_ui.services.erut_session import (
     SCAN_SPEED_MAX,
 )
 from smr_operator_ui.services.ros_status_client import TASK_STATE_NAMES
+from smr_operator_ui.services.robot_vnc import open_robot_vnc
 from smr_operator_ui.services.reference_poses import (
     load_reference_poses,
     save_reference_poses,
@@ -574,6 +575,7 @@ class OperatorWindow(QMainWindow):
         # 연결/연결 해제도 이 화면에서만 한다.
         conn_screen.connect_requested.connect(self._connect_robot)
         conn_screen.disconnect_requested.connect(self._disconnect_robot)
+        conn_screen.vnc_requested.connect(self._open_robot_vnc)
         self.ros_status.connected_changed.connect(conn_screen.set_link_state)
         self.ros_status.connected_changed.connect(self._announce_robot_link)
         self.cobot_jog_screen.jog_pressed.connect(self._send_jog)
@@ -2422,6 +2424,19 @@ class OperatorWindow(QMainWindow):
             self._sync_broker_endpoints()
             self._start_erut_link()
 
+    #: 로봇 화면을 여는 함수(시험에서 바꿔 끼운다).
+    _vnc_opener = staticmethod(open_robot_vnc)
+
+    def _open_robot_vnc(self) -> None:
+        """「로봇 VNC 열기」 — 티치 펜던트 대신 로봇 화면을 VNC 로 연다(2026-11-05).
+
+        Windows · WSL 은 RealVNC Viewer, 우분투는 Remmina. 연결 설정 입력칸의 IP 를 쓴다.
+        """
+        screen = self.screens["connection"]
+        _ok, message = self._vnc_opener(screen.robot_ip())
+        screen.set_link_message(message)
+        self.main_screen.show_activity(message)
+
     def _connect_robot(self) -> None:
         """"연결 설정" 화면의 주소로 로봇에 붙는다.
 
@@ -2754,10 +2769,12 @@ class OperatorWindow(QMainWindow):
         "save_home_pose": ("home_joint", _JOINT_LABELS),
         "save_standby_pose": ("standby_joint", _JOINT_LABELS),
         "save_start_pose": ("start_pose", _POSE_LABELS),
+        # 홀더·EOAT 를 떼고 다는 자세(2026-11-05). 홈에서 movej 로만 오간다.
+        "save_assembly_pose": ("assembly_joint", _JOINT_LABELS),
     }
 
     #: 관절값으로 저장하는 기준 위치(나머지는 TCP pose).
-    _JOINT_TARGETS = ("home_joint", "standby_joint")
+    _JOINT_TARGETS = ("home_joint", "standby_joint", "assembly_joint")
 
     def _save_reference_pose(self, command: str) -> None:
         """현재 자세를 기준 위치로 기록하고 로봇 레지스터에도 쓴다."""
@@ -2862,12 +2879,36 @@ class OperatorWindow(QMainWindow):
             # 메인 화면 '로봇 홈'과 같은 규칙 — 로봇이 동작 중이면 무시한다.
             self._request_home()
             return
+        if command == "move_assembly":
+            self._request_assembly()
+            return
         if command in self.ros_status.COMMAND_SERVICES:
             self.ros_status.call_command(command)
         else:
             self.cobot_manual_screen.activity_label.setText(
                 f"'{command}'에 연결된 명령이 없습니다."
             )
+
+    def _request_assembly(self) -> None:
+        """「조립 위치 이동」 — 홈에서 조립 위치로 movej (2026-11-05).
+
+        홀더·EOAT 를 떼고 달 때만 쓴다. 홈과 조립 위치 사이는 movej 한 번이라
+        **홈에 있을 때만** 보낸다(노드도 한 번 더 확인한다). 돌아올 때는 메인
+        화면 「로봇 홈」 — 노드가 조립 위치를 알아보고 movej 홈만 한다.
+        """
+        refuse = None
+        if self._robot_busy():
+            refuse = "로봇이 동작 중이므로 조립 위치로 갈 수 없습니다."
+        elif not self._reference_poses.get("assembly_joint"):
+            refuse = "조립 위치가 저장되어 있지 않습니다. 조그 화면에서 「조립 위치 저장」을 먼저 하세요."
+        elif not self._robot_at_home:
+            refuse = "홈에서만 조립 위치로 갈 수 있습니다. 먼저 메인 화면 「로봇 홈」으로 보내세요."
+        if refuse:
+            self.main_screen.show_activity(f"조립 위치 이동 거절 — {refuse}")
+            self.cobot_manual_screen.activity_label.setText(refuse)
+            return
+        self.main_screen.show_activity("로봇을 조립 위치로 보냅니다(movej).")
+        self.ros_status.call_command("move_assembly")
 
     def _send_linear_speed(self, scope: str, values: dict) -> None:
         """Cobot 설정을 저장할 때 작업 속도를 로봇에도 반영한다."""

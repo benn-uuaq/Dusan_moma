@@ -9,7 +9,7 @@ from smr_operator_ui.services import RosStatusClient, RosTopics
 
 
 class FakeMessage:
-    def __init__(self, data):
+    def __init__(self, data=None):
         self.data = data
 
 
@@ -189,6 +189,8 @@ def test_dashboard_commands_are_mapped_to_services():
         assert register is None
     # 홈 이동도 30001 스크립트로 처리하므로 레지스터 주소가 필요 없다.
     assert RosStatusClient.COMMAND_SERVICES["home"] == ("robot/command/move_home", None)
+    assert RosStatusClient.COMMAND_SERVICES["move_assembly"] == (
+        "robot/command/move_assembly", None)
 
 
 def test_connection_state_reaches_the_screen(qtbot):
@@ -394,3 +396,26 @@ def test_digital_out_needs_a_publisher(qtbot):
 
     assert client.send_digital_out(1, True) is False
     assert results and results[0][0] == "digital_out"
+
+
+class _Publisher:
+    def __init__(self):
+        self.sent = []
+
+    def publish(self, msg):
+        self.sent.append(list(msg.data))
+
+
+def test_assembly_pose_needs_no_register_address(qtbot, monkeypatch):
+    """조립 위치는 노드가 기억만 한다 — 레지스터 주소가 없어도 보낸다(2026-11-05)."""
+    from smr_operator_ui.services import ros_status_client
+
+    monkeypatch.setattr(ros_status_client, "Float32MultiArray", FakeMessage, raising=False)
+    client = RosStatusClient()
+    client._pose_publishers = {"assembly_joint": _Publisher(), "home_joint": _Publisher()}
+    assert client.writable("assembly_joint") is False
+
+    assert client.send_pose("assembly_joint", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) is True
+    assert client._pose_publishers["assembly_joint"].sent == [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]]
+    # 레지스터에 쓰는 기준 위치는 여전히 주소가 있어야 한다.
+    assert client.send_pose("home_joint", [1.0] * 6) is False

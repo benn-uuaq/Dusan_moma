@@ -324,7 +324,8 @@ def test_home_and_standby_are_saved_separately(qtbot, tmp_path, monkeypatch) -> 
     sent: list[tuple[str, list]] = []
     window.ros_status.send_pose = lambda name, v: sent.append((name, list(v))) or True
     screen = window.cobot_jog_screen
-    assert set(screen.save_buttons) == {"save_home_pose", "save_standby_pose", "save_start_pose"}
+    assert set(screen.save_buttons) == {"save_home_pose", "save_standby_pose", "save_start_pose",
+                                        "save_assembly_pose"}
 
     window.ros_status.joint_position_changed.emit([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
     screen.command_requested.emit("save_standby_pose")
@@ -472,4 +473,69 @@ def test_robot_output_failure_is_reported_on_screen(qtbot) -> None:
     qtbot.mouseClick(screen.output_buttons["DO0"][0], Qt.MouseButton.LeftButton)
 
     assert "연결" in screen.activity_label.text()
+    window.close()
+
+
+# ---- 조립 위치(홀더·EOAT 탈착 자세, 2026-11-05) -----------------------------------
+def _assembly_window(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setenv("SMR_ROBOT_CONFIG_DIR", str(tmp_path))
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    sent: list[tuple[str, list]] = []
+    calls: list[str] = []
+    window.ros_status.send_pose = lambda name, v: sent.append((name, list(v))) or True
+    window.ros_status.call_command = lambda name: calls.append(name) or True
+    return window, sent, calls
+
+
+def test_assembly_pose_is_saved_as_joints(qtbot, tmp_path, monkeypatch) -> None:
+    """「조립 위치 저장」은 관절값을 assembly_joint 로 보내고 파일에도 남긴다."""
+    import json
+
+    window, sent, _calls = _assembly_window(qtbot, tmp_path, monkeypatch)
+    screen = window.cobot_jog_screen
+    assert screen.save_buttons["save_assembly_pose"].toolTip() == "조립 위치 저장"
+
+    window.ros_status.joint_position_changed.emit([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    window.ros_status.tcp_pose_changed.emit([636.8, -47.3, 581.0, 3141.0, 0.0, -1570.0])
+    screen.command_requested.emit("save_assembly_pose")
+
+    assert sent == [("assembly_joint", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])]
+    assert "J1 1.0" in screen.saved_labels["save_assembly_pose"].text()
+    saved = json.loads((tmp_path / "reference_poses.json").read_text(encoding="utf-8"))
+    assert saved["assembly_joint"]["values"] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    window.close()
+
+    # 다시 열면 화면에 보이고, 로봇에 붙을 때 노드에 다시 보낸다.
+    window, sent, _calls = _assembly_window(qtbot, tmp_path, monkeypatch)
+    assert "J1 1.0" in window.cobot_jog_screen.saved_labels["save_assembly_pose"].text()
+    window._restore_robot_settings(True)
+    assert ("assembly_joint", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) in sent
+    window.close()
+
+
+def test_move_assembly_only_from_home(qtbot, tmp_path, monkeypatch) -> None:
+    """「조립 위치 이동」은 저장돼 있고, 홈에 있고, 로봇이 쉴 때만 나간다."""
+    window, _sent, calls = _assembly_window(qtbot, tmp_path, monkeypatch)
+    manual = window.cobot_manual_screen
+
+    window._on_robot_at_home(True)
+    manual.command_requested.emit("move_assembly")
+    assert calls == [] and "저장되어 있지 않습니다" in manual.activity_label.text()
+
+    window.ros_status.joint_position_changed.emit([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    window.cobot_jog_screen.command_requested.emit("save_assembly_pose")
+
+    window._on_robot_at_home(False)
+    manual.command_requested.emit("move_assembly")
+    assert calls == [] and "홈에서만" in manual.activity_label.text()
+
+    window._on_robot_at_home(True)
+    window._on_robot_task_state(1)              # 로봇 태스크 실행 중
+    manual.command_requested.emit("move_assembly")
+    assert calls == [] and "동작 중" in manual.activity_label.text()
+
+    window._on_robot_task_state(3)
+    manual.command_requested.emit("move_assembly")
+    assert calls == ["move_assembly"]
     window.close()

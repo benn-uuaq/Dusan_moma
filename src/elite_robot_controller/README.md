@@ -101,10 +101,12 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 | 서비스 (`std_srvs/Trigger`) | `robot/command/save_home_pose` | `save_home_pose` |
 | 서비스 (`std_srvs/Trigger`) | `robot/command/save_start_pose` | `save_start_pose` |
 | 서비스 (`std_srvs/Trigger`) | `robot/command/move_home` | `move_home` |
+| 서비스 (`std_srvs/Trigger`) | `robot/command/move_assembly` | 없음 (30001 스크립트, 홈에서만) |
 | 토픽 (`std_msgs/Int32`) | `robot/command/linear_speed` | `linear_speed` |
 | 토픽 (`std_msgs/Int32`) | `robot/command/speed_ratio` | `speed_ratio` |
 | 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/home_joint` | `home_joint` |
 | 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/start_pose` | `start_pose` |
+| 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/assembly_joint` | 없음 (노드가 기억만, mrad) |
 | 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/work_area` | `work_area` (성공 시 `param_src`도 1로 세운다) |
 | 토픽 (`std_msgs/Int32`) | `robot/command/jog_joint` | 없음 (30001 스크립트) |
 | 토픽 (`std_msgs/Int32`) | `robot/command/jog_tcp` | 없음 (30001 스크립트) |
@@ -134,6 +136,8 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
   - 30001 소켓(실시간 명령 채널)에 `if`/`else`를 최상위로 그냥 보내면 한 줄씩 별개 명령으로 읽혀 실패합니다(`No 'if' command`). `def move_home_now(): ... end`로 감싼 **하나의 프로그램**으로 보내야 하고, 보낸 즉시 파싱이 끝나는 대로 실행되므로 따로 호출하면 안 됩니다(`move_home_now` 정의 안 됨 오류).
   - 이 프로그램은 태스크 preamble 밖에서 도는 별개 컨텍스트라 태스크가 저장해 둔 `Home_joint`/`Home_pose` 전역을 그냥 참조할 수 없습니다(`정의되지 않았습니다`). 대신 29999의 `variable -get Home_joint`/`variable -get Home_pose`로 로봇에 저장된 실제 값을 그때그때 읽어와(`Robot_29999.get_variable`), `global` 선언 뒤 그 자리에서 바로 대입해 이 스크립트만의 전역으로 만들어 씁니다. 값을 하드코딩하지 않으므로 태스크 쪽 `Home_joint`/`Home_pose`가 바뀌어도 자동으로 맞습니다. 읽기 자체가 실패했을 때만 `RobotControlNode._HOME_JOINT_FALLBACK`/`_HOME_POSE_FALLBACK` 고정값으로 대신합니다.
   - 변수 이름 `p`, `j`는 pose/joint 리터럴(`p[..]`, `j[..]`)과 충돌하니 피합니다.
+- 벽 방향(2026-11-05): `move_home` 은 벽이 베이스 +X 라고 박아 두지 않고 **스캔 대기 위치의 툴 Z 수평 성분**을 벽 방향으로 씁니다. v5(벽 +X)와 v6(로봇을 반대로 달아 벽 -X) 모두 같은 스크립트로 벽 반대쪽으로 물러나고 대기 위치 선상에 맞춥니다. 대기 위치의 툴이 수평이 아니면 물러나기·맞추기를 건너뜁니다.
+- 조립 위치(2026-11-05): 홀더·EOAT 를 떼고 다는 자세입니다. RCS 「조립 위치 저장」이 `robot/command/assembly_joint`(mrad)로 보내면 노드가 기억하고(레지스터 없음, RCS 가 로봇에 붙을 때마다 다시 보냄), `robot/command/move_assembly` 는 **홈에 있을 때만** 태스크를 세우고 `movej` 한 번으로 갑니다. `move_home` 은 조립 위치(오차 `home_leave_tol_j`)에 있으면 대기 위치를 거치지 않고 `movej` 홈만 합니다.
 - `robot/command/work_area`는 원통이 커서 AMR 원주 구역 + Cobot 세로 격자로 나눠 스캔할 때, MQTT `job_cmd`의 `grid` 블록에서 온 이번 격자의 너비/높이/스캐너높이/겹침을 전달한다. `work_area` 항목은 `kind: "raw"`라 다른 자세 항목과 달리 값을 그대로 정수 mm로 저장한다(0.1mm 단위 아님).
 
 > `speedj`/`speedl`은 컨트롤러의 속도 백분율 설정에 영향을 받습니다(스크립트 매뉴얼 3.1.26/3.1.27). 100 %가 아니면 실제 속도가 그만큼 줄어듭니다.

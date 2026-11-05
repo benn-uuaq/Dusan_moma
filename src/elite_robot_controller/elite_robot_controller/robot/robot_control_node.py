@@ -13,6 +13,30 @@ from elite_robot_controller.robot.robot_driver import (
 )
 
 
+def _indent(text, levels):
+    """스크립트 줄마다 두 칸씩 levels 번 들여쓴다."""
+    pad = "  " * levels
+    return "".join(pad + line + "\n" for line in text.splitlines())
+
+
+def _max_joint_gap(name, target):
+    """mh_q 와 target 관절값의 가장 큰 차이 [rad] 를 name 에 담는 스크립트."""
+    return (
+        f"{name} = 0\n"
+        "mh_i = 0\n"
+        "while (mh_i < 6):\n"
+        f"  mh_d = mh_q[mh_i] - {target}[mh_i]\n"
+        "  if (mh_d < 0):\n"
+        "    mh_d = -mh_d\n"
+        "  end\n"
+        f"  if (mh_d > {name}):\n"
+        f"    {name} = mh_d\n"
+        "  end\n"
+        "  mh_i = mh_i + 1\n"
+        "end\n"
+    )
+
+
 class RobotControlNode(Node):
     # 레지스터 주소는 config/modbus_registers.json에서만 관리한다.
     # 주소가 아직 없는 항목은 요청을 거부해 엉뚱한 레지스터에 쓰지 않는다.
@@ -73,6 +97,8 @@ class RobotControlNode(Node):
         # 마지막으로 읽은 레지스터 값(publish_code) · 관절값 [mrad].
         self._last_codes = {}
         self._last_joint_mrad = None
+        # 조립 위치 관절값 [rad]. RCS 「조립 위치 저장」이 보내 줄 때까지는 모른다.
+        self._assembly_joint = None
         # 29999 로 읽어 둔 로봇 변수(Home_joint · Standby_joint)와 읽은 때.
         # 태스크가 안 돌 때 276 을 직접 판정하고, 홈 이동 경로를 정한다.
         self._joint_variables = {}
@@ -140,6 +166,8 @@ class RobotControlNode(Node):
         # 홈 이동은 값이 없는 한 번짜리 명령이므로 Trigger를 쓴다. 기준 위치
         # 저장은 UI가 값을 보내므로 아래 토픽으로 받는다.
         self.create_service(Trigger, 'robot/command/move_home', self.cb_move_home)
+        # 조립 위치(홀더·EOAT 탈착 자세)로 movej (2026-11-05). 홈에서만 받는다.
+        self.create_service(Trigger, 'robot/command/move_assembly', self.cb_move_assembly)
 
         # 값이 있는 명령은 토픽으로 받는다.
         # 작업 속도는 mm/s, 속도 비율은 2~100 [%]이며 레지스터에 쓴다.
@@ -160,6 +188,11 @@ class RobotControlNode(Node):
             Float32MultiArray, 'robot/command/standby_joint', self.cb_standby_joint, 10)
         self.create_subscription(
             Float32MultiArray, 'robot/command/start_pose', self.cb_start_pose, 10)
+        # 조립 위치 관절값 [mrad]. 태스크는 안 쓰고 이 노드의 이동 스크립트만
+        # 쓰므로 레지스터에 두지 않고 기억만 한다 — RCS 가 로봇에 붙을 때마다
+        # 저장해 둔 값을 다시 보낸다.
+        self.create_subscription(
+            Float32MultiArray, 'robot/command/assembly_joint', self.cb_assembly_joint, 10)
 
         # 작업 영역: [너비, 높이, 스캐너높이, 겹침] mm. MQTT job_cmd의 grid
         # 블록이 UI를 거쳐 여기로 온다. 256~259에 쓰고 266(param_src)을
@@ -541,6 +574,14 @@ class RobotControlNode(Node):
         """스캔 대기 위치 관절값 -> 310~315, pose_src(308) = 1 (예전의 홈 자리)."""
         self._write_pose_topic('standby_joint', msg)
 
+    def cb_assembly_joint(self, msg):
+        """조립 위치 관절값 [mrad] 을 기억한다(레지스터 없음, 2026-11-05)."""
+        values = [float(v) for v in msg.data]
+        if len(values) != 6 or not any(values):
+            self.get_logger().warn(f"[assembly_joint] 관절값 6개가 아닙니다: {values}")
+            return
+        self._assembly_joint = [round(v / 1000.0, 5) for v in values]
+
     def cb_start_pose(self, msg):
         self._write_pose_topic('start_pose', msg)
 
@@ -824,10 +865,16 @@ class RobotControlNode(Node):
         레지스터가 비어 있으면(전부 0) 저장한 적이 없는 것으로 본다 — 예전에
         308 만 보고 310~315 를 읽어 movej([0,0,0,0,0,0]) 로 간 일이 있다.
 
-        물러나는 거리는 툴 -Z 로, probe_dist 와 「대기 위치 X 까지 남은 거리」 중
-        작은 쪽이다. 툴이 벽(+X) 쪽을 보고 있지 않으면 물러나지 않는다.
+        물러나는 거리는 툴 -Z 로, probe_dist 와 「대기 위치까지 남은 거리」 중
+        작은 쪽이다. 벽 방향은 고정값이 아니라 **대기 위치의 툴 Z(수평 성분)**
+        로 정한다(2026-11-05) — v5 는 벽이 베이스 +X, v6 는 로봇을 반대로 달아
+        벽이 -X 다. 툴이 벽 쪽을 보고 있지 않으면 물러나지 않고, 대기 위치의
+        툴이 수평이 아니어서 벽 방향을 모르면 물러나기·맞추기를 건너뛴다.
         자리는 플랜지로 본다(TCP 를 0 으로 돌린 뒤) — EOAT 끝점 TCP 가 남아
         있어도 거리가 틀리지 않는다.
+
+        조립 위치(「조립 위치 이동」으로 간 자리)에 있으면 왔던 그대로
+        movej 홈만 한다 — 거기서 대기 위치를 거치면 엉뚱한 길로 돈다.
         """
         if not self.connected:
             res.success = False
@@ -852,6 +899,64 @@ class RobotControlNode(Node):
         tol = float(self.get_parameter('home_tol_j').value)
         home = [round(float(v), 5) for v in home]
         standby = [round(float(v), 5) for v in standby]
+        assembly = getattr(self, '_assembly_joint', None)
+        # 조립 위치는 movej 로 간 자리라 홈을 떠날 때와 같은 넉넉한 오차로 본다.
+        asm_tol = max(tol, float(self.get_parameter('home_leave_tol_j').value))
+        a, v = self._MOVEJ_A, self._MOVEJ_V
+
+        # 대기 위치를 거쳐 홈으로 — 벽에서 물러나고(대기 위치보다 뒤로는 안
+        # 감) 대기 위치 선상·높이에 맞춘 뒤 movej 대기 위치.
+        via_standby = (
+            "mh_ref = get_forward_kin(mh_sb)\n"
+            # 벽 방향 n = 대기 위치 툴 Z 의 수평 성분(단위 벡터).
+            "mh_rz = pose_trans(mh_ref, [0, 0, 1, 0, 0, 0])\n"
+            "mh_nx = mh_rz[0] - mh_ref[0]\n"
+            "mh_ny = mh_rz[1] - mh_ref[1]\n"
+            "mh_nl = sqrt(mh_nx * mh_nx + mh_ny * mh_ny)\n"
+            "if (mh_nl > 0.5):\n"
+            "  mh_nx = mh_nx / mh_nl\n"
+            "  mh_ny = mh_ny / mh_nl\n"
+            "  mh_cur = get_actual_tool_flange_pose()\n"
+            "  mh_cp = pose_trans(mh_cur, [0, 0, 1, 0, 0, 0])\n"
+            # 툴 Z 가 벽 쪽을 얼마나 보는가(cos).
+            "  mh_cz = (mh_cp[0] - mh_cur[0]) * mh_nx + (mh_cp[1] - mh_cur[1]) * mh_ny\n"
+            "  mh_back = 0\n"
+            "  if (mh_cz > 0.2):\n"
+            "    mh_back = ((mh_cur[0] - mh_ref[0]) * mh_nx"
+            " + (mh_cur[1] - mh_ref[1]) * mh_ny) / mh_cz\n"
+            f"    if (mh_back > {retreat_m}):\n"
+            f"      mh_back = {retreat_m}\n"
+            "    end\n"
+            "  end\n"
+            "  if (mh_back > 0.001):\n"
+            "    movel(pose_trans(mh_cur, [0, 0, -mh_back, 0, 0, 0]), a=0.4, v=0.1)\n"
+            "  end\n"
+            # 아직 대기 위치보다 벽 쪽이면 남은 만큼 n 반대로 곧게 물러난다.
+            "  mh_up = get_actual_tool_flange_pose()\n"
+            "  mh_dn = (mh_up[0] - mh_ref[0]) * mh_nx + (mh_up[1] - mh_ref[1]) * mh_ny\n"
+            "  if (mh_dn > 0.001):\n"
+            "    mh_up[0] = mh_up[0] - mh_dn * mh_nx\n"
+            "    mh_up[1] = mh_up[1] - mh_dn * mh_ny\n"
+            "    movel(mh_up, a=0.4, v=0.1)\n"
+            "  end\n"
+            "end\n"
+            # 높이는 대기 위치 높이로 올리거나 내린다.
+            "mh_up = get_actual_tool_flange_pose()\n"
+            "if (mh_up[2] < mh_ref[2] - 0.001 or mh_up[2] > mh_ref[2] + 0.001):\n"
+            "  mh_up[2] = mh_ref[2]\n"
+            "  movel(mh_up, a=0.4, v=0.1)\n"
+            "end\n"
+            f"movej(mh_sb, a={a}, v={v})\n"
+        )
+        if assembly:
+            body = (
+                _max_joint_gap("mh_af", "mh_asm")
+                + f"if (mh_af > {asm_tol}):\n"
+                + _indent(via_standby, 1)
+                + "end\n"
+            )
+        else:
+            body = via_standby
 
         # p, j 는 pose/joint 리터럴(p[..], j[..])에 쓰는 내장 이름과
         # 충돌한다. 겹치지 않는 mh_ 접두 이름을 쓴다.
@@ -859,50 +964,14 @@ class RobotControlNode(Node):
             "def move_home_now():\n"
             f"  mh_home = {home}\n"
             f"  mh_sb = {standby}\n"
-            "  set_tcp([0, 0, 0, 0, 0, 0])\n"
+            + (f"  mh_asm = {assembly}\n" if assembly else "")
+            + "  set_tcp([0, 0, 0, 0, 0, 0])\n"
             "  mh_q = get_actual_joint_positions()\n"
-            "  mh_far = 0\n"
-            "  mh_i = 0\n"
-            "  while (mh_i < 6):\n"
-            "    mh_d = mh_q[mh_i] - mh_home[mh_i]\n"
-            "    if (mh_d < 0):\n"
-            "      mh_d = -mh_d\n"
-            "    end\n"
-            "    if (mh_d > mh_far):\n"
-            "      mh_far = mh_d\n"
-            "    end\n"
-            "    mh_i = mh_i + 1\n"
-            "  end\n"
-            f"  if (mh_far > {tol}):\n"
-            # 벽에서 물러난다 — 대기 위치보다 뒤로는 안 간다.
-            "    mh_ref = get_forward_kin(mh_sb)\n"
-            "    mh_cur = get_actual_tool_flange_pose()\n"
-            "    mh_cz = pose_trans(mh_cur, [0, 0, 1, 0, 0, 0])[0] - mh_cur[0]\n"
-            "    mh_back = 0\n"
-            "    if (mh_cz > 0.2):\n"
-            "      mh_back = (mh_cur[0] - mh_ref[0]) / mh_cz\n"
-            f"      if (mh_back > {retreat_m}):\n"
-            f"        mh_back = {retreat_m}\n"
-            "      end\n"
-            "    end\n"
-            "    if (mh_back > 0.001):\n"
-            "      movel(pose_trans(mh_cur, [0, 0, -mh_back, 0, 0, 0]), a=0.4, v=0.1)\n"
-            "    end\n"
-            # 대기 위치 선상에 맞춘다 — 아직 앞(베이스 +X)이면 대기 위치 X 까지
-            # 곧게 물러나고, 높이를 대기 위치 높이로 올리거나 내린다.
-            "    mh_up = get_actual_tool_flange_pose()\n"
-            "    if (mh_up[0] > mh_ref[0] + 0.001):\n"
-            "      mh_up[0] = mh_ref[0]\n"
-            "      movel(mh_up, a=0.4, v=0.1)\n"
-            "    end\n"
-            "    mh_up = get_actual_tool_flange_pose()\n"
-            "    if (mh_up[2] < mh_ref[2] - 0.001 or mh_up[2] > mh_ref[2] + 0.001):\n"
-            "      mh_up[2] = mh_ref[2]\n"
-            "      movel(mh_up, a=0.4, v=0.1)\n"
-            "    end\n"
-            "    movej(mh_sb, a=1.4, v=0.5)\n"
-            "  end\n"
-            "  movej(mh_home, a=1.4, v=0.5)\n"
+            + _indent(_max_joint_gap("mh_far", "mh_home"), 1)
+            + f"  if (mh_far > {tol}):\n"
+            + _indent(body, 2)
+            + "  end\n"
+            f"  movej(mh_home, a={a}, v={v})\n"
             # 홈에 닿았다 — 레지스터 276 을 세운다. 태스크가 돌지 않는
             # 동안에는 이 스크립트 말고 아무도 이 값을 갱신하지 않는다.
             "  write_port_register(276, 1)\n"
@@ -930,6 +999,60 @@ class RobotControlNode(Node):
     #: 태스크를 세운 뒤 스크립트를 보내기까지 기다리는 시간 [s].
     #: 정지가 끝나기 전에 보내면 컨트롤러가 "실행 중"으로 거부한다.
     _HOME_AFTER_STOP_S = 0.5
+
+    #: 홈 · 대기 위치 · 조립 위치로 가는 movej 가속도 [rad/s^2] · 속도 [rad/s].
+    _MOVEJ_A = 1.4
+    _MOVEJ_V = 0.5
+
+    def _at_home_now(self):
+        """지금 관절값이 홈 관절값 안쪽인가(home_tol_j, 이미 홈이면 home_leave_tol_j)."""
+        joints = getattr(self, '_last_joint_mrad', None)
+        home = self._home_joint_target()
+        if not joints or len(joints) != 6 or not home:
+            return False
+        tol = max(float(self.get_parameter('home_tol_j').value),
+                  float(self.get_parameter('home_leave_tol_j').value))
+        return all(abs(q / 1000.0 - h) <= tol for q, h in zip(joints, home))
+
+    def cb_move_assembly(self, req, res):
+        """홈에서 조립 위치로 movej 한다(2026-11-05).
+
+        로봇에서 홀더·EOAT 를 떼거나 달 때 쓰는 자세다. 홈과 조립 위치 사이는
+        movej 한 번이라 **홈에서만** 받는다 — 벽 앞이나 조그로 옮긴 자리에서
+        곧장 movej 하면 길을 장담할 수 없다. 돌아올 때는 「로봇 홈」이 조립
+        위치를 알아보고 movej 홈만 한다(cb_move_home).
+        """
+        assembly = getattr(self, '_assembly_joint', None)
+        if not self.connected:
+            res.success = False
+            res.message = "[move_assembly] 로봇에 연결되어 있지 않습니다."
+            return res
+        if not assembly:
+            res.success = False
+            res.message = "[move_assembly] 조립 위치가 저장되어 있지 않습니다."
+            return res
+        if not self._at_home_now():
+            res.success = False
+            res.message = "[move_assembly] 홈에서만 조립 위치로 갈 수 있습니다. 먼저 홈으로 보내세요."
+            return res
+
+        script = (
+            "def move_assembly_now():\n"
+            "  set_tcp([0, 0, 0, 0, 0, 0])\n"
+            f"  movej({assembly}, a={self._MOVEJ_A}, v={self._MOVEJ_V})\n"
+            "end"
+        )
+        stop_reply = self.robot_dash.robot_stop()
+        if stop_reply is None:
+            self.get_logger().warn(
+                f"[move_assembly] 태스크 정지 응답 없음 — {self.robot_dash.last_error}")
+        time.sleep(self._HOME_AFTER_STOP_S)
+        self._leaving_home()
+        ok = self.robot_primary.send_script(script)
+        res.success = bool(ok)
+        res.message = ("[move_assembly] 조립 위치 이동을 요청했습니다." if ok
+                       else "[move_assembly] 스크립트 전송 실패")
+        return res
 
     #: 대시보드가 **답은 했지만 거절한** 응답에 들어가는 말들.
     #: 예) "Failed to execute: play", "... not supported in local control mode"
