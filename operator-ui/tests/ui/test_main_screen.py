@@ -258,7 +258,7 @@ def test_step_display_advances_in_order(qtbot) -> None:
 
 
 def test_linear_speed_is_capped_at_safety_limit(qtbot, monkeypatch) -> None:
-    """작업 속도는 운영 기준상 100 mm/s 를 넘겨 보낼 수 없다."""
+    """작업 속도(스캔 외 이동)는 로봇 안전 설정의 TCP 한계 250 mm/s 를 넘겨 보낼 수 없다."""
     from smr_operator_ui.app import MAX_LINEAR_SPEED_MM_S
     from smr_operator_ui.screens import CobotSettingsScreen
 
@@ -277,7 +277,21 @@ def test_linear_speed_is_capped_at_safety_limit(qtbot, monkeypatch) -> None:
     })
 
     assert ("linear_speed", MAX_LINEAR_SPEED_MM_S) in sent
-    assert MAX_LINEAR_SPEED_MM_S == 100
+    assert MAX_LINEAR_SPEED_MM_S == 250
+    window.close()
+
+
+def test_erut_scan_speed_only_sets_the_scan_ratio(qtbot, monkeypatch) -> None:
+    """ERUT 스캔 속도는 ㄹ자 스캔에만(307) — 로봇 전체 속도 비율은 바꾸지 않는다(2026-11-04)."""
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    sent: list[tuple[str, int]] = []
+    monkeypatch.setattr(window.ros_status, "send_value",
+                        lambda name, value: sent.append((name, value)) or True)
+
+    window.erut_session.speed_requested.emit(40)
+
+    assert sent == [("scan_speed_ratio", 40)]
     window.close()
 
 
@@ -1142,7 +1156,7 @@ def test_sensor_tasks_are_the_default(qtbot) -> None:
 
     assert window.screens["cobot"].nosensor_check.isChecked() is False
     scan, mark = window._task_paths()
-    assert scan.endswith("/dusan_v5.task") and mark.endswith("/dusan_v5_mark.task")
+    assert scan.endswith("/dusan_v6.task") and mark.endswith("/dusan_v6_mark.task")
     window.close()
 
 
@@ -1156,11 +1170,11 @@ def test_checking_nosensor_switches_and_loads_the_scan_task(qtbot) -> None:
 
     window.screens["cobot"].nosensor_check.setChecked(True)
 
-    assert pushed[-1] == ("Dusan/dusan_v5/dusan_v5_nosensor_seq.task",
-                          "Dusan/dusan_v5/dusan_v5_nosensor_mark.task")
+    assert pushed[-1] == ("Dusan/dusan_v6/dusan_v6_nosensor_seq.task",
+                          "Dusan/dusan_v6/dusan_v6_nosensor_mark.task")
     assert calls[-1] == "load_scan_task"
     # 판과 버전을 늘 함께 저장한다 — 파일 저장소는 범위를 통째로 바꿔 쓴다.
-    assert ("robot_task", {"nosensor": True, "task_version": "dusan_v5"}) in saved
+    assert ("robot_task", {"nosensor": True, "task_version": "dusan_v6"}) in saved
     window.close()
 
 
@@ -1187,7 +1201,7 @@ def test_stored_nosensor_choice_is_restored(qtbot) -> None:
     window._apply_stored_settings("robot_task", {"nosensor": True})
 
     assert window.screens["cobot"].nosensor_check.isChecked() is True
-    assert pushed[-1][0].endswith("dusan_v5_nosensor_seq.task")
+    assert pushed[-1][0].endswith("dusan_v6_nosensor_seq.task")
     assert "load_scan_task" not in calls, "불러오기만으로 로봇을 건드리면 안 된다"
     window.close()
 
@@ -1204,7 +1218,7 @@ def test_erut_job_loads_the_chosen_scan_task_first(qtbot) -> None:
     window._start_erut_job(GridPlan(column_count=1, row_count=1,
                                     cell_width=721.0, cell_height=500.0))
 
-    assert pushed[-1][0].endswith("dusan_v5_nosensor_seq.task")
+    assert pushed[-1][0].endswith("dusan_v6_nosensor_seq.task")
     assert calls[:3] == ["remote_control_on", "stop", "load_scan_task"]
     window.close()
 
@@ -1415,17 +1429,17 @@ def test_saving_system_settings_moves_the_record_folder(qtbot, tmp_path, monkeyp
     window.close()
 
 
-# ---- 태스크 선택 (dusan_v5 기준 / dusan_v4) ----------------------------------------
-def test_task_selector_lists_versions_with_v5_default(qtbot) -> None:
-    """v5 가 기준이다 — servoj 로 스캔 호를 그리며 센서 눌림 위치를 유지한다."""
+# ---- 태스크 선택 (dusan_v6 기준 / dusan_v5 / dusan_v4) ------------------------------
+def test_task_selector_lists_versions_with_v6_default(qtbot) -> None:
+    """v6 이 기준이다 — v5 와 같은 스캔이고 로봇을 반대로 설치한 판(벽이 베이스 -X)."""
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     cobot = window.screens["cobot"]
     combo = cobot.task_version_combo
-    assert [combo.itemText(i) for i in range(combo.count())] == ["dusan_v5", "dusan_v4"]
-    assert cobot.task_version() == "dusan_v5"
-    assert window._task_paths() == ("Dusan/dusan_v5/dusan_v5.task",
-                                    "Dusan/dusan_v5/dusan_v5_mark.task")
+    assert [combo.itemText(i) for i in range(combo.count())] == ["dusan_v6", "dusan_v5", "dusan_v4"]
+    assert cobot.task_version() == "dusan_v6"
+    assert window._task_paths() == ("Dusan/dusan_v6/dusan_v6.task",
+                                    "Dusan/dusan_v6/dusan_v6_mark.task")
     # 폼 필드가 아니다 — Cobot '저장' 때 cobot 설정에 따로 들어가지 않는다.
     assert "태스크 선택" not in cobot.values()
     window.close()
@@ -1439,8 +1453,8 @@ def test_choosing_v4_switches_paths_saves_and_loads(qtbot) -> None:
     window.settings_service.save = lambda scope, values: saved.append((scope, dict(values)))
     combo = window.screens["cobot"].task_version_combo
 
-    combo.setCurrentIndex(1)
-    combo.activated.emit(1)                     # 사용자가 목록에서 고른 것
+    combo.setCurrentIndex(2)
+    combo.activated.emit(2)                     # 사용자가 목록에서 고른 것(dusan_v4)
 
     assert pushed[-1] == ("Dusan/dusan_v4/dusan_v4.task", "Dusan/dusan_v4/dusan_v4_mark.task")
     assert calls[-1] == "load_scan_task"
@@ -1464,12 +1478,12 @@ def test_stored_task_version_is_restored_without_loading(qtbot) -> None:
     assert pushed[-1][0] == "Dusan/dusan_v4/dusan_v4.task"
     assert "load_scan_task" not in calls, "불러오기만으로 로봇을 건드리면 안 된다"
 
-    # 예전 설정(버전 없음)이나 목록에 없는 값이면 기본 v5 로 둔다.
+    # 예전 설정(버전 없음)이나 목록에 없는 값이면 기본 v6 으로 둔다.
     window._apply_stored_settings("robot_task", {"nosensor": False})
-    assert window.screens["cobot"].task_version() == "dusan_v5"
+    assert window.screens["cobot"].task_version() == "dusan_v6"
     window._apply_stored_settings("robot_task", {"task_version": "dusan_v9"})
-    assert window.screens["cobot"].task_version() == "dusan_v5"
-    assert window._task_paths()[0] == "Dusan/dusan_v5/dusan_v5.task"
+    assert window.screens["cobot"].task_version() == "dusan_v6"
+    assert window._task_paths()[0] == "Dusan/dusan_v6/dusan_v6.task"
     window.close()
 
 def test_clock_does_not_put_korean_into_strftime(qtbot, monkeypatch) -> None:

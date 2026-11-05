@@ -145,6 +145,8 @@ class RobotControlNode(Node):
         # 작업 속도는 mm/s, 속도 비율은 2~100 [%]이며 레지스터에 쓴다.
         self.create_subscription(Int32, 'robot/command/linear_speed', self.cb_linear_speed, 10)
         self.create_subscription(Int32, 'robot/command/speed_ratio', self.cb_speed_ratio, 10)
+        self.create_subscription(
+            Int32, 'robot/command/scan_speed_ratio', self.cb_scan_speed_ratio, 10)
         # 조그는 레지스터가 아니라 30001 스크립트로 처리한다.
         # 값의 부호가 방향, 절댓값이 축 번호(1~6)이며 0은 정지다.
         self.create_subscription(Int32, 'robot/command/jog_joint', self.cb_jog_joint, 10)
@@ -183,9 +185,10 @@ class RobotControlNode(Node):
             Int32MultiArray, 'robot/command/digital_out', self.cb_digital_out, 10)
         # 태스크 바꿔 끼우기. 마킹은 스캔과 다른 태스크라 29999 로 불러온다.
         # 경로는 컨트롤러 안의 실제 위치라 현장에서 한 번 확인해야 한다.
-        # 기준 판은 v5 다(servoj 스캔). RCS 가 고른 판으로 바로 덮어쓴다.
-        self.declare_parameter('mark_task_path', 'Dusan/dusan_v5/dusan_v5_mark.task')
-        self.declare_parameter('scan_task_path', 'Dusan/dusan_v5/dusan_v5.task')
+        # 기준 판은 v6 이다(v5 와 같은 servoj 스캔, 로봇 반대 설치). RCS 가 고른 판으로
+        # 바로 덮어쓴다.
+        self.declare_parameter('mark_task_path', 'Dusan/dusan_v6/dusan_v6_mark.task')
+        self.declare_parameter('scan_task_path', 'Dusan/dusan_v6/dusan_v6.task')
         self.create_service(Trigger, 'robot/dashboard/load_mark_task', self.cb_load_mark_task)
         self.create_service(Trigger, 'robot/dashboard/load_scan_task', self.cb_load_scan_task)
 
@@ -480,6 +483,15 @@ class RobotControlNode(Node):
                 f"[speed] 컨트롤러가 속도 비율 {self.speed_ratio} % 를 거절했습니다: {result}")
         self._write_topic('speed_ratio', Int32(data=self.speed_ratio))
 
+    def cb_scan_speed_ratio(self, msg):
+        """ㄹ자 스캔 속도 비율[%]만 바꾼다 — 레지스터 307. 2~100.
+
+        컨트롤러 전체 속도 비율(29999)은 건드리지 않는다. ERUT 가 보낸 스캔 속도는
+        스캔 줄 · 줄 바꿈에만 걸리고(태스크가 307 을 읽는다), 스캔 밖 이동은 제 속도로
+        간다(v6, 2026-11-04). 조그 속도도 바뀌지 않는다.
+        """
+        self._write_topic('scan_speed_ratio', Int32(data=max(2, min(100, int(msg.data)))))
+
     def _jog_scale(self):
         """속도 비율(2~100 %)을 배율로 바꾼다."""
         return self.speed_ratio / 100.0
@@ -546,8 +558,8 @@ class RobotControlNode(Node):
         """29999 `task -p <경로>` 로 태스크를 불러온다.
 
         경로는 파라미터(mark_task_path / scan_task_path)다. 센서가 없을 때는
-        scan_task_path 를 dusan_v5_nosensor_seq.task, mark_task_path 를
-        dusan_v5_nosensor_mark.task 로 바꿔 띄운다.
+        scan_task_path 를 dusan_v6_nosensor_seq.task, mark_task_path 를
+        dusan_v6_nosensor_mark.task 로 바꿔 띄운다.
         """
         path = self._param_str(param_name, '')
         if not path:

@@ -604,3 +604,21 @@ def test_auto_reconnect_only_when_the_operator_wants_it():
     assert node._try_reconnect() is False and node.connected is False, "연결 해제 뒤에는 안 붙는다"
     node.cb_connect(None, res)
     assert node._want_connected is True and node.connected is True
+
+
+def test_scan_speed_ratio_writes_307_without_touching_the_controller_ratio():
+    """ERUT 스캔 속도는 307 에만 — 29999 speed -v(전체 비율)는 보내지 않는다(2026-11-04)."""
+    node = _linked_node(fail_reads=False)
+    writes, dash = [], []
+    node.write_register = lambda name, value: writes.append((name, value)) or (True, "")
+    node.robot_dash.robot_set_speed = lambda percent: dash.append(percent)
+    msg = type("M", (), {"data": 150})()
+
+    node.cb_scan_speed_ratio(msg)
+
+    assert writes == [("scan_speed_ratio", 100)] and dash == []
+    # 주소는 소스의 주소표로 본다 — 노드는 설치본(colcon build 산출물)을 읽는다.
+    import os
+    from elite_robot_controller import register_map
+    source = os.path.join(os.path.dirname(__file__), "..", "config", "modbus_registers.json")
+    assert register_map.load(source).write_entry("scan_speed_ratio").address == 307

@@ -1101,8 +1101,10 @@ class CobotSettingsScreen(FormScreen):
     task_version_changed = pyqtSignal(str)
 
     #: 고를 수 있는 태스크 버전 = 로봇의 Dusan/<버전> 폴더. 앞의 것이 기본값.
-    #: v5 가 기준이다 — 스캔 호를 servoj 로 그리며 센서 눌림 위치를 계속 유지한다.
-    TASK_VERSIONS = ("dusan_v5", "dusan_v4")
+    #: v6 이 기준이다 — v5(servoj 스캔 · 센서 눌림 유지)와 같고, 로봇을 반대로 설치해
+    #: 벽이 베이스 -X 쪽이고 원점(왼쪽 끝)이 베이스 Y 가 작은 쪽이다(2026-11-04).
+    #: v5 는 예전 설치 방향(벽이 +X)이다.
+    TASK_VERSIONS = ("dusan_v6", "dusan_v5", "dusan_v4")
 
     def __init__(self):
         # pyqtSignal은 QObject.__init__()이 돌기 전에는 바인딩되지 않으므로,
@@ -1152,8 +1154,10 @@ class CobotSettingsScreen(FormScreen):
             rise_fields.append((label, box))
         super().__init__(
             "cobot","Cobot 설정",
-            "작업 슬롯과 속도를 관리합니다. 작업 속도는 movel 속도로 안전 기준상 "
-            "최대 100 mm/s(가속도 400 mm/s²)이고, 속도 비율은 로봇 전체 속도에 곱해집니다(2~100 %). "
+            "작업 슬롯과 속도를 관리합니다. 작업 속도는 스캔 외 이동(시작 · 대기 · 홈 자리로, "
+            "후퇴, 프로브 사이) 속도로 최대 250 mm/s(로봇 안전 설정의 TCP 한계)입니다 — v6 태스크. "
+            "ㄹ자 스캔은 따로 100 mm/s 에 속도 비율(ERUT 스캔 속도)을 곱해 갑니다. "
+            "속도 비율은 로봇 전체 속도에도 곱해집니다(2~100 %). "
             "스캔 상승 높이 제한은 ㄹ자 한 줄을 끝내고 위로 올라가는 최대 높이(프로브 유효 "
             "세로 커버)로, 장착한 EOAT 의 값이 작업을 시작할 때 로봇에 갑니다. "
             "장착 EOAT 는 고르는 즉시 로봇에 갑니다(작업 중에는 바꿀 수 없습니다).",
@@ -1161,7 +1165,8 @@ class CobotSettingsScreen(FormScreen):
                 ("현재 태스크",task_row),
                 ("태스크 선택",version_row),
                 ("태스크 판",self.nosensor_check),
-                (self.SPEED_FIELD,spin(100,1,100)),
+                # 상한 250 = app.MAX_LINEAR_SPEED_MM_S(로봇 안전 TCP 한계).
+                (self.SPEED_FIELD,spin(100,1,250)),
                 (self.RATIO_FIELD,spin(100,2,100)),
                 ("장착 EOAT",eoat_row),
                 *rise_fields,

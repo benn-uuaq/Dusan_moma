@@ -70,6 +70,8 @@ class RosTopics:
 
     LINEAR_SPEED = "robot/command/linear_speed"
     SPEED_RATIO = "robot/command/speed_ratio"
+    # ㄹ자 스캔 속도 비율만(레지스터 307) — 컨트롤러 전체 비율은 그대로 둔다.
+    SCAN_SPEED_RATIO = "robot/command/scan_speed_ratio"
     HOME_JOINT = "robot/command/home_joint"
     # 스캔 대기 위치(레지스터 310~315, 예전의 홈 자리). 홈은 322~327 이다.
     STANDBY_JOINT = "robot/command/standby_joint"
@@ -321,6 +323,8 @@ class RosStatusClient(QObject):
             self._publishers = {
                 "linear_speed": self._node.create_publisher(Int32, RosTopics.LINEAR_SPEED, 10),
                 "speed_ratio": self._node.create_publisher(Int32, RosTopics.SPEED_RATIO, 10),
+                "scan_speed_ratio": self._node.create_publisher(
+                    Int32, RosTopics.SCAN_SPEED_RATIO, 10),
                 "jog_joint": self._node.create_publisher(Int32, RosTopics.JOG_JOINT, 10),
                 "jog_tcp": self._node.create_publisher(Int32, RosTopics.JOG_TCP, 10),
                 "scan_go": self._node.create_publisher(Int32, RosTopics.SCAN_GO, 10),

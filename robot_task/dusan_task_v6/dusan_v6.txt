@@ -1,0 +1,44 @@
+Current Task: dusan_v6
+    Init Variables Value
+    Robot Main Task
+        1 [스크립트파일] dus6_init.script
+            Script: dus6_init.script
+        2 [스크립트파일] dus6_leave_home.script
+            Script: dus6_leave_home.script
+        3 move_start
+            Script: dus6_move_start.script
+        4 [스크립트파일] dus6_probe_c.script
+            Script: dus6_probe_c.script
+        5 move_start
+            MoveL
+                start_pose
+        6 [스크립트파일] dus6_probe_l.script
+            Script: dus6_probe_l.script
+        7 move_start
+            MoveL
+                start_pose
+        8 [스크립트파일] dus6_probe_r.script
+            Script: dus6_probe_r.script
+        9 move_start
+            MoveL
+                start_pose
+        10 [스크립트파일] dus6_goto_zero.script
+            Script: dus6_goto_zero.script
+        Loop 200 times
+            pass_done=0
+            If row_idx<rows and dir_sign>0 and pass_done==0
+                11 [스크립트파일] dus6_pass_r.script
+                    Script: dus6_pass_r.script
+            If row_idx<rows and dir_sign<0 and pass_done==0
+                12 [스크립트파일] dus6_pass_l.script
+                    Script: dus6_pass_l.script
+            If row_idx<rows
+                13 [스크립트파일] dus6_up.script
+                    Script: dus6_up.script
+            If row_idx>=rows
+                14 [스크립트파일] dus6_finish.script
+                    Script: dus6_finish.script
+                15 [스크립트파일] dus6_go_home.script
+                    Script: dus6_go_home.script
+                Halt
+        Halt

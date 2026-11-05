@@ -68,6 +68,7 @@ from smr_operator_ui.services.erut_session import (
     MSG_AREA_APPLY_PENDING,
     MSG_ARC_LIMIT_CLAMPED,
     MSG_HOLDER_MISMATCH,
+    SCAN_SPEED_MAX,
 )
 from smr_operator_ui.services.ros_status_client import TASK_STATE_NAMES
 from smr_operator_ui.services.reference_poses import (
@@ -76,9 +77,12 @@ from smr_operator_ui.services.reference_poses import (
 )
 from smr_operator_ui.styles import load_stylesheet
 
-# TCP 직선 속도의 안전 상한 [mm/s]. 로봇 태스크(dus_init.script)도 같은
-# 값으로 자르지만, 넘는 값을 애초에 보내지 않는다.
-MAX_LINEAR_SPEED_MM_S = 100
+# 「작업 속도」(스캔 외 이동 movel 속도, 레지스터 306)의 상한 [mm/s]. 로봇 안전 설정의
+# TCP 속도 한계(maxTcpSpeed 0.25 m/s)와 같다 — 넘게 시키면 컨트롤러가 안전 정지한다.
+# v6 태스크는 이 값을 스캔 외 이동(v_move)에 쓰고 같은 값으로 자른다. ㄹ자 스캔은 따로
+# 100 mm/s(SCAN_SPEED_MAX)에 속도 비율을 곱해 간다(2026-11-04). v5 태스크는 306 을
+# 벽 접근 · 이동 공용 속도(v_l)로 받아 100 mm/s 로 자른다.
+MAX_LINEAR_SPEED_MM_S = 250
 # 한 구간 세로의 상한 [mm]. 리프트를 한 높이에 세운 채 로봇 팔이 위아래로
 # 훑을 수 있는 범위다(2026-10-06 결정). 넘는 구간은 받지 않는다 — ERUT 는 400
 # area_height, RCS '검사 시작'은 시작 전에 막는다. 모재 전체 높이는 리프트로
@@ -93,8 +97,8 @@ ROBOT_RESTART_DELAY_MS = 1200
 #: 그대로 두면 ERUT 는 running · 진행률 0 으로 완료를 끝없이 기다린다(Q-29).
 ROBOT_START_TIMEOUT_MS = 20_000
 
-#: 기본 태스크 버전. Cobot 설정의 '태스크 선택'으로 바꾼다(dusan_v4 / dusan_v5).
-DEFAULT_TASK_VERSION = "dusan_v5"
+#: 기본 태스크 버전. Cobot 설정의 '태스크 선택'으로 바꾼다(dusan_v6 / v5 / v4).
+DEFAULT_TASK_VERSION = "dusan_v6"
 
 
 def robot_task_paths(version: str, nosensor: bool) -> tuple[str, str]:
@@ -774,9 +778,8 @@ class OperatorWindow(QMainWindow):
         self.ros_status.scan_state_changed.connect(self.mark_runner.handle_scan_state)
         self.erut_session.resume_requested.connect(self.sequencer.resume)
         self.erut_session.abort_requested.connect(self._abort_job)
-        self.erut_session.speed_requested.connect(
-            lambda percent: self._apply_speed_ratio(percent, source="ERUT")
-        )
+        # ERUT 스캔 속도는 ㄹ자 스캔에만 건다(307) — 스캔 밖 이동은 느려지지 않는다.
+        self.erut_session.speed_requested.connect(self._apply_scan_speed_ratio)
 
         # 로봇 진행 → ERUT
         self.sequencer.cell_changed.connect(self.erut_session.on_cell_changed)
@@ -2632,6 +2635,22 @@ class OperatorWindow(QMainWindow):
         self.ros_status.send_value("speed_ratio", percent)
         self.main_screen.show_activity(f"{source} 속도 비율 {percent} % 를 로봇에 보냈습니다.")
 
+    def _apply_scan_speed_ratio(self, percent: int) -> None:
+        """ERUT 가 보낸 스캔 속도[%]를 ㄹ자 스캔에만 건다 — 레지스터 307 (2026-11-04).
+
+        예전에는 로봇 전체 속도 비율(29999 `speed -v`)로 걸어 3점 측정 · 대기 위치 ·
+        홈 이동까지 같이 느려졌다. 이제 스캔 줄(servoj 호)과 줄 바꿈만 이 비율을 따르고,
+        스캔 밖 이동은 「작업 속도」 · 펜던트 이동 속도(v_move)로 간다.
+        """
+        if not SPEED_MIN <= int(percent) <= SPEED_MAX:
+            self.main_screen.show_activity(
+                f"스캔 속도 비율은 {SPEED_MIN}~{SPEED_MAX} % 여야 합니다: {percent}")
+            return
+        self.ros_status.send_value("scan_speed_ratio", int(percent))
+        self.main_screen.show_activity(
+            f"ERUT 스캔 속도 {int(percent)} % ({SCAN_SPEED_MAX * int(percent) // 100} mm/s)를 "
+            f"로봇에 보냈습니다 — 스캔 줄에만 걸립니다.")
+
     def _request_io_output(self, address: str, turn_on: bool) -> None:
         """I/O 화면의 ON/OFF 요청을 실제 장비 경로로 내보낸다.
 
@@ -2793,10 +2812,9 @@ class OperatorWindow(QMainWindow):
                 restored.append(target)
 
         cobot = self.screens["cobot"]
-        # 속도 바가 % 를 mm/s 로 환산할 기준값도 함께 맞춘다.
-        self.main_screen.set_base_speed(
-            min(int(cobot.linear_speed()), MAX_LINEAR_SPEED_MM_S)
-        )
+        # 속도 바의 mm/s 는 ㄹ자 스캔 속도로 보인다(100 % = 100 mm/s). 스캔 외 이동
+        # 속도(작업 속도)는 따로라 바의 기준이 아니다(2026-11-04).
+        self.main_screen.set_base_speed(SCAN_SPEED_MAX)
         for value, name in ((cobot.linear_speed(), "linear_speed"),
                             (cobot.speed_ratio(), "speed_ratio")):
             if self.ros_status.send_value(name, int(value)):
@@ -2862,10 +2880,9 @@ class OperatorWindow(QMainWindow):
             capped = min(int(speed), MAX_LINEAR_SPEED_MM_S)
             if capped != int(speed):
                 self.main_screen.show_activity(
-                    f"작업 속도를 안전 상한 {MAX_LINEAR_SPEED_MM_S} mm/s 로 제한했습니다."
+                    f"작업 속도(스캔 외 이동)를 안전 상한 {MAX_LINEAR_SPEED_MM_S} mm/s 로 제한했습니다."
                 )
             self.ros_status.send_value("linear_speed", capped)
-            self.main_screen.set_base_speed(capped)
 
         # 속도 비율은 29999로 실시간 반영되는 경로를 탄다.
         ratio = values.get(CobotSettingsScreen.RATIO_FIELD)

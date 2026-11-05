@@ -1,0 +1,215 @@
+# =============================================================================
+#  dus6_pass_l.script — dusan_v6
+#  반대쪽 끝에서 원점으로 한 줄. servoj 로 호를 따라가며 눌림을 계속 확인한다
+#
+#  펜던트에서 "8_pass_left" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+#
+#  v4 는 movec 한 번으로 호를 그렸다. 그러면 호를 도는 동안 센서를 볼 수가
+#  없어서, 벽이 설계 반지름과 조금만 달라도 프로브가 떠 있는지 너무 눌렸는지
+#  알 수 없었다. v5 는 제어주기(sv_dt)마다 호 위 다음 점을 직접 계산해
+#  servoj 로 보내고, 그 사이마다 중앙 접촉 센서를 읽어 TCP Z(벽 방향)로
+#  눌림을 보정한다.
+#    di_touch 꺼짐          -> 덜 눌림: TCP +Z 로 조금 전진  (288 = 2)
+#    di_limit 켜짐          -> 너무 눌림: TCP -Z 로 조금 후진 (288 = 3)
+#    di_touch 켜짐·limit 꺼짐 -> 적정: 그대로                (288 = 1)
+#  한 주기 보정량은 press_rate[mm/s] x sv_dt 이고, 한 줄 동안 쌓인 보정이
+#  press_max[mm] 를 넘으면 벽을 놓쳤거나 파고드는 것이라 멈춘다(299 = 6).
+#  289 = 지금까지의 보정량 [0.01mm] (+ 가 전진).
+#
+#  호는 dus6_probe_l 이 잡은 곡률 중심(arc_ox, arc_oy)을 지나는 **수직축**
+#  둘레의 회전이다(al_arc 와 같은 방식) — 자세도 같이 돌아 손이 늘 그
+#  자리의 법선을 본다. 높이(Z)는 그대로다.
+# =============================================================================
+
+def sl_w1(a, v):
+  if (v > 32000):
+    v = 32000
+  end
+  if (v < -32000):
+    v = -32000
+  end
+  write_port_register(a, floor(v + 0.5))
+end
+
+
+def sl_wrap(a):
+  if (a > 3.14159265):
+    a = a - 6.28318531
+  end
+  if (a < -3.14159265):
+    a = a + 6.28318531
+  end
+  return a
+end
+
+
+def sl_rot(o_t, rel, phi):
+  # 곡률 중심 o_t 를 지나는 수직축으로 rel 을 phi [rad] 만큼 돌린 자세.
+  return pose_trans(o_t, pose_trans([0, 0, 0, 0, 0, phi], rel))
+end
+
+
+def sl_fail(code, msg):
+  stopj(2.0)
+  write_port_register(288, 0)
+  write_port_register(299, code)
+  write_port_register(290, 9)
+  popup(s = msg, title = "dusan_v6", blocking = True)
+  halt()
+end
+
+
+def sl_servo_arc(end_pose):
+  # 지금 자세에서 end_pose 의 방위각까지 호를 그린다. 반환: 호 길이 [mm].
+  # 곡률 중심이 안 잡혔으면(dus6_probe_l 실패·반지름 0) 지난 사이클 값으로
+  # 엉뚱한 호를 그리게 된다. 그리지 않고 멈춘다.
+  if (arc_ok == False):
+    sl_fail(4, "SCAN ARC: NO ARC CENTER (radius 260 / arc 256)")
+  end
+  p0 = get_actual_tcp_pose()
+  o_t = [arc_ox, arc_oy, 0, 0, 0, 0]
+  rel = pose_trans(pose_inv(o_t), p0)
+  rx = p0[0] - arc_ox
+  ry = p0[1] - arc_oy
+  r_path = sqrt(rx * rx + ry * ry)
+  dphi = sl_wrap(atan2(end_pose[1] - arc_oy, end_pose[0] - arc_ox) - atan2(ry, rx))
+  sgn = 1
+  if (dphi < 0):
+    sgn = -1
+  end
+  sv_tot = dphi * sgn * r_path
+
+  # 가는 길에 역기구학 해가 없으면 도중에 알람으로 서 버린다. 미리 본다.
+  sv_q = get_actual_joint_positions()
+  p_mid = sl_rot(o_t, rel, dphi * 0.5)
+  p_end = sl_rot(o_t, rel, dphi)
+  if (get_inverse_kin_has_solution(p_mid, qnear = sv_q) == False or get_inverse_kin_has_solution(p_end, qnear = sv_q) == False):
+    sl_fail(7, "SCAN ARC: NO IK SOLUTION")
+  end
+
+  sv_stp = press_rate * 0.001 * sv_dt
+  sv_lim = press_max * 0.001
+  sv_d = 0
+  sv_s = 0
+  sv_v = 0
+  sv_st = 1
+  sv_set = 0
+  # 끝점에 닿은 뒤에도 lookahead 만큼 따라오는 중이다. 두 배를 기다린다.
+  sv_nset = ceil(sv_look * 2.0 / sv_dt)
+  # 진행량은 **실제로 흐른 시간**으로 계산한다. servoj(t = sv_dt) 는 최소
+  # sv_dt 만큼 막히지만, 컨트롤러 주기가 더 길거나(예: 8 ms) 루프 안의
+  # 역기구학·센서·레지스터 일이 더해지면 한 바퀴가 sv_dt 보다 길어진다.
+  # 그런데도 sv_dt 만큼씩만 전진시키면 목표점이 그만큼 늦게 나가 실제
+  # 속도가 v_scan 보다 한참 느려진다. 컨트롤러 시각(controller_timestamp)
+  # 으로 한 바퀴 걸린 시간을 재서 쓴다. 값이 이상하면(0 이하·50 ms 초과)
+  # 예전처럼 sv_dt 를 쓴다.
+  # 속도 비율(307, %)은 **이 호에만 여기서 건다.** movel·movej 는 컨트롤러가
+  # 비율(펜던트 슬라이더 = RCS 의 29999 'speed -v N')로 줄여 주지만, servoj 는
+  # 매 주기 위치를 우리가 직접 찍어 보내는 것이라 비율이 걸리지 않는다 — 그래서
+  # 비율 15 % 에서 다른 동작은 15 mm/s 인데 스캔 좌우만 100 mm/s 로 돌았다
+  # (2026-10-14). RCS 는 비율을 바꿀 때 307 에도 같이 써 둔다.
+  # 전역 v_scan 에 곱하지 않고 이 호의 지역값(sv_vmax)만 쓴다 — 셀마다 다시
+  # 곱해져 계속 줄어들던 예전 문제(dus6_init ※)를 되풀이하지 않게.
+  # 307 이 비었거나(0) 2~100 밖이면 100 % 로 본다.
+  sv_ratio = read_port_register(307, True)
+  if (sv_ratio < 2 or sv_ratio > 100):
+    sv_ratio = 100
+  end
+  sv_vmax = v_scan * sv_ratio / 100.0
+  sv_tp = controller_timestamp()
+  while (sv_set < sv_nset):
+    sv_tn = controller_timestamp()
+    sv_h = sv_tn - sv_tp
+    sv_tp = sv_tn
+    if (sv_h <= 0 or sv_h > 0.05):
+      sv_h = sv_dt
+    end
+    sv_stp = press_rate * 0.001 * sv_h
+    # 1) 진행 — 사다리꼴 속도(a_scan, sv_vmax). 남은 거리로 감속한다.
+    if (sv_s < sv_tot):
+      v_top = sqrt(2.0 * a_scan * (sv_tot - sv_s))
+      if (v_top > sv_vmax):
+        v_top = sv_vmax
+      end
+      if (v_top < 0.002):
+        v_top = 0.002
+      end
+      sv_v = sv_v + a_scan * sv_h
+      if (sv_v > v_top):
+        sv_v = v_top
+      end
+      sv_s = sv_s + sv_v * sv_h
+      if (sv_tot - sv_s < 0.0002):
+        sv_s = sv_tot
+      end
+    else:
+      sv_set = sv_set + 1
+    end
+
+    # 2) 눌림 — 센서를 보고 TCP Z 로 보정한다.
+    # push_offset 으로 일부러 더 눌러 들어간 경우에는 한계 센서가 켜져 있는
+    # 게 정상이다. 그때 뒤로 빼 버리면 더 누른 게 바로 풀린다. 그래서
+    # 한계 센서로는 **이 루프가 스스로 더 민 만큼(sv_d > 0)** 만 되돌린다.
+    # (push_offset 이 0 이면 예전과 똑같이 한계에서 곧바로 뺀다.)
+    if (get_standard_digital_in(di_limit) and (push_offset <= 0 or sv_d > 0)):
+      sv_d = sv_d - sv_stp
+      sv_st = 3
+    elif (get_standard_digital_in(di_touch) == False):
+      sv_d = sv_d + sv_stp
+      sv_st = 2
+    else:
+      sv_st = 1
+    end
+    if (sv_d > sv_lim or sv_d < -sv_lim):
+      sl_fail(6, "SCAN: PRESS NOT HELD (press_max)")
+    end
+    write_port_register(288, sv_st)
+    sl_w1(289, sv_d * 100000)
+
+    # 3) 목표 자세 -> 관절 -> servoj (sv_dt 동안 막힌다 = 루프 주기)
+    tgt = pose_trans(sl_rot(o_t, rel, sgn * sv_s / r_path), [0, 0, sv_d, 0, 0, 0])
+    sv_q = get_inverse_kin(tgt, qnear = sv_q)
+    servoj(sv_q, t = sv_dt, lookahead_time = sv_look, gain = sv_gain)
+  end
+  stopj(2.0)
+  write_port_register(288, 0)
+  # 로봇은 플랜지 기준으로 v_scan 으로 돌지만, 기록할 길이(297·287)는 **프로브 중심이
+  # 벽 위로 지난 호**다 — 같은 각도를 프로브 중심 반지름으로 곱한다.
+  tp = pose_trans(p0, eoat_ofs)
+  r_tip = sqrt((tp[0] - arc_ox) * (tp[0] - arc_ox) + (tp[1] - arc_oy) * (tp[1] - arc_oy))
+  return dphi * sgn * r_tip * 1000.0
+end
+
+
+# p_r_pose 쪽 끝 -> 원점(zero_pose) 방위각까지 한 줄.
+# v6 은 원점이 왼쪽(베이스 Y 가 작은 쪽)이라 베이스 Y 는 **줄어드는** 쪽(왼쪽)이다.
+# 스캔 동작에 들어섰다고 알린다(6 = 스캔 중). 이 값이 6 인 동안에만
+# 제로점 기준 좌표(280~285)가 나간다 — dus6_init 의 pub_rel 참고.
+write_port_register(290, 6)
+
+# ---- TPAC 동기 신호 --------------------------------------------------------
+# 277 = 지금 도는 스캔 구간. RCS 브리지가 이 값을 TPAC 엔코더 보드의 DO 신호
+# (Coil 16~18 / Reg 1)로 바꿔 보낸다 — 1 전진 스캔, 2 줄 바꿈(동결), 3 후진 스캔.
+# 브리지가 값을 읽고(100 ms 주기) 방향 -> 스캔 순서로 신호를 50 ms 이상씩
+# 붙잡아 둘 시간을 주고 나서 움직인다(sig_hold). 안 기다리면 줄 앞부분이
+# 펄스 없이 지나가 TPAC 이 그만큼을 못 센다.
+write_port_register(277, 3)
+sleep(sig_hold)
+pass_len = sl_servo_arc(zero_pose)
+# 끝점 도착 — 스캔 동결(277 = 0 -> DO[1] = 0). 동결이 TPAC 에 닿은 뒤에
+# 다음 동작(줄 바꿈 상승)으로 간다.
+write_port_register(277, 0)
+sleep(sig_hold)
+
+row_idx = row_idx + 1
+dir_sign = 1
+pass_done = 1
+# 총 작업 거리는 TCP 가 실제로 지난 호 길이다(pass_len, mm).
+path_len = path_len + pass_len
+write_port_register(291, row_idx)
+sl_w1(297, path_len * 0.1)
+sl_w1(298, row_idx * 100.0 / rows)
