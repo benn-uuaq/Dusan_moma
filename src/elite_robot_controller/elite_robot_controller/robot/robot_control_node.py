@@ -199,6 +199,10 @@ class RobotControlNode(Node):
         # 1로 세워야 태스크가 이 값을 읽는다.
         self.create_subscription(
             Float32MultiArray, 'robot/command/work_area', self.cb_work_area, 10)
+        # ERUT 좌·우 끝 이동높이 [0.1 mm] -> 356 · 357 (if-0.12). RCS 가 work_area 바로
+        # 앞에 보내고, 태스크는 266 = 1 일 때 work_area 와 같이 읽는다.
+        self.create_subscription(
+            Float32MultiArray, 'robot/command/scan_pitch', self.cb_scan_pitch, 10)
         # 스캔 시작 허가(267). 로봇이 원점에서 멈춰 기다리는 것을 풀어 준다.
         self.create_subscription(Int32, 'robot/command/scan_go', self.cb_scan_go, 10)
         # 차량 고정 확인(309). 차량이 서고 아웃트리거가 고정되고 리프트가
@@ -588,6 +592,12 @@ class RobotControlNode(Node):
     def cb_work_area(self, msg):
         # [너비, 높이, 스캐너높이, 겹침] mm -> 256~259, 성공하면 266=1.
         self._write_pose_topic('work_area', msg, flag_name='param_src')
+
+    def cb_scan_pitch(self, msg):
+        """좌·우 끝 이동높이 [0.1 mm] 두 개를 356 · 357 에 쓴다(플래그는 work_area 가 세운다)."""
+        success, message = self.write_pose('scan_pitch', list(msg.data))
+        if not success:
+            self.get_logger().warn(message)
 
     def cb_mark_target(self, msg):
         """마킹 자리 [u, v] (mm)를 268~269 에 쓴다."""

@@ -111,7 +111,7 @@ def test_job_rows_go_to_one_daily_workbook(rec, tmp_path) -> None:
     assert first["출처"] == "ERUT" and first["job_id"] == "jb00000001"
     assert first["구간"] == "1A" and first["결과"] == "완료"
     assert "E-PROBE-L" in first["비고"], "구간 중 난 장애는 비고에 남는다"
-    assert first["프로브"] == "8축 직사각" and first["태스크"] == "논센서판"
+    assert first["프로브"] == "8축 홀더" and first["태스크"] == "논센서판"
     assert first["호 길이[mm]"] == 721 and first["격자간 겹침[mm]"] == 20
     assert first["좌표 수"] == 1
     assert first["스캔 좌표 파일"].startswith("스캔좌표/2026/09/20260914_")

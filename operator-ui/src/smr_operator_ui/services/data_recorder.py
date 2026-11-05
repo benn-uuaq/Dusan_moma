@@ -218,7 +218,7 @@ class DataRecorder(QObject):
             "overlap": getattr(plan, "pitch_y", ""),
             # 벽 바깥 반지름(바깥 지름 / 2) — 두께는 쓰지 않는다(2026-10-19).
             "radius": getattr(plan, "radius", ""),
-            "probe": {5: "5축 십자", 8: "8축 직사각"}.get(probes, "-"),
+            "probe": {5: "5축 홀더", 8: "8축 홀더"}.get(probes, "-"),
             "task": "" if nosensor is None else ("논센서판" if nosensor else "센서판"),
         }
         self.log_event("정보", f"작업 기록 시작: {source} {job_id}")

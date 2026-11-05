@@ -61,7 +61,9 @@ from smr_operator_ui.services.vehicle_adapters import (
     VehicleAmrAdapter, VehicleLiftAdapter, VehicleOutriggerAdapter,
 )
 from smr_operator_ui.services.vehicle_client import VehicleClient
-from smr_operator_ui.services.job_sequencer import PROBE_COVERAGE_MM, CellStatus
+from smr_operator_ui.services.job_sequencer import (
+    PROBE_COVERAGE_MM, CellStatus, scan_row_heights,
+)
 from smr_operator_ui.services.erut_session import (
     CONTACT_LEAD_MS,
     HOME_BUSY_TEXT,
@@ -583,7 +585,6 @@ class OperatorWindow(QMainWindow):
         self.cobot_jog_screen.command_requested.connect(self._save_reference_pose)
         self.cobot_manual_screen.command_requested.connect(self._handle_cobot_command)
         self.screens["cobot"].save_requested.connect(self._send_linear_speed)
-        self.screens["cobot"].save_requested.connect(self._apply_scan_rise_setting)
         self.screens["cobot"].eoat_changed.connect(self._apply_eoat_choice)
         self.screens["cobot"].task_refresh_requested.connect(
             lambda: self.ros_status.call_command("task_status")
@@ -726,6 +727,8 @@ class OperatorWindow(QMainWindow):
         self.erut_session.home_within_ms = self._home_within_ms
         self.erut_session.area_diameter = (
             lambda: self.main_screen.orbit_view.target_dimensions()[0] * 1000.0)
+        self.erut_session.side_pitch_blocker = self._side_pitch_blocker
+        self.erut_session.motion_remain = self._segment_remain_mm
         self.erut_session.mark_waiting_point = lambda: self.mark_runner.waiting_point
         self.erut_session.pause_settled = self._pause_settled
         self.erut_session.pause_holds_position = self._pause_holds_position
@@ -834,10 +837,6 @@ class OperatorWindow(QMainWindow):
         _w, h = plan.eoat_size
         if h <= 0:
             h = self.main_screen.rect_view.work_area()[2]
-        # ERUT scan.pitch(검사 줄 간격)를 넘지 않는다(if-0.10 탭11 Q-39 가안).
-        pitch = float(getattr(plan, "line_pitch_max", 0.0) or 0.0)
-        if pitch > 0:
-            h = min(h, pitch)
         return h
 
     def _fill_from_local_setup(self, plan):
@@ -861,19 +860,9 @@ class OperatorWindow(QMainWindow):
                 changes["radius"] = radius
         if plan.eoat_probes <= 0 and float(extra.get("eoat_type", 0) or 0) > 0:
             changes["eoat_probes"] = int(float(extra["eoat_type"]))
-        # 스캔 상승 높이 제한은 Cobot 설정에서 EOAT 종류별로 넣은 값이다(2026-10-12).
-        probes = int(changes.get("eoat_probes", plan.eoat_probes) or 0)
-        rise = self.screens["cobot"].scan_rise_mm(probes)
-        if rise <= 0 and probes in PROBE_COVERAGE_MM:
-            rise = PROBE_COVERAGE_MM[probes][1]
-        # ERUT 가 보낸 scan.pitch(검사 줄 간격)를 줄 간격의 최대값으로 본다 — 탐촉자
-        # 유효 높이로 자동으로 정하되 pitch 를 넘지 않게 줄을 늘린다(if-0.10 Q-39 가안).
-        # 로봇은 이 값(263 → scan_h)으로 구역 세로를 균등하게 나눈다.
-        pitch = float(getattr(plan, "line_pitch_max", 0.0) or 0.0)
-        if pitch > 0 and rise > 0:
-            rise = min(rise, pitch)
-        if plan.scan_rise_mm <= 0 and rise > 0:
-            changes["scan_rise_mm"] = rise
+        # 상승 높이는 설정이 아니다(2026-11-06) — ERUT 줄 간격은 좌·우 끝 이동높이
+        # (if-0.12)로 로봇에 따로 가고(356 · 357), 홀더 유효 높이(263)는 장착 홀더의
+        # 기본값(PROBE_COVERAGE_MM)이다.
         return replace(plan, **changes) if changes else plan
 
     def _start_erut_job(self, plan, prepare_only: bool = False) -> None:
@@ -885,6 +874,9 @@ class OperatorWindow(QMainWindow):
         """
         plan = self._fill_from_local_setup(plan)
         scan_h_mm = self._scan_band_mm(plan)
+        # 로봇이 이번 구역에서 3점 측정을 시작할 때까지 290~299 는 지난 구역 값이다 —
+        # 진행률 100 · 끝 줄 위치를 그대로 내보내지 않는다(if-0.12 탭11 Q-48 ②).
+        self._contact_armed = False
         self.simulator.begin_external(plan.column_count)
         # 구간 하나 = job 하나. prepare 가 오면 차량을 구간 x 로, 리프트를
         # 구간 y 로 정렬한 뒤 로봇이 프로브 3점을 잡고 원점에 선다.
@@ -1160,6 +1152,7 @@ class OperatorWindow(QMainWindow):
         overlap_mm: float, radius_mm: float = 0.0,
         eoat_w_mm: float = 0.0, eoat_h_mm: float = 0.0,
         eoat_type: float = 0.0,
+        pitch_left: float = -1.0, pitch_right: float = -1.0,
     ) -> None:
         """셀 치수와 호 정보를 로봇(레지스터 256~264)과 저장소에 반영한다.
 
@@ -1192,7 +1185,8 @@ class OperatorWindow(QMainWindow):
              "eoat_type": eoat_type},
         )
         self._push_work_area_to_robot(width_mm, height_mm, scan_h_mm, overlap_mm,
-                                      radius_mm, eoat_w_mm, eoat_h_mm, eoat_type)
+                                      radius_mm, eoat_w_mm, eoat_h_mm, eoat_type,
+                                      pitch_left, pitch_right)
 
     # 로봇 컨트롤러가 주는 태스크 상태(레지스터 500). 1 = 실행 중.
     _TASK_STATE_RUNNING = 1
@@ -1235,6 +1229,7 @@ class OperatorWindow(QMainWindow):
         self, width_mm: float, height_mm: float, scan_h_mm: float,
         overlap_mm: float, radius_mm: float,
         eoat_w_mm: float, eoat_h_mm: float, eoat_type: float = 0.0,
+        pitch_left: float = -1.0, pitch_right: float = -1.0,
     ) -> None:
         """작업 영역을 로봇 레지스터(256~264)에 쓰고 param_src(266)를 세운다.
 
@@ -1253,6 +1248,21 @@ class OperatorWindow(QMainWindow):
         values = [width_mm, height_mm, round(scan_h_mm * 10), overlap_mm,
                   round(radius_mm * 10), 0,
                   round(eoat_w_mm * 10), round(eoat_h_mm * 10), eoat_type]
+        # ERUT 좌·우 끝 이동높이 [0.1 mm] → 356 · 357 (if-0.12). 없으면 0 · 0 이고 로봇은
+        # 예전처럼 상승 제한(263)으로 구역 세로를 고르게 나눈다. 구역 높이보다 큰
+        # 상승은 어차피 위 끝에서 잘리므로 높이로 줄여 16bit 칸에 담는다.
+        # 줄 높이는 그 값으로 정해진다 — 로봇 태스크와 같은 규칙으로 미리 구해 화면 ·
+        # ERUT 위치 계산에 쓴다(job_sequencer.scan_row_heights).
+        if pitch_left >= 0 and pitch_right >= 0:
+            top = max(float(height_mm), 0.0)
+            self._pending_scan_pitch = [round(min(pitch_left, top) * 10),
+                                        round(min(pitch_right, top) * 10)]
+            self._robot_row_heights = scan_row_heights(
+                round(top), self._pending_scan_pitch[0] / 10, self._pending_scan_pitch[1] / 10)
+        else:
+            self._pending_scan_pitch = [0, 0]
+            self._robot_row_heights = None
+        self.main_screen.rect_view.set_row_heights(self._robot_row_heights)
         self._pending_work_area = values
         # 로봇이 다음 play 에서 읽을 값. 스캔 시작 전에 0 이 없는지 본다.
         self._robot_work_area = values
@@ -1274,9 +1284,35 @@ class OperatorWindow(QMainWindow):
                     "구간 설정을 아직 반영하지 못했습니다. 준비되면 자동으로 다시 반영합니다.")
             return
 
+        self._send_scan_pitch()
         if self.ros_status.send_pose("work_area", values):
             self._pending_work_area = None
             self.main_screen.show_activity("작업 영역을 로봇에 반영했습니다.")
+
+    def _send_scan_pitch(self) -> None:
+        """좌·우 끝 이동높이(356 · 357)를 작업 영역보다 먼저 보낸다.
+
+        0 · 0(ERUT 값 없음)인데 제어 노드가 그 칸을 모르면(옛 노드) 보낼 것이 없다 —
+        옛 노드로도 RCS '검사 시작'은 그대로 돈다.
+        """
+        values = getattr(self, "_pending_scan_pitch", None) or [0, 0]
+        if not any(values) and not self.ros_status.writable("scan_pitch"):
+            return
+        self.ros_status.send_pose("scan_pitch", values)
+
+    #: 좌·우 끝 이동높이(356 · 357)를 읽는 로봇 태스크 판.
+    SIDE_PITCH_TASKS = frozenset({"dusan_v6"})
+
+    def _side_pitch_blocker(self) -> str:
+        """ERUT 좌·우 이동높이를 지금 못 쓰면 그 까닭(→ 400 E6001 detail). 쓰면 ""."""
+        version = getattr(self, "_task_version", "") or DEFAULT_TASK_VERSION
+        if version not in self.SIDE_PITCH_TASKS:
+            return (f"로봇 태스크 {version} 는 좌·우 끝 이동높이(pitch_left · pitch_right)를 "
+                    f"쓰지 못합니다 — {', '.join(sorted(self.SIDE_PITCH_TASKS))} 로 바꿔야 합니다")
+        if self.ros_status.lacks_write("scan_pitch"):
+            return ("로봇 제어 노드가 좌·우 끝 이동높이 칸(레지스터 356 · 357)을 모릅니다 — "
+                    "RCS PC 에서 colcon build 를 다시 해야 합니다")
+        return ""
 
     def _task_state_note(self) -> str:
         """막힌 이유를 따질 수 있게 로봇이 보고한 태스크 상태를 덧붙인다.
@@ -1295,6 +1331,7 @@ class OperatorWindow(QMainWindow):
         values = getattr(self, "_pending_work_area", None)
         if values is None or self._work_area_block_reason():
             return
+        self._send_scan_pitch()
         if self.ros_status.send_pose("work_area", values):
             self._pending_work_area = None
             self.main_screen.show_activity("작업 영역을 로봇에 반영했습니다.")
@@ -1673,6 +1710,13 @@ class OperatorWindow(QMainWindow):
             return length - pos if segment == 1 else pos
         if segment == 2:
             state = getattr(self, "_last_scan_state", None) or []
+            # 좌·우 끝 이동높이(if-0.12)면 이번 상승 = 다음 줄 높이 - 지금 줄 높이.
+            # 로봇은 줄을 끝내고 291(끝낸 줄 수)을 올린 뒤 상승한다.
+            heights = getattr(self, "_robot_row_heights", None)
+            row = int(state[1]) if len(state) > 1 else 0
+            if heights and 1 <= row < len(heights):
+                rise = heights[row] - heights[row - 1]
+                return round(rise, 1) if rise > 0 else None
             pitch = state[6] / 10.0 if len(state) > 6 else 0.0
             return pitch if pitch > 0 else None
         return None
@@ -1687,8 +1731,8 @@ class OperatorWindow(QMainWindow):
         probes = int(float(self._work_area_extra.get("eoat_type") or 0))
         if channels == probes:
             return
-        mounted = f"{probes}축" if probes else "없음(툴 플랜지)"
-        text = (f"ERUT 홀더 채널 수 {channels} 가 RCS 의 장착 EOAT {mounted} 와 다릅니다 — "
+        mounted = f"{probes}축 홀더" if probes else "노그리퍼(툴 플랜지)"
+        text = (f"ERUT 홀더 채널 수 {channels} 가 RCS 의 장착 홀더 {mounted} 와 다릅니다 — "
                 f"로봇은 RCS 설정({mounted})으로 움직입니다. 홀더 설정을 확인하세요.")
         self.main_screen.show_activity(text)
         self.cobot_manual_screen.add_alarm(text)
@@ -1761,19 +1805,35 @@ class OperatorWindow(QMainWindow):
     def _erut_position(self) -> dict:
         """격자 안 로봇 위치와 진행률 (ERUT pos·progress 용).
 
-        가로 = 이번 줄에서 원점부터 호를 따라 간 거리(286, 0.1mm), 세로 = 줄 번호
-        (291) x 줄 간격(296, 0.1mm). 진행률은 로봇이 내는 298, 스캔한 거리는
-        287(누적 mm).
+        가로 = 이번 줄에서 원점부터 호를 따라 간 거리(286, 0.1mm), 세로 = 지금 줄의
+        높이. 줄 높이는 좌·우 끝 이동높이(if-0.12)면 그 규칙으로 구한 높이, 아니면
+        줄 번호(291) x 줄 간격(296, 0.1mm)이다. 진행률은 로봇이 내는 298, 스캔한
+        거리는 287(누적 mm).
+
+        로봇은 다음 구역의 3점 측정을 시작하기 전까지 지난 구역 값(진행률 100 · 끝 줄)을
+        들고 있다. 이번 구역에서 로봇이 출발한 걸 볼 때까지(_contact_armed) 진행률은
+        싣지 않고 위치는 구역 원점으로 둔다(if-0.12 탭11 Q-48 ②).
         """
+        if not getattr(self, "_contact_armed", False):
+            return {"arc_mm": 0.0, "row_mm": 0.0, "progress": None, "scanned_mm": None}
         arc = getattr(self, "_scan_arc", None) or []
         state = getattr(self, "_last_scan_state", None) or []
         row = int(state[1]) if len(state) > 1 else 0
-        # 296 은 0.1 mm 단위다(2026-10-06 — 정수 mm 면 29.6 이 30 이 되어 줄마다
-        # 0.4 mm 씩 위로 밀렸다).
-        pitch_01mm = self._row_pitch_01mm(state)
+        rows = int(state[2]) if len(state) > 2 else 0
+        # 291 은 끝낸 줄 수라 마지막 줄을 끝내면 줄 수와 같아진다 — 그대로 곱하면 위
+        # 끝보다 한 줄 위(y 229 / 구역 200)가 나갔다(Q-48 ③). 끝 줄에 묶는다.
+        heights = getattr(self, "_robot_row_heights", None)
+        if heights:
+            row_mm = heights[min(max(row, 0), len(heights) - 1)]
+        else:
+            if rows > 0:
+                row = min(row, rows - 1)
+            # 296 은 0.1 mm 단위다(2026-10-06 — 정수 mm 면 29.6 이 30 이 되어 줄마다
+            # 0.4 mm 씩 위로 밀렸다).
+            row_mm = row * self._row_pitch_01mm(state) / 10.0
         return {
             "arc_mm": (arc[0] / 10.0) if arc else 0.0,
-            "row_mm": row * pitch_01mm / 10.0,
+            "row_mm": row_mm,
             # 290~299 의 9번째(298)가 진행률이다. 예전엔 8번째(297, 스캔한 경로
             # 0.1 단위)를 읽어 1 m 만 가도 100 이 됐다(ERUT Q-02, 2026-10-02).
             "progress": int(state[8]) if len(state) > 8 else None,
@@ -2401,14 +2461,25 @@ class OperatorWindow(QMainWindow):
                     "eoat_h_mm": float(values.get("eoat_h_mm") or 0.0),
                     "eoat_type": float(values.get("eoat_type") or 0.0),
                 }
+                scan_h_mm = float(values["scan_h_mm"])
+                # 홀더 유효 높이는 기본값이다 — 예전 설정(스캔 상승 높이 제한, 2026-11-06 에
+                # 뺐다)으로 줄여 저장된 값이 남아 있으면 기본값으로 되돌린다.
+                probes = int(self._work_area_extra["eoat_type"])
+                if probes in PROBE_COVERAGE_MM:
+                    cover_w, cover_h = PROBE_COVERAGE_MM[probes]
+                    self._work_area_extra.update(eoat_w_mm=cover_w, eoat_h_mm=cover_h)
+                    scan_h_mm = cover_h
+                    self.main_screen.set_work_area(
+                        float(values["width_mm"]), float(values["height_mm"]), scan_h_mm,
+                        float(values["overlap_mm"]), eoat_w_mm=cover_w, radius_mm=radius_mm)
                 self._show_eoat_choice(values.get("eoat_type"))
                 self._push_work_area_to_robot(
                     float(values["width_mm"]), float(values["height_mm"]),
-                    float(values["scan_h_mm"]), float(values["overlap_mm"]),
+                    scan_h_mm, float(values["overlap_mm"]),
                     radius_mm,
-                    float(values.get("eoat_w_mm") or 0.0),
-                    float(values.get("eoat_h_mm") or 0.0),
-                    float(values.get("eoat_type") or 0.0),
+                    self._work_area_extra["eoat_w_mm"],
+                    self._work_area_extra["eoat_h_mm"],
+                    self._work_area_extra["eoat_type"],
                 )
             return
         screen = self._settings_screens.get(scope)
@@ -2955,7 +3026,7 @@ class OperatorWindow(QMainWindow):
             return
         if self._job_running() or self._robot_task_running():
             self._show_eoat_choice(current)
-            message = "작업 중에는 장착 EOAT 를 바꿀 수 없습니다 — 작업을 마친 뒤 바꾸세요."
+            message = "작업 중에는 장착 홀더를 바꿀 수 없습니다 — 작업을 마친 뒤 바꾸세요."
             self.main_screen.show_activity(message)
             self.cobot_manual_screen.add_alarm(message)
             return
@@ -2964,9 +3035,8 @@ class OperatorWindow(QMainWindow):
         width, height, scan_h, overlap = self.main_screen.rect_view.work_area()
         if probes in PROBE_COVERAGE_MM:
             cover_w, cover_h = PROBE_COVERAGE_MM[probes]
-            rise = self.screens["cobot"].scan_rise_mm(probes)
             extra["eoat_w_mm"] = cover_w
-            extra["eoat_h_mm"] = rise if rise > 0 else cover_h
+            extra["eoat_h_mm"] = cover_h
             # EOAT 를 골랐으면 스캐너 밴드(258)도 그 세로 커버다(_scan_band_mm).
             scan_h = extra["eoat_h_mm"]
         else:
@@ -2974,26 +3044,7 @@ class OperatorWindow(QMainWindow):
             extra["eoat_h_mm"] = 0.0
         self._send_work_area(width, height, scan_h, overlap, **extra)
         self.main_screen.show_activity(
-            f"장착 EOAT 를 {names.get(probes, probes)}(으)로 바꿨습니다 — 로봇 264 = {probes}.")
-
-    def _apply_scan_rise_setting(self, scope: str, _values: dict) -> None:
-        """스캔 상승 높이 제한을 저장하면 장착한 EOAT 의 값을 로봇에 바로 보낸다.
-
-        작업을 시작할 때도 이 값으로 보내지만(_fill_from_local_setup), 쉬고 있을
-        때 바로 맞춰 둬야 화면의 줄 수 · 밴드와 펜던트에서 직접 튼 태스크도 같은
-        값으로 돈다. 작업 중이면 지금 구간은 그대로 두고 다음 작업부터 쓴다.
-        """
-        if scope != "cobot" or self._job_running():
-            return
-        extra = dict(self._work_area_extra)
-        rise = self.screens["cobot"].scan_rise_mm(int(float(extra.get("eoat_type") or 0)))
-        if rise <= 0 or abs(rise - float(extra.get("eoat_h_mm") or 0.0)) < 0.05:
-            return
-        extra["eoat_h_mm"] = rise
-        width, height, _scan_h, overlap = self.main_screen.rect_view.work_area()
-        # EOAT 를 골랐으면 스캐너 밴드(258)도 그 세로 커버다(_scan_band_mm).
-        self._send_work_area(width, height, rise, overlap, **extra)
-        self.main_screen.show_activity(f"스캔 상승 높이 제한 {rise:g} mm 를 로봇에 보냈습니다.")
+            f"장착 홀더를 {names.get(probes, probes)}(으)로 바꿨습니다 — 로봇 264 = {probes}.")
 
     # 위치 저장은 조그 화면에서, 나머지는 수동 제어 화면에서 요청한다.
     _JOG_COMMANDS = ("save_home_pose", "save_standby_pose", "save_start_pose")
@@ -3079,6 +3130,9 @@ class OperatorWindow(QMainWindow):
         7: ("E9107", "SCAN_IK_FAILED", "스캔 호 경로에 역기구학 해가 없어 멈췄습니다 — 로봇 위치·자세를 확인하세요", {}),
         # v5 인터락 — 차량 고정 확인(레지스터 309)을 기다리다 시간이 넘었다.
         8: ("E9108", "VEHICLE_HOLD_TIMEOUT", "차량 고정 확인을 못 받아 로봇이 멈췄습니다 — 아웃트리거 고정·차량 정지를 확인하세요", {}),
+        # v6 — 줄 수가 펜던트 Loop 한도(200)를 넘었다. RCS 가 ERUT 요청을 먼저 거르므로
+        # 보통은 펜던트에서 값을 직접 바꿨을 때만 난다.
+        9: ("E9109", "SCAN_ROWS_OVER_LIMIT", "줄 수가 로봇 한도(200 줄)를 넘어 멈췄습니다 — 구역 높이·이동높이를 확인하세요", {}),
     }
 
     def _handle_probe_error(self, values: list) -> None:

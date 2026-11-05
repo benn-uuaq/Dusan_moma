@@ -496,7 +496,7 @@ def describe_mode(snap: dict[str, Any]) -> str:
     lines = [f"■ {snap.get('name', '')}", f"저장: {snap.get('saved_at', '-')}", ""]
     area = snap.get("work_area") or {}
     if area:
-        probe = {5: "5축 십자", 8: "8축 직사각"}.get(int(float(area.get("eoat_type") or 0)), "-")
+        probe = {5: "5축 홀더", 8: "8축 홀더"}.get(int(float(area.get("eoat_type") or 0)), "-")
         lines.append(f"작업 영역: 호 {num(area.get('width_mm'))} × 높이 {num(area.get('height_mm'))} mm, "
                      f"격자간 겹침 {num(area.get('overlap_mm'))} mm")
         # 반지름은 검사 대상 바깥 지름에서 구한다 — 두께는 쓰지 않는다(2026-10-19).

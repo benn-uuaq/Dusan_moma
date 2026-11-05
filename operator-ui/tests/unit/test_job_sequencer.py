@@ -148,7 +148,8 @@ def test_work_area_is_sent_once_for_whole_job(qtbot) -> None:
     # 커버로 스스로 정한다.
     # 다섯 번째는 호 계산용 벽 바깥 반지름(여기서는 안 줬으므로 0 = 평면) —
     # 두께는 빠졌다(2026-10-19). 마지막 값은 EOAT 종류(레지스터 264). 안 고르면 0.
-    assert h.work_areas == [(600.0, 800.0, 150.0, 20.0, 0.0, 0.0, 0.0, 0.0)]
+    # 끝의 -1 · -1 = ERUT 좌·우 끝 이동높이 없음(RCS 작업 — 로봇이 고르게 나눈다).
+    assert h.work_areas == [(600.0, 800.0, 150.0, 20.0, 0.0, 0.0, 0.0, 0.0, -1.0, -1.0)]
 
 
 def test_arc_geometry_reaches_the_robot(qtbot) -> None:
@@ -167,7 +168,7 @@ def test_arc_geometry_reaches_the_robot(qtbot) -> None:
 
     # 네 번째 값은 격자간 세로 겹침(pitch_y=30)이다. scan_overlap(20)이 아니다.
     assert h.work_areas == [
-        (1214.0, 500.0, 150.0, 30.0, 844.6, 0.0, 0.0, 0.0)]
+        (1214.0, 500.0, 150.0, 30.0, 844.6, 0.0, 0.0, 0.0, -1.0, -1.0)]
 
 
 def test_eoat_size_reaches_the_robot(qtbot) -> None:
@@ -188,7 +189,7 @@ def test_eoat_size_reaches_the_robot(qtbot) -> None:
         seq.start()
         seq.settle()
         # 가로, 세로에 이어 종류(레지스터 264)까지 간다.
-        assert seq.work_areas[0][5:] == (w, h, float(probes))
+        assert seq.work_areas[0][5:8] == (w, h, float(probes))
 
 
 def test_unknown_eoat_falls_back_to_no_tool(qtbot) -> None:
@@ -491,13 +492,24 @@ def test_arrival_during_pause_is_taken_on_resume(qtbot) -> None:
     assert h.seq.state is SequencerState.SCANNING
 
 
-def test_scan_rise_setting_replaces_the_probe_cover_height() -> None:
-    """Cobot 설정의 스캔 상승 높이 제한이 있으면 그 값이 세로 커버(= 상승량)다."""
+def test_holder_cover_height_is_the_fixed_default() -> None:
+    """홀더 유효 높이는 기본값이다 — 설정으로 바꾸지 않는다(2026-11-06)."""
     from dataclasses import replace
 
     plan = GridPlan(column_count=1, row_count=1, cell_width=600.0, cell_height=800.0,
                     eoat_probes=8)
-    assert plan.eoat_size == (75.0, 167.5)                 # 설정이 없으면 기본값
-    assert replace(plan, scan_rise_mm=120.0).eoat_size == (75.0, 120.0)
-    # EOAT 를 안 골랐으면(0) 커버도 없다 — 설정값을 붙이지 않는다.
-    assert replace(plan, eoat_probes=0, scan_rise_mm=120.0).eoat_size == (0.0, 0.0)
+    assert plan.eoat_size == (75.0, 167.5)
+    assert replace(plan, eoat_probes=5).eoat_size == (30.0, 30.0)
+    assert replace(plan, eoat_probes=0).eoat_size == (0.0, 0.0)      # 노그리퍼
+
+
+def test_side_pitch_reaches_the_robot_with_the_work_area(qtbot) -> None:
+    """ERUT 좌·우 끝 이동높이(if-0.12)는 작업 영역과 같은 신호로 간다 — 0 도 0 으로."""
+    plan = GridPlan(column_count=1, row_count=1, cell_width=300.0, cell_height=200.0,
+                    radius=844.6, pitch_left=0.0, pitch_right=40.0)
+    assert plan.has_side_pitch and plan.row_heights() == [
+        0, 40, 40, 80, 80, 120, 120, 160, 160, 200, 200]
+    seq = Harness(plan)
+    seq.start()
+    seq.settle()
+    assert seq.work_areas[0][8:] == (0.0, 40.0)

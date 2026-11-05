@@ -118,6 +118,7 @@ def plan_dimensions(
 def ideal_path(
     width_mm: float, height_mm: float, scan_h_mm: float, overlap_mm: float,
     eoat_w_mm: float = 0.0, radius_mm: float = 0.0,
+    row_heights: list[float] | None = None,
 ):
     """원점(0,0) 기준 이상적인 ㄹ자 경로 [(가로 mm, 세로 mm), ...] 를 만든다.
     가로 값 자체는 원점(0)에서 잰 거리일 뿐이고, 화면에 그릴 때 어느 쪽이
@@ -130,6 +131,22 @@ def ideal_path(
     """
     p = plan_dimensions(width_mm, height_mm, scan_h_mm, overlap_mm, eoat_w_mm,
                         radius_mm)
+    if row_heights:
+        # ERUT 좌·우 끝 이동높이(if-0.12)로 줄 높이가 정해졌다 — 균등 분할 대신 그 높이.
+        # 같은 높이가 이어지면(그 끝 상승 0) 위로 오르지 않고 되돌아 훑는다.
+        gaps = [b - a for a, b in zip(row_heights, row_heights[1:])]
+        p.update(rows=len(row_heights), pitch=max(gaps, default=0.0), overlap=0.0,
+                 top=row_heights[-1], covered=row_heights[-1] + p["scan_h"] / 2.0,
+                 row_heights=list(row_heights))
+        pts = [(0.0, 0.0)]
+        sign = 1
+        for i, v in enumerate(row_heights):
+            h = p["draw_run"] if sign > 0 else 0.0
+            pts.append((h, v))
+            sign = -sign
+            if i < len(row_heights) - 1 and row_heights[i + 1] != v:
+                pts.append((h, row_heights[i + 1]))
+        return pts, p
     margin = p["arc_margin"]
     # 세로는 **가운데 프로브**가 지나는 높이다. 맨 아랫줄은 ㅗ 자세로
     # 밑면을 직접 훑으므로 바닥(0)에서 시작하고, 맨 윗줄은 ㅜ 자세로
@@ -175,6 +192,8 @@ class RectWorkView(QWidget):
         # 경로를 **현** 으로 그리는 데 쓴다(plan_dimensions 의 draw_run 참고).
         # 벽 바깥 반지름 = 바깥 지름 / 2.
         self._radius_mm = 834.6
+        # ERUT 좌·우 끝 이동높이로 정한 줄 높이(없으면 균등 분할).
+        self._row_heights: list[float] | None = None
         self._pos_h_mm = 0.0
         self._pos_v_mm = 0.0
         self._has_position = False
@@ -207,6 +226,22 @@ class RectWorkView(QWidget):
         if radius_mm is not None:
             self._radius_mm = radius_mm
         self.update()
+
+    def set_row_heights(self, heights: list[float] | None) -> None:
+        """ERUT 좌·우 끝 이동높이(if-0.12)로 정한 줄 높이 [mm]. None 이면 균등 분할."""
+        self._row_heights = list(heights) if heights else None
+        self.update()
+
+    def coverage_reach(self) -> tuple[float, float]:
+        """구역 밖으로 홀더가 더 덮는 (가로, 세로) [mm] — 홀더 폭 · 덮는 높이의 반.
+
+        ㄹ자 경로는 홀더(그리퍼) 중심선이라 첫 · 끝 줄과 좌우 끝에서 홀더 절반이
+        구역 밖으로 나간다. 노그리퍼는 폭이 0 이라 가로로는 나가지 않는다.
+        """
+        _pts, plan = ideal_path(self._width_mm, self._height_mm, self._scan_h_mm,
+                                self._overlap_mm, self._eoat_w_mm, self._radius_mm)
+        return (max(float(self._eoat_w_mm or 0.0), 0.0) / 2.0,
+                max(plan["scan_h"], 0.0) / 2.0)
 
     def work_area(self) -> tuple[float, float, float, float]:
         """현재 너비/높이/스캐너 높이/겹침을 mm로 반환한다."""
@@ -272,13 +307,18 @@ class RectWorkView(QWidget):
 
         _pts, plan = ideal_path(
             self._width_mm, self._height_mm, self._scan_h_mm, self._overlap_mm,
-            self._eoat_w_mm, self._radius_mm)
+            self._eoat_w_mm, self._radius_mm, self._row_heights)
         rect = self._plot_rect()
+        # ㄹ자 경로는 **홀더(그리퍼) 중심**이 지나는 선이고, 작업 영역(구역) 사각형은
+        # 그 중심선이 닿는 범위다 — 5축 · 8축 홀더 · 노그리퍼 모두 같다(2026-11-05).
+        # 첫 · 끝 줄에서 홀더는 구역 위아래로 덮는 높이의 반(scan_h/2)씩, 좌우 끝에서는
+        # 홀더 폭의 반씩 더 덮는다. 그만큼을 빈 여백으로 남겨 구역을 그린다 — 띠는
+        # 칠하지 않는다(2026-11-06). 여백 덕에 원점이 잘리지 않고 경로 위에 놓인다.
         # 가로세로 축척이 다르다. 칸을 꽉 채우려는 것이라 의도한 것이다.
-        # 밴드는 격자 위아래로 scan_h/2 씩 넘어가지만 사각형은 격자
-        # 그대로 그린다 — 넘어가는 부분은 검사 대상이 아니다.
-        extent_v = max(plan["height"], 1.0)
-        scale_x = rect.width() / plan["width"] if plan["width"] else 1.0
+        reach_h, reach_v = self.coverage_reach()
+        extent_v = max(plan["height"] + 2 * reach_v, 1.0)
+        extent_h = plan["width"] + 2 * reach_h
+        scale_x = rect.width() / extent_h if extent_h else 1.0
         scale_y = rect.height() / extent_v
 
         def to_px(h_mm: float, v_mm: float) -> tuple[float, float]:
@@ -290,8 +330,8 @@ class RectWorkView(QWidget):
             # 그래서 h_mm=0(원점)이 화면 **왼쪽 아래** 구석이고 ㄹ자는
             # 왼쪽에서 오른쪽으로 뻗어 나간다. 여기 하나만 두면 원점
             # 표시·경로·실시간 위치 점이 모두 같은 기준으로 그려진다.
-            x = rect.left() + h_mm * scale_x
-            y = rect.bottom() - v_mm * scale_y
+            x = rect.left() + (h_mm + reach_h) * scale_x
+            y = rect.bottom() - (v_mm + reach_v) * scale_y
             return x, y
 
         # 제목 + 계산값. 제목은 굵게 크게, 수치는 폭이 좁아도 잘리지 않도록
@@ -309,14 +349,18 @@ class RectWorkView(QWidget):
             QRectF(text_area.x(), text_area.y() + 22, text_area.width(), 40),
             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
             f"{plan['width']:.0f} × {plan['height']:.0f} mm  "
-            f"(스캐너 {plan['scan_h']:.0f} / 겹침 {plan['overlap']:.1f} mm 자동)\n"
-            f"피치 {plan['pitch']:.1f} mm  {plan['rows']} 행",
+            + (f"(ERUT 좌·우 이동높이)\n최대 상승 {plan['pitch']:.1f} mm  {plan['rows']} 행"
+               if self._row_heights else
+               f"(덮는 높이 {plan['scan_h']:.0f} / 겹침 {plan['overlap']:.1f} mm 자동)\n"
+               f"피치 {plan['pitch']:.1f} mm  {plan['rows']} 행"),
         )
 
-        # 작업 영역 사각형
+        # 작업 영역(구역) 사각형 = 홀더 중심선이 닿는 범위
+        ax0, ay0 = to_px(0, 0)
+        ax1, ay1 = to_px(plan["width"], plan["height"])
         painter.setPen(QPen(QColor("#AAB3BC"), 1.5))
         painter.setBrush(QColor("#E4E7EA"))
-        painter.drawRect(rect)
+        painter.drawRect(QRectF(min(ax0, ax1), min(ay0, ay1), abs(ax1 - ax0), abs(ay1 - ay0)))
 
         # 겹침 구간 음영: 인접한 두 패스의 스캐너 밴드가 겹치는 부분
         if plan["overlap"] > 0:
@@ -368,14 +412,11 @@ class RectWorkView(QWidget):
 
         # 원점 표시. 로봇이 알려 주는 좌표가 아니라 **작업 영역 자체의
         # 기준점**이라 그림 좌표 (0, 0) 을 그대로 쓴다 — 화면에서는
-        # 왼쪽 아래 구석이다("스캔 영역의 원점이 원점").
+        # 왼쪽 아래 구석이고, ㄹ자 경로가 시작하는 점이다(홀더 중심이 여기서 출발).
+        # 예전에는 구석에서 반지름만큼 안쪽으로 밀어 그려 경로 위에 있지 않았다.
         ox, oy = to_px(0, 0)
-        # 구석에 정확히 중심을 두면 원이 절반 잘려 나간다. 반지름만큼
-        # 안쪽으로 붙여 구석에 닿은 채로 온전히 보이게 한다.
-        radius = 4.0
-        ox = max(ox, rect.left() + radius)
-        oy = min(oy, rect.bottom() - radius)
-        painter.setPen(QPen(QColor(COLORS["text"]), 1))
+        radius = 4.5
+        painter.setPen(QPen(QColor(COLORS["text"]), 1.5))
         painter.setBrush(QColor("#FFFFFF"))
         painter.drawEllipse(QRectF(ox - radius, oy - radius, radius * 2, radius * 2))
 
@@ -396,9 +437,11 @@ class RectWorkView(QWidget):
         legend_y = self.height() - 22
         painter.setFont(QFont("Malgun Gothic", 8))
         painter.setPen(QColor(COLORS["primary"]))
-        painter.drawText(QRectF(18, legend_y - 3, 70, 18), Qt.AlignmentFlag.AlignLeft, "─ 경로")
+        painter.drawText(QRectF(18, legend_y - 3, 84, 18), Qt.AlignmentFlag.AlignLeft,
+                         "─ 경로(중심)")
         painter.setPen(QColor(COLORS["text"]))
-        painter.drawText(QRectF(94, legend_y - 3, 90, 18), Qt.AlignmentFlag.AlignLeft, "○ 원점")
+        painter.drawText(QRectF(104, legend_y - 3, 50, 18), Qt.AlignmentFlag.AlignLeft, "○ 원점")
         if self._has_position:
             painter.setPen(QColor(COLORS["warning"]))
-            painter.drawText(QRectF(170, legend_y - 3, 90, 18), Qt.AlignmentFlag.AlignLeft, "● 현재 위치")
+            painter.drawText(QRectF(156, legend_y - 3, 90, 18), Qt.AlignmentFlag.AlignLeft,
+                             "● 현재 위치")

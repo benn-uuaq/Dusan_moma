@@ -1,0 +1,105 @@
+"""ERUT 좌·우 끝 이동높이(if-0.12) — RCS 규칙(scan_row_heights)과 로봇 태스크(v6)가 같은 줄을 훑는지.
+
+로봇 스크립트(dus6_init 의 줄 수 · dus6_up 의 상승)를 파이썬으로 바꿔 그대로 돌린다 —
+Elite 스크립트는 `end` 만 빼면 거의 파이썬이다. 센서판 · 논센서판 둘 다 본다.
+"""
+
+import math
+import pathlib
+
+import pytest
+
+from smr_operator_ui.components.rect_work_view import ideal_path
+from smr_operator_ui.services.job_sequencer import SCAN_ROW_LIMIT, scan_row_heights
+
+TASK = pathlib.Path(__file__).resolve().parents[3] / "robot_task" / "dusan_task_v6"
+FOLDERS = ("scripts", "scripts_nosensor")
+
+
+def _python(script: str) -> str:
+    """Elite 스크립트 → 파이썬(end 는 pass)."""
+    return "\n".join(line[:len(line) - len(line.lstrip())] + "pass"
+                     if line.strip() == "end" else line for line in script.splitlines())
+
+
+def _rows_block(folder: str) -> str:
+    text = (TASK / folder / "dus6_init.script").read_text(encoding="utf-8")
+    start = text.index("if (pitch_l < 0):")
+    end = text.index("overlap = scan_h - pitch", start)
+    return _python(text[start:end])
+
+
+def _run_robot(folder: str, height: float, left: float, right: float, scan_h: float = 30.0):
+    """init 으로 줄 수를 세고, 펜던트 Loop 처럼 pass → up 을 돌며 줄 높이를 모은다."""
+    scope = {"app_height": height, "scan_h": scan_h, "pitch_l": left, "pitch_r": right,
+             "ceil": math.ceil}
+    exec(_rows_block(folder), scope)
+    moves, regs = [], {}
+    scope.update({
+        "row_idx": 0, "dir_sign": 1, "z_base": 0.0, "a_scan": 1.0, "v_scan": 0.1,
+        "path_len": 0.0, "floor": math.floor,
+        "write_port_register": lambda a, v: regs.__setitem__(a, v),
+        "read_port_register": lambda a, signed=True: 100,
+        "get_actual_tcp_pose": lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "movel": lambda pose, a, v: moves.append(round(pose[2] * 1000, 3)),
+    })
+    up = _python((TASK / folder / "dus6_up.script").read_text(encoding="utf-8"))
+    heights = [0.0]
+    segments = []
+    for _ in range(200):                                   # 펜던트 Loop 200 회
+        if scope["row_idx"] >= scope["rows"]:
+            break
+        scope["row_idx"] += 1                              # pass_r / pass_l 의 끝
+        scope["dir_sign"] = -scope["dir_sign"]
+        if scope["row_idx"] < scope["rows"]:
+            regs.pop(277, None)
+            exec(up, scope)
+            heights.append(round(scope["row_y"], 3))
+            segments.append(regs.get(277))
+    return scope["rows"], heights, moves, segments
+
+
+CASES = [(200, 0, 40), (200, 40, 0), (200, 40, 40), (200, 0, 30), (200, 30, 0),
+         (200, 15, 25), (200, 0, 300), (500, 12.5, 7.5), (0, 0, 40), (800, 4.1, 4)]
+
+
+@pytest.mark.parametrize("folder", FOLDERS)
+@pytest.mark.parametrize("height, left, right", CASES)
+def test_robot_task_climbs_like_the_rcs_rule(folder, height, left, right):
+    rows, heights, moves, segments = _run_robot(folder, height, left, right)
+    expected = scan_row_heights(height, left, right)
+    assert rows == len(expected)
+    assert heights == pytest.approx(expected)
+    # 오르는 상승만 움직이고 줄 바꿈(277 = 2)을 낸다 — 0 이면 같은 높이를 되돌아 훑는다.
+    rises = [b - a for a, b in zip(expected, expected[1:])]
+    assert moves == pytest.approx([h for h, r in zip(expected[1:], rises) if r > 0])
+    assert segments == [2 if r > 0 else None for r in rises]
+
+
+@pytest.mark.parametrize("folder", FOLDERS)
+def test_without_side_pitch_the_robot_still_splits_evenly(folder):
+    """356 · 357 이 0 · 0 이면 예전처럼 scan_h 로 고르게 나눈다(RCS 단독 작업)."""
+    rows, heights, _moves, segments = _run_robot(folder, 140, 0, 0, scan_h=30)
+    assert rows == 6 and heights == pytest.approx([0, 28, 56, 84, 112, 140])
+    assert segments == [2] * 5
+
+
+def test_first_line_is_at_the_bottom_and_the_last_on_the_top_edge():
+    assert scan_row_heights(200, 0, 40) == [0, 40, 40, 80, 80, 120, 120, 160, 160, 200, 200]
+    assert scan_row_heights(200, 40, 40) == [0, 40, 80, 120, 160, 200]
+    # 위 끝을 넘는 상승은 위 끝까지로 줄인다.
+    assert scan_row_heights(200, 0, 30)[-3:] == [180, 200, 200]
+    assert scan_row_heights(200, 0, 300) == [0, 200, 200]
+    assert scan_row_heights(0, 0, 40) == [0]
+
+
+def test_row_limit_matches_the_pendant_loop():
+    assert SCAN_ROW_LIMIT == 200
+    assert len(scan_row_heights(800, 0, 5)) == SCAN_ROW_LIMIT + 1     # 넘으면 거기서 멈춘다
+
+
+def test_screen_draws_the_side_pitch_rows():
+    """화면 ㄹ자 경로 — 같은 높이가 이어지면 오르지 않고 되돌아 그린다."""
+    pts, plan = ideal_path(300, 200, 30, 0, row_heights=[0, 40, 40, 80])
+    assert plan["rows"] == 4 and plan["pitch"] == 40
+    assert pts == [(0, 0), (300, 0), (300, 40), (0, 40), (300, 40), (300, 80), (0, 80)]

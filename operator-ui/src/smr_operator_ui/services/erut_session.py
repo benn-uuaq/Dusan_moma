@@ -45,10 +45,12 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from smr_operator_ui.services import erut_errors as E
 from smr_operator_ui.services.erut_client import ErutClient
 from smr_operator_ui.services.erut_errors import make_error
-from smr_operator_ui.services.job_sequencer import GridPlan, SequencerState, cell_label
+from smr_operator_ui.services.job_sequencer import (
+    SCAN_ROW_LIMIT, GridPlan, SequencerState, cell_label, scan_row_heights,
+)
 
 # ---- 자기소개 (탭8 evt/info) ------------------------------------------------
-INTERFACE_VERSION = "0.11"
+INTERFACE_VERSION = "0.12"
 VENDOR = "3S"
 MODEL = "SMR-UT-CS612"
 DEVICE_TYPE = "articulated_arm"
@@ -255,6 +257,10 @@ class ErutSession(QObject):
         self.max_area_height: Callable[[], float] = lambda: 0.0
         # 그 한계를 정한 모재 지름 [mm] (evt/info area_limit.diameter). 0 이면 모름.
         self.area_diameter: Callable[[], float] = lambda: 0.0
+        # 좌·우 끝 이동높이(if-0.12)를 지금 로봇 태스크가 못 쓰면 그 까닭, 쓰면 "".
+        self.side_pitch_blocker: Callable[[], str] = lambda: ""
+        # 그 구간(277)에서 움직일 남은 거리 [mm] — 재개할 때 evt/motion 에 다시 싣는다.
+        self.motion_remain: Callable[[int], float | None] = lambda _segment: None
         # 펴진 자세에서 home 까지 가장 오래 걸릴 때 [ms] (evt/info timings.home_within_ms).
         # 0 이면 싣지 않는다(ERUT 는 30초를 쓴다).
         self.home_within_ms: Callable[[], int] = lambda: 0
@@ -1144,7 +1150,10 @@ class ErutSession(QObject):
                 return
             self._answer(req_id, "resume", 202)
             self.resume_requested.emit()
-            self._send_motion(self._MOTION_DIRS.get(self._segment, "none"))
+            # 멈췄던 방향을 남은 거리와 함께 다시 낸다 — 없으면 ERUT 는 줄 끝을 몰라
+            # 그 줄을 양쪽 물로 둔다(if-0.12 탭11 Q-48 ①).
+            self._send_motion(self._MOTION_DIRS.get(self._segment, "none"),
+                              self.motion_remain(self._segment))
             return
         activity = self.activity_state()
         if activity in ("error", "estop"):
@@ -1527,7 +1536,7 @@ class ErutSession(QObject):
         """요청의 `area` · `scan` 으로 구간 하나를 만든다 (탭1 7·8행). (구간, 거절 까닭).
 
             area : { start:{x,y}, end:{x,y} }   검사면 좌표 mm — end 가 start 보다 커야 한다
-            scan : { pitch, speed, overlap }
+            scan : { pitch_left, pitch_right, overlap, speed_mm_s?, speed_pct? }
 
         **구간 하나 = job 하나.** 크기와 위치는 area 가 정한다. 반지름(검사 대상
         바깥 지름 / 2)·검사장비 종류는 RCS 설정에서 채운다(app.py
@@ -1536,9 +1545,13 @@ class ErutSession(QObject):
         if-0.10 부터 이웃 구역끼리의 겹침은 `scan.overlap`(필수, 0 이상 정수 mm)이다
         — 예전에는 scan.pitch 를 겹침으로 읽었다(탭11 Q-06 · Q-39). 차량 · 리프트는
         구역 좌표로 옮기므로 겹침은 기록(레지스터 259)과 구역 번호 계산에만 쓴다.
-        `scan.pitch` 는 규격 뜻대로 **검사 줄 간격**이고, 줄 간격의 최대값으로 쓴다:
-        로봇은 탐촉자 유효 높이(scan_h)로 줄 간격을 자동으로 정하되 pitch 를 넘지
-        않게 줄을 늘린다(Q-39 가안, app.py `_fill_from_local_setup`).
+        if-0.12 부터 줄 간격은 **좌·우 끝 이동높이** 두 칸이다(탭5 161행 — 옛 단일
+        scan.pitch 를 대신하고, 옛 칸으로 채우지 않는다). pitch_left 는 왼쪽 끝,
+        pitch_right 는 오른쪽 끝에서 다음 줄로 올라가는 높이 [mm] 이고 그대로 쓴다 —
+        평균 · 채널 수로 바꾸지 않는다. 둘 다 필수인 유한수, 각각 0 이상, 합 > 0.
+        줄 높이 규칙은 job_sequencer.scan_row_heights(로봇 태스크와 같다). 줄 수가 로봇
+        한도(SCAN_ROW_LIMIT)를 넘거나 지금 로봇 태스크가 두 칸을 못 쓰면 장비가 할 수
+        없는 요청이라 400 E6001 에 까닭을 싣는다(탭5 161행 끝).
         크기가 0 이하인 구역(end 가 start 보다 크지 않음)은 400 이다(if-0.10).
         """
         area = content.get("area")
@@ -1559,19 +1572,54 @@ class ErutSession(QObject):
         # 소수점 아래가 0 인 수는 정수로 받는다.
         if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not float(raw).is_integer():
             return None, f"scan.overlap 은 0 이상의 정수 mm 여야 합니다 (받은 값 {raw!r})"
-        try:
-            overlap = float(raw)
-            pitch = float(scan.get("pitch") or 0)
-        except (TypeError, ValueError):
-            return None, "scan.pitch 가 숫자가 아닙니다"
-        if overlap < 0 or pitch < 0:
-            return None, "scan.overlap · scan.pitch 는 0 이상이어야 합니다"
+        overlap = float(raw)
+        if overlap < 0:
+            return None, "scan.overlap 은 0 이상이어야 합니다"
+        pitches, reason = self._read_side_pitch(scan, y1 - y0)
+        if reason:
+            return None, reason
         return GridPlan(
             column_count=1, row_count=1,
             cell_width=x1 - x0, cell_height=y1 - y0,
             scan_overlap=0.0, pitch_x=overlap, pitch_y=overlap,
-            origin_x=x0, origin_y=y0, line_pitch_max=pitch,
+            origin_x=x0, origin_y=y0,
+            pitch_left=pitches[0], pitch_right=pitches[1],
         ), ""
+
+    def _read_side_pitch(self, scan: dict, height: float) -> tuple[tuple[float, float], str]:
+        """scan.pitch_left · pitch_right → ((좌, 우) mm, 거절 까닭) (if-0.12 탭5 161행 · 탭10 61·62번)."""
+        missing = [key for key in ("pitch_left", "pitch_right") if key not in scan]
+        if missing:
+            old = " — 옛 scan.pitch 는 쓰지 않습니다" if "pitch" in scan else ""
+            return (0.0, 0.0), (f"scan.{' · scan.'.join(missing)} 가 없습니다 (if-0.12 필수 — "
+                                f"좌·우 끝 이동높이 mm){old}")
+        values = []
+        for key in ("pitch_left", "pitch_right"):
+            value = _number(scan[key])
+            if value is None:
+                return (0.0, 0.0), f"scan.{key} 는 유한한 수(mm)여야 합니다 (받은 값 {scan[key]!r})"
+            if value < 0:
+                return (0.0, 0.0), f"scan.{key} 는 0 이상이어야 합니다 (받은 값 {value:g})"
+            values.append(value)
+        left, right = values
+        total = left + right
+        if not math.isfinite(total) or total <= 0:
+            return (0.0, 0.0), (f"scan.pitch_left · pitch_right 의 합이 0 보다 커야 합니다 "
+                                f"(좌 {left:g} · 우 {right:g})")
+        # 로봇에는 0.1 mm 로 간다 — 그보다 작으면 둘 다 0 이 되어 줄이 끝나지 않는다.
+        if round(left * 10) + round(right * 10) <= 0:
+            return (0.0, 0.0), (f"좌·우 이동높이가 너무 작습니다 — 로봇은 0.1 mm 단위로 오릅니다 "
+                                f"(좌 {left:g} · 우 {right:g})")
+        blocker = self.side_pitch_blocker()
+        if blocker:
+            return (0.0, 0.0), blocker
+        rows = len(scan_row_heights(round(height), round(left * 10) / 10,
+                                    round(right * 10) / 10))
+        if rows > SCAN_ROW_LIMIT:
+            return (0.0, 0.0), (f"줄 수가 로봇 한도 {SCAN_ROW_LIMIT} 줄을 넘습니다 — 구역 높이 "
+                                f"{height:g} mm 를 좌 {left:g} · 우 {right:g} mm 로 오르면 "
+                                f"{SCAN_ROW_LIMIT} 줄 넘게 걸립니다")
+        return (left, right), ""
 
     @staticmethod
     def _read_speed(scan: dict) -> tuple[int | None, str, dict]:

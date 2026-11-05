@@ -144,7 +144,7 @@
 - [x] **v6 시작 포즈 · 속도** (2026-11-04) — 시작 포즈(gripper_target_pose)를 EOAT 를 단 채 장착 EOAT TCP(5축)로 티칭한 프로브 중심으로 보고 init 이 오프셋을 빼 플랜지로 바꾼다. ㄹ자 스캔(호 · 줄 바꿈)은 v_scan × 307, 스캔 외 이동은 새 변수 v_move · v_move_j(306 = RCS 「작업 속도」, 상한 250 mm/s = 로봇 안전 TCP 한계), 벽 접근은 예전처럼 v_l / 3 · / 10. ERUT 스캔 속도는 307 만(scan_speed_ratio) — 전체 비율은 안 바꾼다
 - [ ] 현장 PC: 로봇 노드 · RCS 주소표가 설치본(install/)을 읽으므로 `colcon build` 해야 277 읽기(evt/motion) · scan_speed_ratio 가 산다
 - [ ] v6 스캔 대기 위치(Standby_joint) 티칭 — 지금은 새 홈과 같은 값. 현장 RCS 에 예전 설치 방향으로 저장된 홈 · 대기 · 시작 포즈가 있으면 접속할 때 다시 써 넣으므로 새로 저장할 것
-- [ ] 센서판 태스크의 접촉 실패: 펜던트 확인 창(popup blocking)을 띄운 **뒤에** 299 · 290 을 써서, 확인을 누르기 전까지 RCS · ERUT 는 running · 진행률 0 으로만 본다(ERUT Q-43 ② 오전 15분). 오류 레지스터를 먼저 쓰고 창을 띄우도록 바꿀 것 — probe_c/l/r 등
+- [x] 센서판 태스크의 접촉 실패: 펜던트 확인 창(popup blocking)을 띄운 **뒤에** 299 · 290 을 써서, 확인을 누르기 전까지 RCS · ERUT 는 running · 진행률 0 으로만 본다(ERUT Q-43 ② 오전 15분). → v6 (센서 · 논센서) probe_c/l/r · mark_point · init(줄 수 초과, 299 = 9)에서 오류 번호를 먼저 쓰고 창을 띄운다(2026-11-05, Q-49 ②). v5 · v4 는 그대로
 - [ ] ERUT 에 회신: 3S 확장 칸(`location`·`at_home`·`req/home`·`evt/message`)과 E9xxx 코드표, 위치 정확도 (`scan.pitch`/겹침은 if-0.10 Q-39 로 정리됨)
 - [ ] 장애 수집 실제화 — 지금은 로봇 태스크(299)·로봇 알람·차량 실패만 올라간다. 비상정지 버튼 등 안전 신호 경로는 실물 연결 후
 - [ ] **겹침 계산 확정 대기** — 마지막 행/열 나머지 처리(설계안 C: 천장 맞춤), `pitch_scan` 부호, `surface_length` 의미. 스캔업체 회신 후 적용

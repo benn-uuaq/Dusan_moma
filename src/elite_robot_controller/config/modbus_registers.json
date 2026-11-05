@@ -208,6 +208,12 @@
       "count": 9,
       "kind": "raw"
     },
+    "_scan_pitch_comment": "356 = 왼쪽 끝 · 357 = 오른쪽 끝에서 다음 줄로 오르는 높이 [0.1 mm] (ERUT if-0.12 scan.pitch_left · pitch_right). 둘 다 0 이면 로봇은 263(상승 제한)으로 구역 세로를 고르게 나눈다. work_area 와 함께 쓰고 266(param_src) = 1 일 때 v6 태스크가 읽는다(2026-11-05).",
+    "scan_pitch": {
+      "address": 356,
+      "count": 2,
+      "kind": "raw"
+    },
     "param_src": {
       "address": 266,
       "count": 1

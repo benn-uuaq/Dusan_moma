@@ -171,7 +171,7 @@ def test_prepared_area_is_placed_on_the_whole_circumference(qtbot):
     window.erut_session.handle_request("start", {
         "req_id": "prep-3", "job_id": "jb-3", "surface": "outer",
         "area": {"start": {"x": 1160, "y": 0}, "end": {"x": 1760, "y": 800}},
-        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
+        "scan": {"pitch_left": 200, "pitch_right": 200, "speed": 100, "overlap": 20}})
 
     assert targets == [1460.0], "구역 가운데(start.x + 가로/2)"
     view = window.main_screen.orbit_view
@@ -200,7 +200,7 @@ def test_vehicle_goes_to_the_same_angle_on_its_own_track(qtbot):
     window.erut_session.handle_request("start", {
         "req_id": "prep-scale", "job_id": "jb-s", "surface": "outer",
         "area": {"start": {"x": 1000, "y": 0}, "end": {"x": 1600, "y": 800}},
-        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
+        "scan": {"pitch_left": 200, "pitch_right": 200, "speed": 100, "overlap": 20}})
 
     assert targets == [pytest.approx(1430.0)]
     window.close()
@@ -222,7 +222,7 @@ def test_vehicle_puts_the_robot_centre_on_the_section_centre(qtbot):
     window.erut_session.handle_request("start", {
         "req_id": "p-150", "job_id": "jb-150", "surface": "outer",
         "area": {"start": {"x": 0, "y": 0}, "end": {"x": 150, "y": 140}},
-        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
+        "scan": {"pitch_left": 200, "pitch_right": 200, "speed": 100, "overlap": 20}})
     assert targets == [75.0]
 
     window.sequencer.stop()
@@ -230,7 +230,7 @@ def test_vehicle_puts_the_robot_centre_on_the_section_centre(qtbot):
     window.erut_session.handle_request("start", {
         "req_id": "p-seam", "job_id": "jb-seam", "surface": "outer",
         "area": {"start": {"x": 5250, "y": 0}, "end": {"x": 5450, "y": 140}},
-        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
+        "scan": {"pitch_left": 200, "pitch_right": 200, "speed": 100, "overlap": 20}})
     assert targets[-1] == pytest.approx(5350.0 - 3.141592653589793 * 1690.0)
     window.close()
 
@@ -265,7 +265,7 @@ def _start_area(window, req_id, x0, y0):
     window.erut_session.handle_request("start", {
         "req_id": req_id, "job_id": req_id, "surface": "outer",
         "area": {"start": {"x": x0, "y": y0}, "end": {"x": x0 + 600, "y": y0 + 800}},
-        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
+        "scan": {"pitch_left": 200, "pitch_right": 200, "speed": 100, "overlap": 20}})
 
 
 def test_next_column_lowers_the_lift_and_frees_the_outrigger_before_driving(qtbot):
@@ -321,7 +321,7 @@ def test_section_taller_than_1200mm_is_refused_and_area_limit_carries_it(qtbot):
     window.erut_session.handle_request("prepare", {
         "req_id": "p-tall", "job_id": "jb-tall", "surface": "outer",
         "area": {"start": {"x": 0, "y": 0}, "end": {"x": 600, "y": 1300}},
-        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
+        "scan": {"pitch_left": 200, "pitch_right": 200, "speed": 100, "overlap": 20}})
 
     assert responses[-1]["status_code"] == 400
     assert (responses[-1]["error"]["code"], responses[-1]["error"]["max_height"]) == (
@@ -353,37 +353,39 @@ def test_home_within_ms_follows_the_speed_ratio(qtbot):
     window.close()
 
 
-def test_scan_rise_limit_per_eoat_comes_from_cobot_settings(qtbot):
-    """스캔 상승 높이 제한(5축 · 8축)은 Cobot 설정에서 넣고, 작업에 그대로 쓴다."""
+def test_scan_rise_limit_is_not_a_setting_any_more(qtbot):
+    """스캔 상승 높이 제한은 설정에서 뺐다(2026-11-06) — ERUT 가 줄 간격을 보내 준다.
+
+    RCS 단독 작업은 장착 홀더의 기본 유효 높이(5축 30 · 8축 167.5)로 나눈다.
+    """
     from smr_operator_ui.services import GridPlan
 
     window = _window(qtbot)
     cobot = window.screens["cobot"]
-    assert cobot.scan_rise_mm(5) == 30.0 and cobot.scan_rise_mm(8) == 167.5
-    cobot.field("스캔 상승 높이 제한 8축").setValue(120.0)
-    window._work_area_extra = {"eoat_w_mm": 75.0, "eoat_h_mm": 167.5, "eoat_type": 8.0}
+    assert not any("스캔 상승" in key for key in cobot.values())
+    window._work_area_extra = {"eoat_w_mm": 75.0, "eoat_h_mm": 120.0, "eoat_type": 8.0}
 
     plan = window._fill_from_local_setup(GridPlan(column_count=1, row_count=1,
                                                   cell_width=600.0, cell_height=800.0))
 
-    assert plan.eoat_probes == 8 and plan.eoat_size[1] == 120.0
-    assert window._scan_band_mm(plan) == 120.0             # 로봇 258 · 263 으로 가는 값
+    assert plan.eoat_probes == 8 and plan.eoat_size[1] == 167.5
+    assert window._scan_band_mm(plan) == 167.5             # 로봇 258 · 263 으로 가는 값
     window.close()
 
 
-def test_saving_the_scan_rise_limit_sends_it_to_the_robot_when_idle(qtbot):
+def test_old_saved_rise_limit_falls_back_to_the_holder_default(qtbot):
+    """예전 설정으로 줄여 저장된 유효 높이(예: 5축 20)는 불러올 때 기본값(30)으로 되돌린다."""
     window = _window(qtbot)
     pushed: list[tuple] = []
     window._push_work_area_to_robot = lambda *values: pushed.append(values)
-    window._work_area_extra = {"eoat_w_mm": 30.0, "eoat_h_mm": 30.0, "eoat_type": 5.0}
-    cobot = window.screens["cobot"]
-    cobot.field("스캔 상승 높이 제한 5축").setValue(28.0)
 
-    cobot.save_requested.emit("cobot", cobot.values())
+    window._apply_stored_settings("work_area", {
+        "width_mm": 200.0, "height_mm": 100.0, "scan_h_mm": 20.0, "overlap_mm": 0.0,
+        "eoat_w_mm": 30.0, "eoat_h_mm": 20.0, "eoat_type": 5.0})
 
-    assert pushed, "저장했는데 로봇에 보내지 않았다"
     # (가로, 세로, 스캐너 밴드, 겹침, 바깥 반지름, eoat_w, eoat_h, eoat_type)
-    assert pushed[-1][2] == 28.0 and pushed[-1][6] == 28.0
+    assert pushed[-1][2] == 30.0 and pushed[-1][6] == 30.0 and pushed[-1][7] == 5.0
+    assert window.main_screen.rect_view.work_area()[2] == 30.0
     window.close()
 
 
@@ -402,7 +404,7 @@ def test_eoat_choice_in_cobot_settings_reaches_the_robot(qtbot):
     assert cobot.eoat_type() == 0
 
     cobot.eoat_combo.setCurrentIndex(2)
-    cobot.eoat_combo.activated.emit(2)                     # 8축 직사각
+    cobot.eoat_combo.activated.emit(2)                     # 8축 홀더
 
     assert window._work_area_extra["eoat_type"] == 8.0
     # (가로, 세로, 스캐너 밴드, 겹침, 바깥 반지름, eoat_w, eoat_h, eoat_type)
@@ -413,7 +415,7 @@ def test_eoat_choice_in_cobot_settings_reaches_the_robot(qtbot):
     assert plan.eoat_probes == 8
 
     cobot.eoat_combo.setCurrentIndex(1)
-    cobot.eoat_combo.activated.emit(1)                     # 5축 십자형 — 상승 제한 30
+    cobot.eoat_combo.activated.emit(1)                     # 5축 홀더 — 유효 높이 30
     assert pushed[-1][7] == 5.0 and pushed[-1][6] == 30.0
     window.close()
 
@@ -459,7 +461,7 @@ def test_prepare_moves_nothing_and_start_runs_vehicle_outrigger_lift_robot(qtbot
     window.erut_session.handle_request("prepare", {
         "req_id": "p-150", "job_id": "jb-150", "surface": "outer",
         "area": {"start": {"x": 0, "y": 0}, "end": {"x": 150, "y": 140}},
-        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
+        "scan": {"pitch_left": 200, "pitch_right": 200, "speed": 100, "overlap": 20}})
     qtbot.wait(300)
 
     assert moves == [], "prepare 에서 장비가 움직였다"
@@ -470,7 +472,7 @@ def test_prepare_moves_nothing_and_start_runs_vehicle_outrigger_lift_robot(qtbot
     window.erut_session.handle_request("start", {
         "req_id": "s-150", "job_id": "jb-150", "surface": "outer",
         "area": {"start": {"x": 0, "y": 0}, "end": {"x": 150, "y": 140}},
-        "scan": {"pitch": 200, "speed": 100, "overlap": 20}})
+        "scan": {"pitch_left": 200, "pitch_right": 200, "speed": 100, "overlap": 20}})
     # 로봇 단계(스캔)까지 간다.
     qtbot.waitUntil(lambda: window.sequencer.state.name == "SCANNING", timeout=10000)
 
@@ -478,24 +480,38 @@ def test_prepare_moves_nothing_and_start_runs_vehicle_outrigger_lift_robot(qtbot
     window.close()
 
 
-def test_scan_pitch_caps_the_line_spacing(qtbot):
-    """ERUT scan.pitch(검사 줄 간격)는 줄 간격의 최대값이다(if-0.10 Q-39 가안).
+def test_side_pitch_reaches_the_robot_and_does_not_cap_the_rise(qtbot):
+    """ERUT 좌·우 끝 이동높이(if-0.12)는 356 · 357 로 그대로 간다 — 상승 제한(263)으로 줄이지 않는다.
 
-    탐촉자 유효 높이(5축 30)로 정하되 pitch 를 넘지 않게 줄을 늘린다.
+    예전 scan.pitch 는 줄 간격의 최대값이라 탐촉자 유효 높이와 견줘 작은 쪽을 263 에
+    실었다. 이제 줄 높이는 두 값이 정하므로 263 은 장착 EOAT 의 상승 제한 그대로다.
     """
     from smr_operator_ui.services import GridPlan
 
     window = _window(qtbot)
+    sent: list[tuple[str, list]] = []
+    window.ros_status.send_pose = lambda name, values: sent.append((name, list(values))) or True
+    window.ros_status.writable = lambda name: True
     window._work_area_extra = {"eoat_w_mm": 30.0, "eoat_h_mm": 30.0, "eoat_type": 5.0}
     plan = window._fill_from_local_setup(GridPlan(
-        column_count=1, row_count=1, cell_width=140.0, cell_height=140.0,
-        line_pitch_max=10.0))
-    assert plan.eoat_size[1] == 10.0 and window._scan_band_mm(plan) == 10.0
+        column_count=1, row_count=1, cell_width=140.0, cell_height=200.0,
+        pitch_left=0.0, pitch_right=40.0))
+    assert plan.eoat_size[1] == 30.0 and window._scan_band_mm(plan) == 30.0
 
-    wide = window._fill_from_local_setup(GridPlan(
-        column_count=1, row_count=1, cell_width=140.0, cell_height=140.0,
-        line_pitch_max=200.0))
-    assert wide.eoat_size[1] == 30.0               # 탐촉자 커버보다 크면 커버대로
+    window._robot_task_state = 3
+    window._robot_link_up = True
+    window._send_work_area(140.0, 200.0, 30.0, 0.0, 845.0, 30.0, 30.0, 5.0, 0.0, 40.0)
+    names = [name for name, _values in sent]
+    assert names.index("scan_pitch") < names.index("work_area"), "같이 읽히게 먼저 보낸다"
+    assert sent[names.index("scan_pitch")][1] == [0, 400]          # 0.1 mm
+    assert window._robot_row_heights == [0.0, 40.0, 40.0, 80.0, 80.0, 120.0, 120.0,
+                                         160.0, 160.0, 200.0, 200.0]
+    assert window.main_screen.rect_view._row_heights == window._robot_row_heights
+
+    # ERUT 값이 없는 RCS 작업 영역은 0 · 0 — 로봇은 예전처럼 고르게 나눈다.
+    sent.clear()
+    window._send_work_area(140.0, 200.0, 30.0, 0.0, 845.0, 30.0, 30.0, 5.0)
+    assert ("scan_pitch", [0, 0]) in sent and window._robot_row_heights is None
     window.close()
 
 

@@ -97,9 +97,10 @@ def mk_press():
     n_hit = n_hit + 1
     return True
   end
-  popup(s = "MARK: WALL CONTACT NOT FOUND", title = "dusan_v6", blocking = True)
+  # 오류 번호를 먼저 쓰고 창을 띄운다(2026-11-05, ERUT Q-49 ②).
   write_port_register(299, 5)
   write_port_register(290, 9)
+  popup(s = "MARK: WALL CONTACT NOT FOUND", title = "dusan_v6", blocking = True)
   halt()
   return False
 end

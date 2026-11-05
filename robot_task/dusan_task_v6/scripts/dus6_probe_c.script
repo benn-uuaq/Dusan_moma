@@ -115,9 +115,11 @@ def pc_press():
   end
   # 계산값 대신 쓸 값이 없다 — 여기서 조용히 넘어가면 잘못된 좌표로
   # 스캔을 시작하게 되므로, 실패는 반드시 멈춰서 알려야 한다.
-  popup(s = "PROBE_C: WALL CONTACT NOT FOUND", title = "dusan_v6", blocking = True)
+  # 오류 번호를 **먼저** 쓰고 창을 띄운다(2026-11-05, ERUT Q-43 ② · Q-49 ②) — 예전엔
+  # 창을 누를 때까지 RCS · ERUT 가 running · 진행률 0 으로만 봤다(10/20 15분 멈춤).
   write_port_register(299, 1)
   write_port_register(290, 9)
+  popup(s = "PROBE_C: WALL CONTACT NOT FOUND", title = "dusan_v6", blocking = True)
   halt()
   return 0
 end

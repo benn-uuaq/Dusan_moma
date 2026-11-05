@@ -197,3 +197,42 @@ def test_path_starts_at_the_origin_corner_and_runs_outward() -> None:
     assert min(hs) == 0.0
     assert max(hs) == plan["width"]
     assert pts[0] == (0.0, 0.0), "원점에서 시작하지 않는다"
+
+
+# ---- 경로 = 홀더 중심선, 원점은 경로 위 (2026-11-05) --------------------------------
+@pytest.mark.parametrize("scan_h, eoat_w, reach", (
+    (30.0, 30.0, (15.0, 15.0)),          # 5축 홀더
+    (167.5, 75.0, (37.5, 83.75)),        # 8축 홀더
+    (200.0, 0.0, (0.0, 100.0)),          # 노그리퍼 — 가로로는 나가지 않는다
+))
+def test_holder_covers_half_its_size_beyond_the_area(qtbot, scan_h, eoat_w, reach):
+    from smr_operator_ui.components.rect_work_view import RectWorkView
+
+    view = RectWorkView()
+    qtbot.addWidget(view)
+    view.set_work_area(300, 500, scan_h, 0, eoat_w, 845)
+    assert view.coverage_reach() == pytest.approx(reach)
+
+
+def test_origin_is_drawn_on_the_start_of_the_path(qtbot):
+    """원점 동그라미는 ㄹ자 첫 점(구역 왼쪽 아래) 위에 있다 — 안쪽으로 밀지 않는다."""
+    from PyQt6.QtGui import QColor
+
+    from smr_operator_ui.components.rect_work_view import RectWorkView
+
+    view = RectWorkView()
+    qtbot.addWidget(view)
+    view.resize(360, 320)
+    view.set_work_area(300, 500, 167.5, 0, 75, 845)
+    view.show()
+    image = view.grab().toImage()
+    rect = view._plot_rect()
+    reach_h, reach_v = view.coverage_reach()
+    scale_x = rect.width() / (300 + 2 * reach_h)
+    scale_y = rect.height() / (500 + 2 * reach_v)
+    ox = round(rect.left() + reach_h * scale_x)
+    oy = round(rect.bottom() - reach_v * scale_y)
+    assert QColor(image.pixel(ox, oy)).lightness() > 240        # 흰 동그라미 한가운데
+    # 구역 안은 회색, 바로 아래(홀더가 더 덮는 자리)는 칠하지 않은 빈 여백이다.
+    assert QColor(image.pixel(ox + 12, oy - 12)).name() == "#e4e7ea"
+    assert QColor(image.pixel(ox, oy + 12)).name() == QColor(image.pixel(2, oy + 12)).name()

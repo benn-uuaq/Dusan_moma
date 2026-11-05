@@ -622,3 +622,20 @@ def test_scan_speed_ratio_writes_307_without_touching_the_controller_ratio():
     from elite_robot_controller import register_map
     source = os.path.join(os.path.dirname(__file__), "..", "config", "modbus_registers.json")
     assert register_map.load(source).write_entry("scan_speed_ratio").address == 307
+
+
+def test_scan_pitch_goes_to_356_and_357_as_tenths_of_a_mm():
+    """ERUT 좌·우 끝 이동높이(if-0.12) — 0.1 mm 두 개를 356 · 357 에. 플래그는 work_area 가."""
+    import os
+    source = os.path.join(os.path.dirname(__file__), "..", "config", "modbus_registers.json")
+    entry = register_map.load(source).write_entry("scan_pitch")
+    assert (entry.address, entry.count, entry.kind) == (356, 2, "raw")
+
+    node = make_node(map_data={
+        "scale": {"position_per_count": 0.1, "rotation_per_count": 1.0},
+        "read": {},
+        "write": {"scan_pitch": {"address": 356, "count": 2, "kind": "raw"},
+                  "param_src": {"address": 266, "count": 1}},
+    })
+    node.cb_scan_pitch(FakeMessageList([0.0, 400.0]))
+    assert node.robot_modbus.writes == [(356, 0), (357, 400)]

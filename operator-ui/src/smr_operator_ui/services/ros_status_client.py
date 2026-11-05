@@ -79,6 +79,9 @@ class RosTopics:
     # 조립 위치(홀더·EOAT 탈착 자세) 관절값 [mrad]. 레지스터 없이 노드가 기억한다.
     ASSEMBLY_JOINT = "robot/command/assembly_joint"
     WORK_AREA = "robot/command/work_area"
+    # ERUT 좌·우 끝 이동높이 [0.1 mm] (레지스터 356 · 357, if-0.12). work_area 와
+    # 함께 보내고, 로봇은 266 = 1 일 때 같이 읽는다.
+    SCAN_PITCH = "robot/command/scan_pitch"
     JOG_JOINT = "robot/command/jog_joint"
     # 스캔 시작 허가(레지스터 267). 로봇이 원점에서 기다리는 것을 푼다.
     SCAN_GO = "robot/command/scan_go"
@@ -241,6 +244,15 @@ class RosStatusClient(QObject):
             return False
         return self._registers.write_entry(name).available
 
+    def lacks_write(self, name: str) -> bool:
+        """레지스터 지도를 읽었는데 그 칸이 없으면 True — 제어 노드가 옛 판이다.
+
+        지도를 아직 못 읽었으면(ROS 미기동) 모르는 것이라 False 다.
+        """
+        if self._registers is None:
+            return False
+        return not self._registers.write_entry(name).available
+
     @property
     def available(self) -> bool:
         """rclpy를 불러올 수 있는지 알려준다."""
@@ -350,6 +362,8 @@ class RosStatusClient(QObject):
                     Float32MultiArray, RosTopics.ASSEMBLY_JOINT, 10),
                 "work_area": self._node.create_publisher(
                     Float32MultiArray, RosTopics.WORK_AREA, 10),
+                "scan_pitch": self._node.create_publisher(
+                    Float32MultiArray, RosTopics.SCAN_PITCH, 10),
                 "mark_target": self._node.create_publisher(
                     Float32MultiArray, RosTopics.MARK_TARGET, 10),
             }

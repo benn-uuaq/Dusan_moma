@@ -1,6 +1,6 @@
 # =============================================================================
 #  dus6_up.script — dusan_v6
-#  다음 줄로 한 피치만큼 상승한다
+#  다음 줄로 상승한다 — 균등 피치, 또는 ERUT 좌·우 끝 이동높이(if-0.12)
 #
 #  펜던트에서 "9_up" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
@@ -27,11 +27,33 @@ end
 # 스캔 동작마다 세워 둬야, 사이클이 반복되며 goto_zero 를 다시 지나지
 # 않는 구성에서도 좌표가 끊기지 않는다.
 write_port_register(290, 6)
-# TPAC 동기 신호: 줄 바꿈 상승 구간 — 스캔 동결(DO[1] = 0) 유지.
-write_port_register(277, 2)
+
+# 이번 상승 높이. ERUT 좌·우 끝 이동높이(pitch_lr = 1)면 방금 끝낸 줄이 끝난 쪽의
+# 값이다 — pass_r(왼 -> 오)을 끝내면 dir_sign = -1(오른쪽 끝, pitch_r), pass_l 을
+# 끝내면 dir_sign = 1(왼쪽 끝, pitch_l). 위 끝을 넘으면 위 끝까지로 줄인다(dus6_init).
+# 아니면 예전처럼 균등 피치(row_idx * pitch)다.
+if (pitch_lr == 1):
+  if (dir_sign < 0):
+    up_rise = pitch_r
+  else:
+    up_rise = pitch_l
+  end
+  if (row_y + up_rise > app_height):
+    up_rise = app_height - row_y
+  end
+  if (up_rise < 0):
+    up_rise = 0
+  end
+  row_y = row_y + up_rise
+else:
+  up_rise = pitch
+  row_y = row_idx * pitch
+end
+# 296 = 이번 상승 [0.1 mm] — RCS 가 evt/motion +y 의 remain_mm 으로 쓴다.
+up_w1(296, up_rise * 10)
 
 tgt_pose = get_actual_tcp_pose()
-tgt_pose[2] = z_base + row_idx * pitch * 0.001
+tgt_pose[2] = z_base + row_y * 0.001
 # 줄 바꿈도 ㄹ자 스캔이다 — 스캔 줄(servoj 호)과 같은 속도 비율(307 — ERUT 속도 ·
 # RCS 속도 비율)을 건다(v6, 2026-11-04). 예전에는 컨트롤러 전체 비율만 따랐는데, 이제
 # ERUT 속도는 스캔에만 걸리고 컨트롤러 전체 비율은 바꾸지 않는다.
@@ -39,7 +61,13 @@ up_ratio = read_port_register(307, True)
 if (up_ratio < 2 or up_ratio > 100):
   up_ratio = 100
 end
-movel(tgt_pose, a = a_scan, v = v_scan * up_ratio / 100.0)
+# 그 끝의 상승이 0 이면 오르지 않고 같은 높이를 되돌아 훑는다 — 줄 바꿈(277 = 2)도
+# 내지 않는다(ERUT 는 +y 없이 바로 반대 방향을 받는다).
+if (up_rise > 0.0005):
+  # TPAC 동기 신호: 줄 바꿈 상승 구간 — 스캔 동결(DO[1] = 0) 유지.
+  write_port_register(277, 2)
+  movel(tgt_pose, a = a_scan, v = v_scan * up_ratio / 100.0)
+end
 
-path_len = path_len + pitch
+path_len = path_len + up_rise
 up_w1(297, path_len * 0.1)

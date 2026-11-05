@@ -1096,15 +1096,12 @@ class CobotSettingsScreen(FormScreen):
     # 값을 꺼낼 때도 이 이름을 쓴다.
     SPEED_FIELD = "작업 속도"
     RATIO_FIELD = "속도 비율"
-    #: 스캔 상승 높이 제한 — ㄹ자 한 줄을 끝내고 위로 올라가는 최대 높이 [mm].
-    #: 프로브의 유효 세로 커버라 EOAT 종류마다 다르다. 작업을 시작할 때 로봇
-    #: 레지스터 263(태스크 변수 scan_h)으로 간다.
-    SCAN_RISE_FIELDS = {5: "스캔 상승 높이 제한 5축", 8: "스캔 상승 높이 제한 8축"}
-    #: 처음 값 — services/job_sequencer.PROBE_COVERAGE_MM 의 세로값과 같다.
-    SCAN_RISE_DEFAULTS = {5: 30.0, 8: 167.5}
     #: 장착 EOAT(검사장비) 종류 — (로봇 eoat_type 값, 화면 문구). 로봇 레지스터 264 로
-    #: 간다. 0 이면 오프셋 없이 툴 플랜지 그대로 돈다.
-    EOAT_CHOICES = ((0, "없음 (툴 플랜지)"), (5, "5축 십자형"), (8, "8축 직사각"))
+    #: 간다. 0 이면 오프셋 없이 툴 플랜지 그대로 돈다. 5축 · 8축은 「홀더」라 부른다
+    #: (2026-11-05). 어느 쪽이든 ㄹ자 경로는 홀더(그리퍼) 중심이 지나는 선이다.
+    EOAT_CHOICES = ((0, "노그리퍼 (툴 플랜지)"), (5, "5축 홀더"), (8, "8축 홀더"))
+    #: 화면 이름만 바꾼다 — 항목명은 저장 키라 그대로 둔다(저장해 둔 값이 남도록).
+    DISPLAY_LABELS = {"장착 EOAT": "장착 홀더"}
 
     task_refresh_requested = pyqtSignal()
     #: 장착 EOAT 를 목록에서 골랐다(0 · 5 · 8). 고르는 즉시 나간다.
@@ -1158,23 +1155,17 @@ class CobotSettingsScreen(FormScreen):
         eoat_layout = QHBoxLayout(eoat_row)
         eoat_layout.setContentsMargins(0, 0, 0, 0)
         eoat_layout.addWidget(self.eoat_combo, 1)
-        rise_fields = []
-        for probes, label in self.SCAN_RISE_FIELDS.items():
-            box = TouchDoubleSpinBox()
-            box.setRange(1.0, 500.0)
-            box.setDecimals(1)
-            box.setSuffix(" mm")
-            box.setValue(self.SCAN_RISE_DEFAULTS[probes])
-            rise_fields.append((label, box))
+        # 스캔 상승 높이 제한(5축 · 8축 홀더)은 설정에서 뺐다(2026-11-06) — ERUT 가 줄
+        # 간격(좌·우 끝 이동높이)을 관리해 보내 준다. RCS 단독 작업은 홀더 기본 유효
+        # 높이(job_sequencer.PROBE_COVERAGE_MM)로 고르게 나눈다.
         super().__init__(
             "cobot","Cobot 설정",
             "작업 슬롯과 속도를 관리합니다. 작업 속도는 스캔 외 이동(시작 · 대기 · 홈 자리로, "
             "후퇴, 프로브 사이) 속도로 최대 250 mm/s(로봇 안전 설정의 TCP 한계)입니다 — v6 태스크. "
             "ㄹ자 스캔은 따로 100 mm/s 에 속도 비율(ERUT 스캔 속도)을 곱해 갑니다. "
             "속도 비율은 로봇 전체 속도에도 곱해집니다(2~100 %). "
-            "스캔 상승 높이 제한은 ㄹ자 한 줄을 끝내고 위로 올라가는 최대 높이(프로브 유효 "
-            "세로 커버)로, 장착한 EOAT 의 값이 작업을 시작할 때 로봇에 갑니다. "
-            "장착 EOAT 는 고르는 즉시 로봇에 갑니다(작업 중에는 바꿀 수 없습니다).",
+            "ㄹ자 줄 간격은 ERUT 가 보낸 값을 씁니다. "
+            "장착 홀더는 고르는 즉시 로봇에 갑니다(작업 중에는 바꿀 수 없습니다).",
             [
                 ("현재 태스크",task_row),
                 ("태스크 선택",version_row),
@@ -1183,7 +1174,6 @@ class CobotSettingsScreen(FormScreen):
                 (self.SPEED_FIELD,spin(100,1,250)),
                 (self.RATIO_FIELD,spin(100,2,100)),
                 ("장착 EOAT",eoat_row),
-                *rise_fields,
                 ("연결 상태",QLabel("● 연결됨")),
                 ("마지막 응답",QLabel("12 ms")),
             ],
@@ -1196,7 +1186,7 @@ class CobotSettingsScreen(FormScreen):
             lambda index: self.eoat_changed.emit(self.EOAT_CHOICES[index][0]))
 
     def eoat_type(self) -> int:
-        """지금 고른 장착 EOAT (0 = 없음, 5 = 5축 십자형, 8 = 8축 직사각)."""
+        """지금 고른 장착 EOAT (0 = 노그리퍼, 5 = 5축 홀더, 8 = 8축 홀더)."""
         return self.EOAT_CHOICES[max(self.eoat_combo.currentIndex(), 0)][0]
 
     def set_eoat_type(self, probes) -> None:
@@ -1213,13 +1203,6 @@ class CobotSettingsScreen(FormScreen):
         self.eoat_combo.blockSignals(True)
         self.eoat_combo.setCurrentIndex(index)
         self.eoat_combo.blockSignals(False)
-
-    def scan_rise_mm(self, probes: int) -> float:
-        """EOAT 종류(5 · 8축)의 스캔 상승 높이 제한 [mm]. 모르는 종류면 0."""
-        label = self.SCAN_RISE_FIELDS.get(int(probes))
-        if label is None:
-            return 0.0
-        return float(self.values().get(label) or 0.0)
 
     def task_version(self) -> str:
         """지금 고른 태스크 버전 (예: "dusan_v4")."""

@@ -102,9 +102,10 @@ def pr_press(target):
     return get_actual_tcp_pose()
   end
   # 계산값 대신 쓸 값이 없다 — 실패는 반드시 멈춰서 알려야 한다.
-  popup(s = "PROBE_R: WALL CONTACT NOT FOUND", title = "dusan_v6", blocking = True)
+  # 오류 번호를 먼저 쓰고 창을 띄운다(2026-11-05, ERUT Q-49 ②).
   write_port_register(299, 3)
   write_port_register(290, 9)
+  popup(s = "PROBE_R: WALL CONTACT NOT FOUND", title = "dusan_v6", blocking = True)
   halt()
   return target
 end

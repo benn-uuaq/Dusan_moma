@@ -98,7 +98,7 @@ def _req(action, **content):
 
 
 AREA = {"start": {"x": 0, "y": 0}, "end": {"x": 600, "y": 800}}
-SCAN = {"pitch": 200, "speed_mm_s": 100, "speed_pct": 100, "overlap": 20}
+SCAN = {"pitch_left": 200, "pitch_right": 200, "speed_mm_s": 100, "speed_pct": 100, "overlap": 20}
 
 
 def _prepare(s, req_id="p1", job_id="jb1", area=AREA, scan=SCAN, surface="outer", **extra):
@@ -209,7 +209,7 @@ def test_zero_size_area_is_400(session):
 def test_speed_above_the_robot_limit_is_refused(session):
     """낼 수 없는 속도는 분명히 거절한다(탭8 45 · 53행) — 상한과 단위를 함께 알린다."""
     s, client, _seq = session
-    _start(s, scan={"pitch": 200, "speed_mm_s": 150, "speed_pct": 100, "overlap": 20})
+    _start(s, scan={"pitch_left": 200, "pitch_right": 200, "speed_mm_s": 150, "speed_pct": 100, "overlap": 20})
 
     assert client.res[-1]["status_code"] == 400
     error = client.res[-1]["error"]
@@ -228,7 +228,7 @@ def test_speed_pct_is_the_robot_speed_ratio(session):
     s, client, _seq = session
     ratios = _ratios(s)
 
-    _prepare(s, scan={"pitch": 200, "speed_mm_s": 40, "speed_pct": 40, "overlap": 20})
+    _prepare(s, scan={"pitch_left": 200, "pitch_right": 200, "speed_mm_s": 40, "speed_pct": 40, "overlap": 20})
 
     assert client.res[-1]["status_code"] == 202 and ratios == [40]
 
@@ -243,7 +243,7 @@ def test_one_speed_field_is_enough(session, scan, ratio):
     s, client, _seq = session
     ratios = _ratios(s)
 
-    _prepare(s, scan={"pitch": 200, "overlap": 20, **scan})
+    _prepare(s, scan={"pitch_left": 200, "pitch_right": 200, "overlap": 20, **scan})
 
     assert client.res[-1]["status_code"] == 202 and ratios == [ratio]
 
@@ -261,7 +261,7 @@ def test_missing_or_bad_speed_is_400(session, scan):
     starts: list = []
     s.job_requested.connect(starts.append)
 
-    _start(s, scan={"pitch": 200, "overlap": 20, **scan})
+    _start(s, scan={"pitch_left": 200, "pitch_right": 200, "overlap": 20, **scan})
 
     assert client.res[-1]["status_code"] == 400
     assert client.res[-1]["error"]["code"] == "E6001"
@@ -625,7 +625,7 @@ def test_area_origin_and_overlap_make_the_grid_position(session):
     jobs: list = []
     s.job_requested.connect(jobs.append)
     _start(s, area={"start": {"x": 1160, "y": 780}, "end": {"x": 1760, "y": 1580}},
-           scan={"pitch": 200, "speed": 100, "overlap": 20})
+           scan={"pitch_left": 200, "pitch_right": 200, "speed": 100, "overlap": 20})
 
     plan = jobs[0]
     assert (plan.origin_x, plan.origin_y) == (1160, 780)
@@ -778,7 +778,7 @@ def test_info_introduces_the_device(session):
     s.publish_info()
 
     info = client.info[-1]
-    assert info["interface_version"] == INTERFACE_VERSION == "0.11"
+    assert info["interface_version"] == INTERFACE_VERSION == "0.12"
     assert info["vendor"] == "3S" and info["device_type"] == "articulated_arm"
     assert "probe_contact" in info["capabilities"]
     assert "mark_positioning" in info["capabilities"]
@@ -1316,7 +1316,7 @@ def test_area_limit_goes_into_info_once_the_diameter_is_known(session):
     s.finish_calibration(True, 0.0)
 
     assert infos[-1]["area_limit"] == {"diameter": 1690, "max_width": 721}
-    assert infos[-1]["interface_version"] == "0.11"
+    assert infos[-1]["interface_version"] == "0.12"
 
 
 def test_area_taller_than_the_limit_is_refused_with_area_height(session):
@@ -1443,18 +1443,19 @@ def test_error_extra_fields_ride_inside_the_error(session):
 
 
 # ---- if-0.10 (2026-10-13) — 탭11 Q-32 ~ Q-41 ------------------------------------
-def test_overlap_is_required_and_pitch_becomes_the_line_spacing_limit(session):
-    """이웃 구역끼리의 겹침은 scan.overlap(필수), scan.pitch 는 검사 줄 간격(Q-39)."""
+def test_overlap_is_required_and_side_pitch_is_kept_as_sent(session):
+    """이웃 구역끼리의 겹침은 scan.overlap(필수), 줄 간격은 좌·우 끝 이동높이(if-0.12)."""
     s, client, _seq = session
-    _prepare(s, req_id="p-no", scan={"pitch": 30, "speed": 100})
+    _prepare(s, req_id="p-no", scan={"pitch_left": 30, "pitch_right": 30, "speed": 100})
     refused = client.res[-1]
     assert refused["status_code"] == 400 and refused["error"]["code"] == "E6001"
     assert "overlap" in refused["error"]["detail"]
 
-    _prepare(s, req_id="p-ok", scan={"pitch": 10, "speed": 100, "overlap": 15})
+    _prepare(s, req_id="p-ok", scan={"pitch_left": 0, "pitch_right": 40, "speed": 100,
+                                     "overlap": 15})
     assert client.res[-1]["status_code"] == 202
     assert s._plan.pitch_x == s._plan.pitch_y == 15        # 구역끼리 겹침
-    assert s._plan.line_pitch_max == 10                    # 줄 간격 최대값
+    assert (s._plan.pitch_left, s._plan.pitch_right) == (0, 40)   # 받은 그대로
 
 
 @pytest.mark.parametrize("area", (
@@ -1574,7 +1575,7 @@ def test_calibrate_runs_again_for_every_new_request_even_when_calibrated(session
 def test_overlap_must_be_a_whole_number_of_mm(session, overlap, code):
     """scan.overlap 은 0 이상 정수 mm — 소수 · 음수 · 글자면 400 E6001(탭10 45번)."""
     s, client, _seq = session
-    _prepare(s, scan={"pitch": 30, "speed": 100, "overlap": overlap})
+    _prepare(s, scan={"pitch_left": 30, "pitch_right": 30, "speed": 100, "overlap": overlap})
     assert client.res[-1]["status_code"] == code
 
 
@@ -1645,3 +1646,77 @@ def test_motion_seq_keeps_growing_for_the_same_job_id(session):
 
     assert [(m["dir"], m["seq"]) for m in client.motion] == [("+x", 1), ("none", 2), ("+x", 3)]
 
+
+
+# ---- 좌·우 끝 이동높이 (if-0.12 탭5 161행 · 탭10 61·62번 · 탭11 Q-50) ----------------
+def _side(left, right, **extra):
+    return {"pitch_left": left, "pitch_right": right, "speed_pct": 40, "overlap": 0, **extra}
+
+
+@pytest.mark.parametrize("left, right", ((0, 40), (40, 0), (15, 25), (12.5, 0.1)))
+def test_side_pitch_is_taken_as_sent(session, left, right):
+    """두 값 그대로 쓴다 — 평균 · 채널 수로 바꾸지 않는다(탭10 87번)."""
+    s, client, _seq = session
+    _prepare(s, scan=_side(left, right))
+    assert client.res[-1]["status_code"] == 202
+    assert (s._plan.pitch_left, s._plan.pitch_right) == (left, right)
+
+
+@pytest.mark.parametrize("scan", (
+    _side(-5, 20), _side(20, -5), _side(0, 0),                       # 탭10 61번
+    {"pitch": 40, "speed_pct": 40, "overlap": 0},                     # 옛 칸만 — 채우지 않는다
+    {"pitch_left": 40, "speed_pct": 40, "overlap": 0},                # 한쪽 누락
+    {"pitch_right": 40, "pitch": 40, "speed_pct": 40, "overlap": 0},
+    _side(None, 40), _side("20", 40), _side(True, 40),                # 탭10 62번
+    _side(float("nan"), 40), _side(40, float("inf")), _side(1e308, 1e308),
+    _side(0.01, 0.02),                                                 # 0.1 mm 아래는 0 이 된다
+))
+def test_bad_side_pitch_is_refused(session, scan):
+    s, client, _seq = session
+    _prepare(s, scan=scan)
+    refused = client.res[-1]
+    assert refused["status_code"] == 400 and refused["error"]["code"] == "E6001"
+    assert refused["error"]["detail"]
+    assert s._plan is None
+
+
+def test_more_rows_than_the_robot_loop_is_refused_with_the_reason(session):
+    """줄 수가 로봇 태스크 한도(200)를 넘으면 할 수 없는 요청이다 — 400 + detail(탭5 161행 끝)."""
+    s, client, _seq = session
+    tall = {"start": {"x": 0, "y": 0}, "end": {"x": 300, "y": 800}}
+    _prepare(s, area=tall, scan=_side(0, 5))            # 0 · 5 · 5 · 10 · 10 … → 321 줄
+    refused = client.res[-1]
+    assert refused["status_code"] == 400 and "200" in refused["error"]["detail"]
+
+    _prepare(s, req_id="p2", area=tall, scan=_side(0, 8))   # 201 줄 — 아직 넘는다
+    assert client.res[-1]["status_code"] == 400
+    _prepare(s, req_id="p3", area=tall, scan=_side(4, 4))   # 201 줄
+    assert client.res[-1]["status_code"] == 400
+    _prepare(s, req_id="p4", area=tall, scan=_side(4.1, 4))  # 199 줄
+    assert client.res[-1]["status_code"] == 202
+
+
+def test_task_that_cannot_use_side_pitch_refuses_with_the_reason(session):
+    s, client, _seq = session
+    s.side_pitch_blocker = lambda: "로봇 태스크 dusan_v5 는 좌·우 끝 이동높이를 쓰지 못합니다"
+    _prepare(s, scan=_side(0, 40))
+    refused = client.res[-1]
+    assert refused["status_code"] == 400 and "dusan_v5" in refused["error"]["detail"]
+
+
+def test_resume_sends_the_direction_with_what_is_left(session):
+    """재개할 때 멈췄던 방향을 남은 거리와 함께 다시 낸다(if-0.12 탭11 Q-48 ①)."""
+    s, client, seq = session
+    s.pause_requested.connect(seq.pause)
+    s.resume_requested.connect(seq.resume)
+    s.motion_remain = lambda segment: {1: 212.5, 2: 40.0}.get(segment)
+    _start(s)
+    seq._plan = seq.plan or s._plan
+    seq._set_state(SequencerState.SCANNING)
+    s.set_scan_segment(1, remain_mm=300)
+
+    s.handle_request(*_req("pause", req_id="pz"))
+    s.handle_request(*_req("resume", req_id="rz"))
+
+    assert [(m["dir"], m.get("remain_mm")) for m in client.motion] == [
+        ("+x", 300), ("none", None), ("+x", 212.5)]

@@ -6,6 +6,8 @@
 프로브 확인 없이 훑게 된다. 그래서 셀을 시작할 때 RCS 가 0 으로 지운다.
 """
 
+import pytest
+
 from smr_operator_ui.app import OperatorWindow
 from smr_operator_ui.services import SequencerState
 
@@ -226,6 +228,7 @@ def test_reset_does_nothing_when_already_home(qtbot) -> None:
 def test_progress_comes_from_register_298_not_297(qtbot) -> None:
     """Q-02: 297(스캔 경로 0.1 단위)을 진행률로 읽어 1 m 만 가도 100 이 됐다."""
     window, _commands = _scanning_window(qtbot)
+    window._contact_armed = True                 # 이번 구역에서 로봇이 출발했다
     window._last_scan_state = [6, 3, 28, 100, 1, 0, 296, 1750, 11, 0]
 
     assert window._erut_position()["progress"] == 11
@@ -305,6 +308,7 @@ def test_task_stopping_by_itself_during_the_scan_is_a_fault(qtbot) -> None:
 def test_old_task_sending_pitch_in_mm_is_still_read_right(qtbot) -> None:
     """태스크를 다시 올리기 전(296 이 정수 mm)이어도 10 배 틀리지 않는다."""
     window, _commands = _scanning_window(qtbot)
+    window._contact_armed = True
     window._robot_work_area = [600, 800, 300, 20, 8450, 0, 0, 0, 0]
     window._last_scan_state = [6, 3, 28, 100, 1, 0, 30, 1750, 11, 0]      # 옛 판: 30 mm
 
@@ -426,4 +430,67 @@ def test_robot_that_starts_is_left_alone(qtbot, monkeypatch) -> None:
     qtbot.wait(200)
 
     assert raised == []
+    window.close()
+
+
+# ---- if-0.12 문의(2026-11-03 탭11 Q-48 · Q-50) 로 고친 것 ------------------------------
+def test_last_sections_progress_and_row_are_not_sent_for_the_next(qtbot) -> None:
+    """Q-48 ②: 둘째 구역부터 시작하자마자 progress 100 이었다.
+
+    로봇은 다음 구역에서 3점 측정을 시작하기 전까지 지난 구역 값(298 = 100, 끝 줄)을
+    들고 있다. 이번 구역에서 로봇이 출발한 걸 보기 전에는 싣지 않는다.
+    """
+    from smr_operator_ui.services import GridPlan
+
+    window, _commands = _scanning_window(qtbot)
+    window._last_scan_state = [5, 8, 8, 100, 1, 0, 286, 1750, 100, 0]   # 지난 구역 끝
+    window._contact_armed = True
+    window._start_erut_job(GridPlan(column_count=1, row_count=1, cell_width=300.0,
+                                    cell_height=200.0, pitch_left=40.0, pitch_right=40.0))
+    assert window._erut_position() == {"arc_mm": 0.0, "row_mm": 0.0, "progress": None,
+                                       "scanned_mm": None}
+
+    window._robot_task_state = window._TASK_STATE_RUNNING
+    window._track_erut_contact([2, 0, 6, 0, 0, 0, 400, 0, 0, 0])    # 이번 구역 3점 측정
+    window._track_erut_contact([6, 1, 6, 0, 1, 0, 400, 0, 16, 0])
+    assert window._erut_position()["progress"] == 16
+    window.close()
+
+
+def test_finished_section_reports_the_top_edge_not_one_row_above(qtbot) -> None:
+    """Q-48 ③: 끝난 뒤 pos.y 가 229(구역 200)였다 — 끝낸 줄 수(8) x 간격(28.6)."""
+    window, _commands = _scanning_window(qtbot)
+    window._contact_armed = True
+    window._robot_row_heights = None
+    window._robot_work_area = [300, 200, 300, 0, 6500, 0, 0, 0, 0]
+    window._last_scan_state = [5, 8, 8, 100, 1, 0, 286, 1750, 100, 0]
+    assert window._erut_position()["row_mm"] == pytest.approx(200.2)    # 7 x 28.6
+    window.close()
+
+
+def test_side_pitch_rows_give_the_height_and_the_rise(qtbot) -> None:
+    """좌·우 끝 이동높이(Q-50) — 줄 높이와 +y 남은 거리는 그 규칙으로 구한 값이다."""
+    window, _commands = _scanning_window(qtbot)
+    window._contact_armed = True
+    window._robot_row_heights = [0.0, 40.0, 40.0, 80.0, 80.0]
+    window._last_scan_state = [6, 1, 5, 0, 1, 0, 400, 0, 20, 0]     # 첫 줄을 끝냈다
+    assert window._erut_position()["row_mm"] == 40.0
+    assert window._segment_remain_mm(2) == 40.0                    # 오른쪽 끝에서 40
+    window._last_scan_state = [6, 2, 5, 0, 1, 0, 0, 0, 40, 0]      # 왼쪽 끝 — 0
+    assert window._segment_remain_mm(2) is None
+    window._last_scan_state = [5, 5, 5, 0, 1, 0, 0, 0, 100, 0]     # 끝
+    assert window._erut_position()["row_mm"] == 80.0
+    window.close()
+
+
+def test_side_pitch_needs_the_v6_task_and_a_node_that_knows_356(qtbot) -> None:
+    window, _commands = _scanning_window(qtbot)
+    window._task_version = "dusan_v6"
+    window.ros_status.lacks_write = lambda name: False
+    assert window._side_pitch_blocker() == ""
+    window._task_version = "dusan_v5"
+    assert "dusan_v5" in window._side_pitch_blocker()
+    window._task_version = "dusan_v6"
+    window.ros_status.lacks_write = lambda name: name == "scan_pitch"
+    assert "colcon build" in window._side_pitch_blocker()
     window.close()

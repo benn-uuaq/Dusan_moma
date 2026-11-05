@@ -247,6 +247,8 @@ end
 #   259 격자간 겹침 [mm]  260 반지름 [0.1mm]   261 두께 [0.1mm]
 #   262 프로브 유효 가로 [0.1mm]  263 프로브 유효 세로 [0.1mm]
 #   264 그리퍼 종류(eoat_type) — 0=없음, 5=5축, 8=8축
+#   356 왼쪽 끝 · 357 오른쪽 끝 이동높이 [0.1mm] — ERUT scan.pitch_left · pitch_right
+#       (if-0.12). 둘 다 0 이면 예전처럼 scan_h 로 구역 세로를 고르게 나눈다.
 # 258/260/261/262/263 이 0.1mm 인 이유: 반지름 834.6, 유효 커버 167.5
 # 처럼 소수가 나오는 값들이라 정수 mm 로 반올림하면 호 모양과 줄 간격이
 # 눈에 띄게 틀어진다. 호 길이·격자 높이·겹침은 1mm 로 충분하다.
@@ -260,6 +262,8 @@ if (read_port_register(266, True) == 1):
   eoat_w = read_port_register(262, True) * 0.1
   eoat_h = read_port_register(263, True) * 0.1
   eoat_type = read_port_register(264, True)
+  pitch_l = read_port_register(356, True) * 0.1
+  pitch_r = read_port_register(357, True) * 0.1
 end
 
 # ---- 프로브 유효 커버 -----------------------------------------------------
@@ -554,9 +558,55 @@ start_pose = pose_trans(gripper_touch_flange, [0, 0, -probe_dist * 0.001, 0, 0, 
 # (예전에는 259 를 격자 안 최소 겹침으로 써서, 바깥에서 20 을 주면
 #  격자 안 줄이 쓸데없이 촘촘해졌다.)
 
+# ---- ERUT 좌·우 끝 이동높이 (if-0.12, 2026-11-05) ----------------------------
+# 356 · 357 이 오면 줄 높이는 균등 분할이 아니라 **각 끝에서 받은 높이만큼** 오른다:
+#   첫 줄 = 아래 끝(0), 왼쪽 -&gt; 오른쪽(pass_r). 첫 줄 앞에는 오르지 않는다.
+#   오른쪽 끝에서 pitch_r, 왼쪽 끝에서 pitch_l 만큼 올라 다음 줄을 훑는다(dus6_up).
+#   0 이면 그 끝에서 높이를 바꾸지 않고 같은 높이를 되돌아 훑는다.
+#   위 끝을 넘는 상승은 위 끝까지로 줄인다 — 맨 윗줄이 늘 위 끝(app_height)을 지난다.
+#   이미 위 끝인데 올라가야 하면(상승 &gt; 0) 거기서 끝난다.
+# RCS(job_sequencer.scan_row_heights)도 같은 규칙으로 줄 높이를 구해 ERUT 위치를 낸다.
+# 여기서는 줄 수(rows)만 세고, 높이는 dus6_up 이 row_y 에 쌓는다.
+if (pitch_l &lt; 0):
+  pitch_l = 0
+end
+if (pitch_r &lt; 0):
+  pitch_r = 0
+end
+pitch_lr = 0
+if (pitch_l + pitch_r &gt; 0):
+  pitch_lr = 1
+end
+row_y = 0
+
 if (app_height &lt;= 0):
   rows = 1
   pitch = 0
+elif (pitch_lr == 1):
+  rows = 1
+  lr_y = 0
+  lr_right = 1
+  while (rows &lt;= 200):
+    if (lr_right == 1):
+      lr_rise = pitch_r
+    else:
+      lr_rise = pitch_l
+    end
+    if (lr_rise &gt; 0 and lr_y &gt;= app_height - 0.001):
+      break
+    end
+    lr_y = lr_y + lr_rise
+    if (lr_y &gt; app_height):
+      lr_y = app_height
+    end
+    rows = rows + 1
+    lr_right = 1 - lr_right
+  end
+  # 기록 · 화면용 대표 피치 = 두 끝 중 큰 상승. 296 은 dus6_up 이 상승마다 고쳐 쓴다.
+  pitch = pitch_r
+  if (pitch_l &gt; pitch):
+    pitch = pitch_l
+  end
 else:
   gaps = ceil(app_height * 1.0 / scan_h)
   if (gaps &lt; 1):
@@ -572,9 +622,12 @@ overlap = scan_h - pitch
 if (overlap &lt; 0):
   overlap = 0
 end
-if (rows &gt; 400):
-  popup(s = "ROWS OVER LIMIT(400). CHECK HEIGHT/SCAN_H/OVERLAP", title = "dusan_v6", blocking = True)
+# 줄 하나가 펜던트 Loop 한 바퀴다(Loop 200 회) — 200 줄을 넘으면 끝 줄을 못 훑는다.
+# 오류 번호를 **먼저** 쓰고 창을 띄운다 — 창을 누르기 전에도 RCS · ERUT 가 안다.
+if (rows &gt; 200):
+  write_port_register(299, 9)
   write_port_register(290, 9)
+  popup(s = "ROWS OVER LIMIT(200). CHECK HEIGHT/SCAN_H/PITCH", title = "dusan_v6", blocking = True)
   halt()
 end
 
@@ -902,6 +955,8 @@ end
 #   259 격자간 겹침 [mm]  260 반지름 [0.1mm]   261 두께 [0.1mm]
 #   262 프로브 유효 가로 [0.1mm]  263 프로브 유효 세로 [0.1mm]
 #   264 그리퍼 종류(eoat_type) — 0=없음, 5=5축, 8=8축
+#   356 왼쪽 끝 · 357 오른쪽 끝 이동높이 [0.1mm] — ERUT scan.pitch_left · pitch_right
+#       (if-0.12). 둘 다 0 이면 예전처럼 scan_h 로 구역 세로를 고르게 나눈다.
 # 258/260/261/262/263 이 0.1mm 인 이유: 반지름 834.6, 유효 커버 167.5
 # 처럼 소수가 나오는 값들이라 정수 mm 로 반올림하면 호 모양과 줄 간격이
 # 눈에 띄게 틀어진다. 호 길이·격자 높이·겹침은 1mm 로 충분하다.
@@ -915,6 +970,8 @@ if (read_port_register(266, True) == 1):
   eoat_w = read_port_register(262, True) * 0.1
   eoat_h = read_port_register(263, True) * 0.1
   eoat_type = read_port_register(264, True)
+  pitch_l = read_port_register(356, True) * 0.1
+  pitch_r = read_port_register(357, True) * 0.1
 end
 
 # ---- 프로브 유효 커버 -----------------------------------------------------
@@ -1209,9 +1266,55 @@ start_pose = pose_trans(gripper_touch_flange, [0, 0, -probe_dist * 0.001, 0, 0, 
 # (예전에는 259 를 격자 안 최소 겹침으로 써서, 바깥에서 20 을 주면
 #  격자 안 줄이 쓸데없이 촘촘해졌다.)
 
+# ---- ERUT 좌·우 끝 이동높이 (if-0.12, 2026-11-05) ----------------------------
+# 356 · 357 이 오면 줄 높이는 균등 분할이 아니라 **각 끝에서 받은 높이만큼** 오른다:
+#   첫 줄 = 아래 끝(0), 왼쪽 -&gt; 오른쪽(pass_r). 첫 줄 앞에는 오르지 않는다.
+#   오른쪽 끝에서 pitch_r, 왼쪽 끝에서 pitch_l 만큼 올라 다음 줄을 훑는다(dus6_up).
+#   0 이면 그 끝에서 높이를 바꾸지 않고 같은 높이를 되돌아 훑는다.
+#   위 끝을 넘는 상승은 위 끝까지로 줄인다 — 맨 윗줄이 늘 위 끝(app_height)을 지난다.
+#   이미 위 끝인데 올라가야 하면(상승 &gt; 0) 거기서 끝난다.
+# RCS(job_sequencer.scan_row_heights)도 같은 규칙으로 줄 높이를 구해 ERUT 위치를 낸다.
+# 여기서는 줄 수(rows)만 세고, 높이는 dus6_up 이 row_y 에 쌓는다.
+if (pitch_l &lt; 0):
+  pitch_l = 0
+end
+if (pitch_r &lt; 0):
+  pitch_r = 0
+end
+pitch_lr = 0
+if (pitch_l + pitch_r &gt; 0):
+  pitch_lr = 1
+end
+row_y = 0
+
 if (app_height &lt;= 0):
   rows = 1
   pitch = 0
+elif (pitch_lr == 1):
+  rows = 1
+  lr_y = 0
+  lr_right = 1
+  while (rows &lt;= 200):
+    if (lr_right == 1):
+      lr_rise = pitch_r
+    else:
+      lr_rise = pitch_l
+    end
+    if (lr_rise &gt; 0 and lr_y &gt;= app_height - 0.001):
+      break
+    end
+    lr_y = lr_y + lr_rise
+    if (lr_y &gt; app_height):
+      lr_y = app_height
+    end
+    rows = rows + 1
+    lr_right = 1 - lr_right
+  end
+  # 기록 · 화면용 대표 피치 = 두 끝 중 큰 상승. 296 은 dus6_up 이 상승마다 고쳐 쓴다.
+  pitch = pitch_r
+  if (pitch_l &gt; pitch):
+    pitch = pitch_l
+  end
 else:
   gaps = ceil(app_height * 1.0 / scan_h)
   if (gaps &lt; 1):
@@ -1227,9 +1330,12 @@ overlap = scan_h - pitch
 if (overlap &lt; 0):
   overlap = 0
 end
-if (rows &gt; 400):
-  popup(s = "ROWS OVER LIMIT(400). CHECK HEIGHT/SCAN_H/OVERLAP", title = "dusan_v6", blocking = True)
+# 줄 하나가 펜던트 Loop 한 바퀴다(Loop 200 회) — 200 줄을 넘으면 끝 줄을 못 훑는다.
+# 오류 번호를 **먼저** 쓰고 창을 띄운다 — 창을 누르기 전에도 RCS · ERUT 가 안다.
+if (rows &gt; 200):
+  write_port_register(299, 9)
   write_port_register(290, 9)
+  popup(s = "ROWS OVER LIMIT(200). CHECK HEIGHT/SCAN_H/PITCH", title = "dusan_v6", blocking = True)
   halt()
 end
 
@@ -1654,10 +1760,11 @@ write_port_register(290, 3)
 # "Target pose ... coincident with auxiliary pose" 로 죽는데, 그 문구만
 # 보고는 원인을 알 수 없다. 여기서 값을 짚어 멈춘다.
 if (scan_radius &lt;= 0 or arc_half == 0):
-  popup(s = "ARC IS ZERO: check radius(260) and arc length(256)",
-        title = "dusan_v6", blocking = True)
+  # 오류 번호를 먼저 쓰고 창을 띄운다(2026-11-05, ERUT Q-49 ②).
   write_port_register(299, 4)
   write_port_register(290, 9)
+  popup(s = "ARC IS ZERO: check radius(260) and arc length(256)",
+        title = "dusan_v6", blocking = True)
   halt()
 end
 
@@ -2573,7 +2680,7 @@ nl_w1(298, row_idx * 100.0 / rows)
               <ScriptNode scriptType="FILE_TYPE" typeName="Script">
                 <cachedFileContents># =============================================================================
 #  dus6_up.script — dusan_v6
-#  다음 줄로 한 피치만큼 상승한다
+#  다음 줄로 상승한다 — 균등 피치, 또는 ERUT 좌·우 끝 이동높이(if-0.12)
 #
 #  펜던트에서 "9_up" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
@@ -2600,11 +2707,33 @@ end
 # 스캔 동작마다 세워 둬야, 사이클이 반복되며 goto_zero 를 다시 지나지
 # 않는 구성에서도 좌표가 끊기지 않는다.
 write_port_register(290, 6)
-# TPAC 동기 신호: 줄 바꿈 상승 구간 — 스캔 동결(DO[1] = 0) 유지.
-write_port_register(277, 2)
+
+# 이번 상승 높이. ERUT 좌·우 끝 이동높이(pitch_lr = 1)면 방금 끝낸 줄이 끝난 쪽의
+# 값이다 — pass_r(왼 -&gt; 오)을 끝내면 dir_sign = -1(오른쪽 끝, pitch_r), pass_l 을
+# 끝내면 dir_sign = 1(왼쪽 끝, pitch_l). 위 끝을 넘으면 위 끝까지로 줄인다(dus6_init).
+# 아니면 예전처럼 균등 피치(row_idx * pitch)다.
+if (pitch_lr == 1):
+  if (dir_sign &lt; 0):
+    up_rise = pitch_r
+  else:
+    up_rise = pitch_l
+  end
+  if (row_y + up_rise &gt; app_height):
+    up_rise = app_height - row_y
+  end
+  if (up_rise &lt; 0):
+    up_rise = 0
+  end
+  row_y = row_y + up_rise
+else:
+  up_rise = pitch
+  row_y = row_idx * pitch
+end
+# 296 = 이번 상승 [0.1 mm] — RCS 가 evt/motion +y 의 remain_mm 으로 쓴다.
+up_w1(296, up_rise * 10)
 
 tgt_pose = get_actual_tcp_pose()
-tgt_pose[2] = z_base + row_idx * pitch * 0.001
+tgt_pose[2] = z_base + row_y * 0.001
 # 줄 바꿈도 ㄹ자 스캔이다 — 스캔 줄(servoj 호)과 같은 속도 비율(307 — ERUT 속도 ·
 # RCS 속도 비율)을 건다(v6, 2026-11-04). 예전에는 컨트롤러 전체 비율만 따랐는데, 이제
 # ERUT 속도는 스캔에만 걸리고 컨트롤러 전체 비율은 바꾸지 않는다.
@@ -2612,9 +2741,15 @@ up_ratio = read_port_register(307, True)
 if (up_ratio &lt; 2 or up_ratio &gt; 100):
   up_ratio = 100
 end
-movel(tgt_pose, a = a_scan, v = v_scan * up_ratio / 100.0)
+# 그 끝의 상승이 0 이면 오르지 않고 같은 높이를 되돌아 훑는다 — 줄 바꿈(277 = 2)도
+# 내지 않는다(ERUT 는 +y 없이 바로 반대 방향을 받는다).
+if (up_rise &gt; 0.0005):
+  # TPAC 동기 신호: 줄 바꿈 상승 구간 — 스캔 동결(DO[1] = 0) 유지.
+  write_port_register(277, 2)
+  movel(tgt_pose, a = a_scan, v = v_scan * up_ratio / 100.0)
+end
 
-path_len = path_len + pitch
+path_len = path_len + up_rise
 up_w1(297, path_len * 0.1)
 </cachedFileContents>
                 <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v6/scripts_nosensor/dus6_up.script"/>

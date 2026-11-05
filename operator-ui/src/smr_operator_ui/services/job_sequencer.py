@@ -79,6 +79,38 @@ PROBE_COVERAGE_MM: dict[int, tuple[float, float]] = {
 }
 
 
+#: 로봇 태스크가 한 번에 훑는 줄 수의 한도 — 펜던트 프로그램의 Loop 200 회(dus6).
+#: 줄 하나가 한 바퀴라 이보다 많으면 끝 줄을 못 훑고 멈춘다.
+SCAN_ROW_LIMIT = 200
+
+
+def scan_row_heights(height_mm: float, pitch_left: float, pitch_right: float,
+                     limit: int = SCAN_ROW_LIMIT) -> list[float]:
+    """ERUT 좌·우 이동높이(if-0.12)로 ㄹ자 줄 높이 [mm] 를 아래 끝(0)부터 차례로 낸다.
+
+    로봇 태스크(dus6_init 의 줄 수 · dus6_up 의 상승)와 **같은 규칙**이다.
+      * 첫 줄은 구역 아래 끝(0)에서 왼쪽 → 오른쪽으로 — 첫 줄 앞에는 오르지 않는다.
+      * 오른쪽 끝에서 pitch_right, 왼쪽 끝에서 pitch_left 만큼 올라 다음 줄을 훑는다.
+        0 이면 그 끝에서 높이를 바꾸지 않고 같은 높이를 되돌아 훑는다.
+      * 위 끝을 넘는 상승은 위 끝까지로 줄인다 — 맨 윗줄이 늘 구역 위 끝을 지난다.
+      * 이미 위 끝인데 올라가야 하면(상승 > 0) 거기서 끝난다.
+    값은 로봇에 가는 단위(0.1 mm)로 맞춰 계산해야 줄 수가 로봇과 같다. 줄 수가
+    `limit` 를 넘으면 limit + 1 개에서 멈춘다(부른 쪽이 넘었는지 본다).
+    """
+    heights = [0.0]
+    if height_mm <= 0:
+        return heights
+    y, at_right = 0.0, True
+    while len(heights) <= limit:
+        rise = pitch_right if at_right else pitch_left
+        if rise > 0 and y >= height_mm - 0.001:
+            break
+        y = min(y + rise, float(height_mm))
+        heights.append(y)
+        at_right = not at_right
+    return heights
+
+
 @dataclass(frozen=True)
 class GridPlan:
     """격자 분할 계획. 단위는 mm.
@@ -114,27 +146,34 @@ class GridPlan:
     # RCS '검사 시작'처럼 격자를 우리가 도는 경우는 0 이다.
     origin_x: float = 0.0
     origin_y: float = 0.0
-    # 스캔 상승 높이 제한 [mm] — ㄹ자 한 줄을 끝내고 위로 올라가는 최대 높이
-    # (= 프로브 유효 세로 커버, 로봇 scan_h). RCS Cobot 설정에서 EOAT 종류별로
-    # 넣는다(2026-10-12). 0 이면 PROBE_COVERAGE_MM 의 기본값을 쓴다.
-    scan_rise_mm: float = 0.0
-    # 검사 줄 간격의 최대값 [mm] — ERUT scan.pitch(if-0.10 탭8 44행). 줄 간격은
-    # 탐촉자 유효 높이(scan_h)로 자동으로 정하되 이 값을 넘지 않게 줄을 늘린다
-    # (탭11 Q-39 가안). 0 이면 제한 없음(RCS '검사 시작').
-    line_pitch_max: float = 0.0
+    # ERUT 좌·우 끝 이동높이 [mm] (if-0.12 scan.pitch_left · pitch_right — 옛
+    # scan.pitch 를 대신한다). 왼쪽 끝 · 오른쪽 끝에서 다음 줄로 올라가는 높이를
+    # 그대로 쓴다(scan_row_heights). None 이면 ERUT 값이 없는 RCS '검사 시작'이라
+    # 로봇이 탐촉자 유효 높이(scan_h)로 구역 세로를 고르게 나눈다.
+    pitch_left: float | None = None
+    pitch_right: float | None = None
+
+    @property
+    def has_side_pitch(self) -> bool:
+        """ERUT 좌·우 이동높이로 줄을 정하는가."""
+        return self.pitch_left is not None and self.pitch_right is not None
+
+    def row_heights(self) -> list[float] | None:
+        """좌·우 이동높이로 정한 줄 높이(로봇 단위로 맞춘 값). 없으면 None."""
+        if not self.has_side_pitch:
+            return None
+        return scan_row_heights(round(self.cell_height), round(self.pitch_left * 10) / 10,
+                                round(self.pitch_right * 10) / 10)
 
     @property
     def eoat_size(self) -> tuple[float, float]:
         """프로브 **유효 스캔 커버**의 (가로, 세로) [mm]. 모르는 종류면 (0, 0).
 
         가로는 호 방향, 세로는 리프트 방향이다. 세로값이 곧 ㄹ자 up 동작의
-        **최대 상승량**이다 — 자세한 건 PROBE_COVERAGE_MM 주석 참고.
-        Cobot 설정의 스캔 상승 높이 제한(scan_rise_mm)이 있으면 세로값은 그 값이다.
+        **최대 상승량**이다 — 자세한 건 PROBE_COVERAGE_MM 주석 참고. 설정으로 바꾸지
+        않는다(2026-11-06 — ERUT 가 줄 간격을 관리한다).
         """
-        width, height = PROBE_COVERAGE_MM.get(int(self.eoat_probes), (0.0, 0.0))
-        if height > 0 and self.scan_rise_mm > 0:
-            height = float(self.scan_rise_mm)
-        return width, height
+        return PROBE_COVERAGE_MM.get(int(self.eoat_probes), (0.0, 0.0))
 
     @property
     def total_cells(self) -> int:
@@ -232,8 +271,9 @@ class JobSequencer(QObject):
     # 바깥 지름만 쓴다, 2026-10-19):
     #   호 길이, 격자 높이, 스캐너 높이, 겹침, 바깥 반지름,
     #   EOAT 가로, EOAT 세로, EOAT 종류(0/5/8)
+    # 그 뒤에 ERUT 좌·우 끝 이동높이(레지스터 356 · 357, if-0.12) — 없으면 -1.
     work_area_requested = pyqtSignal(float, float, float, float, float,
-                                     float, float, float)
+                                     float, float, float, float, float)
     job_complete = pyqtSignal()
     # 구간 자리에 섰고 로봇 시작을 기다린다(hold_before_scan 으로 시작했을 때).
     ready_reached = pyqtSignal()
@@ -338,6 +378,8 @@ class JobSequencer(QObject):
             plan.cell_width, plan.cell_height, scan_h_mm, plan.pitch_y,
             plan.radius, eoat_w, eoat_h,
             float(plan.eoat_probes),
+            float(plan.pitch_left) if plan.has_side_pitch else -1.0,
+            float(plan.pitch_right) if plan.has_side_pitch else -1.0,
         )
         if move_first:
             # 구간 자리로 차량부터 옮긴다. 도착하면(amr_arrived) 고정 ->

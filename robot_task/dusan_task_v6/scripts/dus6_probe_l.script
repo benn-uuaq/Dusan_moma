@@ -144,9 +144,10 @@ def al_press(target):
   end
   # 계산값 대신 쓸 값이 없다 — 원점이 실측 없이 계산값으로 넘어가면
   # 스캔 전체가 잘못된 좌표로 돌게 되므로, 실패는 반드시 멈춰서 알려야 한다.
-  popup(s = "PROBE_L: WALL CONTACT NOT FOUND", title = "dusan_v6", blocking = True)
+  # 오류 번호를 먼저 쓰고 창을 띄운다(2026-11-05, ERUT Q-49 ②).
   write_port_register(299, 2)
   write_port_register(290, 9)
+  popup(s = "PROBE_L: WALL CONTACT NOT FOUND", title = "dusan_v6", blocking = True)
   halt()
   return target
 end
@@ -177,10 +178,11 @@ write_port_register(290, 3)
 # "Target pose ... coincident with auxiliary pose" 로 죽는데, 그 문구만
 # 보고는 원인을 알 수 없다. 여기서 값을 짚어 멈춘다.
 if (scan_radius <= 0 or arc_half == 0):
-  popup(s = "ARC IS ZERO: check radius(260) and arc length(256)",
-        title = "dusan_v6", blocking = True)
+  # 오류 번호를 먼저 쓰고 창을 띄운다(2026-11-05, ERUT Q-49 ②).
   write_port_register(299, 4)
   write_port_register(290, 9)
+  popup(s = "ARC IS ZERO: check radius(260) and arc length(256)",
+        title = "dusan_v6", blocking = True)
   halt()
 end
 

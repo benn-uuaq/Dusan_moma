@@ -74,6 +74,7 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 | `write.start_pose` | 316~321 | 시작 포즈 (길이 0.1 mm, 회전 mrad) |
 | `write.work_area` | 256~259 | 작업 영역 [너비, 높이, 스캐너높이, 겹침] mm. **정수 mm 그대로** 저장한다(`kind: "raw"`, 0.1mm 아님) |
 | `write.param_src` | 266 | 1이면 태스크가 256~259의 작업 영역을 쓴다 |
+| `write.scan_pitch` | 356~357 | ERUT 왼쪽 끝 · 오른쪽 끝 이동높이 [0.1 mm] (if-0.12 `scan.pitch_left` · `pitch_right`). 둘 다 0 이면 태스크가 고르게 나눈다 |
 
 쓰기 주소는 로봇 태스크가 읽는 범용 레지스터 대역(256~383)에 맞췄습니다. 태스크가 이미 쓰는 256~305는 피했습니다.
 
@@ -108,6 +109,7 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 | 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/start_pose` | `start_pose` |
 | 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/assembly_joint` | 없음 (노드가 기억만, mrad) |
 | 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/work_area` | `work_area` (성공 시 `param_src`도 1로 세운다) |
+| 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/scan_pitch` | `scan_pitch` (RCS 가 `work_area` 바로 앞에 보낸다) |
 | 토픽 (`std_msgs/Int32`) | `robot/command/jog_joint` | 없음 (30001 스크립트) |
 | 토픽 (`std_msgs/Int32`) | `robot/command/jog_tcp` | 없음 (30001 스크립트) |
 
