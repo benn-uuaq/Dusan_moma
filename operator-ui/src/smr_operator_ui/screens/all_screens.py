@@ -746,7 +746,7 @@ class SettingsMenuScreen(BaseScreen):
         super().__init__("설정 / 진단", "장비 설정과 운전 기록을 관리합니다.")
         self.setObjectName("SettingsScreen")
         grid=QGridLayout(); grid.setSpacing(14); self.body.addLayout(grid,1)
-        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","로봇·PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·ERUT"),("system","시스템 설정","장비·기록 위치·보존 기간"),("cobot","Cobot 설정","검사 작업 슬롯"),("tpac_bridge","TPAC 설정 / TCP 인코딩","로봇 값을 외부 Modbus로 중계"),("errors","오류 로그","활성 오류 해제·과거 기록"),("logs","로그 파일","기록 파일 보기·내보내기·삭제"),("modes","운전 모드 저장","작업 조건 묶음 저장·불러오기"))
+        items=(("manual","수동 제어","AMR·리프트·아웃트리거"),("cobot_manual","Cobot 수동 제어","연결·전원·프로그램 제어"),("cobot_jog","Cobot 조그 / 위치 저장","관절·TCP 이동, 기준 위치"),("io","I/O 상태","로봇·PLC 입출력 진단"),("connection","연결 설정","협동로봇·PLC·ERUT"),("system","시스템 설정","장비·기록 위치·보존 기간"),("cobot","Cobot 설정","검사 작업 슬롯"),("vehicle","차량 설정","폭·거리 유지·리프트·속도"),("tpac_bridge","TPAC 설정 / TCP 인코딩","로봇 값을 외부 Modbus로 중계"),("errors","오류 로그","활성 오류 해제·과거 기록"),("logs","로그 파일","기록 파일 보기·내보내기·삭제"),("modes","운전 모드 저장","작업 조건 묶음 저장·불러오기"))
         for i,(key,title,desc) in enumerate(items):
             # key를 기본 인자로 고정한다. 그렇지 않으면 모든 lambda가
             # 반복문의 마지막 key만 참조하게 된다.
@@ -1083,6 +1083,146 @@ class SystemSettingsScreen(FormScreen):
     def __init__(self):
         lang=TouchComboBox(); lang.addItems(["한국어","English"])
         super().__init__("system","시스템 설정","운영 환경과 기록 정책을 설정합니다. 데이터 저장 위치·로그 보존 기간은 로그 파일·오류 로그 화면이 따릅니다.",[("장비 이름",line("SMR Operator Console")),("언어",lang),("상태 갱신 주기",spin(200,50,5000)),("로그 보존 기간",spin(365,1,3650)),("데이터 저장 위치",FolderPathEdit("D:/SMR/Data", title="데이터 저장 위치 선택")),("안전 설정",QLabel("PLC 관리 · 읽기 전용"))])
+
+class VehicleSettingsScreen(FormScreen):
+    """차량(AGV · 리프트) 설정 — 원주 거리 환산 · 리프트 한계 · 로봇 베이스 높이 · 상승 한계 · 주행 속도.
+
+    차량은 모재(벽)에서 「모재 거리 유지」만큼 떨어져, 차량 폭의 가운데를 기준으로
+    모재를 돈다. 모재 표면에서 s 만큼 옮기려면 차량은 s × (R + 거리 + 폭/2) ÷ R 만큼
+    달려야 한다(R = 모재 반지름) — 이 화면의 두 값으로 RCS 가 환산한다(2026-11-09).
+    """
+
+    WIDTH_FIELD = "차량 폭"
+    STANDOFF_FIELD = "모재 거리 유지"
+    LIFT_MAX_FIELD = "리프트 한계 높이"
+    BASE_FIELD = "로봇 베이스 높이"
+    REACH_FIELD = "로봇 상승 한계"
+    SPEED_FIELD = "차량 주행 속도"
+    #: 처음 값. 폭 · 거리 0 이면 배율 1(예전과 같다), 베이스 높이 0 이면 팔은 시작 위치에서
+    #: 상승 한계만큼만 닿는 것으로 본다(작게 잡는 쪽) — 실측값을 넣는다.
+    DEFAULTS = {WIDTH_FIELD: 0, STANDOFF_FIELD: 0, LIFT_MAX_FIELD: 3500,
+                BASE_FIELD: 0, REACH_FIELD: 1600, SPEED_FIELD: 300}
+    DISPLAY_LABELS = {
+        WIDTH_FIELD: "차량 폭 (모재 쪽 면 ↔ 바깥 면)",
+        STANDOFF_FIELD: "모재 거리 유지 (벽 ↔ 차량 센서 면)",
+        LIFT_MAX_FIELD: "리프트 한계 높이",
+        BASE_FIELD: "로봇 베이스 높이 (차량, 리프트 최하단)",
+        REACH_FIELD: "로봇팔 상승 한계 (베이스에서 위로)",
+        SPEED_FIELD: "차량 주행 속도",
+    }
+
+    def __init__(self):
+        def mm(value: int, hi: int, suffix: str = " mm") -> TouchSpinBox:
+            box = spin(value, 0, hi)
+            box.setSuffix(suffix)
+            return box
+
+        self._diameter_mm = 0.0
+        self.center_label = QLabel("-")
+        self.scale_label = QLabel("-")
+        self.reach_label = QLabel("-")
+        for label in (self.center_label, self.scale_label, self.reach_label):
+            label.setWordWrap(True)
+        width = mm(self.DEFAULTS[self.WIDTH_FIELD], 5000)
+        standoff = mm(self.DEFAULTS[self.STANDOFF_FIELD], 2000)
+        speed = mm(self.DEFAULTS[self.SPEED_FIELD], 1000, " mm/s")
+        speed.setMinimum(10)
+        lift_max = mm(self.DEFAULTS[self.LIFT_MAX_FIELD], 10000)
+        base = mm(self.DEFAULTS[self.BASE_FIELD], 3000)
+        reach = mm(self.DEFAULTS[self.REACH_FIELD], 3000)
+        super().__init__(
+            "vehicle", "차량 설정",
+            "차량은 모재(벽)에서 「모재 거리 유지」만큼 떨어져 차량 폭의 가운데를 기준으로 모재를 돕니다 — "
+            "모재 표면에서 200 mm 옮기려면 차량은 그보다 더 달려야 해서, 두 값으로 이동 거리를 환산합니다. "
+            "높이 0 은 모재 아래 끝 = 리프트 최하단의 로봇 시작 위치입니다. 구역이 팔로 닿는 높이(베이스 높이 + "
+            "상승 한계) 안이면 리프트를 올리지 않고 로봇이 팔을 들어 스캔하고, 리프트는 한계 높이까지만 올립니다.",
+            [
+                ("주행 · 원주 이동 환산", None),
+                (self.WIDTH_FIELD, width),
+                (self.STANDOFF_FIELD, standoff),
+                ("벽 ↔ 차량 중심", self.center_label),
+                ("주행 배율", self.scale_label),
+                (self.SPEED_FIELD, speed),
+                ("리프트 · 로봇 높이", None),
+                (self.LIFT_MAX_FIELD, lift_max),
+                (self.BASE_FIELD, base),
+                (self.REACH_FIELD, reach),
+                ("작업 가능 높이", self.reach_label),
+            ],
+            columns=2,
+        )
+        for box in (width, standoff, lift_max, base, reach):
+            box.valueChanged.connect(lambda _v: self._update_derived())
+        self._update_derived()
+
+    def _number(self, field: str) -> float:
+        return float(self.values().get(field, self.DEFAULTS[field]) or 0.0)
+
+    def width_mm(self) -> float:
+        return self._number(self.WIDTH_FIELD)
+
+    def standoff_mm(self) -> float:
+        return self._number(self.STANDOFF_FIELD)
+
+    def lift_max_mm(self) -> float:
+        return self._number(self.LIFT_MAX_FIELD)
+
+    def reach_mm(self) -> float:
+        """로봇 상승 한계 — 로봇 베이스 위로 닿는 높이 [mm]."""
+        return self._number(self.REACH_FIELD)
+
+    def base_height_mm(self) -> float:
+        """리프트 최하단에서 시작 위치(높이 0 = 모재 아래 끝) ↔ 로봇 베이스 [mm]."""
+        return self._number(self.BASE_FIELD)
+
+    def arm_reach_mm(self) -> float:
+        """리프트를 그대로 두고 시작 위치에서 팔로 닿는 높이 = 베이스 높이 + 상승 한계."""
+        return self.base_height_mm() + self.reach_mm()
+
+    def top_limit_mm(self) -> float:
+        """최대 작업 가능 높이 = 로봇 베이스 높이 + 리프트 한계 + 로봇팔 상승 한계.
+
+        로봇팔 상승 한계는 베이스에서 팔을 위로 뻗었을 때의 한계다 — 시작 자세에서 잰 값이
+        아니다. 로봇 태스크에는 이 검사가 없고 RCS 가 구역을 받을 때 · 리프트를 정할 때 본다.
+        """
+        return self.lift_max_mm() + self.arm_reach_mm()
+
+    def speed_mm_s(self) -> float:
+        return self._number(self.SPEED_FIELD)
+
+    def center_distance_mm(self) -> float:
+        """벽 ↔ 차량 중심(회전 · 주행 기준점) = 모재 거리 유지 + 차량 폭 ÷ 2."""
+        return self.standoff_mm() + self.width_mm() / 2.0
+
+    def travel_scale(self, diameter_mm: float | None = None) -> float:
+        """차량 주행 배율 (R + 벽↔차량 중심) ÷ R. 모재 지름을 모르면 1."""
+        diameter = self._diameter_mm if diameter_mm is None else float(diameter_mm)
+        radius = diameter / 2.0
+        if radius <= 0:
+            return 1.0
+        return (radius + self.center_distance_mm()) / radius
+
+    def set_target_diameter(self, diameter_mm: float) -> None:
+        """배율 표시에 쓰는 모재 바깥 지름 [mm]."""
+        self._diameter_mm = max(float(diameter_mm), 0.0)
+        self._update_derived()
+
+    def _update_derived(self) -> None:
+        self.center_label.setText(f"{self.center_distance_mm():,.0f} mm (거리 유지 + 폭 ÷ 2)")
+        self.reach_label.setText(
+            f"리프트 그대로 {self.arm_reach_mm():,.0f} mm · 최대 작업 가능 높이 {self.top_limit_mm():,.0f} mm "
+            f"(베이스 + 리프트 한계 + 팔)")
+        if self._diameter_mm > 0:
+            scale = self.travel_scale()
+            self.scale_label.setText(
+                f"× {scale:.3f} (지름 {self._diameter_mm:,.0f} mm — 표면 200 → 차량 {200 * scale:,.0f} mm)")
+        else:
+            self.scale_label.setText("모재 지름을 받으면 계산합니다")
+
+    def apply_values(self, values: dict[str, object]) -> None:
+        super().apply_values(values)
+        self._update_derived()
+
 
 class CobotSettingsScreen(FormScreen):
     """협동로봇 작업 슬롯을 설정하는 화면.

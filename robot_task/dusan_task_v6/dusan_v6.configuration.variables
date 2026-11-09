@@ -1,10 +1,10 @@
 <VariablesManager>
-  <Variable name="Home_joint" value="[-3.09014, -1.51147, -2.45596, 0.82559, 1.51934, 3.14141]" remarks="홈(접힌 자세) 관절값 [rad]. RCS 「홈 위치 저장」(레지스터 322~327, 328 = 1)이 있으면 그 값으로 덮어쓰고, 없으면 펜던트에서 티칭한 이 값을 쓴다. 작업 시작·끝에 언제나 스캔 대기 위치(Standby_joint)를 거쳐 movej 로 오간다. 로봇이 여기 있으면 276 = 1(차량·리프트 이동 허가). 처음 값은 예전 홈(= 지금 스캔 대기 위치)과 같으니 새로 티칭할 것" favorite="false"/>
-  <Variable name="Home_pose" value="[-0.47265, 0.15858, 0.49596, 1.57105, 0.0002, -1.5708]" remarks="[계산값] 홈의 툴 플랜지 pose. dus6_init 이 Home_joint 로 매번 다시 계산한다 — 직접 바꾸지 말 것" favorite="false"/>
-  <Variable name="Standby_joint" value="[-3.09014, -1.51147, -2.45596, 0.82559, 1.51934, 3.14141]" remarks="[v6: 새 설치 방향의 대기 위치를 아직 티칭하지 않아 홈과 같은 값 — 티칭할 것] 스캔 대기 위치 관절값 [rad] (예전의 홈). 홈과 작업 자리 사이는 언제나 여기를 거친다: 홈 -movej-> 여기 -> 시작 위치 / 스캔 끝 -> 물러나고(여기보다 뒤로는 안 감) 이 높이로 상승 -movej-> 여기 -movej-> 홈. RCS 「스캔 대기 위치 저장」(레지스터 310~315, 308 = 1)이 있으면 그 값으로 덮어쓴다" favorite="false"/>
-  <Variable name="Standby_pose" value="[-0.47265, 0.15858, 0.49596, 1.57105, 0.0002, -1.5708]" remarks="[계산값] 스캔 대기 위치의 툴 플랜지 pose. dus6_init 이 Standby_joint 로 매번 다시 계산한다 — 직접 바꾸지 말 것" favorite="false"/>
-  <Variable name="gripper_target_pose" value="[-0.80363, 0.00001, -0.50713, 1.57115, 0.00022, -1.57076]" remarks="[v6] 그리퍼와 ERUT 홀더를 달고, 장착 EOAT 의 TCP(5축이면 eoat5_offset)를 로봇 TCP 로 두고 벽 중앙에 프로브 중심을 붙여 티칭한 pose (입력레지스터 316~321, RCS 「시작 포즈 저장」). dus6_init 이 장착 EOAT 오프셋을 빼 플랜지 pose 로 바꾼 뒤 probe_dist 만큼 TCP -Z 로 물러난 곳을 start_pose 로 쓴다. EOAT 「없음」이면 그대로(예전 방식)" favorite="false"/>
-  <Variable name="start_pose" value="[-0.45863, 0.00001, -0.50713, 1.57115, 0.00022, -1.57076]" remarks="실제 movej 목표(툴플랜지 기준, 그리퍼가 작업면에서 probe_dist 만큼 물러난 대기 자세). dus_init이 매 작업마다 gripper_target_pose 로부터 다시 계산한다 — 여기 직접 값을 넣어도 다음 작업 시작 시 덮어써진다" favorite="false"/>
+  <Variable name="Home_joint" value="[-3.05761, -1.55391, -2.81363, -1.88002, -1.48684, -0.00297]" remarks="홈(접힌 자세) 관절값 [rad]. RCS 「홈 위치 저장」(레지스터 322~327, 328 = 1)이 있으면 그 값으로 덮어쓰고, 없으면 펜던트에서 티칭한 이 값을 쓴다. 작업 시작·끝에 언제나 스캔 대기 위치(Standby_joint)를 거쳐 movej 로 오간다. 로봇이 여기 있으면 276 = 1(차량·리프트 이동 허가). 처음 값은 예전 홈(= 지금 스캔 대기 위치)과 같으니 새로 티칭할 것" favorite="false"/>
+  <Variable name="Home_pose" value="[-0.3136, 0.16057, 0.14636, 1.5353, -2.0E-5, -1.57082]" remarks="[계산값] 홈의 툴 플랜지 pose. dus6_init 이 Home_joint 로 매번 다시 계산한다 — 직접 바꾸지 말 것" favorite="false"/>
+  <Variable name="Standby_joint" value="[-3.11132, -3.4462, -1.3582, -1.44348, -1.54053, -0.00105]" remarks="[v6: 새 설치 방향의 대기 위치를 아직 티칭하지 않아 홈과 같은 값 — 티칭할 것] 스캔 대기 위치 관절값 [rad] (예전의 홈). 홈과 작업 자리 사이는 언제나 여기를 거친다: 홈 -movej-&gt; 여기 -&gt; 시작 위치 / 스캔 끝 -&gt; 물러나고(여기보다 뒤로는 안 감) 이 높이로 상승 -movej-&gt; 여기 -movej-&gt; 홈. RCS 「스캔 대기 위치 저장」(레지스터 310~315, 308 = 1)이 있으면 그 값으로 덮어쓴다" favorite="false"/>
+  <Variable name="Standby_pose" value="[-0.65419, 0.16058, -0.68295, 1.5355, -2.0E-5, -1.5708]" remarks="[계산값] 스캔 대기 위치의 툴 플랜지 pose. dus6_init 이 Standby_joint 로 매번 다시 계산한다 — 직접 바꾸지 말 것" favorite="false"/>
+  <Variable name="gripper_target_pose" value="[-0.74949, 0.16058, -0.68296, 1.5355, -2.0E-5, -1.5708]" remarks="[v6] 그리퍼와 ERUT 홀더를 달고, 장착 EOAT 의 TCP(5축이면 eoat5_offset)를 로봇 TCP 로 두고 벽 중앙에 프로브 중심을 붙여 티칭한 pose (입력레지스터 316~321, RCS 「시작 포즈 저장」). dus6_init 이 장착 EOAT 오프셋을 빼 플랜지 pose 로 바꾼 뒤 probe_dist 만큼 TCP -Z 로 물러난 곳을 start_pose 로 쓴다. EOAT 「없음」이면 그대로(예전 방식)" favorite="false"/>
+  <Variable name="start_pose" value="[-0.70363, 0.00001, -0.50709, 1.57115, 0.00022, -1.57076]" remarks="실제 movej 목표(툴플랜지 기준, 그리퍼가 작업면에서 probe_dist 만큼 물러난 대기 자세). dus_init이 매 작업마다 gripper_target_pose 로부터 다시 계산한다 — 여기 직접 값을 넣어도 다음 작업 시작 시 덮어써진다" favorite="false"/>
   <Variable name="pose_src" value="0" remarks="0=이 변수값 사용, 1=Modbus 310~321 사용 (레지스터 308)" favorite="false"/>
   <Variable name="pub_a" value="0" remarks="발행 스레드 생존 확인용 — 워치독(293) 이전 값. dus6_init 이 두 제어주기 동안 293 이 안 변하면 스레드가 죽은 것으로 보고 다시 띄운다" favorite="false"/>
   <Variable name="pub_b" value="0" remarks="발행 스레드 생존 확인용 — 워치독(293) 이후 값" favorite="false"/>
@@ -65,6 +65,7 @@
   <Variable name="lr_y" value="0" remarks="[계산값] dus6_init 이 좌·우 이동높이로 줄 수를 셀 때 쓰는 높이 [mm]" favorite="false"/>
   <Variable name="lr_right" value="1" remarks="[계산값] dus6_init 이 줄 수를 셀 때 지금 오른쪽 끝인가(1) 왼쪽 끝인가(0)" favorite="false"/>
   <Variable name="lr_rise" value="0" remarks="[계산값] dus6_init 이 줄 수를 셀 때 이번 상승 [mm]" favorite="false"/>
+  <Variable name="scan_z_ofs" value="0" remarks="[계산값] 팔을 들어 스캔할 높이 [mm] — 레지스터 358(266 = 1 일 때). 리프트를 올리지 않고 시작 자세를 이만큼 위로 올려 3점 측정 · 원점 · ㄹ자를 한다(발행 좌표는 영점부터). 펜던트로 돌리면 0" favorite="false"/>
   <Variable name="row_idx" value="0" remarks="완료한 가로 패스 수" favorite="false"/>
   <Variable name="dir_sign" value="1" remarks="1=오른쪽(Y-) 차례, -1=왼쪽(Y+) 차례" favorite="false"/>
   <Variable name="pass_done" value="0" remarks="" favorite="false"/>

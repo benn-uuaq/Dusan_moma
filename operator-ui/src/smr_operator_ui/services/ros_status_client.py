@@ -82,6 +82,8 @@ class RosTopics:
     # ERUT 좌·우 끝 이동높이 [0.1 mm] (레지스터 356 · 357, if-0.12). work_area 와
     # 함께 보내고, 로봇은 266 = 1 일 때 같이 읽는다.
     SCAN_PITCH = "robot/command/scan_pitch"
+    # 리프트 대신 로봇 팔을 들어 스캔할 높이 [mm] (레지스터 358, 2026-11-09). 0 = 예전과 같다.
+    SCAN_Z_OFFSET = "robot/command/scan_z_offset"
     JOG_JOINT = "robot/command/jog_joint"
     # 스캔 시작 허가(레지스터 267). 로봇이 원점에서 기다리는 것을 푼다.
     SCAN_GO = "robot/command/scan_go"
@@ -345,6 +347,8 @@ class RosStatusClient(QObject):
                 "jog_joint": self._node.create_publisher(Int32, RosTopics.JOG_JOINT, 10),
                 "jog_tcp": self._node.create_publisher(Int32, RosTopics.JOG_TCP, 10),
                 "scan_go": self._node.create_publisher(Int32, RosTopics.SCAN_GO, 10),
+                "scan_z_offset": self._node.create_publisher(
+                    Int32, RosTopics.SCAN_Z_OFFSET, 10),
                 "mark_go": self._node.create_publisher(Int32, RosTopics.MARK_GO, 10),
                 "vehicle_ready": self._node.create_publisher(
                     Int32, RosTopics.VEHICLE_READY, 10),

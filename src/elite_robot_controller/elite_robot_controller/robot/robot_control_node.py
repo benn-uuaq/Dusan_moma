@@ -203,6 +203,9 @@ class RobotControlNode(Node):
         # 앞에 보내고, 태스크는 266 = 1 일 때 work_area 와 같이 읽는다.
         self.create_subscription(
             Float32MultiArray, 'robot/command/scan_pitch', self.cb_scan_pitch, 10)
+        # 리프트 대신 팔을 들어 스캔할 높이 [mm] -> 358 (2026-11-09). 플래그는 work_area 가 세운다.
+        self.create_subscription(
+            Int32, 'robot/command/scan_z_offset', self.cb_scan_z_offset, 10)
         # 스캔 시작 허가(267). 로봇이 원점에서 멈춰 기다리는 것을 풀어 준다.
         self.create_subscription(Int32, 'robot/command/scan_go', self.cb_scan_go, 10)
         # 차량 고정 확인(309). 차량이 서고 아웃트리거가 고정되고 리프트가
@@ -598,6 +601,10 @@ class RobotControlNode(Node):
         success, message = self.write_pose('scan_pitch', list(msg.data))
         if not success:
             self.get_logger().warn(message)
+
+    def cb_scan_z_offset(self, msg):
+        """팔을 들어 스캔할 높이 [mm] 를 358 에 쓴다. 음수는 0 으로."""
+        self._write_topic('scan_z_offset', type(msg)(data=max(int(msg.data), 0)))
 
     def cb_mark_target(self, msg):
         """마킹 자리 [u, v] (mm)를 268~269 에 쓴다."""

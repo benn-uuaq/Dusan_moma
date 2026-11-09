@@ -261,6 +261,8 @@ class ErutSession(QObject):
         self.side_pitch_blocker: Callable[[], str] = lambda: ""
         # 그 구간(277)에서 움직일 남은 거리 [mm] — 재개할 때 evt/motion 에 다시 싣는다.
         self.motion_remain: Callable[[int], float | None] = lambda _segment: None
+        # 구역(아래 끝 y, 세로)을 리프트 · 로봇 팔로 닿을 수 없으면 그 까닭, 닿으면 "".
+        self.zone_reach_blocker: Callable[[float, float], str] = lambda _y0, _height: ""
         # 펴진 자세에서 home 까지 가장 오래 걸릴 때 [ms] (evt/info timings.home_within_ms).
         # 0 이면 싣지 않는다(ERUT 는 30초를 쓴다).
         self.home_within_ms: Callable[[], int] = lambda: 0
@@ -959,6 +961,12 @@ class ErutSession(QObject):
             self._refuse(req_id, action, E.AREA_WIDTH,
                          f"구역 가로 {plan.cell_width:.0f} mm > 최대 {limit:.0f} mm",
                          max_width=int(limit))
+            return False
+        # 높이 위치 — 리프트 한계 높이 + 로봇 세로 작업 범위 안이어야 한다(2026-11-09).
+        reason = self.zone_reach_blocker(plan.origin_y, plan.cell_height)
+        if reason:
+            self.activity.emit(f"ERUT {action}: {reason} — 거절합니다.")
+            self._refuse(req_id, action, E.AREA_HEIGHT, reason)
             return False
         return True
 

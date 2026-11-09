@@ -639,3 +639,20 @@ def test_scan_pitch_goes_to_356_and_357_as_tenths_of_a_mm():
     })
     node.cb_scan_pitch(FakeMessageList([0.0, 400.0]))
     assert node.robot_modbus.writes == [(356, 0), (357, 400)]
+
+
+def test_scan_z_offset_goes_to_358_in_mm_and_never_below_zero():
+    """리프트 대신 팔을 들어 스캔할 높이(2026-11-09) — mm 그대로 358 에. 음수는 0."""
+    import os
+    source = os.path.join(os.path.dirname(__file__), "..", "config", "modbus_registers.json")
+    assert register_map.load(source).write_entry("scan_z_offset").address == 358
+
+    node = make_node(map_data={
+        "scale": {"position_per_count": 0.1, "rotation_per_count": 1.0},
+        "read": {},
+        "write": {"scan_z_offset": {"address": 358, "count": 1}},
+    })
+    Msg = type("Int32", (), {"__init__": lambda self, data=0: setattr(self, "data", data)})
+    node.cb_scan_z_offset(Msg(800))
+    node.cb_scan_z_offset(Msg(-5))
+    assert node.robot_modbus.writes == [(358, 800), (358, 0)]

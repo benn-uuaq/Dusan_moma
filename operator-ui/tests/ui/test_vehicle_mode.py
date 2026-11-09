@@ -98,16 +98,18 @@ def test_mode_is_not_switched_while_a_job_runs(window) -> None:
 
 
 # ---- 로봇이 끝난 뒤에 차량·리프트를 움직인다 ------------------------------------------
+# 높이는 로봇 세로 작업 범위(1600 mm)보다 높게 준다 — 그 안이면 리프트는 그대로 두고 팔을
+# 들어 스캔하므로(2026-11-09) 리프트가 움직이지 않는다. 여기서는 리프트를 기다리는 규칙을 본다.
 def test_lift_waits_until_the_robot_task_ends(window, qtbot) -> None:
     """로봇은 완료 플래그를 먼저 쓰고 홈으로 간다 — 그동안 리프트를 올리면 안 된다."""
     window._on_robot_task_state(1)                      # 로봇 태스크 실행 중(홈 이동 중)
-    window.sequencer.lift_target_requested.emit(480.0)
+    window.sequencer.lift_target_requested.emit(2480.0)
 
-    assert window.lift.target != 480.0, "아직 올리면 안 된다"
+    assert window.lift.target != 2480.0, "아직 올리면 안 된다"
     assert "로봇 태스크가 실행 중" in window.main_screen.activity_label.text()
 
     window._on_robot_task_state(3)                      # 태스크 종료(홈 도착)
-    assert window.lift.target == 480.0
+    assert window.lift.target == 2480.0
 
 
 def test_deferred_move_runs_anyway_after_the_wait_limit(window, qtbot) -> None:
@@ -116,10 +118,10 @@ def test_deferred_move_runs_anyway_after_the_wait_limit(window, qtbot) -> None:
     window.main_screen.activity_shown.connect(said.append)   # 뒤 문구에 덮이므로 모아 둔다
     window.ROBOT_TASK_WAIT_MS = 120
     window._on_robot_task_state(1)
-    window.sequencer.lift_target_requested.emit(300.0)
-    assert window.lift.target != 300.0
+    window.sequencer.lift_target_requested.emit(2300.0)
+    assert window.lift.target != 2300.0
 
-    qtbot.waitUntil(lambda: window.lift.target == 300.0, timeout=2000)
+    qtbot.waitUntil(lambda: window.lift.target == 2300.0, timeout=2000)
     assert any("그대로 진행합니다" in text for text in said), said
 
 
@@ -137,8 +139,8 @@ def test_stopping_drops_the_deferred_moves(window) -> None:
 
 def test_motion_runs_at_once_when_the_robot_is_idle(window) -> None:
     window._on_robot_task_state(3)
-    window.sequencer.lift_target_requested.emit(167.5)
-    assert window.lift.target == 167.5
+    window.sequencer.lift_target_requested.emit(2167.5)
+    assert window.lift.target == 2167.5
 
 
 # ---- 홈 위치 플래그(레지스터 276)까지 확인한다 ----------------------------------------
@@ -160,16 +162,16 @@ def test_lift_waits_until_the_robot_reaches_home(window) -> None:
     window._send_home = lambda: homes.append(1)
     window._on_robot_task_state(3)                      # 태스크는 끝났다
     _home(window, False)                                # 그런데 홈이 아니다
-    window.sequencer.lift_target_requested.emit(480.0)
+    window.sequencer.lift_target_requested.emit(2480.0)
 
-    assert window.lift.target != 480.0
+    assert window.lift.target != 2480.0
     assert any("홈 위치" in text for text in said), said
     assert homes == [1]
-    window.sequencer.lift_target_requested.emit(500.0)
+    window.sequencer.lift_target_requested.emit(2500.0)
     assert homes == [1], "홈 명령은 한 번만"
 
     window._on_robot_at_home(True)                      # 홈 도착
-    assert window.lift.target == 500.0
+    assert window.lift.target == 2500.0
 
 
 def test_no_move_while_the_arm_stays_out_after_the_wait(window, qtbot) -> None:
@@ -180,12 +182,12 @@ def test_no_move_while_the_arm_stays_out_after_the_wait(window, qtbot) -> None:
     window.ROBOT_TASK_WAIT_MS = 120
     window._on_robot_task_state(3)
     _home(window, False)
-    window.sequencer.lift_target_requested.emit(300.0)
+    window.sequencer.lift_target_requested.emit(2300.0)
 
     qtbot.waitUntil(lambda: bool(raised), timeout=2000)
     # 먼저 홈으로 보냈는데도 안 왔다 — 표준 E2002 HOME_FAILED(if-0.8).
     assert (raised[-1]["code"], raised[-1]["name"]) == ("E2002", "HOME_FAILED")
-    assert window.lift.target != 300.0
+    assert window.lift.target != 2300.0
     assert not window._pending_motions
 
 
@@ -195,7 +197,7 @@ def test_vehicle_stops_when_the_arm_leaves_home_while_moving(window) -> None:
     window.erut_session.raise_error = lambda fields: raised.append(fields)
     window._on_robot_task_state(3)
     _home(window, True)
-    window.sequencer.lift_target_requested.emit(400.0)
+    window.sequencer.lift_target_requested.emit(2400.0)
     assert window.lift.moving
 
     window._on_robot_at_home(False)
@@ -208,8 +210,8 @@ def test_home_flag_is_ignored_until_the_robot_reports_home_once(window) -> None:
     """이 값을 안 쓰는 옛 태스크가 올라가 있으면 0 만 계속 온다 — 막으면 안 된다."""
     window._on_robot_task_state(3)
     window._on_robot_at_home(False)
-    window.sequencer.lift_target_requested.emit(300.0)
-    assert window.lift.target == 300.0
+    window.sequencer.lift_target_requested.emit(2300.0)
+    assert window.lift.target == 2300.0
 
     # 한 번이라도 홈이라고 알려 오면 그때부터는 믿고 건다.
     _home(window, False)

@@ -183,17 +183,19 @@ def test_prepared_area_is_placed_on_the_whole_circumference(qtbot):
 
 
 def test_vehicle_goes_to_the_same_angle_on_its_own_track(qtbot):
-    """차량은 모재에서 떨어진 바깥 궤적을 돈다 — x 에 한 바퀴 배율을 곱한다.
+    """차량은 모재에서 떨어진 바깥 궤적을 돈다 — x 에 주행 배율을 곱한다(2026-11-09).
 
-    ERUT 의 x 는 검사면 둘레(π × 지름) 위 거리다. 캘리브레이션 한 바퀴를 실제로
-    5840 mm 달렸으면(검사면 5309 mm 의 1.1 배) 구역 1000~1600 의 가운데 1300 은
+    ERUT 의 x 는 검사면 둘레(π × 지름) 위 거리다. 배율 = (R + 거리 유지 + 차량 폭/2) ÷ R
+    — 지름 1690(R 845)에 폭 169 · 거리 0 이면 1.1 배라, 구역 1000~1600 의 가운데 1300 은
     차량 1430 mm 다.
     """
     window = _window(qtbot)
     _tap(window)
     window.erut_session._calibrated = True
     window.main_screen.orbit_view.set_target_dimensions(1.69, 6.0)
-    window._vehicle_lap_scale = 1.1
+    vehicle = window.screens["vehicle"]
+    vehicle.field(vehicle.WIDTH_FIELD).setValue(169)
+    vehicle.field(vehicle.STANDOFF_FIELD).setValue(0)
     targets: list[float] = []
     window.amr.move_to = lambda distance, unit="", label=None: targets.append(distance)
 
@@ -287,8 +289,9 @@ def test_next_column_lowers_the_lift_and_frees_the_outrigger_before_driving(qtbo
     window.close()
 
 
-def test_next_band_up_in_the_same_column_only_moves_the_lift(qtbot):
-    """같은 세로 줄의 위 구간(y 780 — ERUT 가 겹침 20 을 넣었다): 리프트만 780 으로."""
+def test_next_band_up_in_the_same_column_raises_the_arm_not_the_lift(qtbot):
+    """같은 세로 줄의 위 구간(y 780~1580): 로봇 세로 작업 범위(1600) 안이라 리프트는 0 그대로,
+    로봇이 팔을 780 mm 들어 스캔한다(2026-11-09 — 예전에는 리프트를 780 으로 올렸다)."""
     window = _window(qtbot)
     _tap(window)
     window.erut_session._calibrated = True
@@ -298,11 +301,14 @@ def test_next_band_up_in_the_same_column_only_moves_the_lift(qtbot):
     window.amr.reset(300.0)                   # 아래 구간(0~600)을 끝내고 가운데에 서 있다
     moves = _record_moves(window)
 
+    offsets: list[int] = []
+    window._send_scan_z_offset = lambda mm: offsets.append(int(round(mm)))
     _start_area(window, "s-next-band", 0, 780)
     qtbot.waitUntil(lambda: window.sequencer.state.name == "SCANNING", timeout=10000)
 
     assert ("outrigger", 0.0) not in moves
-    assert moves[-1] == ("lift", 780.0)
+    assert moves[-1] == ("lift", 0.0)
+    assert offsets == [780]
     window.close()
 
 

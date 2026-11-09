@@ -35,7 +35,7 @@ from smr_operator_ui.screens import (
     CobotJogScreen, CobotManualScreen, CobotSettingsScreen, ConnectionSettingsScreen,
     ErrorLogScreen, IOStatusScreen, LogFilesScreen, MainScreen, ManualScreen,
     ModeSlotsScreen, RunScreen, SettingsMenuScreen, SystemSettingsScreen,
-    TpacBridgeScreen,
+    TpacBridgeScreen, VehicleSettingsScreen,
 )
 from smr_operator_ui.keypad import install_wheel_guard
 from smr_operator_ui.state import CyclePhase
@@ -447,7 +447,8 @@ class OperatorWindow(QMainWindow):
             "settings": SettingsMenuScreen(), "io": IOStatusScreen(),
             "connection": ConnectionSettingsScreen(),
             "system": SystemSettingsScreen(),
-            "cobot": CobotSettingsScreen(), "errors": ErrorLogScreen(),
+            "cobot": CobotSettingsScreen(), "vehicle": VehicleSettingsScreen(),
+            "errors": ErrorLogScreen(),
             "logs": LogFilesScreen(), "modes": ModeSlotsScreen(),
             "cobot_manual": self.cobot_manual_screen,
             "cobot_jog": self.cobot_jog_screen,
@@ -585,6 +586,7 @@ class OperatorWindow(QMainWindow):
         self.cobot_jog_screen.command_requested.connect(self._save_reference_pose)
         self.cobot_manual_screen.command_requested.connect(self._handle_cobot_command)
         self.screens["cobot"].save_requested.connect(self._send_linear_speed)
+        self.screens["vehicle"].save_requested.connect(self._on_vehicle_settings_saved)
         self.screens["cobot"].eoat_changed.connect(self._apply_eoat_choice)
         self.screens["cobot"].task_refresh_requested.connect(
             lambda: self.ros_status.call_command("task_status")
@@ -729,6 +731,7 @@ class OperatorWindow(QMainWindow):
             lambda: self.main_screen.orbit_view.target_dimensions()[0] * 1000.0)
         self.erut_session.side_pitch_blocker = self._side_pitch_blocker
         self.erut_session.motion_remain = self._segment_remain_mm
+        self.erut_session.zone_reach_blocker = self._zone_reach_blocker
         self.erut_session.mark_waiting_point = lambda: self.mark_runner.waiting_point
         self.erut_session.pause_settled = self._pause_settled
         self.erut_session.pause_holds_position = self._pause_holds_position
@@ -930,9 +933,11 @@ class OperatorWindow(QMainWindow):
         self.amr.position_changed.connect(self._show_motion_position)
 
         # 이동 요청 → 더미 어댑터 → 도착 신호 → 시퀀서
+        # 구역 아래 끝 높이를 받는다 — 로봇 팔이 닿으면 리프트를 그대로 두고 팔을 든다
+        # (_move_lift_for_cell, 2026-11-09).
         seq.lift_target_requested.connect(
             lambda mm: self._defer_until_robot_idle(
-                f"리프트 {mm:,.0f} mm", lambda: self.lift.move_to(mm, " mm")))
+                f"리프트 {mm:,.0f} mm", lambda: self._move_lift_for_cell(mm)))
         # AMR 은 시퀀서가 **열 번호**로 부르는데, 바깥에는 이동 거리(mm)를
         # 알려야 한다(ERUT 규격 탭5 progress.moved). 열 간격으로 환산해
         # 어댑터에는 거리를 주고, 화면 문구에만 열 번호를 남긴다.
@@ -1010,7 +1015,7 @@ class OperatorWindow(QMainWindow):
         circumference = math.pi * self.main_screen.orbit_view.target_dimensions()[0] * 1000.0
         if circumference > 0:
             x %= circumference
-        return x * getattr(self, "_vehicle_lap_scale", 1.0)
+        return x * self._travel_scale()
 
     def _prepare_to_drive(self, drive, guard=None) -> None:
         """차량이 달리기 전에 리프트를 내리고 아웃트리거를 푼 뒤 drive() 한다.
@@ -1089,6 +1094,8 @@ class OperatorWindow(QMainWindow):
         """
         self.settings_service.save(
             "inspection_target", {"diameter_m": diameter_m, "height_m": height_m})
+        # 차량 주행 배율도 모재 지름에 따라 바뀐다(차량 설정 화면 표시).
+        self.screens["vehicle"].set_target_diameter(float(diameter_m) * 1000.0)
         width, height, scan_h, overlap = self.main_screen.rect_view.work_area()
         self._send_work_area(width, height, scan_h, overlap, **self._work_area_extra)
 
@@ -1975,6 +1982,8 @@ class OperatorWindow(QMainWindow):
         """
         self.ros_status.call_command("remote_control_on")
         self.ros_status.call_command("stop")
+        # 마킹은 시작 자세 높이 그대로 한다 — 스캔 때 들어 둔 팔 높이(358)를 지운다.
+        self._send_scan_z_offset(0)
         self.ros_status.call_command("load_mark_task")
         self._schedule_play()
 
@@ -2487,6 +2496,8 @@ class OperatorWindow(QMainWindow):
             screen.apply_values(values)
         if scope == "system":
             self._apply_system_settings(scope, values)
+        if scope in ("vehicle", "inspection_target"):
+            self._apply_vehicle_settings()
         # 예전에는 이 줄들이 위 if 안에 들어가 있어 한 번도 돌지 않았다 —
         # 저장된 차량 제어 방식과 브로커 주소가 시작할 때 반영되지 않았다.
         if scope == "connection":
@@ -3233,11 +3244,14 @@ class OperatorWindow(QMainWindow):
         height_m = float(height_mm) / 1000.0 if height_mm > 0 else old_h
         self._set_target_dimensions(float(diameter_mm) / 1000.0, height_m)
         planned = math.pi * float(diameter_mm)
-        self._calibration_lap = {"planned": planned, "start": self.amr.position,
-                                 "target": self.amr.position + planned}
+        # 차량은 모재에서 떨어진 바깥 궤적(차량 중심)을 돈다 — 한 바퀴 = 둘레 × 주행 배율
+        # (차량 설정의 폭 · 모재 거리 유지, 2026-11-09).
+        scale = self._travel_scale()
+        self._calibration_lap = {"planned": planned, "scale": scale, "start": self.amr.position,
+                                 "target": self.amr.position + planned * scale}
         self.main_screen.show_activity(
-            f"캘리브레이션: 차량이 모재(지름 {diameter_mm:g} mm)를 따라 한 바퀴 "
-            f"({planned:.0f} mm) 돌며 좌표계를 잡습니다.")
+            f"캘리브레이션: 차량이 모재(지름 {diameter_mm:g} mm, 둘레 {planned:.0f} mm)를 따라 "
+            f"한 바퀴(차량 {planned * scale:.0f} mm) 돌며 좌표계를 잡습니다.")
         self._drive_calibration_lap()
 
     def _drive_calibration_lap(self) -> None:
@@ -3255,7 +3269,8 @@ class OperatorWindow(QMainWindow):
         if lap is None or not self.erut_session.calibrating:
             return
         self._once(self.amr.arrived, self._finish_calibration_lap)
-        self.amr.move_to(lap["target"], " mm", label=f"캘리브레이션 한 바퀴 ({lap['planned']:.0f} mm)")
+        self.amr.move_to(lap["target"], " mm",
+                         label=f"캘리브레이션 한 바퀴 (차량 {lap['planned'] * lap['scale']:.0f} mm)")
 
     def _finish_calibration_lap(self) -> None:
         """한 바퀴 돌아 원점에 섰다. 잰 거리로 결과를 낸다(evt/complete).
@@ -3267,18 +3282,17 @@ class OperatorWindow(QMainWindow):
         lap = getattr(self, "_calibration_lap", None)
         if lap is None or not self.erut_session.calibrating:
             return
-        measured = self.amr.position - lap["start"]
+        driven = self.amr.position - lap["start"]
+        # ERUT 의 x · total_length_mm 은 모재 표면 둘레(π × 지름) 위의 거리다. 차량은
+        # 바깥 궤적을 돌았으므로 주행 배율로 나눠 표면 거리로 되돌린다.
+        scale = lap.get("scale") or 1.0
+        measured = driven / scale
         error = abs(measured - lap["planned"])
         self._calibration_lap = None
         self.amr.reset(0.0)
-        # ERUT 의 x 는 검사면 둘레(π × 지름) 위의 거리다. 차량은 모재에서 떨어진
-        # 바깥 궤적을 돌아 한 바퀴가 그보다 길 수 있다 — 같은 각도에 서도록 그
-        # 비율을 차량 이동에 곱한다(2026-10-12). 지금 더미는 둘레만큼만 달려 1 이다.
-        self._vehicle_lap_scale = (measured / lap["planned"]
-                                   if lap["planned"] > 0 and measured > 0 else 1.0)
         self._finish_calibration(
-            True, f"차량 한 바퀴 {measured:.0f} mm (계획 {lap['planned']:.0f} mm)",
-            error, total_length_mm=measured)
+            True, f"차량 한 바퀴 {driven:.0f} mm (표면 환산 {measured:.0f} mm, "
+            f"계획 둘레 {lap['planned']:.0f} mm)", error, total_length_mm=measured)
 
     def _pause_calibration_lap(self) -> None:
         """캘리브레이션 주행 일시정지 — 차량을 세운다. 재개하면 남은 거리를 간다."""
@@ -3564,13 +3578,120 @@ class OperatorWindow(QMainWindow):
         if rec.root != before:
             self.main_screen.show_activity(f"운영 기록 저장 위치: {rec.root}")
 
-    #: 차량 주행 속도 [m/s]. SetJob.set_speed 로 싣는다(2026-10-06 0.2 → 0.3).
+    #: 차량 주행 속도 [m/s] 처음 값. SetJob.set_speed 로 싣는다 — 차량 설정 「차량 주행 속도」가
+    #: 덮는다(2026-11-09).
     VEHICLE_SPEED_MPS = 0.3
+
+    # ---- 차량 설정 (2026-11-09) ----------------------------------------------------
+    def _apply_vehicle_settings(self) -> None:
+        """차량 설정을 반영한다 — 주행 속도 · 수동 화면 리프트 상한 · 배율 표시."""
+        vehicle = self.screens["vehicle"]
+        amr = getattr(self, "_vehicle_amr", None)
+        if amr is not None:
+            amr.speed_mps = vehicle.speed_mm_s() / 1000.0
+        lift_max = int(vehicle.lift_max_mm())
+        if lift_max > 0:
+            self.screens["manual"].lift_target.setMaximum(lift_max)
+        vehicle.set_target_diameter(self.main_screen.orbit_view.target_dimensions()[0] * 1000.0)
+
+    def _on_vehicle_settings_saved(self, scope: str, _values: dict) -> None:
+        if scope == "vehicle":
+            self._apply_vehicle_settings()
+
+    def _travel_scale(self) -> float:
+        """모재 표면 거리 → 차량 주행 거리 배율 (R + 거리 유지 + 차량 폭/2) ÷ R."""
+        diameter_mm = self.main_screen.orbit_view.target_dimensions()[0] * 1000.0
+        return self.screens["vehicle"].travel_scale(diameter_mm)
+
+    #: 시작 높이를 올려(358) 팔로 스캔할 수 있는 로봇 태스크 판.
+    ARM_RAISE_TASKS = frozenset({"dusan_v6"})
+
+    def _can_raise_arm(self) -> bool:
+        version = getattr(self, "_task_version", "") or DEFAULT_TASK_VERSION
+        return (version in self.ARM_RAISE_TASKS
+                and not self.ros_status.lacks_write("scan_z_offset"))
+
+    def _plan_lift(self, bottom_mm: float, height_mm: float) -> tuple[float, float, str]:
+        """구역 [아래 끝, 아래 끝 + 세로] 을 훑을 (리프트 높이, 팔 올림 높이, 못 하는 까닭).
+
+        높이 0 은 모재 아래 끝 = 리프트 최하단의 로봇 시작 위치다(시작 자세를 모재 아래 끝에
+        맞춰 티칭한다). 리프트가 L 이면 시작 위치는 L, 로봇 베이스는 L + 베이스 높이, 팔은
+        베이스 위로 상승 한계까지 — 시작 위치에서 「베이스 높이 + 상승 한계」 만큼 닿는다. 그래서
+          * 지금 리프트 높이에서 팔만 들어 닿으면 리프트는 그대로 두고 팔을 그만큼 든다
+            (주행 전에 리프트를 0 으로 내리므로 낮은 구역은 리프트를 올리지 않는다).
+          * 아니면 예전처럼 리프트를 구역 아래 끝으로 올린다. 리프트 한계 높이를 넘으면
+            한계까지 올리고 나머지를 팔로 든다.
+        팔을 못 드는 태스크(v6 전)면 늘 리프트로 구역 아래 끝까지 간다.
+        """
+        vehicle = self.screens["vehicle"]
+        reach = vehicle.arm_reach_mm()
+        lift_max = vehicle.lift_max_mm()
+        bottom = max(float(bottom_mm), 0.0)
+        top = bottom + max(float(height_mm), 0.0)
+        if not self._can_raise_arm():
+            if bottom > lift_max + 0.5:
+                return lift_max, 0.0, (f"구역 아래 끝 {bottom:,.0f} mm 가 리프트 한계 높이 "
+                                       f"{lift_max:,.0f} mm 를 넘습니다")
+            return bottom, 0.0, ""
+        current = max(float(self.lift.position), 0.0)
+        if current <= bottom + 0.5 and top <= current + reach + 0.5:
+            return current, max(bottom - current, 0.0), ""
+        lift = min(bottom, lift_max)
+        offset = bottom - lift
+        if offset + (top - bottom) > reach + 0.5:
+            return lift, 0.0, self._top_limit_text(top)
+        return lift, offset, ""
+
+    def _top_limit_text(self, top: float) -> str:
+        """최대 작업 가능 높이를 넘었다 — 로봇 쪽에는 이 검사가 없고 RCS 가 본다(2026-11-09)."""
+        vehicle = self.screens["vehicle"]
+        return (f"구역 위 끝 {top:,.0f} mm 가 최대 작업 가능 높이 {vehicle.top_limit_mm():,.0f} mm "
+                f"(로봇 베이스 높이 {vehicle.base_height_mm():,.0f} + 리프트 한계 "
+                f"{vehicle.lift_max_mm():,.0f} + 로봇팔 상승 한계 {vehicle.reach_mm():,.0f})를 넘습니다")
+
+    def _zone_reach_blocker(self, bottom_mm: float, height_mm: float) -> str:
+        """ERUT 구역을 리프트 · 팔로 닿을 수 없으면 그 까닭(→ 400 E6003). 지금 리프트와 무관하다."""
+        vehicle = self.screens["vehicle"]
+        bottom = max(float(bottom_mm), 0.0)
+        top = bottom + max(float(height_mm), 0.0)
+        if self._can_raise_arm():
+            if top > vehicle.top_limit_mm() + 0.5:
+                return self._top_limit_text(top)
+            return ""
+        if bottom > vehicle.lift_max_mm() + 0.5:
+            return (f"구역 아래 끝 {bottom:,.0f} mm 가 리프트 한계 높이 "
+                    f"{vehicle.lift_max_mm():,.0f} mm 를 넘습니다")
+        return ""
+
+    def _send_scan_z_offset(self, offset_mm: float) -> None:
+        """팔을 들어 스캔할 높이를 로봇에 쓴다(358). 0 인데 노드가 칸을 모르면 보낼 것이 없다."""
+        value = int(round(max(float(offset_mm), 0.0)))
+        self._scan_z_offset_mm = value
+        if value == 0 and not self.ros_status.writable("scan_z_offset"):
+            return
+        self.ros_status.send_value("scan_z_offset", value)
+
+    def _move_lift_for_cell(self, bottom_mm: float) -> None:
+        """이번 구역 높이로 — 팔이 닿으면 리프트는 그대로 두고 팔을 든다(_plan_lift)."""
+        plan = self.sequencer.plan
+        height = float(plan.cell_height) if plan is not None else 0.0
+        lift, offset, reason = self._plan_lift(bottom_mm, height)
+        if reason:
+            self._on_vehicle_problem(f"리프트 · 로봇 높이: {reason}")
+            return
+        self._send_scan_z_offset(offset)
+        if offset > 0:
+            self.main_screen.show_activity(
+                f"리프트 {lift:,.0f} mm 에서 로봇이 팔을 {offset:,.0f} mm 들어 스캔합니다"
+                f"(구역 {bottom_mm:,.0f}~{bottom_mm + height:,.0f} mm).")
+        self.lift.move_to(lift, " mm")
 
     def _setup_vehicle(self) -> None:
         """ROS 차량 제어 노드와 붙는다(vehicle_interfaces). 없으면 더미로만 돈다."""
         self.vehicle = VehicleClient(self.ros_status, parent=self)
         self._vehicle_amr = VehicleAmrAdapter(self.vehicle, self.VEHICLE_SPEED_MPS, parent=self)
+        # 차량 설정이 먼저 불러와졌으면 그 속도를 쓴다.
+        self._vehicle_amr.speed_mps = self.screens["vehicle"].speed_mm_s() / 1000.0
         self.amr.add_backend("vehicle", self._vehicle_amr)
         self.lift.add_backend("vehicle", VehicleLiftAdapter(self.vehicle, parent=self))
         self.outrigger.add_backend("vehicle", VehicleOutriggerAdapter(self.vehicle, parent=self))

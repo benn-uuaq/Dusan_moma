@@ -103,3 +103,62 @@ def test_screen_draws_the_side_pitch_rows():
     pts, plan = ideal_path(300, 200, 30, 0, row_heights=[0, 40, 40, 80])
     assert plan["rows"] == 4 and plan["pitch"] == 40
     assert pts == [(0, 0), (300, 0), (300, 40), (0, 40), (300, 40), (300, 80), (0, 80)]
+
+
+# ---- 리프트 대신 팔 올리기 (358, 2026-11-09) ---------------------------------------
+def _arm_raise_block(folder: str) -> str:
+    text = (TASK / folder / "dus6_init.script").read_text(encoding="utf-8")
+    start = text.index("if (scan_z_ofs < 0):")
+    end = text.index("\n", text.index("gripper_touch_flange[2] = gripper_touch_flange[2]", start))
+    return _python(text[start:end])
+
+
+class _Halt(Exception):
+    pass
+
+
+def _run_arm_raise(folder: str, offset: float, height: float):
+    calls: list[tuple] = []
+
+    def halt():
+        raise _Halt
+
+    scope = {
+        "scan_z_ofs": offset, "app_height": height,
+        "gripper_touch_flange": [-0.8, 0.0, -0.5, 1.57, 0.0, -1.57],
+        "write_port_register": lambda a, v: calls.append(("reg", a, v)),
+        "popup": lambda **kw: calls.append(("popup",)),
+        "halt": halt,
+    }
+    try:
+        exec(_arm_raise_block(folder), scope)
+    except _Halt:
+        calls.append(("halt",))
+    return scope["gripper_touch_flange"], calls
+
+
+@pytest.mark.parametrize("folder", FOLDERS)
+def test_start_pose_rises_by_the_arm_offset(folder):
+    """358 = 800 이면 시작 자세가 0.8 m 위로 — 원점 · 3점 측정 · ㄹ자가 다 같이 오른다."""
+    pose, calls = _run_arm_raise(folder, 800, 200)
+    assert pose[2] == pytest.approx(-0.5 + 0.8) and calls == []
+    pose, calls = _run_arm_raise(folder, -50, 200)          # 음수는 0
+    assert pose[2] == pytest.approx(-0.5)
+
+
+@pytest.mark.parametrize("folder", FOLDERS)
+def test_height_limit_is_checked_by_rcs_not_the_robot(folder):
+    """최대 작업 가능 높이(베이스 높이 + 리프트 한계 + 팔 상승 한계)는 RCS 가 본다 — 로봇 태스크는
+    팔 상승 한계를 시작 자세에서 재지 않는다(2026-11-09). 큰 올림도 그대로 올린다."""
+    pose, calls = _run_arm_raise(folder, 3000, 800)
+    assert pose[2] == pytest.approx(-0.5 + 3.0) and calls == []
+    text = (TASK / folder / "dus6_init.script").read_text(encoding="utf-8")
+    assert "z_reach_max" not in text and "write_port_register(299, 10)" not in text
+
+
+@pytest.mark.parametrize("folder", FOLDERS)
+def test_arm_offset_is_read_only_from_rcs(folder):
+    """펜던트로 돌릴 때(266 = 0)는 0 — 358 은 266 = 1 일 때만 읽는다."""
+    text = (TASK / folder / "dus6_init.script").read_text(encoding="utf-8")
+    block = text[text.index("scan_z_ofs = 0"):text.index("scan_z_ofs = read_port_register(358, True)")]
+    assert "if (read_port_register(266, True) == 1):" in block

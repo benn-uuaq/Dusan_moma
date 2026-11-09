@@ -249,6 +249,7 @@ end
 #   264 그리퍼 종류(eoat_type) — 0=없음, 5=5축, 8=8축
 #   356 왼쪽 끝 · 357 오른쪽 끝 이동높이 [0.1mm] — ERUT scan.pitch_left · pitch_right
 #       (if-0.12). 둘 다 0 이면 예전처럼 scan_h 로 구역 세로를 고르게 나눈다.
+#   358 팔을 들어 스캔할 높이 [mm] — 리프트 대신 시작 자세를 이만큼 올린다(2026-11-09).
 # 258/260/261/262/263 이 0.1mm 인 이유: 반지름 834.6, 유효 커버 167.5
 # 처럼 소수가 나오는 값들이라 정수 mm 로 반올림하면 호 모양과 줄 간격이
 # 눈에 띄게 틀어진다. 호 길이·격자 높이·겹침은 1mm 로 충분하다.
@@ -264,6 +265,11 @@ if (read_port_register(266, True) == 1):
   eoat_type = read_port_register(264, True)
   pitch_l = read_port_register(356, True) * 0.1
   pitch_r = read_port_register(357, True) * 0.1
+end
+# 팔 올림은 RCS 가 구역마다 정한다 — 펜던트로 돌릴 때(266 = 0)는 늘 0 이다.
+scan_z_ofs = 0
+if (read_port_register(266, True) == 1):
+  scan_z_ofs = read_port_register(358, True)
 end
 
 # ---- 프로브 유효 커버 -----------------------------------------------------
@@ -530,6 +536,18 @@ write_port_register(349, floor(eoat_ofs[2] * 10000 + 0.5))
 # 8축으로 바꿔 달아도 같은 벽 점(티칭한 프로브 중심)에 8축 프로브 중심이 오도록
 # 8축 오프셋으로 뺀다 — EOAT 를 바꿀 때 다시 티칭하지 않아도 된다(오프셋 변수가 맞다면).
 gripper_touch_flange = pose_trans(gripper_target_pose, pose_inv(eoat_ofs))
+
+# ---- 리프트 대신 팔을 들어 스캔 (358, 2026-11-09) -----------------------------
+# 구역이 팔로 닿는 높이 안이면 RCS 는 리프트를 그대로 두고 358 에 구역 아래 끝까지의
+# 높이를 준다. 시작 자세를 그만큼 위(베이스 +Z)로 올리면 3점 측정 · 원점 · ㄹ자 줄이 모두
+# 시작 자세에서 나오므로 같이 올라간다. 원점(zero_pose)이 올라간 자리에서 잡히니 발행
+# 좌표(280~285 · TPAC)는 그대로 영점부터다. 0 이면 예전과 같다.
+# 높이 한계는 RCS 가 본다 — 최대 작업 가능 높이 = 차량에서의 로봇 베이스 높이 + 리프트 한계
+# 높이 + 로봇팔 상승 한계(베이스에서 팔을 위로 뻗었을 때). 넘는 구역은 RCS 가 받지 않는다.
+if (scan_z_ofs &lt; 0):
+  scan_z_ofs = 0
+end
+gripper_touch_flange[2] = gripper_touch_flange[2] + scan_z_ofs * 0.001
 
 # ---- 그리퍼를 작업면에 딱 붙인 티칭 지점에서 물러난 곳이 start_pose ------
 # gripper_target_pose 는 그리퍼를 작업면 중앙에 접촉시켜 놓고 티칭한
@@ -957,6 +975,7 @@ end
 #   264 그리퍼 종류(eoat_type) — 0=없음, 5=5축, 8=8축
 #   356 왼쪽 끝 · 357 오른쪽 끝 이동높이 [0.1mm] — ERUT scan.pitch_left · pitch_right
 #       (if-0.12). 둘 다 0 이면 예전처럼 scan_h 로 구역 세로를 고르게 나눈다.
+#   358 팔을 들어 스캔할 높이 [mm] — 리프트 대신 시작 자세를 이만큼 올린다(2026-11-09).
 # 258/260/261/262/263 이 0.1mm 인 이유: 반지름 834.6, 유효 커버 167.5
 # 처럼 소수가 나오는 값들이라 정수 mm 로 반올림하면 호 모양과 줄 간격이
 # 눈에 띄게 틀어진다. 호 길이·격자 높이·겹침은 1mm 로 충분하다.
@@ -972,6 +991,11 @@ if (read_port_register(266, True) == 1):
   eoat_type = read_port_register(264, True)
   pitch_l = read_port_register(356, True) * 0.1
   pitch_r = read_port_register(357, True) * 0.1
+end
+# 팔 올림은 RCS 가 구역마다 정한다 — 펜던트로 돌릴 때(266 = 0)는 늘 0 이다.
+scan_z_ofs = 0
+if (read_port_register(266, True) == 1):
+  scan_z_ofs = read_port_register(358, True)
 end
 
 # ---- 프로브 유효 커버 -----------------------------------------------------
@@ -1238,6 +1262,18 @@ write_port_register(349, floor(eoat_ofs[2] * 10000 + 0.5))
 # 8축으로 바꿔 달아도 같은 벽 점(티칭한 프로브 중심)에 8축 프로브 중심이 오도록
 # 8축 오프셋으로 뺀다 — EOAT 를 바꿀 때 다시 티칭하지 않아도 된다(오프셋 변수가 맞다면).
 gripper_touch_flange = pose_trans(gripper_target_pose, pose_inv(eoat_ofs))
+
+# ---- 리프트 대신 팔을 들어 스캔 (358, 2026-11-09) -----------------------------
+# 구역이 팔로 닿는 높이 안이면 RCS 는 리프트를 그대로 두고 358 에 구역 아래 끝까지의
+# 높이를 준다. 시작 자세를 그만큼 위(베이스 +Z)로 올리면 3점 측정 · 원점 · ㄹ자 줄이 모두
+# 시작 자세에서 나오므로 같이 올라간다. 원점(zero_pose)이 올라간 자리에서 잡히니 발행
+# 좌표(280~285 · TPAC)는 그대로 영점부터다. 0 이면 예전과 같다.
+# 높이 한계는 RCS 가 본다 — 최대 작업 가능 높이 = 차량에서의 로봇 베이스 높이 + 리프트 한계
+# 높이 + 로봇팔 상승 한계(베이스에서 팔을 위로 뻗었을 때). 넘는 구역은 RCS 가 받지 않는다.
+if (scan_z_ofs &lt; 0):
+  scan_z_ofs = 0
+end
+gripper_touch_flange[2] = gripper_touch_flange[2] + scan_z_ofs * 0.001
 
 # ---- 그리퍼를 작업면에 딱 붙인 티칭 지점에서 물러난 곳이 start_pose ------
 # gripper_target_pose 는 그리퍼를 작업면 중앙에 접촉시켜 놓고 티칭한
