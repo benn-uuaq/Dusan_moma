@@ -29,11 +29,37 @@ def test_gripper_position_is_used_as_a_flange_pose(folder):
 
 
 @pytest.mark.parametrize("folder", FOLDERS)
-@pytest.mark.parametrize("name", ("dus6_move_start.script", "dus6_move_start_waypoint.script"))
-def test_moves_to_the_start_pose_use_the_flange_tcp(folder, name):
-    code = _code(folder, name)
+def test_moves_to_the_start_pose_use_the_flange_tcp(folder):
+    code = _code(folder, "dus6_move_start.script")
     assert "eoat_ofs" not in code
     assert "set_tcp([0, 0, 0, 0, 0, 0])" in code
+
+
+@pytest.mark.parametrize("folder", FOLDERS)
+def test_waypoint_between_probes_keeps_the_tip_tcp_through_the_blend(folder):
+    """프로브 사이 경유점은 블렌드(r_l)로 지나가 다음 노드(끝점 TCP)로 이어진다.
+
+    블렌드 중에 TCP 를 바꾸면 목표가 홀더 길이만큼 튀어 4·5·6 축이 꺾이며 멈춘다
+    (2026-11-10, 왼쪽 → 오른쪽 프로브 이동 중). 그래서 경유점도 끝점 TCP 로 지나가고, TCP 는
+    블렌드 없는 movel 뒤(로봇이 서 있을 때)에만 바꾼다. 목표 자체는 플랜지 pose start_pose.
+    """
+    code = _code(folder, "dus6_move_start_waypoint.script")
+    body = code[code.index("def mw_tip_movel"):]
+    func, main = body.split("\nend\n", 1)
+    assert "set_tcp(eoat_ofs)" in func
+    assert "movel(pose_trans(target, eoat_ofs), a = a_move, v = v_move, r = blend)" in func
+    assert "mw_tip_movel(start_pose, r_l)" in main
+    # 블렌드 이동 뒤에는 TCP 를 바꾸지 않는다 — 다음 노드가 끝점 TCP 로 그대로 이어 간다.
+    assert "set_tcp" not in main[main.index("mw_tip_movel(start_pose, r_l)"):]
+
+
+@pytest.mark.parametrize("folder", FOLDERS)
+@pytest.mark.parametrize("name", ("dus6_probe_r.script", "dus6_goto_zero.script"))
+def test_nodes_after_the_waypoint_do_not_switch_an_equal_tcp(folder, name):
+    """경유점 다음 노드는 TCP 가 이미 끝점이면 다시 걸지 않는다(움직이는 중일 수 있다)."""
+    code = _code(folder, name)
+    assert re.search(r"if \(pose_dist\(get_tcp_offset\(\), eoat_ofs\) > 0\.000001\):\s*\n\s*set_tcp\(eoat_ofs\)",
+                     code)
 
 
 @pytest.mark.parametrize("folder", FOLDERS)

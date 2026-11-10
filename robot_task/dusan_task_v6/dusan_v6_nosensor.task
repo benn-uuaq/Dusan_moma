@@ -1156,23 +1156,35 @@ movel(l_stand, a = a_move, v = v_move)</cachedFileContents>
 #  접촉 탐색(probe_c)처럼 시작점 정밀도를 요구하는 자리에는 쓰지 않고,
 #  프로브 사이 이동처럼 지나가기만 하면 되는 자리에만 쓴다.
 #  Z 올림(첫 movel)은 벽·바닥을 피하는 동작이라 블렌드를 걸지 않는다.
-def mw_flange_movel(target, blend):
-  # 저장한 위치(그리퍼 접촉 위치에서 물러난 start_pose)로는 **툴 플랜지 TCP** 로 간다
-  # (2026-11-09) — 홈 · 스캔 대기 위치 · 그리퍼 접촉 위치는 홀더 오프셋과 무관하다. 홀더
-  # 끝점 TCP 는 3점 측정 · 스캔 동작(dus6_probe_* · dus6_goto_zero)에서만 쓴다.
-  set_tcp([0, 0, 0, 0, 0, 0])
-  movel(target, a = a_move, v = v_move, r = blend)
+#
+#  ※ 이 노드는 **프로브 사이(probe_l → probe_r, probe_r → goto_zero)** 에서만 쓰고, 다음
+#    노드는 홀더 끝점 TCP 로 이어 간다(pr_tip_movel · gz_tip_movel). 블렌드(r_l = 350 mm)로
+#    지나가는 동안에는 TCP 를 바꾸면 안 된다 — 그래서 여기서부터 **끝점 TCP 로** 지나간다.
+#    2026-11-09 에 이 이동을 플랜지 TCP 로 바꿨더니, 블렌드 중에 다음 노드가 끝점 TCP 로
+#    갈아 끼우면서 목표가 홀더 길이(5축 245 mm)만큼 튀어 왼쪽 → 오른쪽 이동 중 4·5·6 축이
+#    확 꺾이며 멈췄다(2026-11-10). 목표는 그대로 **플랜지 pose** start_pose 라, 끝점 TCP 로
+#    가도 플랜지는 start_pose 에 선다 — 저장 위치 값은 홀더와 무관하다.
+def mw_tip_movel(target, blend):
+  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고 간다. 플랜지
+  # TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs(5축 245 mm) 앞의 끝점이 크게
+  # 휘둘린다(2026-10-12). TCP 는 **로봇이 서 있을 때만** 바꾼다 — 이 함수 앞의 movel 은
+  # 블렌드가 없어 끝까지 선다.
+  if (pose_dist(get_tcp_offset(), eoat_ofs) &gt; 0.000001):
+    set_tcp(eoat_ofs)
+  end
+  movel(pose_trans(target, eoat_ofs), a = a_move, v = v_move, r = blend)
 end
 
 
-# 현재 높이도 플랜지로 본다 — 앞 동작이 끝점 TCP 를 남겼어도 높이가 어긋나지 않게.
+# 현재 높이는 플랜지로 본다(앞 노드는 블렌드 없이 서 있다 — 여기서 TCP 를 바꿔도 된다).
 set_tcp([0, 0, 0, 0, 0, 0])
 if (get_actual_tcp_pose()[2] &lt; start_pose[2] - 0.001):
   z_up = get_actual_tcp_pose()
   z_up[2] = start_pose[2]
   movel(z_up, a = a_move, v = v_move)
 end
-mw_flange_movel(start_pose, r_l)
+# 끝점 TCP 인 채 블렌드로 지나간다 — 다음 노드도 끝점 TCP 라 움직이는 중에 TCP 가 안 바뀐다.
+mw_tip_movel(start_pose, r_l)
 </cachedFileContents>
         <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v6/scripts_nosensor/dus6_move_start_waypoint.script"/>
       </ScriptNode>
@@ -1279,23 +1291,35 @@ write_port_register(346, arc_mode)</cachedFileContents>
 #  접촉 탐색(probe_c)처럼 시작점 정밀도를 요구하는 자리에는 쓰지 않고,
 #  프로브 사이 이동처럼 지나가기만 하면 되는 자리에만 쓴다.
 #  Z 올림(첫 movel)은 벽·바닥을 피하는 동작이라 블렌드를 걸지 않는다.
-def mw_flange_movel(target, blend):
-  # 저장한 위치(그리퍼 접촉 위치에서 물러난 start_pose)로는 **툴 플랜지 TCP** 로 간다
-  # (2026-11-09) — 홈 · 스캔 대기 위치 · 그리퍼 접촉 위치는 홀더 오프셋과 무관하다. 홀더
-  # 끝점 TCP 는 3점 측정 · 스캔 동작(dus6_probe_* · dus6_goto_zero)에서만 쓴다.
-  set_tcp([0, 0, 0, 0, 0, 0])
-  movel(target, a = a_move, v = v_move, r = blend)
+#
+#  ※ 이 노드는 **프로브 사이(probe_l → probe_r, probe_r → goto_zero)** 에서만 쓰고, 다음
+#    노드는 홀더 끝점 TCP 로 이어 간다(pr_tip_movel · gz_tip_movel). 블렌드(r_l = 350 mm)로
+#    지나가는 동안에는 TCP 를 바꾸면 안 된다 — 그래서 여기서부터 **끝점 TCP 로** 지나간다.
+#    2026-11-09 에 이 이동을 플랜지 TCP 로 바꿨더니, 블렌드 중에 다음 노드가 끝점 TCP 로
+#    갈아 끼우면서 목표가 홀더 길이(5축 245 mm)만큼 튀어 왼쪽 → 오른쪽 이동 중 4·5·6 축이
+#    확 꺾이며 멈췄다(2026-11-10). 목표는 그대로 **플랜지 pose** start_pose 라, 끝점 TCP 로
+#    가도 플랜지는 start_pose 에 선다 — 저장 위치 값은 홀더와 무관하다.
+def mw_tip_movel(target, blend):
+  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고 간다. 플랜지
+  # TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs(5축 245 mm) 앞의 끝점이 크게
+  # 휘둘린다(2026-10-12). TCP 는 **로봇이 서 있을 때만** 바꾼다 — 이 함수 앞의 movel 은
+  # 블렌드가 없어 끝까지 선다.
+  if (pose_dist(get_tcp_offset(), eoat_ofs) &gt; 0.000001):
+    set_tcp(eoat_ofs)
+  end
+  movel(pose_trans(target, eoat_ofs), a = a_move, v = v_move, r = blend)
 end
 
 
-# 현재 높이도 플랜지로 본다 — 앞 동작이 끝점 TCP 를 남겼어도 높이가 어긋나지 않게.
+# 현재 높이는 플랜지로 본다(앞 노드는 블렌드 없이 서 있다 — 여기서 TCP 를 바꿔도 된다).
 set_tcp([0, 0, 0, 0, 0, 0])
 if (get_actual_tcp_pose()[2] &lt; start_pose[2] - 0.001):
   z_up = get_actual_tcp_pose()
   z_up[2] = start_pose[2]
   movel(z_up, a = a_move, v = v_move)
 end
-mw_flange_movel(start_pose, r_l)
+# 끝점 TCP 인 채 블렌드로 지나간다 — 다음 노드도 끝점 TCP 라 움직이는 중에 TCP 가 안 바뀐다.
+mw_tip_movel(start_pose, r_l)
 </cachedFileContents>
         <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v6/scripts_nosensor/dus6_move_start_waypoint.script"/>
       </ScriptNode>
