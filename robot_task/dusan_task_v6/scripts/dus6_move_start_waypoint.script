@@ -15,24 +15,20 @@
 #  접촉 탐색(probe_c)처럼 시작점 정밀도를 요구하는 자리에는 쓰지 않고,
 #  프로브 사이 이동처럼 지나가기만 하면 되는 자리에만 쓴다.
 #  Z 올림(첫 movel)은 벽·바닥을 피하는 동작이라 블렌드를 걸지 않는다.
-def mw_tip_movel(target, blend):
-  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
-  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
-  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
-  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
-  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
-  # 앞 노드(dus6_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
-  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
-  if (pose_dist(get_tcp_offset(), eoat_ofs) > 0.000001):
-    set_tcp(eoat_ofs)
-  end
-  movel(pose_trans(target, eoat_ofs), a = a_move, v = v_move, r = blend)
+def mw_flange_movel(target, blend):
+  # 저장한 위치(그리퍼 접촉 위치에서 물러난 start_pose)로는 **툴 플랜지 TCP** 로 간다
+  # (2026-11-09) — 홈 · 스캔 대기 위치 · 그리퍼 접촉 위치는 홀더 오프셋과 무관하다. 홀더
+  # 끝점 TCP 는 3점 측정 · 스캔 동작(dus6_probe_* · dus6_goto_zero)에서만 쓴다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  movel(target, a = a_move, v = v_move, r = blend)
 end
 
 
+# 현재 높이도 플랜지로 본다 — 앞 동작이 끝점 TCP 를 남겼어도 높이가 어긋나지 않게.
+set_tcp([0, 0, 0, 0, 0, 0])
 if (get_actual_tcp_pose()[2] < start_pose[2] - 0.001):
   z_up = get_actual_tcp_pose()
   z_up[2] = start_pose[2]
   movel(z_up, a = a_move, v = v_move)
 end
-mw_tip_movel(start_pose, r_l)
+mw_flange_movel(start_pose, r_l)

@@ -539,3 +539,46 @@ def test_move_assembly_only_from_home(qtbot, tmp_path, monkeypatch) -> None:
     manual.command_requested.emit("move_assembly")
     assert calls == ["move_assembly"]
     window.close()
+
+
+# ---- 저장하는 위치는 툴 플랜지 기준 (2026-11-09) -------------------------------------
+def test_start_pose_is_saved_after_the_tcp_is_set_to_the_flange(qtbot, tmp_path, monkeypatch) -> None:
+    """시작 포즈(TCP 좌표)는 로봇 TCP 를 플랜지로 맞춘 뒤 새로 읽은 값으로 저장한다."""
+    monkeypatch.setenv("SMR_ROBOT_CONFIG_DIR", str(tmp_path))
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    calls: list[str] = []
+    sent: list[tuple[str, list]] = []
+    window.ros_status.call_command = lambda name: calls.append(name) or True
+    window.ros_status.send_pose = lambda name, v: sent.append((name, list(v))) or True
+    window.FLANGE_SETTLE_MS = 50
+    screen = window.cobot_jog_screen
+
+    window.ros_status.tcp_pose_changed.emit([900.0, 0.0, 0.0, 0.0, 0.0, 0.0])   # 홀더 끝점 TCP 값
+    screen.command_requested.emit("save_start_pose")
+    assert calls == ["flange_tcp"] and sent == [], "TCP 를 맞추기 전에는 저장하지 않는다"
+
+    window.ros_status.tcp_pose_changed.emit([655.0, 0.0, 0.0, 0.0, 0.0, 0.0])   # 플랜지로 바뀐 값
+    qtbot.waitUntil(lambda: bool(sent), timeout=2000)
+    assert sent == [("start_pose", [655.0, 0.0, 0.0, 0.0, 0.0, 0.0])]
+
+    # 관절값으로 저장하는 위치는 TCP 와 상관없다 — 바로 저장한다.
+    calls.clear()
+    window.ros_status.joint_position_changed.emit([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    screen.command_requested.emit("save_standby_pose")
+    assert calls == [] and sent[-1][0] == "standby_joint"
+    window.close()
+
+
+def test_start_pose_is_not_saved_while_the_robot_task_runs(qtbot, tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SMR_ROBOT_CONFIG_DIR", str(tmp_path))
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    calls: list[str] = []
+    window.ros_status.call_command = lambda name: calls.append(name) or True
+    window.ros_status.tcp_pose_changed.emit([655.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    window._on_robot_task_state(1)
+    window.cobot_jog_screen.command_requested.emit("save_start_pose")
+    assert calls == []
+    assert "태스크가 도는 중" in window.cobot_jog_screen.activity_label.text()
+    window.close()

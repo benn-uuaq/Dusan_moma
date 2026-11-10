@@ -29,19 +29,21 @@ def _rows_block(folder: str) -> str:
     return _python(text[start:end])
 
 
-def _run_robot(folder: str, height: float, left: float, right: float, scan_h: float = 30.0):
+def _run_robot(folder: str, height: float, left: float, right: float, scan_h: float = 30.0,
+               z_base: float = 0.0, zero_z: float = 0.0):
     """init 으로 줄 수를 세고, 펜던트 Loop 처럼 pass → up 을 돌며 줄 높이를 모은다."""
     scope = {"app_height": height, "scan_h": scan_h, "pitch_l": left, "pitch_r": right,
              "ceil": math.ceil}
     exec(_rows_block(folder), scope)
     moves, regs = [], {}
     scope.update({
-        "row_idx": 0, "dir_sign": 1, "z_base": 0.0, "a_scan": 1.0, "v_scan": 0.1,
+        "row_idx": 0, "dir_sign": 1, "z_base": z_base, "a_scan": 1.0, "v_scan": 0.1,
+        "zero_pose": [0.0, 0.0, zero_z, 0.0, 0.0, 0.0],
         "path_len": 0.0, "floor": math.floor,
         "write_port_register": lambda a, v: regs.__setitem__(a, v),
         "read_port_register": lambda a, signed=True: 100,
         "get_actual_tcp_pose": lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        "movel": lambda pose, a, v: moves.append(round(pose[2] * 1000, 3)),
+        "movel": lambda pose, a, v: moves.append(round(pose[2] * 1000 - zero_z * 1000, 3)),
     })
     up = _python((TASK / folder / "dus6_up.script").read_text(encoding="utf-8"))
     heights = [0.0]
@@ -162,3 +164,11 @@ def test_arm_offset_is_read_only_from_rcs(folder):
     text = (TASK / folder / "dus6_init.script").read_text(encoding="utf-8")
     block = text[text.index("scan_z_ofs = 0"):text.index("scan_z_ofs = read_port_register(358, True)")]
     assert "if (read_port_register(266, True) == 1):" in block
+
+
+@pytest.mark.parametrize("folder", FOLDERS)
+def test_rows_climb_from_the_origin_height_not_the_start_pose(folder):
+    """툴이 조금 기울면 원점(zero_pose)이 시작 자세 높이(z_base)보다 몇 mm 높게 잡힌다 —
+    줄 바꿈은 원점 높이 기준이어야 한다. 예전에는 1 mm 올라가야 할 때 2.5 mm 내려갔다."""
+    _rows, _heights, moves, _segments = _run_robot(folder, 1, 0, 1, z_base=0.5, zero_z=0.5035)
+    assert moves == pytest.approx([1.0])           # 원점에서 1 mm 위 — 아래로 가지 않는다

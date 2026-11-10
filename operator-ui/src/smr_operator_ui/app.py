@@ -1690,6 +1690,23 @@ class OperatorWindow(QMainWindow):
     # ---- ERUT 에 싣는 로봇 위치 · 접촉 · 홈 ------------------------------------
     #: 탐촉자가 벽에 붙어 있는 로봇 상태(290): 원점 대기 · 적심 · 스캔.
     _CONTACT_STATES = frozenset({7, 8, 6})
+    #: ㄹ자 스캔 중인 로봇 상태(290).
+    _SCAN_STATE_SCANNING = 6
+
+    def _arc_position_mm(self) -> float | None:
+        """ㄹ자 스캔 중(290 = 6) 지금 줄의 호 위 거리 [mm] (레지스터 286). 아니면 None.
+
+        로봇은 원점 기준 좌표(280~285)를 스캔 중에만 내고 그 밖에는 0 을 쏘지만, 286 은
+        호가 잡혀 있으면 원점 복귀 · 후퇴 중에도 낸다 — 스캔 중일 때만 써야 점이 세로 0 에
+        가로만 떠 있지 않는다. 호가 안 잡혔으면(0) None.
+        """
+        state = getattr(self, "_last_scan_state", None) or []
+        if not state or int(state[0]) != self._SCAN_STATE_SCANNING:
+            return None
+        arc = getattr(self, "_scan_arc", None) or []
+        if arc and arc[0] > 0:
+            return arc[0] / 10.0
+        return None
 
     def _on_scan_arc(self, values: list) -> None:
         self._scan_arc = [int(v) for v in values]
@@ -2834,7 +2851,14 @@ class OperatorWindow(QMainWindow):
             # 홈 이동·태스크 정지 뒤에는 레지스터에 마지막 스캔 좌표가 굳어
             # 남는다 — 생존 카운터가 다시 움직일 때까지는 그리지 않는다.
             if not getattr(self, "_position_stale", False):
-                self.main_screen.apply_wall_position(values[1], values[2])
+                # ㄹ자 줄 위에서는 가로를 로봇이 내는 **호 위 거리**(286)로 그린다 — 경로 폭이 곧
+                # 호 길이라 점이 선을 따라간다. 베이스 Y 변위(현)는 호 위 거리에 비례하지 않아
+                # 줄 가운데서 점이 앞서거나 처졌다(2026-11-09). 세로는 원점 기준 높이 그대로.
+                along_arc = self._arc_position_mm()
+                if along_arc is not None:
+                    self.main_screen.apply_wall_position(along_arc, values[2], along_arc=True)
+                else:
+                    self.main_screen.apply_wall_position(values[1], values[2])
 
     @staticmethod
     def _format_pose(values: list) -> dict[str, str]:
@@ -2858,11 +2882,33 @@ class OperatorWindow(QMainWindow):
     #: 관절값으로 저장하는 기준 위치(나머지는 TCP pose).
     _JOINT_TARGETS = ("home_joint", "standby_joint", "assembly_joint")
 
+    #: 로봇 TCP 를 툴 플랜지로 맞춘 뒤 TCP 좌표(384~389)가 새로 들어올 때까지 [ms].
+    FLANGE_SETTLE_MS = 600
+
     def _save_reference_pose(self, command: str) -> None:
-        """현재 자세를 기준 위치로 기록하고 로봇 레지스터에도 쓴다."""
-        target, labels = self.POSE_TARGETS.get(command, (None, ()))
+        """현재 자세를 기준 위치로 기록하고 로봇 레지스터에도 쓴다.
+
+        저장하는 위치는 모두 **툴 플랜지 TCP [0, 0, 0, 0, 0, 0]** 기준이다(2026-11-09) — 홀더
+        오프셋과 무관하다. 관절값(홈 · 스캔 대기 · 조립 위치)은 TCP 와 상관없고, TCP 좌표로
+        저장하는 시작 포즈(그리퍼 접촉 위치)는 로봇 TCP 를 먼저 플랜지로 맞추고 잠시 뒤 읽는다
+        — 태스크가 홀더 끝점 TCP 로 움직이다 멈추면 그 TCP 가 남아 있을 수 있다.
+        """
+        target, _labels = self.POSE_TARGETS.get(command, (None, ()))
         if target is None:
             return
+        if target not in self._JOINT_TARGETS:
+            if self._robot_task_running():
+                self.cobot_jog_screen.show_result(
+                    "로봇 태스크가 도는 중에는 그리퍼 접촉 위치를 저장하지 않습니다 — 멈춘 뒤 저장하세요.")
+                return
+            if self.ros_status.call_command("flange_tcp"):
+                self.cobot_jog_screen.show_result("로봇 TCP 를 툴 플랜지로 맞춘 뒤 저장합니다.")
+                QTimer.singleShot(self.FLANGE_SETTLE_MS,
+                                  lambda: self._store_reference_pose(command, target))
+                return
+        self._store_reference_pose(command, target)
+
+    def _store_reference_pose(self, command: str, target: str) -> None:
         values = (
             getattr(self, "_last_joint", None) if target in self._JOINT_TARGETS
             else getattr(self, "_last_tcp_pose", None)

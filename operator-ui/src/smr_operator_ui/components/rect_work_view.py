@@ -196,6 +196,7 @@ class RectWorkView(QWidget):
         self._row_heights: list[float] | None = None
         self._pos_h_mm = 0.0
         self._pos_v_mm = 0.0
+        self._pos_along_arc = False
         self._has_position = False
         self._cell_label = ""
         # 최소 폭은 실제로 쓸 수 있는 공간에 맞춘다.
@@ -247,12 +248,36 @@ class RectWorkView(QWidget):
         """현재 너비/높이/스캐너 높이/겹침을 mm로 반환한다."""
         return self._width_mm, self._height_mm, self._scan_h_mm, self._overlap_mm
 
-    def set_position(self, horizontal_mm: float, vertical_mm: float) -> None:
+    def set_position(self, horizontal_mm: float, vertical_mm: float,
+                     along_arc: bool = False) -> None:
         """원점 기준 현재 위치를 표시한다. 가로는 원점에서 잰 거리(화면상 어느
-        쪽인지는 to_px()가 정한다 — 지금은 원점이 오른쪽 끝), 세로 + = 위."""
+        쪽인지는 to_px()가 정한다), 세로 + = 위.
+
+        `along_arc` 면 가로는 **호를 따라 간 거리**(로봇 286)라 경로와 같은 단위 그대로 쓴다.
+        아니면 베이스 Y 변위(현)라 경로 폭에 맞춰 늘린다(2026-11-09 — 현은 호 위 거리에
+        비례하지 않아 점이 경로를 벗어나 보였다).
+        """
         self._pos_h_mm, self._pos_v_mm = horizontal_mm, vertical_mm
+        self._pos_along_arc = bool(along_arc)
         self._has_position = True
         self.update()
+
+    def position_on_path_mm(self, plan: dict | None = None) -> tuple[float, float]:
+        """현재 위치를 ㄹ자 경로(ideal_path)와 같은 단위 (가로 mm, 세로 mm) 로 낸다.
+
+        호 위 거리(along_arc)는 경로 폭이 곧 호 길이라 그대로, 현(베이스 Y 변위)은
+        경로 폭 ÷ 현 만큼 늘린다.
+        """
+        h_mm, v_mm = self._pos_h_mm, self._pos_v_mm
+        if not self._pos_along_arc:
+            if plan is None:
+                _pts, plan = ideal_path(self._width_mm, self._height_mm, self._scan_h_mm,
+                                        self._overlap_mm, self._eoat_w_mm, self._radius_mm,
+                                        self._row_heights)
+            chord = plan["chord"]
+            if chord > 0:
+                h_mm = h_mm * plan["draw_run"] / chord
+        return h_mm, v_mm
 
     def set_cell_label(self, text: str) -> None:
         """현재 스캔 중인 격자 이름을 표시한다. 예: "A0 (1/9)"."""
@@ -391,13 +416,14 @@ class RectWorkView(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(path)
 
-        def robot_to_px(h_mm: float, v_mm: float) -> tuple[float, float]:
+        def robot_to_px() -> tuple[float, float]:
             """로봇이 알려 주는 원점 기준 좌표를 화면 좌표로 바꾼다.
 
-            가로: 로봇은 제로점 기준 Y 변위, 즉 **현**(두 끝점 사이 직선
-            거리)을 보낸다. 그림은 격자 폭(호를 편 길이)으로 그리므로
-            width/chord 만큼 늘려 얹는다 — TPAC 이 호를 평면으로 펴서
-            보는 것과 같다. 값 계산·전달은 그대로 둔다.
+            가로: ㄹ자 스캔 중에는 로봇이 낸 **호 위 거리**(286)라 경로 폭과 같은 단위
+            그대로 얹는다. 그 밖에는 제로점 기준 Y 변위, 즉 **현**(두 끝점 사이 직선
+            거리)이라 width/chord 만큼 늘려 얹는다(position_on_path_mm). 현은 호 위
+            거리에 비례하지 않아, 스캔 중에도 현으로 그리던 때는 줄 가운데서 점이
+            경로 선을 앞서거나 처져 보였다(2026-11-09).
 
             세로: 로봇의 0 은 첫 줄(ㅗ 자세로 밑면을 훑는 줄)의 스캔선
             이고, 그림에서도 그 줄이 바닥(0)이다. 그대로 쓴다.
@@ -405,10 +431,7 @@ class RectWorkView(QWidget):
             스캔이 아닐 때 로봇은 (0, 0) 을 보내는데, 그 자리가 곧 ㄹ자가
             시작하는 자리(오른쪽 아래 구석)라 따로 손댈 것이 없다.
             """
-            chord = plan["chord"]
-            if chord > 0:
-                h_mm = h_mm * plan["draw_run"] / chord
-            return to_px(h_mm, v_mm)
+            return to_px(*self.position_on_path_mm(plan))
 
         # 원점 표시. 로봇이 알려 주는 좌표가 아니라 **작업 영역 자체의
         # 기준점**이라 그림 좌표 (0, 0) 을 그대로 쓴다 — 화면에서는
@@ -422,7 +445,7 @@ class RectWorkView(QWidget):
 
         # 현재 위치
         if self._has_position:
-            px, py = robot_to_px(self._pos_h_mm, self._pos_v_mm)
+            px, py = robot_to_px()
             # 치수가 바뀐 직후 등 옛 좌표가 범위를 벗어나면 그림 밖(제목
             # 위)까지 그려진다. 점이 통째로 보이도록 반지름만큼 안쪽으로
             # 눌러 둔다.

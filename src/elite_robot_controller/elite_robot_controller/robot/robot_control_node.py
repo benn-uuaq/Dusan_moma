@@ -168,6 +168,9 @@ class RobotControlNode(Node):
         self.create_service(Trigger, 'robot/command/move_home', self.cb_move_home)
         # 조립 위치(홀더·EOAT 탈착 자세)로 movej (2026-11-05). 홈에서만 받는다.
         self.create_service(Trigger, 'robot/command/move_assembly', self.cb_move_assembly)
+        # 로봇 TCP 를 툴 플랜지 [0, 0, 0, 0, 0, 0] 로 — RCS 가 시작 포즈를 저장하기 전에 부른다
+        # (저장하는 위치는 모두 플랜지 기준이다, 2026-11-09).
+        self.create_service(Trigger, 'robot/command/flange_tcp', self.cb_flange_tcp)
 
         # 값이 있는 명령은 토픽으로 받는다.
         # 작업 속도는 mm/s, 속도 비율은 2~100 [%]이며 레지스터에 쓴다.
@@ -1030,6 +1033,27 @@ class RobotControlNode(Node):
         tol = max(float(self.get_parameter('home_tol_j').value),
                   float(self.get_parameter('home_leave_tol_j').value))
         return all(abs(q / 1000.0 - h) <= tol for q, h in zip(joints, home))
+
+    def cb_flange_tcp(self, req, res):
+        """로봇 TCP 를 툴 플랜지로 되돌린다(2026-11-09).
+
+        저장하는 위치(홈 · 스캔 대기 위치 · 그리퍼 접촉 위치 · 조립 위치)는 모두 툴 플랜지 기준이다.
+        태스크가 홀더 끝점 TCP 로 움직이다 멈추면 그 TCP 가 남아, 그때 읽은 TCP 좌표(384~389)는
+        플랜지가 아니다. RCS 는 시작 포즈를 저장하기 전에 이걸 부르고 잠시 뒤 값을 읽는다.
+        태스크가 도는 중이면 보내지 않는다 — 30001 프로그램이 태스크를 끊는다.
+        """
+        if not self.connected:
+            res.success = False
+            res.message = "[flange_tcp] 로봇에 연결되어 있지 않습니다."
+            return res
+        if getattr(self, '_last_codes', {}).get('task_state') in (1, 2):
+            res.success = False
+            res.message = "[flange_tcp] 로봇 태스크가 도는 중이라 TCP 를 바꾸지 않습니다."
+            return res
+        ok = self.robot_primary.send_script("set_tcp([0, 0, 0, 0, 0, 0])")
+        res.success = bool(ok)
+        res.message = "[flange_tcp] TCP 를 툴 플랜지로 맞췄습니다." if ok else "[flange_tcp] 스크립트 전송 실패"
+        return res
 
     def cb_move_assembly(self, req, res):
         """홈에서 조립 위치로 movej 한다(2026-11-05).

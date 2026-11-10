@@ -188,6 +188,8 @@ class RosStatusClient(QObject):
         "stop": (f"{RosTopics.DASHBOARD}/stop", None),
         "home": (RosTopics.MOVE_HOME, None),
         "move_assembly": (RosTopics.MOVE_ASSEMBLY, None),
+        # 시작 포즈를 저장하기 전에 로봇 TCP 를 툴 플랜지로 맞춘다(2026-11-09).
+        "flange_tcp": ("robot/command/flange_tcp", None),
         # 태스크는 펜던트/로봇 쪽에서 고정이라 여기서 고르지 않는다 —
         # 지금 뭐가 올라가 있는지만 29999 "task -s"로 물어 보여준다.
         "task_status": (f"{RosTopics.DASHBOARD}/task_status", None),

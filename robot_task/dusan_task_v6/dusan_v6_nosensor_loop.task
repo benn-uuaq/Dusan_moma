@@ -439,7 +439,7 @@ end
 # ---- 기준 위치 (RCS 「위치 저장」) ----------------------------------------
 #   308 = 1 : 310~315 **스캔 대기 위치** 관절값 [mRad] — RCS 「스캔 대기 위치 저장」
 #             (예전 「홈 위치 저장」 자리, 2026-10-15 부터 대기 위치)
-#             316~321 그리퍼 기준점 pose(길이 0.1mm, 회전 mRad) — RCS 「시작 포즈 저장」.
+#             316~321 그리퍼 기준점 pose(길이 0.1mm, 회전 mRad) — RCS 「그리퍼 접촉 위치 저장」.
 #             작업면에 붙였을 때의 툴 플랜지 pose 다(티칭한 그대로).
 #   328 = 1 : 322~327 **홈** 관절값 [mRad] — RCS 「홈 위치 저장」(2026-10-16)
 # 플래그가 0 이면 펜던트 변수 값을 그대로 쓴다. 홈과 작업 자리 사이는 언제나
@@ -526,16 +526,12 @@ end
 write_port_register(347, floor(eoat_ofs[0] * 10000 + 0.5))
 write_port_register(348, floor(eoat_ofs[1] * 10000 + 0.5))
 write_port_register(349, floor(eoat_ofs[2] * 10000 + 0.5))
-# ---- 시작 포즈 = 장착 EOAT 의 TCP(프로브 중심)로 티칭한 값 (v6, 2026-11-04) ------
-# 예전에는 EOAT 없이 티칭해 티칭값을 그대로 플랜지 pose 로 썼다. v6 은 그리퍼와
-# ERUT 홀더를 달고 **그 EOAT 의 TCP(5축이면 eoat5_offset)를 로봇 TCP 로 두고**
-# 티칭한다 — 티칭값은 벽 중앙에 닿은 프로브 중심의 pose 다. 이 태스크의 이동 계산은
-# 플랜지 기준이므로 장착 EOAT 의 오프셋을 거꾸로 빼 플랜지 pose 로 바꾼다.
-# 오프셋은 툴 로컬 평행이동이라 자세(회전)는 그대로다. EOAT 를 「없음」으로 고르면
-# 오프셋이 0 이라 예전처럼 티칭값을 그대로 쓴다.
-# 8축으로 바꿔 달아도 같은 벽 점(티칭한 프로브 중심)에 8축 프로브 중심이 오도록
-# 8축 오프셋으로 뺀다 — EOAT 를 바꿀 때 다시 티칭하지 않아도 된다(오프셋 변수가 맞다면).
-gripper_touch_flange = pose_trans(gripper_target_pose, pose_inv(eoat_ofs))
+# ---- 그리퍼 접촉 위치 = 툴 플랜지 TCP 로 티칭한 값 (2026-11-09) -------------------
+# 저장하는 위치(홈 · 스캔 대기 위치 · 그리퍼 접촉 위치 · 조립 위치)는 모두 **툴 플랜지 TCP
+# [0, 0, 0, 0, 0, 0]** 기준이고 장착 홀더(5축 · 8축 · 노그리퍼)와 무관하다. 그래서 티칭값을
+# 그대로 플랜지 pose 로 쓴다. 홀더 · EOAT 길이(eoat_ofs)는 3점 측정 동작(곡률 중심 · 호 회전)과
+# 스캔 중 좌표 계산에만 쓴다.
+gripper_touch_flange = gripper_target_pose
 
 # ---- 리프트 대신 팔을 들어 스캔 (358, 2026-11-09) -----------------------------
 # 구역이 팔로 닿는 높이 안이면 RCS 는 리프트를 그대로 두고 358 에 구역 아래 끝까지의
@@ -1165,7 +1161,7 @@ end
 # ---- 기준 위치 (RCS 「위치 저장」) ----------------------------------------
 #   308 = 1 : 310~315 **스캔 대기 위치** 관절값 [mRad] — RCS 「스캔 대기 위치 저장」
 #             (예전 「홈 위치 저장」 자리, 2026-10-15 부터 대기 위치)
-#             316~321 그리퍼 기준점 pose(길이 0.1mm, 회전 mRad) — RCS 「시작 포즈 저장」.
+#             316~321 그리퍼 기준점 pose(길이 0.1mm, 회전 mRad) — RCS 「그리퍼 접촉 위치 저장」.
 #             작업면에 붙였을 때의 툴 플랜지 pose 다(티칭한 그대로).
 #   328 = 1 : 322~327 **홈** 관절값 [mRad] — RCS 「홈 위치 저장」(2026-10-16)
 # 플래그가 0 이면 펜던트 변수 값을 그대로 쓴다. 홈과 작업 자리 사이는 언제나
@@ -1252,16 +1248,12 @@ end
 write_port_register(347, floor(eoat_ofs[0] * 10000 + 0.5))
 write_port_register(348, floor(eoat_ofs[1] * 10000 + 0.5))
 write_port_register(349, floor(eoat_ofs[2] * 10000 + 0.5))
-# ---- 시작 포즈 = 장착 EOAT 의 TCP(프로브 중심)로 티칭한 값 (v6, 2026-11-04) ------
-# 예전에는 EOAT 없이 티칭해 티칭값을 그대로 플랜지 pose 로 썼다. v6 은 그리퍼와
-# ERUT 홀더를 달고 **그 EOAT 의 TCP(5축이면 eoat5_offset)를 로봇 TCP 로 두고**
-# 티칭한다 — 티칭값은 벽 중앙에 닿은 프로브 중심의 pose 다. 이 태스크의 이동 계산은
-# 플랜지 기준이므로 장착 EOAT 의 오프셋을 거꾸로 빼 플랜지 pose 로 바꾼다.
-# 오프셋은 툴 로컬 평행이동이라 자세(회전)는 그대로다. EOAT 를 「없음」으로 고르면
-# 오프셋이 0 이라 예전처럼 티칭값을 그대로 쓴다.
-# 8축으로 바꿔 달아도 같은 벽 점(티칭한 프로브 중심)에 8축 프로브 중심이 오도록
-# 8축 오프셋으로 뺀다 — EOAT 를 바꿀 때 다시 티칭하지 않아도 된다(오프셋 변수가 맞다면).
-gripper_touch_flange = pose_trans(gripper_target_pose, pose_inv(eoat_ofs))
+# ---- 그리퍼 접촉 위치 = 툴 플랜지 TCP 로 티칭한 값 (2026-11-09) -------------------
+# 저장하는 위치(홈 · 스캔 대기 위치 · 그리퍼 접촉 위치 · 조립 위치)는 모두 **툴 플랜지 TCP
+# [0, 0, 0, 0, 0, 0]** 기준이고 장착 홀더(5축 · 8축 · 노그리퍼)와 무관하다. 그래서 티칭값을
+# 그대로 플랜지 pose 로 쓴다. 홀더 · EOAT 길이(eoat_ofs)는 3점 측정 동작(곡률 중심 · 호 회전)과
+# 스캔 중 좌표 계산에만 쓴다.
+gripper_touch_flange = gripper_target_pose
 
 # ---- 리프트 대신 팔을 들어 스캔 (358, 2026-11-09) -----------------------------
 # 구역이 팔로 닿는 높이 안이면 RCS 는 리프트를 그대로 두고 358 에 구역 아래 끝까지의
@@ -1567,9 +1559,8 @@ movej(Standby_joint, a = a_move_j, v = v_move_j)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
 #  ※ if / while 은 반드시 end 로 닫을 것
 #
-#  start_pose 는 로봇 툴플렌지 기준이 아니라 실제 장착된 그리퍼(5축/8축)
-#  기준으로 맞춰지도록 dus6_init.script 가 매 작업마다 계산해 둔 값이다
-#  (eoat_type + eoat5/8_offset_x/y/z 참고). 여기서는 그 결과만 쓴다.
+#  start_pose 는 **툴 플랜지 TCP [0, 0, 0, 0, 0, 0] 기준**이다 — 장착 홀더(5축 · 8축)와
+#  무관하다(2026-11-09). 그리퍼 접촉 위치에서 probe_dist 만큼 물러난 자리(dus6_init).
 #
 #  move_home 과 같은 이유로 두 단계로 나눈다: 먼저 현재 위치에서 Z 만
 #  start_pose 높이까지 올린 뒤(자세는 그대로 두고 벽/바닥을 스치지
@@ -1580,27 +1571,23 @@ movej(Standby_joint, a = a_move_j, v = v_move_j)
 #  때와 probe_c 로 넘어갈 때처럼, 다음 동작이 접촉 탐색이라 시작점이
 #  흔들리면 안 되는 자리에 쓴다. 블렌드가 필요한 자리는
 #  dus6_move_start_waypoint.script 를 쓴다.
-def ms_tip_movel(target, blend):
-  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
-  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
-  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
-  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
-  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
-  # 앞 노드(dus6_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
-  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
-  if (pose_dist(get_tcp_offset(), eoat_ofs) &gt; 0.000001):
-    set_tcp(eoat_ofs)
-  end
-  movel(pose_trans(target, eoat_ofs), a = a_move, v = v_move, r = blend)
+def ms_flange_movel(target, blend):
+  # 저장한 위치(그리퍼 접촉 위치에서 물러난 start_pose)로는 **툴 플랜지 TCP** 로 간다
+  # (2026-11-09) — 홈 · 스캔 대기 위치 · 그리퍼 접촉 위치는 홀더 오프셋과 무관하다. 홀더
+  # 끝점 TCP 는 3점 측정 · 스캔 동작(dus6_probe_* · dus6_goto_zero)에서만 쓴다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  movel(target, a = a_move, v = v_move, r = blend)
 end
 
 
+# 현재 높이도 플랜지로 본다 — 앞 동작이 끝점 TCP 를 남겼어도 높이가 어긋나지 않게.
+set_tcp([0, 0, 0, 0, 0, 0])
 if (get_actual_tcp_pose()[2] &lt; start_pose[2] - 0.001):
   z_up = get_actual_tcp_pose()
   z_up[2] = start_pose[2]
   movel(z_up, a = a_move, v = v_move)
 end
-ms_tip_movel(start_pose, 0)
+ms_flange_movel(start_pose, 0)
 # 다음 계산(get_actual_tcp_pose · 접촉 탐색)은 플랜지 기준이다 — 선 뒤에 되돌린다.
 set_tcp([0, 0, 0, 0, 0, 0])
 </cachedFileContents>
@@ -1687,9 +1674,8 @@ movel(x_start, a = a_move, v = v_move)
 #  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
 #  ※ if / while 은 반드시 end 로 닫을 것
 #
-#  start_pose 는 로봇 툴플렌지 기준이 아니라 실제 장착된 그리퍼(5축/8축)
-#  기준으로 맞춰지도록 dus6_init.script 가 매 작업마다 계산해 둔 값이다
-#  (eoat_type + eoat5/8_offset_x/y/z 참고). 여기서는 그 결과만 쓴다.
+#  start_pose 는 **툴 플랜지 TCP [0, 0, 0, 0, 0, 0] 기준**이다 — 장착 홀더(5축 · 8축)와
+#  무관하다(2026-11-09). 그리퍼 접촉 위치에서 probe_dist 만큼 물러난 자리(dus6_init).
 #
 #  move_home 과 같은 이유로 두 단계로 나눈다: 먼저 현재 위치에서 Z 만
 #  start_pose 높이까지 올린 뒤(자세는 그대로 두고 벽/바닥을 스치지
@@ -1700,27 +1686,23 @@ movel(x_start, a = a_move, v = v_move)
 #  때와 probe_c 로 넘어갈 때처럼, 다음 동작이 접촉 탐색이라 시작점이
 #  흔들리면 안 되는 자리에 쓴다. 블렌드가 필요한 자리는
 #  dus6_move_start_waypoint.script 를 쓴다.
-def ms_tip_movel(target, blend):
-  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
-  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
-  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
-  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
-  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
-  # 앞 노드(dus6_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
-  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
-  if (pose_dist(get_tcp_offset(), eoat_ofs) &gt; 0.000001):
-    set_tcp(eoat_ofs)
-  end
-  movel(pose_trans(target, eoat_ofs), a = a_move, v = v_move, r = blend)
+def ms_flange_movel(target, blend):
+  # 저장한 위치(그리퍼 접촉 위치에서 물러난 start_pose)로는 **툴 플랜지 TCP** 로 간다
+  # (2026-11-09) — 홈 · 스캔 대기 위치 · 그리퍼 접촉 위치는 홀더 오프셋과 무관하다. 홀더
+  # 끝점 TCP 는 3점 측정 · 스캔 동작(dus6_probe_* · dus6_goto_zero)에서만 쓴다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  movel(target, a = a_move, v = v_move, r = blend)
 end
 
 
+# 현재 높이도 플랜지로 본다 — 앞 동작이 끝점 TCP 를 남겼어도 높이가 어긋나지 않게.
+set_tcp([0, 0, 0, 0, 0, 0])
 if (get_actual_tcp_pose()[2] &lt; start_pose[2] - 0.001):
   z_up = get_actual_tcp_pose()
   z_up[2] = start_pose[2]
   movel(z_up, a = a_move, v = v_move)
 end
-ms_tip_movel(start_pose, 0)
+ms_flange_movel(start_pose, 0)
 # 다음 계산(get_actual_tcp_pose · 접촉 탐색)은 플랜지 기준이다 — 선 뒤에 되돌린다.
 set_tcp([0, 0, 0, 0, 0, 0])
 </cachedFileContents>
@@ -1896,27 +1878,23 @@ movel(l_stand, a = a_move, v = v_move)</cachedFileContents>
 #  접촉 탐색(probe_c)처럼 시작점 정밀도를 요구하는 자리에는 쓰지 않고,
 #  프로브 사이 이동처럼 지나가기만 하면 되는 자리에만 쓴다.
 #  Z 올림(첫 movel)은 벽·바닥을 피하는 동작이라 블렌드를 걸지 않는다.
-def mw_tip_movel(target, blend):
-  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
-  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
-  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
-  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
-  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
-  # 앞 노드(dus6_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
-  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
-  if (pose_dist(get_tcp_offset(), eoat_ofs) &gt; 0.000001):
-    set_tcp(eoat_ofs)
-  end
-  movel(pose_trans(target, eoat_ofs), a = a_move, v = v_move, r = blend)
+def mw_flange_movel(target, blend):
+  # 저장한 위치(그리퍼 접촉 위치에서 물러난 start_pose)로는 **툴 플랜지 TCP** 로 간다
+  # (2026-11-09) — 홈 · 스캔 대기 위치 · 그리퍼 접촉 위치는 홀더 오프셋과 무관하다. 홀더
+  # 끝점 TCP 는 3점 측정 · 스캔 동작(dus6_probe_* · dus6_goto_zero)에서만 쓴다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  movel(target, a = a_move, v = v_move, r = blend)
 end
 
 
+# 현재 높이도 플랜지로 본다 — 앞 동작이 끝점 TCP 를 남겼어도 높이가 어긋나지 않게.
+set_tcp([0, 0, 0, 0, 0, 0])
 if (get_actual_tcp_pose()[2] &lt; start_pose[2] - 0.001):
   z_up = get_actual_tcp_pose()
   z_up[2] = start_pose[2]
   movel(z_up, a = a_move, v = v_move)
 end
-mw_tip_movel(start_pose, r_l)
+mw_flange_movel(start_pose, r_l)
 </cachedFileContents>
         <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v6/scripts_nosensor/dus6_move_start_waypoint.script"/>
       </ScriptNode>
@@ -2023,27 +2001,23 @@ write_port_register(346, arc_mode)</cachedFileContents>
 #  접촉 탐색(probe_c)처럼 시작점 정밀도를 요구하는 자리에는 쓰지 않고,
 #  프로브 사이 이동처럼 지나가기만 하면 되는 자리에만 쓴다.
 #  Z 올림(첫 movel)은 벽·바닥을 피하는 동작이라 블렌드를 걸지 않는다.
-def mw_tip_movel(target, blend):
-  # target(툴 플랜지 pose)으로 가되 **EOAT 끝점(프로브 중심)을 TCP 로** 잡고
-  # 간다. 플랜지 TCP 로 movel 하면 자세가 플랜지를 중심으로 돌아 eoat_ofs
-  # (5축 245mm) 앞의 끝점이 크게 휘둘린다(2026-10-12 140x140 구역에서 확인).
-  # 끝점 TCP 면 끝점이 직선으로 가며 끝점을 중심으로 돈다. 설치 TCP 는 0
-  # (플랜지)이고, 나머지 계산은 모두 플랜지 기준이라 이동하는 동안만 바꾼다.
-  # 앞 노드(dus6_move_start_waypoint)가 블렌드로 이미 끝점 TCP 인 채 지나가는
-  # 중이면 다시 걸지 않는다 — 움직이는 중에 TCP 를 바꾸지 않게.
-  if (pose_dist(get_tcp_offset(), eoat_ofs) &gt; 0.000001):
-    set_tcp(eoat_ofs)
-  end
-  movel(pose_trans(target, eoat_ofs), a = a_move, v = v_move, r = blend)
+def mw_flange_movel(target, blend):
+  # 저장한 위치(그리퍼 접촉 위치에서 물러난 start_pose)로는 **툴 플랜지 TCP** 로 간다
+  # (2026-11-09) — 홈 · 스캔 대기 위치 · 그리퍼 접촉 위치는 홀더 오프셋과 무관하다. 홀더
+  # 끝점 TCP 는 3점 측정 · 스캔 동작(dus6_probe_* · dus6_goto_zero)에서만 쓴다.
+  set_tcp([0, 0, 0, 0, 0, 0])
+  movel(target, a = a_move, v = v_move, r = blend)
 end
 
 
+# 현재 높이도 플랜지로 본다 — 앞 동작이 끝점 TCP 를 남겼어도 높이가 어긋나지 않게.
+set_tcp([0, 0, 0, 0, 0, 0])
 if (get_actual_tcp_pose()[2] &lt; start_pose[2] - 0.001):
   z_up = get_actual_tcp_pose()
   z_up[2] = start_pose[2]
   movel(z_up, a = a_move, v = v_move)
 end
-mw_tip_movel(start_pose, r_l)
+mw_flange_movel(start_pose, r_l)
 </cachedFileContents>
         <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v6/scripts_nosensor/dus6_move_start_waypoint.script"/>
       </ScriptNode>
@@ -2736,8 +2710,12 @@ def up_w1(a, v):
 end
 
 
-# 목표 높이는 직전 위치가 아니라 원점(z_base) 기준 절대값으로 잡는다.
+# 목표 높이는 직전 위치가 아니라 **원점(zero_pose) 높이** 기준 절대값으로 잡는다.
 # 상대값으로 쌓으면 구간마다의 정지 오차가 행 수만큼 누적된다.
+# 예전에는 시작 자세에서 잰 z_base 를 썼다. 그런데 툴이 수평에서 조금 기울어 있으면(티칭
+# rx 1.5355 = 약 2 도) 벽 쪽으로 밀고 들어가 원점을 잡는 동안 높이가 몇 mm 바뀌어, 원점과
+# z_base 가 어긋났다 — 첫 줄은 원점 높이인데 다음 줄은 z_base 기준이라 1 mm 를 올라가야 할
+# 때 오히려 몇 mm 내려갔다(2026-11-09, ERUT 1 mm 구역에서 발견).
 # 스캔 동작에 들어섰다고 알린다(6 = 스캔 중). 이 값이 6 인 동안에만
 # 제로점 기준 좌표(280~285)가 나간다 — dus6_init 의 pub_rel 참고.
 # 스캔 동작마다 세워 둬야, 사이클이 반복되며 goto_zero 를 다시 지나지
@@ -2769,7 +2747,7 @@ end
 up_w1(296, up_rise * 10)
 
 tgt_pose = get_actual_tcp_pose()
-tgt_pose[2] = z_base + row_y * 0.001
+tgt_pose[2] = zero_pose[2] + row_y * 0.001
 # 줄 바꿈도 ㄹ자 스캔이다 — 스캔 줄(servoj 호)과 같은 속도 비율(307 — ERUT 속도 ·
 # RCS 속도 비율)을 건다(v6, 2026-11-04). 예전에는 컨트롤러 전체 비율만 따랐는데, 이제
 # ERUT 속도는 스캔에만 걸리고 컨트롤러 전체 비율은 바꾸지 않는다.

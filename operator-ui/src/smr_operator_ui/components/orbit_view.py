@@ -104,6 +104,20 @@ class OrbitView(QWidget):
         circumference, _width, step, _current, _done = self._sections
         return max(1, math.ceil(circumference / step - 1e-6))
 
+    def section_position(self) -> tuple[int, int]:
+        """(지금 구간 번호(1 부터), 전체 구간 수). 구간이 없으면 (0, 0)."""
+        if self._sections is not None:
+            return self._sections[3] + 1, self.section_count()
+        total = int(self._state.total_segments or 0)
+        if total <= 0:
+            return 0, 0
+        return max(1, int(self._state.current_segment or 1)), total
+
+    def section_label(self) -> str:
+        """차량 구간 위에 적는 유일한 구간 번호 「현재/전체」. 구간이 없으면 ""."""
+        current, total = self.section_position()
+        return f"{current}/{total}" if total > 0 else ""
+
     def _segments(self) -> list[tuple[float, float, str]]:
         """그릴 조각들 — (12시 기준 반시계 중심각, 폭[도], 색). 그리는 순서대로.
 
@@ -242,28 +256,21 @@ class OrbitView(QWidget):
         painter.setPen(QColor(COLORS["text"]))
         painter.drawText(target, Qt.AlignmentFlag.AlignCenter, target_text)
 
-        painter.setFont(QFont("Malgun Gothic", 8, 600))
-        if self._sections is not None:
-            count = self.section_count()
-            centers = [i * 360.0 / count for i in range(count)]
-        else:
-            total = max(1, self._state.total_segments)
-            centers = [i * 360.0 / total for i in range(total)]
-        placed: list[float] = []
-        for index, center_deg in enumerate(centers):
+        # 구간 번호는 차량이 있는 구간에만 「현재/전체」로 적는다(2026-11-09). 예전에는 모든
+        # 구간에 번호를 적었는데, ERUT 가 원주를 아주 잘게 나누면(129 구간 등) 번호가 서로
+        # 겹쳐 읽을 수 없었다. 몇 번째 구간인지는 작업 영역 제목에도 나온다.
+        label = self.section_label()
+        if label:
             # 화면 Y 가 아래로 커지므로 각도를 **빼야** 반시계 방향이다.
             # 차량은 원통을 반시계로 돈다 (1번이 12시, 2번이 그 왼쪽 …).
-            angle = math.radians(-90 - center_deg)
-            # 마지막 구간은 둘레를 넘어 첫 구간과 겹칠 수 있다 — 번호가 겹치면
-            # 한 칸 바깥에 적는다.
-            near = any(abs((center_deg - other + 180.0) % 360.0 - 180.0) < 12.0
-                       for other in placed)
-            placed.append(center_deg)
-            ring = radius * (1.44 if near else 1.28)
+            angle = math.radians(-90 - self._robot_angle_deg())
+            ring = radius * 1.30
             x = center.x() + math.cos(angle) * ring
             y = center.y() + math.sin(angle) * ring
+            painter.setFont(QFont("Malgun Gothic", 10, 700))
             painter.setPen(QColor(COLORS["text"]))
-            painter.drawText(QRectF(x - 17, y - 12, 34, 24), Qt.AlignmentFlag.AlignCenter, f"{index + 1:02d}")
+            painter.drawText(QRectF(x - 36, y - 12, 72, 24), Qt.AlignmentFlag.AlignCenter,
+                             label)
 
         # 1번 구간은 12시 방향에서 시작하며 이후 구간은 **반시계 방향**으로
         # 30도씩 동일하게 이동한다.

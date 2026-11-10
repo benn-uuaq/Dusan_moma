@@ -573,7 +573,9 @@ class CobotJogScreen(BaseScreen):
     # 로봇은 홈과 작업 자리 사이를 언제나 스캔 대기 위치를 거쳐 오간다.
     _SAVE = (("홈 위치 저장", "save_home_pose"),
              ("스캔 대기 위치 저장", "save_standby_pose"),
-             ("시작 포즈 저장", "save_start_pose"),
+             # 그리퍼를 벽 중앙에 붙인 자리 → 레지스터 316~321 → 태스크 gripper_target_pose.
+             # 로봇은 여기서 probe_dist 만큼 물러난 자리(태스크 start_pose)에 먼저 선다.
+             ("그리퍼 접촉 위치 저장", "save_start_pose"),
              # 홀더·EOAT 탈착 자세(2026-11-05). 수동 제어 「조립 위치 이동」이 쓴다.
              ("조립 위치 저장", "save_assembly_pose"))
 

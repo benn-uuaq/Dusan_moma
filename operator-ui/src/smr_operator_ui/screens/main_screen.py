@@ -302,9 +302,13 @@ class MainScreen(QWidget):
         self.rect_view.set_work_area(width_mm, height_mm, scan_h_mm, overlap_mm,
                                      eoat_w_mm, radius_mm)
 
-    def apply_wall_position(self, horizontal_mm: float, vertical_mm: float) -> None:
-        """원점 기준 상대좌표(가로/세로)를 사각형 작업 모델에 표시한다."""
-        self.rect_view.set_position(horizontal_mm, vertical_mm)
+    def apply_wall_position(self, horizontal_mm: float, vertical_mm: float,
+                            along_arc: bool = False) -> None:
+        """원점 기준 상대좌표(가로/세로)를 사각형 작업 모델에 표시한다.
+
+        `along_arc` 면 가로가 호를 따라 간 거리(경로 길이 그대로), 아니면 베이스 Y 변위(현).
+        """
+        self.rect_view.set_position(horizontal_mm, vertical_mm, along_arc)
 
     def set_grid_position(self, column: int, columns: int,
                           row: int, rows: int) -> None:

@@ -419,3 +419,17 @@ def test_move_assembly_without_a_saved_pose_is_refused():
     res = node.cb_move_assembly(None, FakeResponse())
     assert not res.success and "저장" in res.message
     assert node.robot_primary.scripts == []
+
+
+# ---- 저장 전 TCP 를 툴 플랜지로 (2026-11-09) ----------------------------------------
+def test_flange_tcp_sets_the_tcp_to_the_flange_when_idle():
+    node = _assembly_node(HOME)
+    res = node.cb_flange_tcp(None, FakeResponse())
+    assert res.success and node.robot_primary.scripts == ["set_tcp([0, 0, 0, 0, 0, 0])"]
+
+
+def test_flange_tcp_is_refused_while_a_task_runs():
+    node = _assembly_node(HOME)
+    node._last_codes = {'task_state': 1}
+    res = node.cb_flange_tcp(None, FakeResponse())
+    assert not res.success and node.robot_primary.scripts == []
