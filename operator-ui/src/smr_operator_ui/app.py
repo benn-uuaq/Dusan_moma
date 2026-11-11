@@ -1638,6 +1638,9 @@ class OperatorWindow(QMainWindow):
         예전에는 QTimer.singleShot 으로 걸어 두어 되돌릴 수 없었다. 시작 직후
         abort 가 오면 그 뒤에 play 가 날아가 **멈춘 로봇이 다시 출발**했다.
         """
+        # 출발 직전에 스캔 줄 속도(307)를 지금 값으로 다시 써 둔다 — 그사이 무엇이 덮었어도
+        # 이번 구간은 ERUT 속도(ERUT 작업) · 속도 바 값(RCS 작업)으로 돈다(2026-11-11).
+        self._sync_scan_ratio(alarm=True)
         if not hasattr(self, "_play_timer"):
             self._play_timer = QTimer(self)
             self._play_timer.setSingleShot(True)
@@ -2286,6 +2289,7 @@ class OperatorWindow(QMainWindow):
             return
         state = getattr(self, "_robot_task_state", None)
         if state == self._TASK_STATE_PAUSED:
+            self._sync_scan_ratio(alarm=True)
             self.ros_status.call_command("remote_control_on")
             self.ros_status.call_command("play")
             self.main_screen.show_activity("재개 — 로봇이 멈춘 자리에서 잇습니다(play).")
@@ -2747,7 +2751,13 @@ class OperatorWindow(QMainWindow):
             )
             return
         self.ros_status.send_value("speed_ratio", percent)
-        self.main_screen.show_activity(f"{source} 속도 비율 {percent} % 를 로봇에 보냈습니다.")
+        self._speed_ratio_sent = percent
+        # 전체 비율은 29999 로만 간다 — 스캔 줄(307)은 따로 맞춘다. ERUT 작업 중이면
+        # ERUT 속도를 그대로 지킨다(2026-11-11, 예전에는 바가 307 까지 덮었다).
+        _sent, scan, scan_source = self._sync_scan_ratio()
+        note = (f" — ERUT 작업 중이라 스캔 줄은 ERUT 속도 {scan} % 그대로입니다."
+                if scan_source == "ERUT" else "")
+        self.main_screen.show_activity(f"{source} 속도 비율 {percent} % 를 로봇에 보냈습니다.{note}")
 
     def _apply_scan_speed_ratio(self, percent: int) -> None:
         """ERUT 가 보낸 스캔 속도[%]를 ㄹ자 스캔에만 건다 — 레지스터 307 (2026-11-04).
@@ -2755,15 +2765,62 @@ class OperatorWindow(QMainWindow):
         예전에는 로봇 전체 속도 비율(29999 `speed -v`)로 걸어 3점 측정 · 대기 위치 ·
         홈 이동까지 같이 느려졌다. 이제 스캔 줄(servoj 호)과 줄 바꿈만 이 비율을 따르고,
         스캔 밖 이동은 「작업 속도」 · 펜던트 이동 속도(v_move)로 간다.
+
+        ERUT 작업이 걸려 있는 동안은 이 값이 307 의 주인이다 — 속도 바 · 설정 저장 ·
+        재연결 복원이 덮지 않고, play 직전에 다시 써 둔다(`_sync_scan_ratio`, 2026-11-11).
         """
-        if not SPEED_MIN <= int(percent) <= SPEED_MAX:
+        percent = int(percent)
+        if not SPEED_MIN <= percent <= SPEED_MAX:
             self.main_screen.show_activity(
                 f"스캔 속도 비율은 {SPEED_MIN}~{SPEED_MAX} % 여야 합니다: {percent}")
             return
-        self.ros_status.send_value("scan_speed_ratio", int(percent))
-        self.main_screen.show_activity(
-            f"ERUT 스캔 속도 {int(percent)} % ({SCAN_SPEED_MAX * int(percent) // 100} mm/s)를 "
-            f"로봇에 보냈습니다 — 스캔 줄에만 걸립니다.")
+        self._erut_scan_ratio = percent
+        # 이 신호는 ERUT 구역을 받아 들이는 도중에 온다 — 세션이 아직 일을 등록하기 전일 수
+        # 있으므로 「지금 ERUT 작업 중인가」를 따지지 않고 이 값을 바로 쓴다.
+        sent = self._send_scan_ratio(percent, "ERUT")
+        mm_s = SCAN_SPEED_MAX * percent // 100
+        if sent:
+            self.main_screen.show_activity(
+                f"ERUT 스캔 속도 {percent} % ({mm_s} mm/s)를 로봇에 보냈습니다 — 스캔 줄에만 걸립니다.")
+        else:
+            self.cobot_manual_screen.add_alarm(
+                f"ERUT 스캔 속도 {percent} % ({mm_s} mm/s)를 로봇에 보내지 못했습니다 — "
+                f"제어 노드 · 로봇 연결을 확인하세요. 스캔은 로봇에 남은 속도로 돕니다.")
+
+    def _scan_ratio_now(self) -> tuple[int, str]:
+        """ㄹ자 스캔 줄에 걸어야 할 속도 비율과 그 출처.
+
+        ERUT 작업(준비 · 구간)이 걸려 있으면 ERUT 가 준 값, 아니면 RCS 가 마지막으로 보낸
+        전체 속도 비율(속도 바 · 설정) — 예전에도 307 은 바 값을 따랐다.
+        """
+        erut = getattr(self, "_erut_scan_ratio", None)
+        if erut is not None and self.erut_session.has_work():
+            return int(erut), "ERUT"
+        bar = getattr(self, "_speed_ratio_sent", None)
+        if bar is None:
+            bar = self.screens["cobot"].speed_ratio()
+        return int(bar), "속도 바"
+
+    def _send_scan_ratio(self, percent: int, source: str) -> bool:
+        """307 에 쓰고 화면의 「스캔 줄」 표시를 맞춘다. 보냈는지 돌려준다."""
+        sent = self.ros_status.send_value("scan_speed_ratio", int(percent))
+        self.main_screen.set_scan_speed(int(percent), SCAN_SPEED_MAX * int(percent) / 100,
+                                        source, sent)
+        return sent
+
+    def _sync_scan_ratio(self, alarm: bool = False) -> tuple[bool, int, str]:
+        """스캔 줄 속도(307)를 지금 맞는 값으로 다시 쓴다 — (보냈나, 비율, 출처).
+
+        전체 비율을 바꾼 뒤 · 재연결 복원 뒤 · 로봇 play 직전에 부른다. `alarm` 이면 못
+        보냈을 때 알람을 띄운다(ERUT 값이 걸려야 하는 자리).
+        """
+        percent, source = self._scan_ratio_now()
+        sent = self._send_scan_ratio(percent, source)
+        if not sent and alarm:
+            self.cobot_manual_screen.add_alarm(
+                f"스캔 속도 {percent} % ({source})를 로봇에 보내지 못했습니다 — "
+                f"제어 노드 · 로봇 연결을 확인하세요.")
+        return sent, percent, source
 
     def _request_io_output(self, address: str, turn_on: bool) -> None:
         """I/O 화면의 ON/OFF 요청을 실제 장비 경로로 내보낸다.
@@ -2964,6 +3021,11 @@ class OperatorWindow(QMainWindow):
                             (cobot.speed_ratio(), "speed_ratio")):
             if self.ros_status.send_value(name, int(value)):
                 restored.append(name)
+        self._speed_ratio_sent = int(cobot.speed_ratio())
+        # 스캔 줄 속도(307)는 전체 비율과 따로 — ERUT 작업 중이면 ERUT 값을 다시 쓴다.
+        # 예전에는 재연결 복원이 307 을 저장해 둔 비율로 덮어 ERUT 속도가 소리 없이 풀렸다.
+        if self._sync_scan_ratio(alarm=self.erut_session.has_work())[0]:
+            restored.append("scan_speed_ratio")
 
         if restored:
             self.cobot_manual_screen.activity_label.setText(

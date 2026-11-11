@@ -61,6 +61,15 @@ class SpeedBar(QFrame):
         self.mms_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self.mms_label)
 
+        # ㄹ자 스캔 줄에 실제로 걸린 속도(레지스터 307). 전체 비율(위 바)과 따로다 —
+        # ERUT 작업 중이면 ERUT 가 준 속도, 아니면 바와 같다(2026-11-11). 예전에는 ERUT
+        # 속도가 화면 어디에도 안 나와 「적용이 안 된다」로 보였다.
+        self.scan_label = QLabel("스캔 줄\n- %")
+        self.scan_label.setObjectName("ScanSpeed")
+        self.scan_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.scan_label.setWordWrap(True)
+        layout.addWidget(self.scan_label)
+
         # 끄는 동안은 숫자만 따라오고, 놓을 때 한 번 명령을 보낸다.
         self.slider.valueChanged.connect(self._show_value)
         self.slider.sliderReleased.connect(self._emit_value)
@@ -82,6 +91,21 @@ class SpeedBar(QFrame):
     def value(self) -> int:
         """지금 슬라이더가 가리키는 비율."""
         return self.slider.value()
+
+    def set_scan_speed(self, percent: int, mm_s: float, source: str, sent: bool = True) -> None:
+        """ㄹ자 스캔 줄에 건 속도(307)를 보인다. `source` 는 「ERUT」 · 「속도 바」 등.
+
+        로봇에 못 보냈으면(`sent` False) 「미전송」으로 적는다 — 보낸 척하지 않는다.
+        """
+        tail = source if sent else f"{source} · 미전송"
+        self.scan_label.setText(f"스캔 줄\n{int(percent)} %\n{mm_s:.0f} mm/s\n({tail})")
+        self.scan_label.setProperty("source", "erut" if source == "ERUT" else "bar")
+        self.scan_label.setProperty("failed", not sent)
+        self.scan_label.style().unpolish(self.scan_label)
+        self.scan_label.style().polish(self.scan_label)
+
+    def scan_text(self) -> str:
+        return self.scan_label.text()
 
     def set_actual(self, percent: int) -> None:
         """로봇이 실제로 쓰고 있는 비율을 반영한다.

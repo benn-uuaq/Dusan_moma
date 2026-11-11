@@ -351,6 +351,10 @@ class MainScreen(QWidget):
         """속도 바가 % 를 mm/s 로 환산할 기준값을 갱신한다."""
         self.speed_bar.set_base_speed(mm_s)
 
+    def set_scan_speed(self, percent: int, mm_s: float, source: str, sent: bool = True) -> None:
+        """ㄹ자 스캔 줄 속도(307)를 속도 바 아래에 보인다."""
+        self.speed_bar.set_scan_speed(percent, mm_s, source, sent)
+
     def set_speed_scale(self, percent: int) -> None:
         """로봇이 실제로 쓰고 있는 동작 속도 비율[%]을 표시한다."""
         self.speed_bar.set_actual(percent)

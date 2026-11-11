@@ -91,6 +91,9 @@ QSlider#SpeedSlider::handle:vertical {
     border-radius: 13px;
 }
 QLabel#SpeedValue { color: #00599A; font-size: 26px; font-weight: 700; }
+QLabel#ScanSpeed { color: #404B57; font-size: 12px; font-weight: 600; }
+QLabel#ScanSpeed[source="erut"] { color: #B85C00; }
+QLabel#ScanSpeed[failed="true"] { color: #C62828; }
 
 /* 설정 화면 카드를 담는 스크롤 영역. 배율이 커져 세로가 모자랄 때 위젯이
    겹치는 대신 스크롤되게 한다. 틀·배경은 카드가 그대로 보이도록 비운다. */

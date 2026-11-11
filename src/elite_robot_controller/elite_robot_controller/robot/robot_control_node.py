@@ -510,9 +510,11 @@ class RobotControlNode(Node):
     def cb_speed_ratio(self, msg):
         """로봇 전체 동작 속도 비율[%]을 바꾼다. 2~100.
 
-        29999로 실시간 반영하는 것이 본 경로다. 레지스터 307은 태스크가
-        시작할 때 읽어 가는 값이라 함께 써 둔다(태스크 재시작 후에도 유지).
-        조그 속도도 이 값을 그대로 곱해 줄인다.
+        29999로 실시간 반영한다. 조그 속도도 이 값을 그대로 곱해 줄인다.
+        레지스터 307(ㄹ자 스캔 속도 비율)은 **쓰지 않는다**(2026-11-11) — 307 은
+        scan_speed_ratio 한 곳에서만 쓴다. 예전에는 여기서도 307 을 같이 써서, ERUT 가
+        준 스캔 속도가 RCS 속도 바 · 설정 저장 · 재연결 복원에 소리 없이 덮였다. 스캔
+        속도는 RCS 가 정해(ERUT 작업 중이면 ERUT 값, 아니면 속도 바 값) 따로 보낸다.
         """
         self.speed_ratio = max(2, min(100, int(msg.data)))
         # 실시간 반영: 돌고 있는 동작에도 바로 먹는다.
@@ -524,7 +526,6 @@ class RobotControlNode(Node):
             # 답은 왔는데 거절한 경우(명령 형식이 틀렸거나 로컬 모드 등).
             self.get_logger().warn(
                 f"[speed] 컨트롤러가 속도 비율 {self.speed_ratio} % 를 거절했습니다: {result}")
-        self._write_topic('speed_ratio', Int32(data=self.speed_ratio))
 
     def cb_scan_speed_ratio(self, msg):
         """ㄹ자 스캔 속도 비율[%]만 바꾼다 — 레지스터 307. 2~100.

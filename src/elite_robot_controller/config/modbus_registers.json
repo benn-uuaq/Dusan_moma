@@ -174,7 +174,7 @@
       "address": 307,
       "count": 1
     },
-    "_scan_speed_ratio_comment": "scan_speed_ratio 는 307 만 쓴다(컨트롤러 전체 속도 비율은 그대로). ERUT 가 보낸 스캔 속도가 ㄹ자 스캔에만 걸리고 나머지 이동은 느려지지 않게 한다(v6, 2026-11-04).",
+    "_scan_speed_ratio_comment": "scan_speed_ratio 는 307 만 쓴다(컨트롤러 전체 속도 비율은 그대로). ERUT 가 보낸 스캔 속도가 ㄹ자 스캔에만 걸리고 나머지 이동은 느려지지 않게 한다(v6, 2026-11-04). 307 을 쓰는 것은 이 칸 하나다 — speed_ratio 는 29999 speed -v 만 보내고 307 은 쓰지 않는다(주소는 RCS 가 보낼 수 있는지 보는 데만 남긴다, 2026-11-11).",
     "scan_speed_ratio": {
       "address": 307,
       "count": 1

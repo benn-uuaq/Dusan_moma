@@ -68,7 +68,8 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 | `read.task_state` | 500 | 태스크 상태(1 실행 중, 2 일시 중지, 3 중지됨). holding 이 아니라 **input register** 라 드라이버 폴백으로 읽힌다 |
 | `read.speed_scale` | 17 | 로봇 동작 속도 비율[%] 2~100. **읽기 전용으로 쓴다** — 설정은 29999 `speed -v N` 으로 보낸다 |
 | `write.linear_speed` | 306 | 작업 속도 [mm/s]. 태스크의 `movel` 속도 |
-| `write.speed_ratio` | 307 | 로봇 자체 속도 비율 [%] 2~100 |
+| `write.speed_ratio` | (307) | 로봇 전체 속도 비율 [%] 2~100. **29999 `speed -v N` 으로만 보낸다** — 307 은 쓰지 않는다(주소는 RCS 가 보낼 수 있는지 보는 데만 남김, 2026-11-11) |
+| `write.scan_speed_ratio` | 307 | ㄹ자 스캔 줄 속도 비율 [%] 2~100. 307 을 쓰는 유일한 칸 — RCS 가 ERUT 작업 중이면 ERUT 속도, 아니면 속도 바 값을 보낸다 |
 | `write.pose_src` | 308 | 1이면 태스크가 310~321의 기준 위치를 쓴다 |
 | `write.home_joint` | 310~315 | 홈 관절값 [mrad] |
 | `write.start_pose` | 316~321 | 시작 포즈 (길이 0.1 mm, 회전 mrad) |
@@ -123,7 +124,7 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 
 - 조그 값은 **부호가 방향, 절댓값이 축 번호(1~6)** 이며 `0`은 정지입니다.
 - 움직일 때는 `speedj` / `speedl`을 보내고, **멈출 때는 29999의 `stop`** 을 씁니다. 감속 없이 즉시 서기 위해서입니다.
-- **조그 속도는 레지스터 307(속도 비율 %)을 그대로 따릅니다.** 단위가 달라 아래 파라미터를 100 % 기준으로 두고 비율만큼 줄입니다.
+- **조그 속도는 전체 속도 비율(%, `speed_ratio` 로 받은 값)을 그대로 따릅니다.** 단위가 달라 아래 파라미터를 100 % 기준으로 두고 비율만큼 줄입니다.
 
 | 파라미터 | 기본값 | 단위 | 대상 |
 | --- | --- | --- | --- |

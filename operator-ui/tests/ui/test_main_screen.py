@@ -325,7 +325,8 @@ def test_speed_bar_sends_ratio_to_robot(qtbot, monkeypatch) -> None:
     assert sent == [], "끄는 동안에는 보내지 않는다"
     bar.slider.sliderReleased.emit()
 
-    assert sent == [("speed_ratio", 45)]
+    # 전체 비율(29999)과, ERUT 작업이 없으니 스캔 줄(307)도 같은 값으로 따로 간다(2026-11-11).
+    assert sent == [("speed_ratio", 45), ("scan_speed_ratio", 45)]
     window.close()
 
 

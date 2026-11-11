@@ -606,6 +606,23 @@ def test_auto_reconnect_only_when_the_operator_wants_it():
     assert node._want_connected is True and node.connected is True
 
 
+def test_controller_speed_ratio_does_not_overwrite_the_scan_ratio():
+    """전체 속도 비율은 29999 로만 — 307(스캔 속도)은 쓰지 않는다(2026-11-11).
+
+    예전에는 307 도 같이 써서 ERUT 스캔 속도가 속도 바 · 재연결 복원에 덮였다.
+    """
+    node = _linked_node(fail_reads=False)
+    writes, dash = [], []
+    node.write_register = lambda name, value: writes.append((name, value)) or (True, "")
+    node.robot_dash.robot_set_speed = lambda percent: dash.append(percent) or "ok"
+    msg = type("M", (), {"data": 70})()
+
+    node.cb_speed_ratio(msg)
+
+    assert dash == [70] and node.speed_ratio == 70
+    assert writes == []
+
+
 def test_scan_speed_ratio_writes_307_without_touching_the_controller_ratio():
     """ERUT 스캔 속도는 307 에만 — 29999 speed -v(전체 비율)는 보내지 않는다(2026-11-04)."""
     node = _linked_node(fail_reads=False)
