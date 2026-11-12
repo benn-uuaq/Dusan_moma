@@ -42,7 +42,9 @@ class MainScreen(QWidget):
     alarm_reset_requested = pyqtSignal()
     target_dimensions_changed = pyqtSignal(float, float)
     # 너비/높이/스캐너 높이/겹침. Modbus 256~259와 같은 mm 단위다.
-    work_area_changed = pyqtSignal(float, float, float, float)
+    # 너비 · 높이 · 스캐너 높이 · 겹침 · 왼쪽 끝 상승 · 오른쪽 끝 상승 [mm].
+    # 상승 두 값이 모두 0 이면 「자동」(스캐너 높이로 고르게 나눔)이다(2026-11-12).
+    work_area_changed = pyqtSignal(float, float, float, float, float, float)
     # 세로 속도 바에서 로봇 동작 속도 비율(2~100 %)을 바꿨다.
     speed_changed = pyqtSignal(int)
 
@@ -258,6 +260,7 @@ class MainScreen(QWidget):
             field.setValue(int(value))
             return field
 
+        pitch_left, pitch_right = getattr(self, "_side_pitch", None) or (0.0, 0.0)
         width_input = mm_field(width_mm, "작업 영역 너비 입력")
         height_input = mm_field(height_mm, "작업 영역 높이 입력")
         scan_h_input = mm_field(scan_h_mm, "스캐너 세로 유효높이 입력")
@@ -273,6 +276,12 @@ class MainScreen(QWidget):
         # 모두 지나야 해서 줄 위치가 먼저 정해지고, 겹침은 그 결과다.
         # 여기 값은 "최소 이만큼은 겹쳐라"는 하한일 뿐이다.
         form.addRow("최소 겹침", overlap_input)
+        # ERUT 좌 · 우 끝 이동높이(if-0.12)와 같은 값 — 마지막으로 받은 값이 들어 있다.
+        # 둘 다 0 이면 스캐너 높이로 고르게 나눈다(예전 방식).
+        left_input = mm_field(pitch_left, "왼쪽 끝 상승 높이 입력 (0 = 자동)", minimum=0)
+        right_input = mm_field(pitch_right, "오른쪽 끝 상승 높이 입력 (0 = 자동)", minimum=0)
+        form.addRow("왼쪽 끝 상승", left_input)
+        form.addRow("오른쪽 끝 상승", right_input)
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(
@@ -286,7 +295,8 @@ class MainScreen(QWidget):
             values = (width_input.value(), height_input.value(),
                       scan_h_input.value(), overlap_input.value())
             self.set_work_area(*values)
-            self.work_area_changed.emit(*(float(v) for v in values))
+            self.work_area_changed.emit(*(float(v) for v in values),
+                                        float(left_input.value()), float(right_input.value()))
 
     def set_work_area(
         self, width_mm: float, height_mm: float, scan_h_mm: float, overlap_mm: float,
@@ -350,6 +360,10 @@ class MainScreen(QWidget):
     def set_base_speed(self, mm_s: float) -> None:
         """속도 바가 % 를 mm/s 로 환산할 기준값을 갱신한다."""
         self.speed_bar.set_base_speed(mm_s)
+
+    def set_side_pitch(self, pitch: tuple[float, float] | None) -> None:
+        """작업 영역 대화상자에 미리 채울 좌 · 우 끝 상승 [mm]. None 이면 자동(0, 0)."""
+        self._side_pitch = tuple(pitch) if pitch else None
 
     def set_scan_speed(self, percent: int, mm_s: float, source: str, sent: bool = True) -> None:
         """ㄹ자 스캔 줄 속도(307)를 속도 바 아래에 보인다."""

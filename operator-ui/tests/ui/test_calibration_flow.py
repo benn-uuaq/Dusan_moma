@@ -514,9 +514,14 @@ def test_side_pitch_reaches_the_robot_and_does_not_cap_the_rise(qtbot):
                                          160.0, 160.0, 200.0, 200.0]
     assert window.main_screen.rect_view._row_heights == window._robot_row_heights
 
-    # ERUT 값이 없는 RCS 작업 영역은 0 · 0 — 로봇은 예전처럼 고르게 나눈다.
+    # 값을 안 주면 마지막 계획(ERUT 에서 받은 값)을 그대로 잇는다(2026-11-12) — RCS 「검사
+    # 시작」도 같은 줄 높이로 돈다.
     sent.clear()
     window._send_work_area(140.0, 200.0, 30.0, 0.0, 845.0, 30.0, 30.0, 5.0)
+    assert ("scan_pitch", [0, 400]) in sent
+    # 「자동」(음수)이면 0 · 0 — 로봇은 예전처럼 고르게 나눈다.
+    sent.clear()
+    window._send_work_area(140.0, 200.0, 30.0, 0.0, 845.0, 30.0, 30.0, 5.0, -1.0, -1.0)
     assert ("scan_pitch", [0, 0]) in sent and window._robot_row_heights is None
     window.close()
 

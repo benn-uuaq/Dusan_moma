@@ -82,3 +82,14 @@ def save_reference_poses(values: dict) -> str | None:
         data[name] = {"values": [float(v) for v in pose], "saved_at": stamp}
     data[LAYOUT_KEY] = LAYOUT
     return _write(data)
+
+
+def delete_reference_pose(name: str) -> str | None:
+    """한 항목을 지워 저장한다(2026-11-12, 조그 화면 「삭제」). 저장한 경로를 돌려준다.
+
+    지운 항목은 로봇이 펜던트에서 티칭한 값으로 돌아간다 — 앱이 레지스터를 0 으로 쓴다.
+    """
+    data = load_reference_poses()
+    data.pop(name, None)
+    data[LAYOUT_KEY] = LAYOUT
+    return _write(data)

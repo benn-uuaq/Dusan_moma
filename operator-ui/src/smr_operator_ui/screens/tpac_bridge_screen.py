@@ -24,6 +24,7 @@ QScrollArea에 담는다 — 이 화면은 다른 720px 고정 화면과 달리 
 
 from __future__ import annotations
 
+import copy
 import errno
 import os
 import time
@@ -109,6 +110,11 @@ class TpacBridgeScreen(BaseScreen):
         # 들고 있는다. 속도는 베이스와 공용이라(둘 다 같은 로봇 동작을
         # 다른 원점 기준으로 볼 뿐이라 변화율은 같다) 따로 계산하지 않는다.
         self._last_plane = [0] * 6
+        # 정지 · 초기화 뒤 스캔 좌표를 0 으로 붙든다(2026-11-12) — hold_scan_zero 참고.
+        # 값은 붙든 순간의 로봇 진행 상태(290). 그 값이 바뀌면(다음 작업 시작) 놓는다.
+        self._scan_zero_hold = False
+        self._scan_zero_state: int | None = None
+        self._last_data = None
 
         # 본문이 길어질 수 있어 스크롤 영역에 담는다. 작은 화면에서도
         # 아래쪽 표·로그가 잘리지 않고 스크롤로 보인다.
@@ -486,8 +492,53 @@ class TpacBridgeScreen(BaseScreen):
         self.do_status.setText("DO 신호: 서버 정지")
 
     # ------------------------------------------------------------ 콜백 슬롯
+    # ------------------------------------------------------------ 정지 · 초기화
+    def hold_scan_zero(self, reason: str = "") -> None:
+        """TPAC 에 내보내는 스캔 좌표(280~287 중계값)를 0 으로 붙든다(2026-11-12).
+
+        로봇 태스크를 스캔 도중 세우면 발행 스레드도 같이 서서 280~287 에 마지막 스캔
+        좌표가 굳는다 — 그대로 중계하면 TPAC 은 로봇이 아직 그 자리에서 스캔하는 줄 안다.
+        ERUT 정지(abort) · 초기화(reset) · RCS 정지에서 부른다. 정상 완료 뒤에는 부르지
+        않는다 — 그때는 마지막 값을 일부러 남긴다(dus6_finish, TPAC 기록에 0 이 섞이지 않게).
+        로봇 진행 상태(290)가 붙든 때와 달라지면(다음 작업의 dus6_init 이 0 을 쓴다) 놓는다.
+        """
+        self._scan_zero_hold = True
+        last = self._last_data
+        self._scan_zero_state = int(last.scan_state) if last is not None else None
+        self._append_log(f"스캔 좌표를 0 으로 고정합니다{' — ' + reason if reason else ''}")
+        if last is not None:
+            self._on_data(last)          # 다음 폴링을 기다리지 않고 바로 0 을 써 둔다
+
+    def release_scan_zero(self) -> None:
+        if self._scan_zero_hold:
+            self._scan_zero_hold = False
+            self._scan_zero_state = None
+            self._append_log("다음 작업이 시작돼 스캔 좌표 0 고정을 풉니다")
+
+    @property
+    def scan_zero_held(self) -> bool:
+        return self._scan_zero_hold
+
+    def _masked(self, data):
+        """붙든 동안은 스캔 좌표만 0 으로 바꾼 사본. 진행 상태가 바뀌면 놓고 원본을 쓴다."""
+        if not self._scan_zero_hold:
+            return data
+        state = int(getattr(data, "scan_state", 0))
+        if self._scan_zero_state is None:
+            self._scan_zero_state = state
+        elif state != self._scan_zero_state:
+            self.release_scan_zero()
+            return data
+        masked = copy.copy(data)
+        masked.tcp_scan = [0] * 6
+        masked.arc_pos = 0.0
+        masked.arc_total = 0.0
+        return masked
+
     def _on_data(self, data) -> None:
         """폴링 스레드가 값을 읽을 때마다(기본 100ms) 불린다."""
+        self._last_data = data
+        data = self._masked(data)
         if self.server.running:
             self.server.update(data)
             if self.server.mirror:

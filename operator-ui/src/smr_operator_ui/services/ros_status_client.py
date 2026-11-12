@@ -188,6 +188,9 @@ class RosStatusClient(QObject):
         "stop": (f"{RosTopics.DASHBOARD}/stop", None),
         "home": (RosTopics.MOVE_HOME, None),
         "move_assembly": (RosTopics.MOVE_ASSEMBLY, None),
+        # Cobot 조그 화면 위치 카드의 「이동」(2026-11-12).
+        "move_standby": ("robot/command/move_standby", None),
+        "move_gripper": ("robot/command/move_gripper", None),
         # 시작 포즈를 저장하기 전에 로봇 TCP 를 툴 플랜지로 맞춘다(2026-11-09).
         "flange_tcp": ("robot/command/flange_tcp", None),
         # 태스크는 펜던트/로봇 쪽에서 고정이라 여기서 고르지 않는다 —

@@ -378,7 +378,8 @@ def test_reconnect_rewrites_volatile_registers(qtbot, tmp_path, monkeypatch) -> 
     # 옛 파일의 home_joint 는 스캔 대기 위치로 옮겨져 310~315 로 간다(예전과 같은 자리).
     assert ("standby_joint", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) in poses
     assert ("start_pose", [10.0, 20.0, 30.0, 0.0, 0.0, 0.0]) in poses
-    assert not any(name == "home_joint" for name, _values in poses)
+    # 저장 안 한(지운) 홈은 0 으로 비운다 — 로봇은 펜던트 홈을 쓴다(2026-11-12).
+    assert [v for name, v in poses if name == "home_joint"] == [[0] * 6]
     # 속도 설정도 같은 이유로 다시 올린다.
     assert ("linear_speed", 100) in values
     assert ("speed_ratio", 100) in values

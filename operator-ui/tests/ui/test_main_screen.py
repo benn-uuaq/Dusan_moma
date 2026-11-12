@@ -666,7 +666,9 @@ def test_work_area_is_held_back_while_the_robot_task_runs(qtbot) -> None:
     sent: list[list] = []
     raised: list[dict] = []
     notes: list[tuple] = []
-    window.ros_status.send_pose = lambda name, values: sent.append(list(values)) or True
+    # 작업 영역만 본다 — 연결되면 기준 위치(저장 안 한 칸은 0)도 다시 나간다.
+    window.ros_status.send_pose = lambda name, values: (
+        sent.append(list(values)) if name == "work_area" else None) or True
     window.erut_session.raise_error = lambda fields: raised.append(fields)
     window.erut_session.notify = lambda code, msg, text, **kw: notes.append((code, msg, text))
 
@@ -748,7 +750,8 @@ def test_work_area_edited_on_screen_reaches_the_robot(qtbot) -> None:
     assert sent[-1][3] == 0.0
 
     # 화면 다이얼로그에서 겹침만 20 으로 바꾼다.
-    window.main_screen.work_area_changed.emit(721.0, 500.0, 30.0, 20.0)
+    # 좌·우 끝 상승은 0 · 0 = 자동(2026-11-12 부터 대화상자에 함께 있다).
+    window.main_screen.work_area_changed.emit(721.0, 500.0, 30.0, 20.0, 0.0, 0.0)
 
     assert sent[-1][3] == 20.0, "겹침이 로봇까지 가지 않았다"
     # 다이얼로그가 안 묻는 값은 지워지지 않고 그대로 이어져야 한다. 반지름은

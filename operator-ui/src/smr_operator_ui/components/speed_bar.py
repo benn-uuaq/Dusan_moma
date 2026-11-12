@@ -99,7 +99,7 @@ class SpeedBar(QFrame):
         """
         tail = source if sent else f"{source} · 미전송"
         self.scan_label.setText(f"스캔 줄\n{int(percent)} %\n{mm_s:.0f} mm/s\n({tail})")
-        self.scan_label.setProperty("source", "erut" if source == "ERUT" else "bar")
+        self.scan_label.setProperty("source", "erut" if source.startswith("ERUT") else "bar")
         self.scan_label.setProperty("failed", not sent)
         self.scan_label.style().unpolish(self.scan_label)
         self.scan_label.style().polish(self.scan_label)

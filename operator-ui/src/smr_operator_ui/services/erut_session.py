@@ -166,6 +166,10 @@ class ErutSession(QObject):
     pause_requested = pyqtSignal()
     resume_requested = pyqtSignal()
     abort_requested = pyqtSignal()
+    #: 초기화(reset)를 받아들였다(일하는 중이라 그대로 둔 때는 안 낸다, 2026-11-12).
+    reset_requested = pyqtSignal()
+    #: 받은 구역의 모재 지름 · 높이 [mm] (prepare · start, 실려 왔을 때만 — 2026-11-12).
+    target_reported = pyqtSignal(float, float)
     speed_requested = pyqtSignal(int)
     # ERUT 가 실어 보낸 홀더 장착 채널 수(holder.channel_count, if-0.11). 이동에는
     # 쓰지 않는다 — app.py 가 RCS 의 장착 EOAT 와 견줘 다르면 작업자에게 알린다.
@@ -902,6 +906,10 @@ class ErutSession(QObject):
         self._contact = None           # 새 구역 — 접촉 상태는 모름에서 시작
         self._apply_speed(content)
         self._take_holder(content)
+        # 모재 크기를 RCS 에 남긴다 — RCS 「검사 시작」도 마지막으로 받은 모재로 돈다.
+        diameter, height = _mm(content.get("diameter")), _mm(content.get("height"))
+        if diameter > 0 and height > 0:
+            self.target_reported.emit(diameter, height)
 
     def _parsed_plan(self, req_id: str, action: str, content: dict) -> GridPlan | None:
         """요청 모양을 확인해 구간을 만든다 — 원점과 무관한 형식 검사만(400 E6001).
@@ -1259,6 +1267,8 @@ class ErutSession(QObject):
             self._answer(req_id, "reset", 200)
             self.activity.emit(f"ERUT 리셋 요청 — {activity} 중이라 하던 일을 그대로 둡니다")
             return
+        # 하던 일이 없거나 장애로 섰다 — 굳은 스캔 좌표를 비우게 알린다(TPAC 중계 0).
+        self.reset_requested.emit()
         # 장애로 선 때(error)는 풀고, 멈춰 둔 작업이 있으면 버린다(탭9 8~10행).
         dropping = activity in ("error", "estop") and bool(
             self._paused_work or self.sequencer.state is SequencerState.PAUSED)

@@ -1,3 +1,4 @@
+import math
 import threading
 import time
 
@@ -73,6 +74,11 @@ class RobotControlNode(Node):
         # (home_tol_j)보다 넉넉하게 둔다 — 관절마다 약 3도. 이보다 크게 움직이면
         # 펴진 것으로 보고 276 을 내린다(RCS 가 이동을 멈추고 E2003 을 낸다).
         self.declare_parameter('home_leave_tol_j', 0.05)
+        # 홈으로 보는 관절 오차 [도] (2026-11-12). RCS 에 저장한 홈과 펜던트 홈이 조금
+        # 다르면(같은 자리를 따로 티칭 · 관절값 반올림) 펜던트로 홈에 둔 팔을 홈이 아니라고
+        # 봐 홈 이동 · 차량 이동이 막혔다. 관절마다 이 안쪽이면 홈이다 — home_tol_j 보다
+        # 작으면 home_tol_j 를 쓴다.
+        self.declare_parameter('home_near_tol_deg', 3.0)
         # 로봇의 Home_joint 를 29999 로 다시 읽어 오는 간격 [s].
         self.declare_parameter('home_refresh_s', 60.0)
         robot_ip = self.get_parameter('robot_ip').get_parameter_value().string_value
@@ -168,6 +174,9 @@ class RobotControlNode(Node):
         self.create_service(Trigger, 'robot/command/move_home', self.cb_move_home)
         # 조립 위치(홀더·EOAT 탈착 자세)로 movej (2026-11-05). 홈에서만 받는다.
         self.create_service(Trigger, 'robot/command/move_assembly', self.cb_move_assembly)
+        # Cobot 조그 화면의 위치별 「이동」(2026-11-12): 스캔 대기 위치 · 그리퍼 접촉 위치 앞.
+        self.create_service(Trigger, 'robot/command/move_standby', self.cb_move_standby)
+        self.create_service(Trigger, 'robot/command/move_gripper', self.cb_move_gripper)
         # 로봇 TCP 를 툴 플랜지 [0, 0, 0, 0, 0, 0] 로 — RCS 가 시작 포즈를 저장하기 전에 부른다
         # (저장하는 위치는 모두 플랜지 기준이다, 2026-11-09).
         self.create_service(Trigger, 'robot/command/flange_tcp', self.cb_flange_tcp)
@@ -588,8 +597,12 @@ class RobotControlNode(Node):
     def cb_assembly_joint(self, msg):
         """조립 위치 관절값 [mrad] 을 기억한다(레지스터 없음, 2026-11-05)."""
         values = [float(v) for v in msg.data]
-        if len(values) != 6 or not any(values):
+        if len(values) != 6:
             self.get_logger().warn(f"[assembly_joint] 관절값 6개가 아닙니다: {values}")
+            return
+        if not any(values):
+            # 전부 0 = RCS 에서 지웠다(2026-11-12) — 조립 위치를 잊는다.
+            self._assembly_joint = None
             return
         self._assembly_joint = [round(v / 1000.0, 5) for v in values]
 
@@ -797,9 +810,9 @@ class RobotControlNode(Node):
         if not entry.available:
             return
         current = self.robot_modbus.get_register(entry.address)
-        # 들어올 때는 home_tol_j, 이미 홈이면 home_leave_tol_j 까지 홈으로 본다 —
-        # 이동 중 흔들림으로 플래그가 깜박이지 않게(히스테리시스).
-        tol = float(self.get_parameter('home_tol_j').value)
+        # 들어올 때는 홈 근처 오차(_home_near_tol), 이미 홈이면 home_leave_tol_j 까지 홈으로
+        # 본다 — 이동 중 흔들림으로 플래그가 깜박이지 않게(히스테리시스).
+        tol = self._home_near_tol()
         if current == 1:
             tol = max(tol, float(self.get_parameter('home_leave_tol_j').value))
         at_home = all(abs(q / 1000.0 - h) <= tol for q, h in zip(joints, target))
@@ -912,12 +925,10 @@ class RobotControlNode(Node):
             self.get_logger().warn(
                 "[move_home] 스캔 대기 위치(Standby_joint)를 모릅니다 — 홈을 대기 위치로 씁니다.")
             standby = list(home)
-        # 벽에서 먼저 물러날 거리 [m]. 태스크가 쓰는 probe_dist(mm)와 같다.
-        probe_dist = self.robot_dash.get_variable("probe_dist")
-        if not isinstance(probe_dist, (int, float)) or probe_dist <= 0:
-            probe_dist = self._HOME_RETREAT_FALLBACK_MM
-        retreat_m = round(float(probe_dist) / 1000.0, 4)
-        tol = float(self.get_parameter('home_tol_j').value)
+        retreat_m = self._retreat_m()
+        # 홈 근처(관절마다 home_near_tol_deg 안)면 대기 위치를 거치지 않고 movej 홈만 한다 —
+        # 펜던트 홈과 RCS 홈이 조금 다를 때 홈에서 홈으로 가며 크게 돌지 않게(2026-11-12).
+        tol = self._home_near_tol()
         home = [round(float(v), 5) for v in home]
         standby = [round(float(v), 5) for v in standby]
         assembly = getattr(self, '_assembly_joint', None)
@@ -927,48 +938,7 @@ class RobotControlNode(Node):
 
         # 대기 위치를 거쳐 홈으로 — 벽에서 물러나고(대기 위치보다 뒤로는 안
         # 감) 대기 위치 선상·높이에 맞춘 뒤 movej 대기 위치.
-        via_standby = (
-            "mh_ref = get_forward_kin(mh_sb)\n"
-            # 벽 방향 n = 대기 위치 툴 Z 의 수평 성분(단위 벡터).
-            "mh_rz = pose_trans(mh_ref, [0, 0, 1, 0, 0, 0])\n"
-            "mh_nx = mh_rz[0] - mh_ref[0]\n"
-            "mh_ny = mh_rz[1] - mh_ref[1]\n"
-            "mh_nl = sqrt(mh_nx * mh_nx + mh_ny * mh_ny)\n"
-            "if (mh_nl > 0.5):\n"
-            "  mh_nx = mh_nx / mh_nl\n"
-            "  mh_ny = mh_ny / mh_nl\n"
-            "  mh_cur = get_actual_tool_flange_pose()\n"
-            "  mh_cp = pose_trans(mh_cur, [0, 0, 1, 0, 0, 0])\n"
-            # 툴 Z 가 벽 쪽을 얼마나 보는가(cos).
-            "  mh_cz = (mh_cp[0] - mh_cur[0]) * mh_nx + (mh_cp[1] - mh_cur[1]) * mh_ny\n"
-            "  mh_back = 0\n"
-            "  if (mh_cz > 0.2):\n"
-            "    mh_back = ((mh_cur[0] - mh_ref[0]) * mh_nx"
-            " + (mh_cur[1] - mh_ref[1]) * mh_ny) / mh_cz\n"
-            f"    if (mh_back > {retreat_m}):\n"
-            f"      mh_back = {retreat_m}\n"
-            "    end\n"
-            "  end\n"
-            "  if (mh_back > 0.001):\n"
-            "    movel(pose_trans(mh_cur, [0, 0, -mh_back, 0, 0, 0]), a=0.4, v=0.1)\n"
-            "  end\n"
-            # 아직 대기 위치보다 벽 쪽이면 남은 만큼 n 반대로 곧게 물러난다.
-            "  mh_up = get_actual_tool_flange_pose()\n"
-            "  mh_dn = (mh_up[0] - mh_ref[0]) * mh_nx + (mh_up[1] - mh_ref[1]) * mh_ny\n"
-            "  if (mh_dn > 0.001):\n"
-            "    mh_up[0] = mh_up[0] - mh_dn * mh_nx\n"
-            "    mh_up[1] = mh_up[1] - mh_dn * mh_ny\n"
-            "    movel(mh_up, a=0.4, v=0.1)\n"
-            "  end\n"
-            "end\n"
-            # 높이는 대기 위치 높이로 올리거나 내린다.
-            "mh_up = get_actual_tool_flange_pose()\n"
-            "if (mh_up[2] < mh_ref[2] - 0.001 or mh_up[2] > mh_ref[2] + 0.001):\n"
-            "  mh_up[2] = mh_ref[2]\n"
-            "  movel(mh_up, a=0.4, v=0.1)\n"
-            "end\n"
-            f"movej(mh_sb, a={a}, v={v})\n"
-        )
+        via_standby = self._via_standby_script(retreat_m)
         if assembly:
             body = (
                 _max_joint_gap("mh_af", "mh_asm")
@@ -1017,6 +987,196 @@ class RobotControlNode(Node):
     #: probe_dist 를 로봇에서 못 읽었을 때 쓰는 후퇴 한도 [mm].
     _HOME_RETREAT_FALLBACK_MM = 100.0
 
+    def _retreat_m(self):
+        """벽에서 먼저 물러날 거리 [m]. 태스크가 쓰는 probe_dist(mm)와 같다."""
+        probe_dist = self.robot_dash.get_variable("probe_dist")
+        if not isinstance(probe_dist, (int, float)) or probe_dist <= 0:
+            probe_dist = self._HOME_RETREAT_FALLBACK_MM
+        return round(float(probe_dist) / 1000.0, 4)
+
+    def _via_standby_script(self, retreat_m):
+        """지금 자리에서 스캔 대기 위치(mh_sb)까지 가는 스크립트 줄.
+
+        벽에서 물러나 대기 위치 선상 · 높이에 맞춘 뒤 movej 대기 위치. 홈 이동 · 대기 위치
+        이동 · 그리퍼 위치 이동이 같이 쓴다. 벽 방향은 **대기 위치의 툴 Z(수평 성분)** 로 정한다(cb_move_home 참고).
+        """
+        a, v = self._MOVEJ_A, self._MOVEJ_V
+        return (
+            "mh_ref = get_forward_kin(mh_sb)\n"
+            # 벽 방향 n = 대기 위치 툴 Z 의 수평 성분(단위 벡터).
+            "mh_rz = pose_trans(mh_ref, [0, 0, 1, 0, 0, 0])\n"
+            "mh_nx = mh_rz[0] - mh_ref[0]\n"
+            "mh_ny = mh_rz[1] - mh_ref[1]\n"
+            "mh_nl = sqrt(mh_nx * mh_nx + mh_ny * mh_ny)\n"
+            "if (mh_nl > 0.5):\n"
+            "  mh_nx = mh_nx / mh_nl\n"
+            "  mh_ny = mh_ny / mh_nl\n"
+            "  mh_cur = get_actual_tool_flange_pose()\n"
+            "  mh_cp = pose_trans(mh_cur, [0, 0, 1, 0, 0, 0])\n"
+            # 툴 Z 가 벽 쪽을 얼마나 보는가(cos).
+            "  mh_cz = (mh_cp[0] - mh_cur[0]) * mh_nx + (mh_cp[1] - mh_cur[1]) * mh_ny\n"
+            "  mh_back = 0\n"
+            "  if (mh_cz > 0.2):\n"
+            "    mh_back = ((mh_cur[0] - mh_ref[0]) * mh_nx"
+            " + (mh_cur[1] - mh_ref[1]) * mh_ny) / mh_cz\n"
+            f"    if (mh_back > {retreat_m}):\n"
+            f"      mh_back = {retreat_m}\n"
+            "    end\n"
+            "  end\n"
+            "  if (mh_back > 0.001):\n"
+            "    movel(pose_trans(mh_cur, [0, 0, -mh_back, 0, 0, 0]), a=0.4, v=0.1)\n"
+            "  end\n"
+            # 아직 대기 위치보다 벽 쪽이면 남은 만큼 n 반대로 곧게 물러난다.
+            "  mh_up = get_actual_tool_flange_pose()\n"
+            "  mh_dn = (mh_up[0] - mh_ref[0]) * mh_nx + (mh_up[1] - mh_ref[1]) * mh_ny\n"
+            "  if (mh_dn > 0.001):\n"
+            "    mh_up[0] = mh_up[0] - mh_dn * mh_nx\n"
+            "    mh_up[1] = mh_up[1] - mh_dn * mh_ny\n"
+            "    movel(mh_up, a=0.4, v=0.1)\n"
+            "  end\n"
+            "end\n"
+            # 높이는 대기 위치 높이로 올리거나 내린다.
+            "mh_up = get_actual_tool_flange_pose()\n"
+            "if (mh_up[2] < mh_ref[2] - 0.001 or mh_up[2] > mh_ref[2] + 0.001):\n"
+            "  mh_up[2] = mh_ref[2]\n"
+            "  movel(mh_up, a=0.4, v=0.1)\n"
+            "end\n"
+            f"movej(mh_sb, a={a}, v={v})\n"
+        )
+
+    def _to_standby_program(self, name):
+        """(프로그램 앞부분, 오류) — 지금 자리에서 스캔 대기 위치까지 가는 스크립트 줄들.
+
+        홈 근처면 movej 대기 위치(태스크 dus6_leave_home 과 같다), 조립 위치면 movej 홈 →
+        movej 대기 위치, 그 밖(벽 앞 · 조그로 옮긴 자리)이면 벽에서 물러나 대기 위치로.
+        """
+        home = self._home_joint_target()
+        standby = self._standby_joint_target()
+        if not standby:
+            return None, f"[{name}] 스캔 대기 위치를 모릅니다 — RCS 나 펜던트에서 먼저 저장하세요."
+        if not home:
+            home = list(standby)
+        home = [round(float(v), 5) for v in home]
+        standby = [round(float(v), 5) for v in standby]
+        tol = self._home_near_tol()
+        assembly = getattr(self, '_assembly_joint', None)
+        asm_tol = max(tol, float(self.get_parameter('home_leave_tol_j').value))
+        a, v = self._MOVEJ_A, self._MOVEJ_V
+        far = self._via_standby_script(self._retreat_m())
+        if assembly:
+            far = (
+                _max_joint_gap("mh_af", "mh_asm")
+                + f"if (mh_af <= {asm_tol}):\n"
+                + f"  movej(mh_home, a={a}, v={v})\n"
+                + f"  movej(mh_sb, a={a}, v={v})\n"
+                + "else:\n"
+                + _indent(far, 1)
+                + "end\n"
+            )
+        lines = (
+            f"  mh_home = {home}\n"
+            f"  mh_sb = {standby}\n"
+            + (f"  mh_asm = {assembly}\n" if assembly else "")
+            + "  set_tcp([0, 0, 0, 0, 0, 0])\n"
+            "  mh_q = get_actual_joint_positions()\n"
+            + _indent(_max_joint_gap("mh_far", "mh_home"), 1)
+            + f"  if (mh_far <= {tol}):\n"
+            + f"    movej(mh_sb, a={a}, v={v})\n"
+            + "  else:\n"
+            + _indent(far, 2)
+            + "  end\n"
+        )
+        return lines, ""
+
+    def _gripper_contact_target(self):
+        """그리퍼 접촉 위치(플랜지 pose) [m, rad]. 모르면 None.
+
+        308 이 1 이고 316~321 이 차 있으면 그 값, 아니면 로봇의 gripper_target_pose.
+        """
+        flag = self.registers.write_entry('pose_src')
+        entry = self.registers.write_entry('start_pose')
+        if (flag.available and entry.available
+                and self.robot_modbus.get_register(flag.address) == 1):
+            regs = self.robot_modbus.get_all_registers(entry.address, entry.count)
+            if regs and len(regs) == 6 and any(regs):
+                scales = self.registers.scales_for(entry)
+                # 위치 0.1 mm · 회전 mrad → m · rad
+                return [round(r * sc / 1000.0, 6) for r, sc in zip(regs, scales)]
+        return self._robot_joint_variable('gripper_target_pose')
+
+    def _send_motion_program(self, name, program):
+        """돌던 태스크를 세우고 홈 플래그를 내린 뒤 30001 로 프로그램을 보낸다."""
+        stop_reply = self.robot_dash.robot_stop()
+        if stop_reply is None:
+            self.get_logger().warn(f"[{name}] 태스크 정지 응답 없음 — {self.robot_dash.last_error}")
+        time.sleep(self._HOME_AFTER_STOP_S)
+        self._leaving_home()
+        return self.robot_primary.send_script(program)
+
+    def cb_move_standby(self, req, res):
+        """스캔 대기 위치로 간다(2026-11-12, Cobot 조그 화면 「이동」).
+
+        홈에서는 movej 한 번(태스크와 같다), 벽 앞이면 홈 이동처럼 먼저 물러나 대기 위치
+        선상 · 높이에 맞춘 뒤 movej, 조립 위치면 홈을 거친다.
+        """
+        if not self.connected:
+            res.success = False
+            res.message = "[move_standby] 로봇에 연결되어 있지 않습니다."
+            return res
+        lines, error = self._to_standby_program("move_standby")
+        if error:
+            res.success = False
+            res.message = error
+            return res
+        ok = self._send_motion_program("move_standby", "def move_standby_now():\n" + lines + "end")
+        res.success = bool(ok)
+        res.message = ("[move_standby] 스캔 대기 위치 이동을 요청했습니다." if ok
+                       else "[move_standby] 스크립트 전송 실패")
+        return res
+
+    def cb_move_gripper(self, req, res):
+        """그리퍼 접촉 위치 **앞**(probe_dist 만큼 물러난 자리)으로 간다(2026-11-12).
+
+        태스크와 같은 길이다: 스캔 대기 위치를 거쳐(dus6_leave_home) 높이를 먼저 맞추고
+        직선으로 시작 자리에 선다(dus6_move_start, 툴 플랜지 TCP). 접촉 위치 자체로는 가지
+        않는다 — 태스크도 거기서부터는 센서로 찾아 들어가고, 차량이 티칭 때보다 벽에 가까우면
+        그대로 밀고 들어가 벽을 친다. 마지막 거리는 조그로 확인한다.
+        """
+        if not self.connected:
+            res.success = False
+            res.message = "[move_gripper] 로봇에 연결되어 있지 않습니다."
+            return res
+        contact = self._gripper_contact_target()
+        if not contact:
+            res.success = False
+            res.message = "[move_gripper] 그리퍼 접촉 위치를 모릅니다 — 먼저 저장하세요."
+            return res
+        lines, error = self._to_standby_program("move_gripper")
+        if error:
+            res.success = False
+            res.message = error
+            return res
+        retreat_m = self._retreat_m()
+        contact = [round(float(c), 6) for c in contact]
+        program = (
+            "def move_gripper_now():\n"
+            + f"  mg_c = {contact}\n"
+            + f"  mg_t = pose_trans(mg_c, [0, 0, -{retreat_m}, 0, 0, 0])\n"
+            + lines
+            + "  mg_up = get_actual_tool_flange_pose()\n"
+            + "  if (mg_up[2] < mg_t[2] - 0.001):\n"
+            + "    mg_up[2] = mg_t[2]\n"
+            + "    movel(mg_up, a=0.4, v=0.1)\n"
+            + "  end\n"
+            + "  movel(mg_t, a=0.4, v=0.1)\n"
+            + "end"
+        )
+        ok = self._send_motion_program("move_gripper", program)
+        res.success = bool(ok)
+        res.message = (f"[move_gripper] 그리퍼 접촉 위치 {retreat_m * 1000:.0f} mm 앞으로 이동을 요청했습니다."
+                       if ok else "[move_gripper] 스크립트 전송 실패")
+        return res
+
     #: 태스크를 세운 뒤 스크립트를 보내기까지 기다리는 시간 [s].
     #: 정지가 끝나기 전에 보내면 컨트롤러가 "실행 중"으로 거부한다.
     _HOME_AFTER_STOP_S = 0.5
@@ -1031,9 +1191,14 @@ class RobotControlNode(Node):
         home = self._home_joint_target()
         if not joints or len(joints) != 6 or not home:
             return False
-        tol = max(float(self.get_parameter('home_tol_j').value),
+        tol = max(self._home_near_tol(),
                   float(self.get_parameter('home_leave_tol_j').value))
         return all(abs(q / 1000.0 - h) <= tol for q, h in zip(joints, home))
+
+    def _home_near_tol(self):
+        """홈으로 보는 관절 오차 [rad] — home_near_tol_deg 와 home_tol_j 중 큰 값."""
+        near = math.radians(float(self.get_parameter('home_near_tol_deg').value))
+        return max(float(self.get_parameter('home_tol_j').value), near)
 
     def cb_flange_tcp(self, req, res):
         """로봇 TCP 를 툴 플랜지로 되돌린다(2026-11-09).

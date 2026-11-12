@@ -563,6 +563,9 @@ class CobotJogScreen(BaseScreen):
     jog_pressed = pyqtSignal(str, int, int)
     jog_released = pyqtSignal(str, int)
     command_requested = pyqtSignal(str)
+    # 위치 카드의 「이동」 · 「삭제」(2026-11-12). 값은 그 카드의 저장 명령(save_*_pose).
+    move_requested = pyqtSignal(str)
+    delete_requested = pyqtSignal(str)
 
     # 관절 이름은 Modbus 레지스터 73~78의 순서를 그대로 따른다.
     _JOINTS = (("베이스", "mrad"), ("어깨", "mrad"), ("엘보", "mrad"),
@@ -605,21 +608,37 @@ class CobotJogScreen(BaseScreen):
         columns.addWidget(tcp_card, 4)
 
         # 저장된 기준 위치는 조그 값과 헷갈리지 않도록 오른쪽에 따로 둔다.
-        right = QVBoxLayout(); right.setSpacing(12); columns.addLayout(right, 3)
+        right = QVBoxLayout(); right.setSpacing(10); columns.addLayout(right, 3)
         self.save_buttons: dict[str, QPushButton] = {}
+        self.move_buttons: dict[str, QPushButton] = {}
+        self.delete_buttons: dict[str, QPushButton] = {}
         self.saved_labels: dict[str, QLabel] = {}
+        # 삭제는 되돌릴 수 없다 — 묻고 지운다. 시험에서는 이 함수를 바꿔 끼운다.
+        self.confirm = lambda text: QMessageBox.question(
+            self, "기준 위치 삭제", text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
         for text, command in self._SAVE:
-            card, cl = self.surface(text.replace(" 저장", ""))
-            # 「저장」 버튼은 제목 줄 오른쪽에 둔다 — 카드가 넷(조립 위치 추가,
-            # 2026-11-05)이어도 768 보다 낮은 창에서 잘리지 않게 카드를 낮춘다.
+            title = text.replace(" 저장", "")
+            card, cl = self.surface(title)
+            # 제목 줄 오른쪽에 「이동 · 저장 · 삭제」(2026-11-12) — 카드가 넷이어도 768
+            # 보다 낮은 창에서 잘리지 않게 줄을 늘리지 않는다.
             heading = cl.takeAt(0).widget()
-            row = QHBoxLayout(); row.setSpacing(8)
+            row = QHBoxLayout(); row.setSpacing(6)
             row.addWidget(heading, 1)
-            button = QPushButton("저장"); button.setMinimumHeight(44); button.setMinimumWidth(80)
-            button.setToolTip(text)
-            button.clicked.connect(lambda _, key=command, label=text: self._request(key, label))
-            self.save_buttons[command] = button
-            row.addWidget(button)
+            for caption, store, slot in (
+                    ("이동", self.move_buttons,
+                     lambda _, key=command, name=title: self._request_move(key, name)),
+                    ("저장", self.save_buttons,
+                     lambda _, key=command, label=text: self._request(key, label)),
+                    ("삭제", self.delete_buttons,
+                     lambda _, key=command, name=title: self._request_delete(key, name))):
+                button = QPushButton(caption)
+                button.setMinimumHeight(44); button.setMinimumWidth(58)
+                button.setToolTip(f"{title} {caption}")
+                button.clicked.connect(slot)
+                store[command] = button
+                row.addWidget(button)
             cl.addLayout(row)
             saved = QLabel("저장된 값 없음")
             saved.setObjectName("Muted"); saved.setWordWrap(True)
@@ -685,6 +704,17 @@ class CobotJogScreen(BaseScreen):
         self.activity_label.setText(f"'{label}'을 요청했습니다.")
         self.command_requested.emit(command)
 
+    def _request_move(self, command: str, name: str) -> None:
+        self.activity_label.setText(f"'{name}'(으)로 이동을 요청했습니다.")
+        self.move_requested.emit(command)
+
+    def _request_delete(self, command: str, name: str) -> None:
+        if not self.confirm(f"저장한 「{name}」을(를) 지울까요?\n"
+                            "지우면 로봇은 펜던트에서 티칭한 값을 씁니다."):
+            self.activity_label.setText(f"'{name}' 삭제를 취소했습니다.")
+            return
+        self.delete_requested.emit(command)
+
     def apply_joint_position(self, values: list) -> None:
         """관절 각도를 축 이름 옆에 표시한다. 순서는 레지스터 순서와 같다."""
         for index, value in enumerate(values):
@@ -697,6 +727,13 @@ class CobotJogScreen(BaseScreen):
         for axis, label in self.tcp_values.items():
             if axis in values:
                 label.setText(values[axis])
+
+    def title_of(self, command: str) -> str:
+        """저장 명령(save_*_pose)의 카드 제목 — 「홈 위치」 등."""
+        for text, key in self._SAVE:
+            if key == command:
+                return text.replace(" 저장", "")
+        return command
 
     def set_saved_pose(self, command: str, text: str) -> None:
         """저장되어 있는 기준 위치를 보여준다."""

@@ -43,7 +43,8 @@ def _node(joints_rad, flag, task_state=3, home=HOME, pose_src=0, regs_310=None,
                   'home_src': {'address': 328, 'count': 1}},
     })
     node.robot_dash = FakeDash(home)
-    params = {'home_tol_j': 0.02, 'home_leave_tol_j': 0.05, 'home_refresh_s': 60.0}
+    params = {'home_tol_j': 0.02, 'home_leave_tol_j': 0.05, 'home_refresh_s': 60.0,
+              'home_near_tol_deg': 3.0}
     node.get_parameter = lambda name: FakeParam(params[name])
     node._last_codes = {'task_state': task_state}
     node._last_joint_mrad = [round(q * 1000) for q in joints_rad]
@@ -237,9 +238,19 @@ def test_leaving_beyond_the_wider_tolerance_clears_the_flag():
     assert node.robot_modbus.writes == [(276, 0)]
 
 
-def test_entering_home_still_needs_the_tight_tolerance():
-    """홈이 아닌 데서 들어올 때는 예전처럼 home_tol_j(0.02 rad) 안이어야 한다."""
-    node = _node(_shifted(0.03), flag=0)
+def test_entering_within_the_near_tolerance_counts_as_home():
+    """펜던트 홈과 RCS 홈이 관절마다 3도 안쪽으로 다르면 홈으로 본다(2026-11-12).
+
+    예전에는 들어올 때 home_tol_j(0.02 rad ≈ 1.1도) 안이어야 해서, 펜던트로 홈에 둔 팔이
+    RCS 홈과 조금만 달라도 홈이 아니라 홈 이동 · 차량 이동이 막혔다.
+    """
+    node = _node(_shifted(0.03), flag=0)          # 약 1.7도
+    node._watch_home()
+    assert node.robot_modbus.writes == [(276, 1)]
+
+
+def test_entering_beyond_the_near_tolerance_is_not_home():
+    node = _node(_shifted(0.06), flag=0)          # 약 3.4도
     node._watch_home()
     assert node.robot_modbus.writes == []
 
@@ -391,8 +402,11 @@ def test_assembly_joint_topic_is_kept_in_radians():
     node = _assembly_node(HOME)
     node.cb_assembly_joint(FakeMsg(ASSEMBLY_MRAD))
     assert node._assembly_joint == [1.0, -1.0, 1.0, 0.0, 1.0, 0.0]
+    # 전부 0 은 RCS 에서 「삭제」한 것이다(2026-11-12) — 조립 위치를 잊는다.
     node.cb_assembly_joint(FakeMsg([0.0] * 6))
-    assert node._assembly_joint == [1.0, -1.0, 1.0, 0.0, 1.0, 0.0], "0 은 저장 안 한 값"
+    assert node._assembly_joint is None
+    node.cb_assembly_joint(FakeMsg([1.0] * 5))
+    assert node._assembly_joint is None, "6 개가 아니면 무시"
 
 
 def test_move_assembly_from_home_sends_one_movej():
@@ -433,3 +447,69 @@ def test_flange_tcp_is_refused_while_a_task_runs():
     node._last_codes = {'task_state': 1}
     res = node.cb_flange_tcp(None, FakeResponse())
     assert not res.success and node.robot_primary.scripts == []
+
+
+# ---- 홈 근처 · 위치별 이동 (2026-11-12) ---------------------------------------------
+def test_move_home_near_home_skips_the_standby_detour():
+    """관절마다 3도 안쪽이면 홈 근처다 — 대기 위치를 거치지 않고 movej 홈만 한다."""
+    import math
+    _node_, script = _home_script({"Home_joint": HOME, "Standby_joint": STANDBY,
+                                   "probe_dist": 100.0})
+    assert f"if (mh_far > {max(0.02, math.radians(3.0))}):" in script
+
+
+def _move_node(variables, joints=HOME, **regs):
+    node = _node(joints, flag=1, **regs)
+    node.robot_dash = FakeVars(variables)
+    node.robot_primary = FakePrimary()
+    node.connected = True
+    node._HOME_AFTER_STOP_S = 0
+    node._assembly_joint = None
+    return node
+
+
+def test_move_standby_from_home_is_one_movej_and_away_goes_through_the_retreat():
+    node = _move_node({"Home_joint": HOME, "Standby_joint": STANDBY, "probe_dist": 100.0})
+    res = node.cb_move_standby(None, FakeResponse())
+    assert res.success
+    script = node.robot_primary.scripts[0]
+    assert script.startswith("def move_standby_now():")
+    assert f"mh_sb = {STANDBY}" in script
+    # 홈 근처면 movej 대기 위치, 아니면 벽에서 물러나는 길(대기 위치 툴 Z 로 벽 방향).
+    assert "if (mh_far <= " in script and "else:" in script
+    assert "get_forward_kin(mh_sb)" in script
+    assert "movej(mh_home" not in script.split("else:")[0], "홈에서는 홈으로 되돌아가지 않는다"
+    assert node.robot_modbus.writes[0] == (276, 0), "가는 동안은 홈이 아니다"
+
+
+def test_move_standby_without_any_standby_is_refused():
+    node = _move_node({"Home_joint": HOME, "probe_dist": 100.0})
+    res = node.cb_move_standby(None, FakeResponse())
+    assert not res.success and "스캔 대기 위치" in res.message
+    assert node.robot_primary.scripts == []
+
+
+def test_move_gripper_stops_probe_dist_in_front_of_the_contact_pose():
+    contact = [-0.74949, 0.16058, -0.68296, 1.5355, -2.0e-05, -1.5708]
+    node = _move_node({"Home_joint": HOME, "Standby_joint": STANDBY, "probe_dist": 100.0,
+                       "gripper_target_pose": contact})
+    res = node.cb_move_gripper(None, FakeResponse())
+    assert res.success and "100 mm 앞" in res.message
+    script = node.robot_primary.scripts[0]
+    assert f"mg_c = {contact}" in script
+    assert "mg_t = pose_trans(mg_c, [0, 0, -0.1, 0, 0, 0])" in script
+    # 대기 위치를 거쳐 높이 먼저 맞추고 직선으로 — 접촉 위치 자체(mg_c)로는 안 간다.
+    assert script.index("mh_sb") < script.index("movel(mg_t")
+    assert "movel(mg_c" not in script and "movej(mg_c" not in script
+
+
+def test_move_gripper_uses_the_saved_registers_when_pose_src_is_set():
+    from elite_robot_controller import register_map
+    node = _move_node({"Home_joint": HOME, "Standby_joint": STANDBY, "probe_dist": 50.0,
+                       "gripper_target_pose": [0.0] * 6}, pose_src=1)
+    node.registers = register_map.RegisterMap({
+        'scale': {'position_per_count': 0.1, 'rotation_per_count': 1.0},
+        'read': {}, 'write': {'pose_src': {'address': 308, 'count': 1},
+                              'start_pose': {'address': 316, 'count': 6, 'kind': 'pose'}}})
+    node.robot_modbus.registers[316] = [-7495, 1606, -6830, 1536, 0, -1571]
+    assert node._gripper_contact_target() == [-0.7495, 0.1606, -0.683, 1.536, 0.0, -1.571]

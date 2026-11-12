@@ -62,7 +62,7 @@ from smr_operator_ui.services.vehicle_adapters import (
 )
 from smr_operator_ui.services.vehicle_client import VehicleClient
 from smr_operator_ui.services.job_sequencer import (
-    PROBE_COVERAGE_MM, CellStatus, scan_row_heights,
+    PROBE_COVERAGE_MM, SCAN_ROW_LIMIT, CellStatus, scan_row_heights,
 )
 from smr_operator_ui.services.erut_session import (
     CONTACT_LEAD_MS,
@@ -75,6 +75,7 @@ from smr_operator_ui.services.erut_session import (
 from smr_operator_ui.services.ros_status_client import TASK_STATE_NAMES
 from smr_operator_ui.services.robot_vnc import open_robot_vnc
 from smr_operator_ui.services.reference_poses import (
+    delete_reference_pose,
     load_reference_poses,
     save_reference_poses,
 )
@@ -516,7 +517,7 @@ class OperatorWindow(QMainWindow):
             cobot_screen.nosensor_changed.connect(self._set_nosensor)
             cobot_screen.task_version_changed.connect(self._set_task_version)
         for scope in (*self._settings_screens.keys(), "inspection_target",
-                      "work_area", "robot_task", "mode_slots"):
+                      "work_area", "robot_task", "mode_slots", "scan_speed"):
             self.settings_service.load(scope)
 
         # 기준 위치의 원본은 로봇 쪽 설정 파일이다. 레지스터는 휘발성이라
@@ -584,6 +585,8 @@ class OperatorWindow(QMainWindow):
         self.cobot_jog_screen.jog_pressed.connect(self._send_jog)
         self.cobot_jog_screen.jog_released.connect(self._stop_jog)
         self.cobot_jog_screen.command_requested.connect(self._save_reference_pose)
+        self.cobot_jog_screen.move_requested.connect(self._goto_reference_pose)
+        self.cobot_jog_screen.delete_requested.connect(self._delete_reference_pose)
         self.cobot_manual_screen.command_requested.connect(self._handle_cobot_command)
         self.screens["cobot"].save_requested.connect(self._send_linear_speed)
         self.screens["vehicle"].save_requested.connect(self._on_vehicle_settings_saved)
@@ -786,6 +789,9 @@ class OperatorWindow(QMainWindow):
         self.ros_status.scan_state_changed.connect(self.mark_runner.handle_scan_state)
         self.erut_session.resume_requested.connect(self.sequencer.resume)
         self.erut_session.abort_requested.connect(self._abort_job)
+        self.erut_session.reset_requested.connect(
+            lambda: self._zero_scan_outputs("ERUT 초기화"))
+        self.erut_session.target_reported.connect(self._keep_erut_target)
         # ERUT 스캔 속도는 ㄹ자 스캔에만 건다(307) — 스캔 밖 이동은 느려지지 않는다.
         self.erut_session.speed_requested.connect(self._apply_scan_speed_ratio)
 
@@ -904,6 +910,7 @@ class OperatorWindow(QMainWindow):
         self._pending_motions.clear()       # 미뤄 둔 차량·리프트 이동도 버린다
         self._auto_home_sent = False
         self._motion_wait_timer.stop()
+        self._zero_scan_outputs("ERUT 정지")
         self.sequencer.stop()
         for adapter in (self.lift, self.amr, self.outrigger, self.retractor):
             adapter.cancel()
@@ -1159,9 +1166,13 @@ class OperatorWindow(QMainWindow):
         overlap_mm: float, radius_mm: float = 0.0,
         eoat_w_mm: float = 0.0, eoat_h_mm: float = 0.0,
         eoat_type: float = 0.0,
-        pitch_left: float = -1.0, pitch_right: float = -1.0,
+        pitch_left: float | None = None, pitch_right: float | None = None,
     ) -> None:
         """셀 치수와 호 정보를 로봇(레지스터 256~264)과 저장소에 반영한다.
+
+        좌 · 우 끝 상승(`pitch_left` · `pitch_right`, if-0.12)을 주지 않으면(None) 지금
+        값을 그대로 잇는다 — ERUT 에서 마지막으로 받은 값이 RCS 「검사 시작」까지 남는다
+        (2026-11-12). 0 이상 두 값이면 그 값으로, 음수 · 합 0 이면 「자동」(고르게 나눔)으로.
 
         `width_mm` 은 **호 길이**다(현이 아니다). 로봇이 반지름과 함께
         현을 계산해 호 세 점을 만든다. `radius_mm` 은 벽 바깥 반지름이고, 주지
@@ -1182,6 +1193,7 @@ class OperatorWindow(QMainWindow):
         }
         self._show_eoat_choice(eoat_type)
         width_mm = self._clamp_work_width(width_mm, radius_mm, eoat_w_mm)
+        side = self._set_side_pitch(pitch_left, pitch_right)
         self.main_screen.set_work_area(width_mm, height_mm, scan_h_mm, overlap_mm,
                                        eoat_w_mm, radius_mm)
         self.settings_service.save(
@@ -1189,11 +1201,25 @@ class OperatorWindow(QMainWindow):
             {"width_mm": width_mm, "height_mm": height_mm,
              "scan_h_mm": scan_h_mm, "overlap_mm": overlap_mm,
              "eoat_w_mm": eoat_w_mm, "eoat_h_mm": eoat_h_mm,
-             "eoat_type": eoat_type},
+             "eoat_type": eoat_type,
+             "pitch_left_mm": side[0] if side else None,
+             "pitch_right_mm": side[1] if side else None},
         )
         self._push_work_area_to_robot(width_mm, height_mm, scan_h_mm, overlap_mm,
                                       radius_mm, eoat_w_mm, eoat_h_mm, eoat_type,
-                                      pitch_left, pitch_right)
+                                      *(side if side else (-1.0, -1.0)))
+
+    #: 지금 작업 계획의 좌 · 우 끝 상승 [mm] — ERUT 에서 받았거나 화면에서 넣은 값. None = 자동.
+    _side_pitch: tuple[float, float] | None = None
+
+    def _set_side_pitch(self, pitch_left, pitch_right) -> tuple[float, float] | None:
+        """좌 · 우 끝 상승을 정한다 — None 이면 지금 값 그대로. 정한 값을 돌려준다."""
+        if pitch_left is not None and pitch_right is not None:
+            left, right = float(pitch_left), float(pitch_right)
+            self._side_pitch = ((left, right) if left >= 0 and right >= 0 and left + right > 0
+                                else None)
+        self.main_screen.set_side_pitch(self._side_pitch)
+        return self._side_pitch
 
     # 로봇 컨트롤러가 주는 태스크 상태(레지스터 500). 1 = 실행 중.
     _TASK_STATE_RUNNING = 1
@@ -1208,7 +1234,9 @@ class OperatorWindow(QMainWindow):
     }
 
     def _apply_work_area_edit(self, width_mm: float, height_mm: float,
-                              scan_h_mm: float, overlap_mm: float) -> None:
+                              scan_h_mm: float, overlap_mm: float,
+                              pitch_left: float | None = None,
+                              pitch_right: float | None = None) -> None:
         """화면에서 고친 작업 영역을 저장하고 **로봇에도 보낸다**.
 
         예전에는 저장만 해서, 겹침을 바꿔도 로봇은 옛 값으로 계속 돌았다.
@@ -1217,7 +1245,8 @@ class OperatorWindow(QMainWindow):
         훑을 뻔했다. 다이얼로그가 안 묻는 값은 지금 값을 그대로 잇는다.
         """
         extra = dict(self._work_area_extra)
-        self._send_work_area(width_mm, height_mm, scan_h_mm, overlap_mm, **extra)
+        self._send_work_area(width_mm, height_mm, scan_h_mm, overlap_mm, **extra,
+                             pitch_left=pitch_left, pitch_right=pitch_right)
 
     def _work_area_block_reason(self) -> str:
         """지금 작업 영역을 로봇에 못 보내는 이유. 보낼 수 있으면 빈 문자열.
@@ -2034,6 +2063,8 @@ class OperatorWindow(QMainWindow):
         self._pending_motions.clear()          # 미뤄 둔 차량·리프트 이동도 버린다
         self._auto_home_sent = False
         self._motion_wait_timer.stop()
+        if self._job_running():
+            self._zero_scan_outputs("RCS 정지")
         self.simulator.stop_cycle()
         self.sequencer.stop()
         self.mark_runner.cancel()
@@ -2141,6 +2172,15 @@ class OperatorWindow(QMainWindow):
             "code": "E2002", "name": "HOME_FAILED", "level": "stop",
             "recovery": "reset_required", "detail": detail,
         })
+
+    def _zero_scan_outputs(self, reason: str) -> None:
+        """정지 · 초기화 — TPAC 에 내보내는 스캔 좌표를 0 으로 비우고 화면 점도 원점에 둔다.
+
+        스캔 도중 로봇 태스크가 서면 280~287 에 마지막 스캔 좌표가 굳어 TPAC 에 그대로
+        나갔다(2026-11-12). 다음 작업이 시작되면(로봇 진행 상태가 바뀌면) 저절로 풀린다.
+        """
+        self.screens["tpac_bridge"].hold_scan_zero(reason)
+        self._park_position()
 
     def _park_position(self) -> None:
         """현재 위치를 영점에 세우고, 로봇이 다시 좌표를 낼 때까지
@@ -2503,6 +2543,10 @@ class OperatorWindow(QMainWindow):
                         float(values["width_mm"]), float(values["height_mm"]), scan_h_mm,
                         float(values["overlap_mm"]), eoat_w_mm=cover_w, radius_mm=radius_mm)
                 self._show_eoat_choice(values.get("eoat_type"))
+                # 마지막 작업 계획의 좌 · 우 끝 상승(ERUT 또는 화면 입력, 2026-11-12).
+                left, right = values.get("pitch_left_mm"), values.get("pitch_right_mm")
+                side = self._set_side_pitch(
+                    *((left, right) if left is not None and right is not None else (-1, -1)))
                 self._push_work_area_to_robot(
                     float(values["width_mm"]), float(values["height_mm"]),
                     scan_h_mm, float(values["overlap_mm"]),
@@ -2510,7 +2554,14 @@ class OperatorWindow(QMainWindow):
                     self._work_area_extra["eoat_w_mm"],
                     self._work_area_extra["eoat_h_mm"],
                     self._work_area_extra["eoat_type"],
+                    *(side if side else (-1.0, -1.0)),
                 )
+            return
+        if scope == "scan_speed":
+            ratio = values.get("ratio")
+            if isinstance(ratio, (int, float)) and SPEED_MIN <= int(ratio) <= SPEED_MAX:
+                self._local_scan_ratio = int(ratio)
+                self._local_scan_source = str(values.get("source") or "속도 바")
             return
         screen = self._settings_screens.get(scope)
         if screen is not None:
@@ -2697,6 +2748,15 @@ class OperatorWindow(QMainWindow):
             self.main_screen.show_activity(text)
             self.cobot_manual_screen.add_alarm(text)
             return
+        if self._side_pitch:
+            rows_needed = len(scan_row_heights(round(height), *self._side_pitch)) - 1
+            if rows_needed > SCAN_ROW_LIMIT:
+                text = (f"좌·우 끝 상승 {self._side_pitch[0]:g}·{self._side_pitch[1]:g} mm 로는 "
+                        f"높이 {height:g} mm 에 줄이 {SCAN_ROW_LIMIT} 개를 넘어 시작하지 않습니다 — "
+                        "작업 영역에서 상승 높이를 키우거나 0 (자동)으로 두세요.")
+                self.main_screen.show_activity(text)
+                self.cobot_manual_screen.add_alarm(text)
+                return
         diameter_m, target_h_m = self.main_screen.orbit_view.target_dimensions()
         column_pitch = max(width - overlap, 1.0)
         row_pitch = max(height - overlap, 1.0)
@@ -2711,10 +2771,16 @@ class OperatorWindow(QMainWindow):
             scan_overlap=0.0, pitch_x=overlap, pitch_y=overlap,
             radius=self._outer_radius_mm(),
             eoat_probes=int(float(extra.get("eoat_type", 0) or 0)),
+            # 줄 높이도 마지막 작업 계획(ERUT 에서 받았거나 화면에서 넣은 좌 · 우 끝 상승) 그대로.
+            pitch_left=self._side_pitch[0] if self._side_pitch else None,
+            pitch_right=self._side_pitch[1] if self._side_pitch else None,
         )
+        side = (f", 좌·우 끝 상승 {self._side_pitch[0]:g}·{self._side_pitch[1]:g} mm"
+                if self._side_pitch else "")
+        scan, scan_source = self._scan_ratio_now()
         self.main_screen.show_activity(
             f"RCS 검사 시작: {columns}열 x {rows}행 (셀 {width:.0f} x {height:.0f} mm, "
-            f"겹침 {overlap:g} mm)")
+            f"겹침 {overlap:g} mm{side}, 스캔 속도 {scan} % · {scan_source})")
         self._begin_grid_job(grid, self._scan_band_mm(grid), source="RCS")
 
     def _toggle_pause(self) -> None:
@@ -2752,6 +2818,8 @@ class OperatorWindow(QMainWindow):
             return
         self.ros_status.send_value("speed_ratio", percent)
         self._speed_ratio_sent = percent
+        # 사람이 바꾼 속도다 — 다음 RCS 작업의 스캔 속도도 이 값이 된다(ERUT 값을 바꾼다).
+        self._remember_scan_ratio(percent, source)
         # 전체 비율은 29999 로만 간다 — 스캔 줄(307)은 따로 맞춘다. ERUT 작업 중이면
         # ERUT 속도를 그대로 지킨다(2026-11-11, 예전에는 바가 307 까지 덮었다).
         _sent, scan, scan_source = self._sync_scan_ratio()
@@ -2775,6 +2843,8 @@ class OperatorWindow(QMainWindow):
                 f"스캔 속도 비율은 {SPEED_MIN}~{SPEED_MAX} % 여야 합니다: {percent}")
             return
         self._erut_scan_ratio = percent
+        # 마지막으로 받은 ERUT 속도를 남긴다 — RCS 「검사 시작」도 이 속도로 돈다(2026-11-12).
+        self._remember_scan_ratio(percent, "ERUT")
         # 이 신호는 ERUT 구역을 받아 들이는 도중에 온다 — 세션이 아직 일을 등록하기 전일 수
         # 있으므로 「지금 ERUT 작업 중인가」를 따지지 않고 이 값을 바로 쓴다.
         sent = self._send_scan_ratio(percent, "ERUT")
@@ -2790,16 +2860,34 @@ class OperatorWindow(QMainWindow):
     def _scan_ratio_now(self) -> tuple[int, str]:
         """ㄹ자 스캔 줄에 걸어야 할 속도 비율과 그 출처.
 
-        ERUT 작업(준비 · 구간)이 걸려 있으면 ERUT 가 준 값, 아니면 RCS 가 마지막으로 보낸
-        전체 속도 비율(속도 바 · 설정) — 예전에도 307 은 바 값을 따랐다.
+        ERUT 작업(준비 · 구간)이 걸려 있으면 ERUT 가 준 값. 아니면 마지막으로 정해진 값 —
+        ERUT 에서 받았거나 사람이 속도 바 · 설정으로 바꾼 것 중 나중 것(2026-11-12, 저장해
+        두어 다시 켜도 남는다). 그것도 없으면 RCS 가 보낸 전체 속도 비율.
         """
         erut = getattr(self, "_erut_scan_ratio", None)
         if erut is not None and self.erut_session.has_work():
             return int(erut), "ERUT"
+        local = getattr(self, "_local_scan_ratio", None)
+        if local is not None:
+            source = getattr(self, "_local_scan_source", "속도 바")
+            return int(local), ("ERUT 마지막" if source == "ERUT" else source)
         bar = getattr(self, "_speed_ratio_sent", None)
         if bar is None:
             bar = self.screens["cobot"].speed_ratio()
         return int(bar), "속도 바"
+
+    def _remember_scan_ratio(self, percent: int, source: str) -> None:
+        """다음 작업에 쓸 스캔 줄 속도를 남긴다 — ERUT 값이든 사람이 넣은 값이든 나중 것."""
+        self._local_scan_ratio = int(percent)
+        self._local_scan_source = str(source)
+        self.settings_service.save("scan_speed", {"ratio": int(percent), "source": str(source)})
+
+    def _keep_erut_target(self, diameter_mm: float, height_mm: float) -> None:
+        """ERUT 구역의 모재 크기를 RCS 검사 대상으로 남긴다(다를 때만, 2026-11-12)."""
+        diameter_m, height_m = diameter_mm / 1000.0, height_mm / 1000.0
+        old_d, old_h = self.main_screen.orbit_view.target_dimensions()
+        if abs(old_d - diameter_m) > 0.0005 or abs(old_h - height_m) > 0.0005:
+            self._set_target_dimensions(diameter_m, height_m)
 
     def _send_scan_ratio(self, percent: int, source: str) -> bool:
         """307 에 쓰고 화면의 「스캔 줄」 표시를 맞춘다. 보냈는지 돌려준다."""
@@ -2982,6 +3070,73 @@ class OperatorWindow(QMainWindow):
             self.cobot_jog_screen.show_result("기준 위치 파일을 저장하지 못했습니다.")
         self.ros_status.send_pose(target, values)
 
+    #: 위치 카드 「이동」이 부르는 노드 명령(홈 · 조립 위치는 기존 경로를 탄다).
+    _GOTO_SERVICES = {"save_standby_pose": "move_standby", "save_start_pose": "move_gripper"}
+
+    def _goto_reference_pose(self, command: str) -> None:
+        """조그 화면 위치 카드의 「이동」(2026-11-12).
+
+        홈은 메인 「로봇 홈」, 조립 위치는 수동 제어 「조립 위치 이동」과 같은 길이다.
+        스캔 대기 위치는 홈 이동처럼 벽에서 물러나 movej, 그리퍼 접촉 위치는 태스크처럼
+        대기 위치를 거쳐 접촉 위치 **앞**(probe_dist)까지만 간다 — 마지막은 조그로 본다.
+        로봇이 동작 중이거나 차량 · 리프트가 움직이면 보내지 않는다.
+        """
+        target, _labels = self.POSE_TARGETS.get(command, (None, ()))
+        if target is None:
+            return
+        if command == "save_home_pose":
+            self._request_home()
+            self.cobot_jog_screen.show_result(self.main_screen.activity_label.text())
+            return
+        if command == "save_assembly_pose":
+            self._request_assembly()
+            self.cobot_jog_screen.show_result(self.main_screen.activity_label.text())
+            return
+        name = "스캔 대기 위치" if command == "save_standby_pose" else "그리퍼 접촉 위치 앞"
+        refuse = ""
+        if self._robot_busy():
+            refuse = "로봇이 동작 중이므로 이동할 수 없습니다 — 정지한 뒤 누르세요."
+        elif any(m.moving for m in (self.amr, self.lift)):
+            refuse = "차량·리프트가 움직이는 중이라 팔을 움직이지 않습니다."
+        if refuse:
+            self.cobot_jog_screen.show_result(f"{name} 이동 거절 — {refuse}")
+            self.main_screen.show_activity(f"{name} 이동 거절 — {refuse}")
+            return
+        self.main_screen.show_activity(f"로봇을 {name}(으)로 보냅니다.")
+        self.cobot_jog_screen.show_result(f"로봇을 {name}(으)로 보냅니다.")
+        self.ros_status.call_command(self._GOTO_SERVICES[command])
+
+    def _delete_reference_pose(self, command: str) -> None:
+        """조그 화면 위치 카드의 「삭제」(2026-11-12) — 파일 · 화면 · 로봇 레지스터에서 지운다.
+
+        로봇에는 그 칸을 0 으로 쓴다 — 태스크와 노드는 0 인 칸을 「저장 안 함」으로 보고
+        펜던트에서 티칭한 값(Home_joint · Standby_joint · gripper_target_pose)을 쓴다.
+        조립 위치는 노드가 잊는다. 태스크가 도는 중에는 지우지 않는다.
+        """
+        target, _labels = self.POSE_TARGETS.get(command, (None, ()))
+        if target is None:
+            return
+        name = self.cobot_jog_screen.title_of(command)
+        if not self._reference_poses.get(target):
+            self.cobot_jog_screen.show_result(f"「{name}」은(는) 저장된 값이 없습니다.")
+            return
+        if self._robot_task_running():
+            self.cobot_jog_screen.show_result(
+                f"로봇 태스크가 도는 중에는 「{name}」을(를) 지우지 않습니다 — 멈춘 뒤 지우세요.")
+            return
+        self._reference_poses.pop(target, None)
+        self.cobot_jog_screen.set_saved_pose(command, "")
+        saved = delete_reference_pose(target) is not None
+        sent = self.ros_status.send_pose(target, [0] * 6)
+        notes = []
+        if not saved:
+            notes.append("기준 위치 파일을 고치지 못했습니다")
+        if not sent:
+            notes.append("로봇에 연결되어 있지 않아 다음 연결 때 비웁니다")
+        tail = f" ({' · '.join(notes)})" if notes else ""
+        self.cobot_jog_screen.show_result(
+            f"「{name}」을(를) 지웠습니다 — 로봇은 펜던트에서 티칭한 값을 씁니다.{tail}")
+
     def _show_saved_pose(self, command: str, entry: dict) -> None:
         """저장된 값을 축 이름과 함께 보여준다."""
         _target, labels = self.POSE_TARGETS[command]
@@ -3012,6 +3167,11 @@ class OperatorWindow(QMainWindow):
             values = entry.get("values") if isinstance(entry, dict) else None
             if values and self.ros_status.send_pose(target, values):
                 restored.append(target)
+        # RCS 에 없는(지운) 위치는 로봇 칸을 비운다 — 연결이 끊긴 사이 지웠으면 레지스터에
+        # 옛 값이 남아 로봇이 지운 위치로 갔다(2026-11-12). 0 = 펜던트 값을 쓴다.
+        for target, _labels in self.POSE_TARGETS.values():
+            if not self._reference_poses.get(target):
+                self.ros_status.send_pose(target, [0] * 6)
 
         cobot = self.screens["cobot"]
         # 속도 바의 mm/s 는 ㄹ자 스캔 속도로 보인다(100 % = 100 mm/s). 스캔 외 이동
@@ -3166,7 +3326,8 @@ class OperatorWindow(QMainWindow):
             f"장착 홀더를 {names.get(probes, probes)}(으)로 바꿨습니다 — 로봇 264 = {probes}.")
 
     # 위치 저장은 조그 화면에서, 나머지는 수동 제어 화면에서 요청한다.
-    _JOG_COMMANDS = ("save_home_pose", "save_standby_pose", "save_start_pose")
+    _JOG_COMMANDS = ("save_home_pose", "save_standby_pose", "save_start_pose",
+                     "move_standby", "move_gripper")
 
     #: 스캔을 띄우고 멈추는 명령. 실패가 메인 화면에도 보여야 한다.
     _SCAN_COMMANDS = ("play", "stop", "remote_control_on",

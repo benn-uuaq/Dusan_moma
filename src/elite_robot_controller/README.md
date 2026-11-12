@@ -105,6 +105,8 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
 | 서비스 (`std_srvs/Trigger`) | `robot/command/save_start_pose` | `save_start_pose` |
 | 서비스 (`std_srvs/Trigger`) | `robot/command/move_home` | `move_home` |
 | 서비스 (`std_srvs/Trigger`) | `robot/command/move_assembly` | 없음 (30001 스크립트, 홈에서만) |
+| 서비스 (`std_srvs/Trigger`) | `robot/command/move_standby` | 없음 (30001 스크립트 — 스캔 대기 위치로) |
+| 서비스 (`std_srvs/Trigger`) | `robot/command/move_gripper` | 없음 (30001 스크립트 — 그리퍼 접촉 위치 앞 probe_dist 까지) |
 | 토픽 (`std_msgs/Int32`) | `robot/command/linear_speed` | `linear_speed` |
 | 토픽 (`std_msgs/Int32`) | `robot/command/speed_ratio` | `speed_ratio` |
 | 토픽 (`std_msgs/Float32MultiArray`) | `robot/command/home_joint` | `home_joint` |
@@ -142,6 +144,8 @@ ros2 run elite_robot_controller robot_control_node --ros-args -p register_map:=/
   - 이 프로그램은 태스크 preamble 밖에서 도는 별개 컨텍스트라 태스크가 저장해 둔 `Home_joint`/`Home_pose` 전역을 그냥 참조할 수 없습니다(`정의되지 않았습니다`). 대신 29999의 `variable -get Home_joint`/`variable -get Home_pose`로 로봇에 저장된 실제 값을 그때그때 읽어와(`Robot_29999.get_variable`), `global` 선언 뒤 그 자리에서 바로 대입해 이 스크립트만의 전역으로 만들어 씁니다. 값을 하드코딩하지 않으므로 태스크 쪽 `Home_joint`/`Home_pose`가 바뀌어도 자동으로 맞습니다. 읽기 자체가 실패했을 때만 `RobotControlNode._HOME_JOINT_FALLBACK`/`_HOME_POSE_FALLBACK` 고정값으로 대신합니다.
   - 변수 이름 `p`, `j`는 pose/joint 리터럴(`p[..]`, `j[..]`)과 충돌하니 피합니다.
 - 벽 방향(2026-11-05): `move_home` 은 벽이 베이스 +X 라고 박아 두지 않고 **스캔 대기 위치의 툴 Z 수평 성분**을 벽 방향으로 씁니다. v5(벽 +X)와 v6(로봇을 반대로 달아 벽 -X) 모두 같은 스크립트로 벽 반대쪽으로 물러나고 대기 위치 선상에 맞춥니다. 대기 위치의 툴이 수평이 아니면 물러나기·맞추기를 건너뜁니다.
+- 홈 근처(2026-11-12): 관절마다 `home_near_tol_deg`(기본 3도) 안이면 홈으로 봅니다 — 홈 플래그(276), 조립 위치 이동 허가, `move_home` 이 대기 위치를 거치지 않고 `movej` 홈만 하는 기준. RCS 에 저장한 홈과 펜던트 홈이 조금 달라도 홈 이동 · 차량 이동이 막히지 않습니다. `home_tol_j` 보다 작게 주면 `home_tol_j` 를 씁니다.
+- 위치별 이동(2026-11-12, RCS 조그 화면 「이동」): `move_standby` 는 홈 근처면 `movej` 대기 위치, 조립 위치면 홈을 거쳐, 그 밖이면 `move_home` 처럼 벽에서 물러나 대기 위치로 갑니다. `move_gripper` 는 그 길로 대기 위치까지 간 뒤 높이를 먼저 맞추고 직선으로 **그리퍼 접촉 위치에서 probe_dist 만큼 물러난 자리**에 섭니다(태스크 dus6_move_start 와 같음 — 접촉 위치 자체로는 가지 않습니다). 접촉 위치는 308 = 1 이고 316~321 이 차 있으면 그 값, 아니면 로봇 변수 `gripper_target_pose` 입니다. `assembly_joint` 로 전부 0 이 오면 조립 위치를 잊습니다(RCS 「삭제」).
 - 조립 위치(2026-11-05): 홀더·EOAT 를 떼고 다는 자세입니다. RCS 「조립 위치 저장」이 `robot/command/assembly_joint`(mrad)로 보내면 노드가 기억하고(레지스터 없음, RCS 가 로봇에 붙을 때마다 다시 보냄), `robot/command/move_assembly` 는 **홈에 있을 때만** 태스크를 세우고 `movej` 한 번으로 갑니다. `move_home` 은 조립 위치(오차 `home_leave_tol_j`)에 있으면 대기 위치를 거치지 않고 `movej` 홈만 합니다.
 - `robot/command/work_area`는 원통이 커서 AMR 원주 구역 + Cobot 세로 격자로 나눠 스캔할 때, MQTT `job_cmd`의 `grid` 블록에서 온 이번 격자의 너비/높이/스캐너높이/겹침을 전달한다. `work_area` 항목은 `kind: "raw"`라 다른 자세 항목과 달리 값을 그대로 정수 mm로 저장한다(0.1mm 단위 아님).
 
