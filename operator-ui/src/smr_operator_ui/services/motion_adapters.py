@@ -68,8 +68,8 @@ class DummyMotionAdapter(QObject):
         return self._timer.isActive()
 
     def move_to(self, target: float | int, unit: str = "",
-                label: str = "") -> None:
-        """이동을 시작한다. 이미 이동 중이면 지금 위치에서 새 목표로 간다."""
+                label: str = "", timeout_ms: int | None = None) -> None:
+        """이동을 시작한다. 이미 이동 중이면 지금 위치에서 새 목표로 간다(제한 시간은 안 쓴다)."""
         self._from = self._position
         self._target = float(target)
         self._elapsed_ms = 0
@@ -171,8 +171,12 @@ class SwitchableMotion(QObject):
     def moving(self) -> bool:
         return self.backend.moving
 
-    def move_to(self, target, unit: str = "", label: str = "") -> None:
-        self.backend.move_to(target, unit, label=label)
+    def move_to(self, target, unit: str = "", label: str = "",
+                timeout_ms: int | None = None) -> None:
+        if timeout_ms:
+            self.backend.move_to(target, unit, label=label, timeout_ms=timeout_ms)
+        else:
+            self.backend.move_to(target, unit, label=label)
 
     def cancel(self) -> None:
         self.backend.cancel()

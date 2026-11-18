@@ -119,6 +119,9 @@ class RobotControlNode(Node):
         self.pub_joint_position = self.create_publisher(
             Float32MultiArray, 'robot/status/joint_position', 10)
         self.pub_alarm = self.create_publisher(String, 'robot/status/alarms', 10)
+        # 로봇 안전정지(보호 정지 · 안전 IO 정지 — 비상정지와 다르다, 2026-11-17). 차량이 움직이는
+        # 동안 PLC 가 걸고, 차량이 서면 안전재설정으로 푼다. 1 = 안전정지 중. 바뀔 때 · 주기마다 낸다.
+        self.pub_safety_stop = self.create_publisher(Int32, 'robot/status/safety_stop', 10)
         self.pub_connected = self.create_publisher(Bool, 'robot/status/connected', 10)
         # 로봇 태스크가 쓰는 스캔 진행 상태(290~298). 운영 UI의 격자 순회가
         # 이 값으로 한 셀의 완료(state==5 && finished==1)를 판정한다.
@@ -142,6 +145,10 @@ class RobotControlNode(Node):
         # 디지털 입출력 비트묶음(레지스터 0 = 표준 DI, 2 = 표준 DO).
         # 한 레지스터가 16비트고 비트 0 부터 IO 번호에 대응한다.
         self.pub_digital_in = self.create_publisher(Int32, 'robot/status/digital_in', 10)
+        # 레지스터 1 = Config 입력 + 툴 입력(xxxxTTTTCCCCCCCC). 비트 0~3 CI0 · CI1 안전정지 · CI2 · CI3
+        # 안전재설정, 비트 8~10 툴 입력 T0 5축 홀더 밀착 · T1 8축 홀더 밀착 · T2 밀착 리미트(2026-11-17).
+        self.pub_config_digital_in = self.create_publisher(
+            Int32, 'robot/status/config_digital_in', 10)
         self.pub_digital_out = self.create_publisher(Int32, 'robot/status/digital_out', 10)
         # 3점 측정 결과(300~305)와 접촉 자세(330~355). ERUT 캘리브레이션이
         # 이 값으로 실제 벽 반지름을 재 오차를 계산한다.
@@ -231,8 +238,8 @@ class RobotControlNode(Node):
         # 마킹 끝(278). 로봇은 마킹 자리(290 = 11)에서 이 값이 1 이 될 때까지 선다.
         self.create_subscription(Int32, 'robot/command/mark_go', self.cb_mark_go, 10)
         # 디지털 출력 한 개 켜고 끄기: [번호, 값]. 번호는 표준 DO 0~15,
-        # 값은 0 또는 1 이다. 물 분사 밸브·마킹기처럼 로봇 출력에 붙는
-        # 장치를 화면에서 손으로 확인할 때 쓴다.
+        # 값은 0 또는 1 이다. 로봇 출력에 붙는 장치를 화면에서 손으로
+        # 확인할 때 쓴다(물 분사 · 마킹기는 ERUT 장비라 여기 붙지 않는다).
         self.create_subscription(
             Int32MultiArray, 'robot/command/digital_out', self.cb_digital_out, 10)
         # 태스크 바꿔 끼우기. 마킹은 스캔과 다른 태스크라 29999 로 불러온다.
@@ -407,12 +414,15 @@ class RobotControlNode(Node):
         self.publish_code('home_flag', self.pub_home_flag)
         self.publish_code('speed_scale', self.pub_speed_scale)
         self.publish_code('digital_in', self.pub_digital_in)
+        self.publish_code('config_digital_in', self.pub_config_digital_in)
         self.publish_code('digital_out', self.pub_digital_out)
         self.publish_raw('probe_result', self.pub_probe_result)
         self.publish_raw('probe_poses', self.pub_probe_poses)
 
-        # 30001 포트 비동기 백그라운드 실시간 알람 스트림 처리
-        self.robot_primary.get_data()
+        # 30001 포트 비동기 백그라운드 실시간 알람 스트림 처리. 상태 묶음이 오면 안전정지를 본다.
+        data = self.robot_primary.get_data()
+        if data is not None:
+            self._publish_safety_stop(data)
         while not self.robot_primary.alarm_queue.empty():
             alarm = self.robot_primary.alarm_queue.get()
             if self.alarm_mgr.process(alarm):
@@ -420,6 +430,18 @@ class RobotControlNode(Node):
                 alarm_msg.data = (f"[ALARM] {alarm.msg}" if alarm.msg
                                   else f"[ALARM CODE] E{alarm.code} S{alarm.sub}")
                 self.pub_alarm.publish(alarm_msg)
+
+    #: 30001 safety_mode 에서 안전정지로 보는 값 — 3 PROTECTIVE_STOP · 5 SAFEGUARD_STOP ·
+    #: 12 AUTOMATIC_MODE_SAFEGUARD_STOP (Elite safety_mode 표로 확인, 2026-11-17).
+    SAFETY_STOP_MODES = (3, 5, 12)
+
+    def _publish_safety_stop(self, data):
+        """로봇이 안전정지 중인가(보호 정지 플래그 또는 safety_mode) — robot/status/safety_stop."""
+        protective = bool(getattr(data, 'is_robot_protective_stopped', False))
+        mode = getattr(data, 'safety_mode', None)
+        stopped = protective or (mode in self.SAFETY_STOP_MODES)
+        self._safety_stop = stopped
+        self.pub_safety_stop.publish(Int32(data=1 if stopped else 0))
 
     def _link_lost(self):
         """로봇 응답이 끊겼다. 연결 끊김을 알리고 소켓을 정리한다(재연결은 배경 스레드)."""

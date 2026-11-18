@@ -69,7 +69,7 @@ def mk_press():
   far = pose_trans(x_home, [0, 0, seek_limit * 0.001, 0, 0, 0])
   mv_h = start_thread(mk_rush, (far,), detach_mode = False)
   while (True):
-    if (get_standard_digital_in(di_touch) or get_standard_digital_in(di_limit)):
+    if (get_tool_digital(di_touch) or get_tool_digital(di_limit)):
       stop_thread(mv_h)
       stopl(1.2)
       break
@@ -82,18 +82,18 @@ def mk_press():
     sync()
   end
   tries = 0
-  while (get_standard_digital_in(di_limit) and tries < seek_tries):
+  while (get_tool_digital(di_limit) and tries < seek_tries):
     tries = tries + 1
     mk_step(seek_step)
     sync()
   end
   tries = 0
-  while (get_standard_digital_in(di_touch) == False and tries < seek_tries):
+  while (get_tool_digital(di_touch) == False and tries < seek_tries):
     tries = tries + 1
     mk_step(-seek_step)
     sync()
   end
-  if (get_standard_digital_in(di_touch)):
+  if (get_tool_digital(di_touch)):
     n_hit = n_hit + 1
     return True
   end

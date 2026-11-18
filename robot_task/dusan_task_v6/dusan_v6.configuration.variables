@@ -14,8 +14,8 @@
   <Variable name="spd_in" value="100" remarks="작업 속도 입력 [mm/s] (입력레지스터 306). 0이면 v_l 유지" favorite="false"/>
   <Variable name="spd_ratio" value="100" remarks="로봇 자체 속도 비율 [%] 2~100 (입력레지스터 307)" favorite="false"/>
   <Variable name="param_src" value="0" remarks="0=이 변수값 사용, 1=Modbus 256~259 사용 (레지스터 266)" favorite="false"/>
-  <Variable name="di_touch" value="0" remarks="중앙 접촉 센서 1차 — ON 이면 적정 눌림 위치" favorite="false"/>
-  <Variable name="di_limit" value="1" remarks="중앙 접촉 센서 2차 — ON 이면 눌림 한계. TCP -Z 로 후퇴한다" favorite="false"/>
+  <Variable name="di_touch" value="0" remarks="[계산값 · v6] 밀착 감지 = 툴 디지털 입력 번호. dus6_init 이 장착 홀더로 고른다 — 5축 홀더 0, 8축 홀더 1(노그리퍼는 0). ON 이면 적정 눌림 위치(2026-11-12 부터 표준 DI 가 아니라 툴 I/O)" favorite="false"/>
+  <Variable name="di_limit" value="2" remarks="[계산값 · v6] 밀착 리미트 감지 = 툴 디지털 입력 2. ON 이면 눌림 한계 — TCP -Z 로 후퇴한다(2026-11-12 부터 표준 DI 가 아니라 툴 I/O)" favorite="false"/>
   <Variable name="app_radius" value="70" remarks="도면 반지름(안쪽 면) [mm]. 레지스터 260 을 0.1mm 로 받고, dus6_init 이 두께를 더해 훑는 면 반지름으로 바꾼다. 시험 벽 기준(MQTT 시뮬레이터·RCS 샘플과 동일) — 충돌 여유 700mm 현 계산도 이 반지름 기준" favorite="false"/>
   <Variable name="scan_radius" value="70" remarks="로봇이 실제로 훑는 바깥면의 반지름 [mm] = app_radius + app_thick. dus6_init 이 매번 다시 계산한다. app_radius(도면 안쪽 반지름)에 두께를 덮어쓰면 dus6_init 이 반복 실행될 때마다 두께가 또 더해져 값이 계속 커진다 — 그래서 따로 둔다" favorite="false"/>
   <Variable name="app_thick" value="0" remarks="제품 두께 [mm]. 레지스터 261 을 0.1mm 단위로 받는다. UT 기록용" favorite="false"/>

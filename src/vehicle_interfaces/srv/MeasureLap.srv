@@ -1,0 +1,15 @@
+# 캘리브레이션 주행 (2026-11-17 · 2026-11-18 mode 추가). 모재 모양에 따라 두 가지다.
+#   LAP   (원통) 원점(QR)에서 출발해 모재를 한 바퀴 돌고 원점(QR)에 선다.
+#   ALIGN (곡판) 한 바퀴 돌지 않는다 — 원점 QR 마커에 맞춰 정렬만 하고 선다(차량은 QR 앞에 놓여 있다).
+# 진행 · 결과는 두 경우 모두 RobotStatus 의 lap_state · lap_path_m · lap_origin_ok · lap_error 로 낸다.
+# 일시정지 · 재개는 RobotControl(PAUSED · RUNNING), 그만두기는 RobotControl(STOP) → lap_state FAILED.
+# Request
+string job_id            # 작업 식별자 (RobotStatus.job_id 로 돌려준다)
+string mode              # "LAP" (원통 한 바퀴) | "ALIGN" (곡판 QR 정렬만). 빈 글자 = LAP
+float64 speed            # 목표 속도 [m/s] — RCS 차량 설정 「차량 주행 속도」(ALIGN 은 정렬 움직임의 상한)
+float64 standoff         # 거리 유지 [m] — 차량 안쪽 면 ↔ 모재 표면 (ALIGN 도 이 거리로 맞춰 선다)
+float64 expected_dist    # LAP: RCS 가 계산한 한 바퀴 거리 [m] = 2π(모재 반지름 + 거리 유지 + 차량 폭/2). 안전 한도 · 참고용. ALIGN: 0
+---
+# Response
+bool success             # 받아들였다(출발은 바로 한다)
+string message           # 결과 또는 거절 까닭

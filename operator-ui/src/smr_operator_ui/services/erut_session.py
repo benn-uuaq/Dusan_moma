@@ -9,7 +9,8 @@
 
     query     → res 200 (activity·resumable·calibrated·errors[]·last_job …)
     calibrate → res 202 → evt/complete (origin, calibration_error_mm, total_length_mm)
-                **차량(AGV) 캘리브레이션**: 모재 외벽을 따라 한 바퀴 돌며 좌표계(맵)를 잡는다
+                **차량(AGV) 캘리브레이션**: 원통은 모재 외벽을 따라 한 바퀴 돌며 좌표계(맵)를
+                잡고, 곡판은 한 바퀴 돌지 않고 판 왼쪽 끝의 QR 마커에 정렬만 한다(2026-11-18)
     prepare   → res 202 → evt/ready  (작업 값만 확인해 둔다 — 아무것도 움직이지 않는다)
     start     → res 202 → 차량 이동 → 아웃트리거 고정 → 리프트 → 로봇 3점 측정 →
                 시작점에 붙음 → evt/contact attached → 적심 → ㄹ자 스캔 →
@@ -23,6 +24,10 @@
 상시 발행: evt/status(5초 + 바뀌면 바로) · evt/contact(2초 + 바뀌면 바로) ·
 evt/home(접속 시 + 바뀔 때만) · evt/info(접속 시) · evt/progress(작업 중 2초) ·
 evt/motion(구역 검사 중 방향이 바뀔 때 움직이기 전에 — if-0.11, 로봇 스캔 구간 277).
+
+if-0.13: 모재 모양 · 크기는 geometry{shape, diameter, height, width} 묶음으로 온다(맨 바깥
+diameter · height 는 없다). 모양은 cylinder(원통) · curved_plate(곡판) 둘 다 받는다 —
+evt/info shapes 로 알린다. 요청 자체 검사(400 → 501)를 원점 판정(409 E6104)보다 먼저 한다(R-17).
 
 if-0.11: 속도는 scan.speed_pct(%) · scan.speed_mm_s(mm/s) 두 칸으로 오고 로봇은
 speed_pct 를 쓴다(없으면 mm/s 를 100 mm/s = 100 % 로). holder.channel_count 는 형식만
@@ -50,11 +55,11 @@ from smr_operator_ui.services.job_sequencer import (
 )
 
 # ---- 자기소개 (탭8 evt/info) ------------------------------------------------
-INTERFACE_VERSION = "0.12"
+INTERFACE_VERSION = "0.13"
 VENDOR = "3S"
 MODEL = "SMR-UT-CS612"
 DEVICE_TYPE = "articulated_arm"
-#: 지원하는 기능. battery·charging 은 차량 자료가 오면 넣는다(TODO).
+#: 지원하는 기능. battery · charging 은 차량이 배터리를 알려 줄 때만 더한다(_info_content).
 #: 마킹은 마커가 ERUT 것이라 marking 이 아니라 mark_positioning 이다(탭2 초안).
 #: home(if-0.5): 이동 안전 자세를 evt/home 으로 알린다 — 3S 가 요청한 기능.
 #: motion_direction(if-0.11): 구역 검사 중 움직이기 전에 방향을 evt/motion 으로 알린다.
@@ -63,6 +68,15 @@ CAPABILITIES = (
     "probe_contact", "mark_positioning", "position_feedback", "home",
     "motion_direction",
 )
+
+#: 받는 모재 모양(evt/info shapes · geometry.shape, if-0.13). 없는 모양은 501 E6501 이다.
+#: 곡판은 원기둥에서 세로로 잘라낸 한 조각 — 로봇은 원통과 같은 곡률로 훑고, 차량은 한 바퀴
+#: 대신 QR 정렬만 한다(2026-11-18). x 는 0(판 왼쪽 끝) ~ width 이고 감기지 않는다.
+SHAPE_CYLINDER = "cylinder"
+SHAPE_PLATE = "curved_plate"
+SHAPES = (SHAPE_CYLINDER, SHAPE_PLATE)
+#: 화면 · 작업 알림에 쓰는 모양 이름.
+SHAPE_NAMES = {SHAPE_CYLINDER: "원통", SHAPE_PLATE: "곡판"}
 
 #: 합의한 검사면. 모르는 surface 는 400 으로 거절한다(탭4 E-1 11번) — 짐작으로
 #: 다른 면을 검사하면 보고서에는 요청한 면으로 적힌다.
@@ -111,7 +125,8 @@ _SEQ_IDLE = (SequencerState.IDLE, SequencerState.DONE, SequencerState.STOPPED)
 _WORKING_ACTIVITIES = frozenset({"calibrating", "preparing", "running", "marking", "paused"})
 #: prepare · start 의 모재 지름이 원점을 잡을 때 받은 지름과 이만큼 넘게 다르면 지금
 #: 원점으로는 할 수 없다 — 409 E6104 [mm]. 원점(좌표계)은 차량이 바깥 둘레를 따라
-#: 한 바퀴 돌아 잡으므로 지름에만 기댄다. 높이는 견주지 않는다(if-0.10 탭11 Q-32).
+#: 한 바퀴 돌아(곡판은 QR 에 정렬해) 잡으므로 모양과 지름에만 기댄다. 높이 · 판 가로는
+#: 견주지 않는다(if-0.10 탭11 Q-32 · if-0.13 — 모양이 다르면 E6104).
 ORIGIN_DIAMETER_TOLERANCE_MM = 1.0
 
 #: 로봇이 동작 중이라 홈 요청을 받을 수 없을 때 보여 주는 문장.
@@ -150,6 +165,35 @@ def _mm(value: Any) -> float:
         return 0.0
 
 
+def describe_geometry(geometry: dict) -> str:
+    """작업자에게 보여 줄 모재 한 줄 — 「원통 지름 1690 mm · 높이 6000 mm」."""
+    shape = geometry.get("shape", "")
+    text = (f"{SHAPE_NAMES.get(shape, shape)} 지름 {float(geometry.get('diameter', 0)):g} mm · "
+            f"높이 {float(geometry.get('height', 0)):g} mm")
+    if shape == SHAPE_PLATE:
+        text += f" · 판 가로 {float(geometry.get('width', 0)):g} mm"
+    return text
+
+
+def outside_material(plan: GridPlan, geometry: dict) -> str:
+    """구역이 모재 밖이면 그 까닭, 안이면 "" (if-0.13 「모재 밖 구역」 — 400 E6001).
+
+    원통 · 곡판 모두 y 는 0 ~ height, 곡판은 x 도 0 ~ width(감기지 않는다). 원통의 x 범위
+    (둘레)는 원점에 기대는 검사라 `_fits_origin` 이 원점 판정 뒤에 본다.
+    """
+    y0, y1 = plan.origin_y, plan.origin_y + plan.cell_height
+    height = float(geometry.get("height") or 0.0)
+    if y0 < 0 or (height > 0 and y1 > height + 1e-6):
+        return (f"모재 밖 구역 — y {y0:g}~{y1:g} mm 는 모재 높이 0~{height:g} mm 안이어야 합니다")
+    if geometry.get("shape") == SHAPE_PLATE:
+        x0, x1 = plan.origin_x, plan.origin_x + plan.cell_width
+        width = float(geometry.get("width") or 0.0)
+        if x0 < 0 or x1 > width + 1e-6:
+            return (f"모재 밖 구역 — 곡판 x {x0:g}~{x1:g} mm 는 판 가로 0~{width:g} mm 안이어야 "
+                    "합니다(감기지 않습니다)")
+    return ""
+
+
 class ErutSession(QObject):
     """ERUT 요청을 받아 로봇·차량을 움직이고 표준대로 답한다."""
 
@@ -168,8 +212,9 @@ class ErutSession(QObject):
     abort_requested = pyqtSignal()
     #: 초기화(reset)를 받아들였다(일하는 중이라 그대로 둔 때는 안 낸다, 2026-11-12).
     reset_requested = pyqtSignal()
-    #: 받은 구역의 모재 지름 · 높이 [mm] (prepare · start, 실려 왔을 때만 — 2026-11-12).
-    target_reported = pyqtSignal(float, float)
+    #: 받은 구역의 모재 geometry {shape, diameter, height[, width]} [mm] (prepare · start, 실려
+    #: 왔을 때만 — 2026-11-12, if-0.13 묶음).
+    target_reported = pyqtSignal(dict)
     speed_requested = pyqtSignal(int)
     # ERUT 가 실어 보낸 홀더 장착 채널 수(holder.channel_count, if-0.11). 이동에는
     # 쓰지 않는다 — app.py 가 RCS 의 장착 EOAT 와 견줘 다르면 작업자에게 알린다.
@@ -192,8 +237,9 @@ class ErutSession(QObject):
     mark_resume_requested = pyqtSignal()
     # 로봇을 홈으로 보내 달라는 요청. 로봇이 쉬고 있을 때만 나간다.
     home_requested = pyqtSignal()
-    # 모재 기준 좌표계를 잡아 달라는 요청 (지름 mm, 높이 mm) — 차량이 한 바퀴 돈다.
-    calibration_requested = pyqtSignal(float, float)
+    # 모재 기준 좌표계를 잡아 달라는 요청 — geometry {shape, diameter, height[, width]} [mm].
+    # 원통은 차량이 한 바퀴 돌고, 곡판은 QR 에 정렬만 한다(2026-11-18).
+    calibration_requested = pyqtSignal(dict)
     # 캘리브레이션 주행을 멈추라 / 이어 가라(일시정지·재개).
     calibration_stop_requested = pyqtSignal()
     calibration_resume_requested = pyqtSignal()
@@ -221,10 +267,12 @@ class ErutSession(QObject):
         self._start_req_id = ""
         self._started_at = 0.0
         self._calibrate_req_id = ""
-        self._calibrate_target = (0.0, 0.0)
-        # 지금 원점을 잡을 때 받은 모재 크기 (지름, 높이) [mm]. prepare · start 의
-        # diameter 와 견준다(if-0.10 — 다르면 409 E6104).
-        self._calibrated_size = (0.0, 0.0)
+        self._calibrate_target: dict = {}
+        # RCS 「계측 시작」으로 돌리는 캘리브레이션(ERUT 가 시킨 일이 아니다, 2026-11-12).
+        self._local_calibration = False
+        # 지금 원점을 잡을 때 받은 geometry {shape, diameter, height[, width]} [mm]. prepare ·
+        # start 의 geometry 와 견준다(모양 · 지름이 다르면 409 E6104).
+        self._calibrated_geometry: dict = {}
         # abort 를 받고 장비가 다 서기를 기다리는 중 — 그동안 activity 는 running,
         # 다 서면 idle(if-0.10 탭11 Q-35 — idle 은 「다 섰다」는 신호다).
         self._stopping = False
@@ -270,6 +318,11 @@ class ErutSession(QObject):
         # 펴진 자세에서 home 까지 가장 오래 걸릴 때 [ms] (evt/info timings.home_within_ms).
         # 0 이면 싣지 않는다(ERUT 는 30초를 쓴다).
         self.home_within_ms: Callable[[], int] = lambda: 0
+        # 캘리브레이션이 가장 오래 걸릴 때 [ms] (evt/info timings.complete_within_ms.calibrate). 0 이면
+        # 싣지 않는다 — ERUT 기본 5 분(2026-11-12, RCS 차량 설정 「캘리브레이션 최대 시간」).
+        self.calibrate_within_ms: Callable[[], int] = lambda: 0
+        # 차량 배터리 {"battery": %, "charging": bool} — 모르면 빈 사전(칸을 싣지 않는다, 2026-11-17).
+        self.battery_state: Callable[[], dict] = dict
         # reset 으로 팔을 거둘 수 있는 때인가(돌거나 멈춰 둔 작업이 없고 로봇이 붙어 있다).
         self.can_fold: Callable[[], bool] = lambda: False
         # 마킹 ②: 지금 자리에서 마킹을 기다리는 점 id (없으면 빈 문자열).
@@ -348,7 +401,10 @@ class ErutSession(QObject):
         content: dict[str, Any] = {
             "interface_version": INTERFACE_VERSION,
             "vendor": VENDOR, "model": MODEL, "device_type": DEVICE_TYPE,
-            "capabilities": list(CAPABILITIES),
+            "capabilities": list(CAPABILITIES) + (
+                ["battery", "charging"] if self.battery_state() else []),
+            # 받는 모재 모양(if-0.13 필수) — 없으면 브릿지가 [시작]을 막는다.
+            "shapes": list(SHAPES),
             "timings": {
                 "progress_interval_ms": PROGRESS_PERIOD_MS,
                 "stop_latency_ms": STOP_LATENCY_MS,
@@ -359,6 +415,10 @@ class ErutSession(QObject):
         if home_ms > 0:
             # 이동 명령 전에 ERUT 가 home 을 기다리는 시간(if-0.7 탭8 69행).
             content["timings"]["home_within_ms"] = home_ms
+        calibrate_ms = int(self.calibrate_within_ms() or 0)
+        if calibrate_ms > 0:
+            # 캘리브레이션 완료를 기다릴 시간(if-0.12 탭8 52행) — 지나면 ERUT 가 query 로 묻는다.
+            content["timings"]["complete_within_ms"] = {"calibrate": calibrate_ms}
         limit = self._area_limit()
         if limit:
             content["area_limit"] = limit
@@ -398,7 +458,7 @@ class ErutSession(QObject):
     def publish_status(self) -> None:
         """장치 상태 (탭2 11행). 모든 칸이 맨 바깥이다.
 
-        battery·charging 은 싣지 않는다 — 차량 자료가 아직 없다(TODO). 규격은
+        battery · charging 은 차량이 알려 줄 때만 싣는다(2026-11-17). 규격은
         배터리가 없는 장비는 칸을 빼라고 한다(0 으로 채우면 시작을 영영 못 한다).
         홈 자세는 if-0.5 부터 따로 `evt/home` 으로 낸다(예전 at_home 칸은 뺐다).
         """
@@ -407,7 +467,7 @@ class ErutSession(QObject):
         activity, calibrated, job_id = sig
         self.client.publish_status(
             "online", activity=activity, calibrated=calibrated,
-            job_id=job_id or None)
+            job_id=job_id or None, **self.battery_state())
 
     def refresh_status(self) -> None:
         """값이 바뀌었으면 주기를 기다리지 않고 바로 낸다(탭2 11·14행)."""
@@ -440,13 +500,14 @@ class ErutSession(QObject):
             self.publish_home()
 
     def set_contact(self, attached: bool) -> None:
-        """탐촉자가 검사면에 붙었는가. 바뀌면 바로 알린다(탭2 12행).
+        """탐촉자가 검사면에 붙었는가. 바뀌면 바로 알린다(evt/contact).
 
-        ERUT 가 시킨 구간(prepare·start) 안에서만 attached 로 알린다 — ERUT 는 이
-        신호로 물을 켠다. 캘리브레이션의 3점 측정이나 RCS 단독 작업 중에 벽에
-        닿는 것은 ERUT 의 검사가 아니다.
+        if-0.13: RCS 단독 작업 · 수동 조작처럼 로봇 주도로 움직일 때도 닿음 · 떨어짐을
+        알린다 — 그때는 job_id 를 빼므로 브릿지는 물을 켜지 않는다. job_id 는 ERUT 가 맡긴
+        구역을 검사하는 동안(start 를 받은 뒤)만 싣는다(_publish_contact). 언제 붙었다고
+        치는지(3점 측정 뒤 시작점 대기 · 스캔)는 app.py 가 로봇 상태로 정한다.
         """
-        attached = bool(attached) and bool(self._prepare_req_id or self._start_req_id)
+        attached = bool(attached)
         if attached == self._contact:
             return
         self._contact = attached
@@ -456,8 +517,10 @@ class ErutSession(QObject):
     def _publish_contact(self) -> None:
         if self._contact is None:
             return
-        self.client.publish_contact(
-            "attached" if self._contact else "detached", self._job_id)
+        # job_id 는 그 구역의 req/start 를 받은 뒤에만(if-0.13 A1) — prepare 만 받은 때 ·
+        # RCS 단독 작업 · 수동 조작에는 칸을 뺀다(빈 글자 금지, Q-41).
+        job_id = self._job_id if self._start_req_id else ""
+        self.client.publish_contact("attached" if self._contact else "detached", job_id)
 
     # ------------------------------------------------------------ 이동 방향
     #: 로봇 태스크의 스캔 구간(레지스터 277 — TPAC 동기 신호와 같은 값) → 구역 좌표의
@@ -515,7 +578,7 @@ class ErutSession(QObject):
             if self._paused_work == "calibrate":
                 return "calibrating"
             return _ACTIVITY_MAP.get(self.sequencer.resume_state, "running")
-        if self._calibrate_req_id:
+        if self._calibrate_req_id or self._local_calibration:
             return "calibrating"
         if self._is_ready():
             return "ready"
@@ -680,32 +743,36 @@ class ErutSession(QObject):
             return True
         return False
 
-    def _needs_calibration(self, req_id: str, action: str, content: dict | None = None) -> bool:
+    def _needs_calibration(self, req_id: str, action: str, geometry: dict | None = None) -> bool:
         """지금 원점으로 이 요청을 할 수 없으면 409 E6104 로 거절하고 True (탭4 D-4).
 
-        원점이 없거나(calibrated=false), 요청의 모재 지름이 원점을 잡을 때와 다를 때다
-        (if-0.10 탭5 157행 · 탭11 Q-32). 장비는 스스로 원점을 다시 잡지 않는다 —
-        브릿지가 이번 크기로 calibrate 를 보낸다. 지름 칸이 없는 요청(손으로 쓴 요청 ·
-        옛 브릿지)은 견주지 않는다. 둘레 범위 같은 원점 기준 검사보다 먼저 부른다.
+        원점이 없거나(calibrated=false), 요청의 모재 모양 · 지름이 원점을 잡을 때와 다를 때다
+        (if-0.10 탭11 Q-32 · if-0.13). 장비는 스스로 원점을 다시 잡지 않는다 — 브릿지가
+        이번 geometry 로 calibrate 를 보낸다. geometry 가 없는 요청은 견주지 않는다.
+        요청 자체 검사(400 · 501) 뒤, 둘레 범위 같은 원점 기준 검사 앞에 부른다(R-17).
         """
         if not self._calibrated:
             self._refuse(req_id, action, E.CALIBRATION_REQUIRED, "원점을 먼저 잡아야 합니다")
             self.activity.emit(
                 f"ERUT {action} 거절 — 캘리브레이션이 무효합니다(E6104). 재캘리브레이션이 필요합니다.")
             return True
-        mismatch = self._origin_mismatch(content or {})
+        mismatch = self._origin_mismatch(geometry)
         if not mismatch:
             return False
         self._refuse(req_id, action, E.CALIBRATION_REQUIRED, mismatch)
         self.activity.emit(f"ERUT {action} 거절(E6104) — {mismatch}. 원점을 다시 잡아야 합니다.")
         return True
 
-    def _origin_mismatch(self, content: dict) -> str:
-        """요청의 모재 지름이 원점을 잡을 때와 다르면 그 설명. 같거나 칸이 없으면 ""."""
-        if content.get("diameter") is None:
+    def _origin_mismatch(self, geometry: dict | None) -> str:
+        """요청의 모재 모양 · 지름이 원점을 잡을 때와 다르면 그 설명. 같거나 geometry 가 없으면 ""."""
+        if not geometry:
             return ""
-        diameter = _mm(content.get("diameter"))
-        origin = float(self._calibrated_size[0] or 0.0)
+        origin_shape = self._calibrated_geometry.get("shape")
+        if origin_shape and geometry["shape"] != origin_shape:
+            return (f"모재 모양 {SHAPE_NAMES.get(geometry['shape'], geometry['shape'])} 이(가) 원점을 잡을 때의 "
+                    f"{SHAPE_NAMES.get(origin_shape, origin_shape)} 와 다릅니다")
+        diameter = float(geometry["diameter"])
+        origin = float(self._calibrated_geometry.get("diameter") or 0.0)
         if diameter <= 0 or origin <= 0:
             return ""
         if abs(diameter - origin) <= ORIGIN_DIAMETER_TOLERANCE_MM:
@@ -758,7 +825,8 @@ class ErutSession(QObject):
             extra["errors"] = [dict(e) for e in self._errors.values()]
         if self._last_job:
             extra["last_job"] = dict(self._last_job)
-        # battery·charging: 차량 자료가 오면 넣는다(TODO — docs/todo.md).
+        # battery · charging — 차량이 알려 줄 때만(2026-11-17).
+        extra.update(self.battery_state())
         # query 는 재실행 금지 대상이 아니라 기록하지 않는다(늘 지금 상태로 답한다).
         self.client.publish_res(req_id, "query", 200, **extra)
 
@@ -766,27 +834,67 @@ class ErutSession(QObject):
     def _do_calibrate(self, req_id: str, content: dict) -> None:
         """모재 기준 좌표계 수립 (탭1 · 탭3 ②) — **차량(AGV) 캘리브레이션**이다.
 
-        원형 모재 정보(지름·높이)를 받아, 차량이 외벽을 따라 붙어 한 바퀴 돌며
-        좌표계(맵)를 잡는다. 검사 시작 전 1회, 자리를 옮겼다 돌아왔을 때 다시
-        한다. 로봇의 3점 측정은 여기가 아니라 구간 검사(start) 안에서 한다.
-        차량이 움직이므로 로봇은 홈(이동 안전 자세)에 있어야 한다.
+        geometry(모재 모양 · 크기, if-0.13 필수)를 받아 좌표계(맵)를 잡는다. 원통은 차량이
+        외벽을 따라 붙어 한 바퀴 돌고, 곡판은 한 바퀴 돌지 않고 판 왼쪽 끝의 원점 QR 마커에
+        정렬만 한다(2026-11-18). 검사 시작 전 1회, 자리를 옮겼다 돌아왔을 때 다시 한다.
+        로봇의 3점 측정은 여기가 아니라 구간 검사(start) 안에서 한다. 차량이 움직이므로
+        로봇은 홈(이동 안전 자세)에 있어야 한다. 검사 순서는 400 → 501 → 409(R-17).
         """
-        diameter = _mm(content.get("diameter"))
-        height = _mm(content.get("height"))
-        if diameter <= 0:
-            self._refuse(req_id, "calibrate", E.BAD_REQUEST, "diameter 가 없거나 0 입니다")
+        geometry, code, reason = self._read_geometry(content, required=True)
+        if code:
+            self._refuse(req_id, "calibrate", code, reason)
             return
         if self._refuse_by_state(req_id, "calibrate"):
             return
         self._drop_prepared()
         self._calibrate_req_id = req_id
-        self._calibrate_target = (diameter, height)
+        self._calibrate_target = dict(geometry)
         self._calibrated = False
         self._answer(req_id, "calibrate", 202)
-        self.activity.emit(
-            f"ERUT 캘리브레이션 — 모재 지름 {diameter:g} mm, 높이 {height:g} mm "
-            "— 차량이 외벽을 따라 한 바퀴 돌며 좌표계를 잡습니다.")
-        self.calibration_requested.emit(diameter, height)
+        self.activity.emit(f"ERUT 캘리브레이션 — {describe_geometry(geometry)} — " + (
+            "차량이 원점 QR 마커에 정렬합니다(한 바퀴 돌지 않습니다)."
+            if geometry["shape"] == SHAPE_PLATE
+            else "차량이 외벽을 따라 한 바퀴 돌며 좌표계를 잡습니다."))
+        self.calibration_requested.emit(dict(geometry))
+
+    def begin_local_calibration(self) -> None:
+        """RCS 「계측 시작」 — ERUT 에는 calibrating 으로 보이고, 끝날 때까지 이동 명령을 409 로 받지 않는다.
+
+        ERUT 가 시킨 일이 아니라 evt/complete 는 내지 않고, ERUT 의 원점(calibrated)도 바꾸지 않는다.
+        """
+        self._local_calibration = True
+        self.refresh_status()
+
+    def end_local_calibration(self) -> None:
+        if self._local_calibration:
+            self._local_calibration = False
+            self.refresh_status()
+
+    @property
+    def local_calibrating(self) -> bool:
+        return self._local_calibration
+
+    def pause_calibration_locally(self) -> bool:
+        """RCS 「일시정지」로 ERUT 캘리브레이션 주행을 세웠다 — ERUT 에는 paused 로 보인다.
+
+        ERUT pause 와 같은 상태라 ERUT 의 resume 로도, RCS 「재개」로도 잇는다(2026-11-12).
+        """
+        if self._calibrate_req_id and not self._paused_work:
+            self._paused_work = "calibrate"
+            self.refresh_status()
+            return True
+        return False
+
+    def resume_calibration_locally(self) -> bool:
+        if self._paused_work == "calibrate":
+            self._paused_work = ""
+            self.refresh_status()
+            return True
+        return False
+
+    @property
+    def calibration_paused(self) -> bool:
+        return self._paused_work == "calibrate"
 
     def finish_calibration(self, ok: bool, error_mm: float = 0.0,
                            detail: str = "", total_length_mm: float | None = None) -> None:
@@ -808,7 +916,7 @@ class ErutSession(QObject):
             self.refresh_status()
             return
         self._calibrated = True
-        self._calibrated_size = tuple(self._calibrate_target)
+        self._calibrated_geometry = dict(self._calibrate_target)
         extra: dict[str, Any] = {
             # 좌표계의 원점이므로 그 자신은 (0, 0) 이다(탭5 x·y 정의).
             "origin": {"x": 0, "y": 0},
@@ -835,18 +943,19 @@ class ErutSession(QObject):
         바로 evt/ready 를 낸다(activity ready). start 를 받으면 그때 차량 이동 →
         아웃트리거 고정 → 리프트 → 로봇 순으로 간다.
         """
-        plan = self._parsed_plan(req_id, "prepare", content)
-        if plan is None:
+        parsed = self._parsed_plan(req_id, "prepare", content)
+        if parsed is None:
             return
+        plan, geometry = parsed
         if self._refuse_by_state(req_id, "prepare"):
             return
-        # 원점 판정(E6104)이 둘레 범위 · 구역 한계 같은 원점 기준 검사보다 먼저다(if-0.10).
-        if self._needs_calibration(req_id, "prepare", content):
+        # 요청 자체 검사(400 · 501) 뒤, 둘레 범위 · 구역 한계 같은 원점 기준 검사 앞(R-17).
+        if self._needs_calibration(req_id, "prepare", geometry):
             return
-        if not self._fits_origin(req_id, "prepare", plan):
+        if not self._fits_origin(req_id, "prepare", plan, geometry):
             return
         self._drop_prepared()
-        self._begin_job(content, plan)
+        self._begin_job(content, plan, geometry)
         self._prepare_req_id = req_id
         self._prepared = True
         self._answer(req_id, "prepare", 202)
@@ -870,17 +979,19 @@ class ErutSession(QObject):
         job_id = str(content.get("job_id", "")).strip()
         same = self._prepared and (not job_id or job_id == self._job_id)
         reuse = same and not content.get("area")
+        geometry = None
         if reuse:
             plan = self._plan
         else:
-            plan = self._parsed_plan(req_id, "start", content)
-            if plan is None:
+            parsed = self._parsed_plan(req_id, "start", content)
+            if parsed is None:
                 return
+            plan, geometry = parsed
         if self._refuse_by_state(req_id, "start"):
             return
-        if self._needs_calibration(req_id, "start", content):
+        if self._needs_calibration(req_id, "start", geometry):
             return
-        if not reuse and not self._fits_origin(req_id, "start", plan):
+        if not reuse and not self._fits_origin(req_id, "start", plan, geometry):
             return
         if same:
             self._plan = plan
@@ -889,7 +1000,7 @@ class ErutSession(QObject):
             self._prepared = False
         else:
             self._drop_prepared()
-            self._begin_job(content, plan)
+            self._begin_job(content, plan, geometry)
         self._start_req_id = req_id
         self._started_at = time.time()
         self._progress = 0
@@ -898,7 +1009,7 @@ class ErutSession(QObject):
         self.activity.emit(f"ERUT 구간 검사 시작 ({self._job_id}) — 차량 이동부터")
         self.job_requested.emit(plan, False)
 
-    def _begin_job(self, content: dict, plan: GridPlan) -> None:
+    def _begin_job(self, content: dict, plan: GridPlan, geometry: dict | None = None) -> None:
         self._job_id = str(content.get("job_id", "")).strip()
         self._plan = plan
         self._progress = 0
@@ -906,16 +1017,18 @@ class ErutSession(QObject):
         self._contact = None           # 새 구역 — 접촉 상태는 모름에서 시작
         self._apply_speed(content)
         self._take_holder(content)
-        # 모재 크기를 RCS 에 남긴다 — RCS 「검사 시작」도 마지막으로 받은 모재로 돈다.
-        diameter, height = _mm(content.get("diameter")), _mm(content.get("height"))
-        if diameter > 0 and height > 0:
-            self.target_reported.emit(diameter, height)
+        # 모재 모양 · 크기를 RCS 에 남긴다 — RCS 「검사 시작」도 마지막으로 받은 모재로 돈다.
+        if geometry:
+            self.target_reported.emit(dict(geometry))
 
-    def _parsed_plan(self, req_id: str, action: str, content: dict) -> GridPlan | None:
-        """요청 모양을 확인해 구간을 만든다 — 원점과 무관한 형식 검사만(400 E6001).
+    def _parsed_plan(self, req_id: str, action: str,
+                     content: dict) -> tuple[GridPlan, dict | None] | None:
+        """요청 자체 검사 — (구간, geometry 또는 None). 거절했으면 None.
 
-        area · scan.overlap(필수, if-0.10) · surface · speed 를 본다. 원점에 기대는
-        검사(둘레 범위 · 구역 한계)는 원점 판정(E6104) 뒤에 `_fits_origin` 이 한다.
+        원점과 무관하게 요청만 보고 알 수 있는 잘못을 본다(R-17): area · scan.overlap ·
+        surface · speed · holder · geometry · 모재 밖 구역은 400 E6001, 그 뒤 모르는 모양은
+        501 E6501. 원점에 기대는 검사(둘레 범위 · 구역 한계)는 원점 판정(E6104) 뒤에
+        `_fits_origin` 이 한다. geometry 가 통째로 없으면 받는다(견주지 않는다 — if-0.13).
         """
         plan, reason = self._read_plan(content)
         if plan is None:
@@ -934,10 +1047,67 @@ class ErutSession(QObject):
         if reason:
             self._refuse(req_id, action, E.BAD_REQUEST, reason)
             return None
-        return plan
+        geometry, code, reason = self._read_geometry(content, required=False)
+        if code == E.BAD_REQUEST:
+            self._refuse(req_id, action, code, reason)
+            return None
+        if geometry is not None:
+            reason = outside_material(plan, geometry)
+            if reason:
+                self._refuse(req_id, action, E.BAD_REQUEST, reason)
+                return None
+        if code:
+            self._refuse(req_id, action, code, reason)
+            return None
+        return plan, geometry
 
-    def _fits_origin(self, req_id: str, action: str, plan: GridPlan) -> bool:
+    def _read_geometry(self, content: dict, required: bool) -> tuple[dict | None, str, str]:
+        """content.geometry → (geometry, 거절 번호, 까닭). 받을 수 있으면 번호가 "".
+
+        if-0.13 묶음 {shape, diameter, height, width}. 400 E6001: 묶음이 객체가 아님 ·
+        calibrate 에 없음 · shape 가 글자가 아님 · diameter · height 가 0 이하 · 곡판에 width 가
+        없거나 0 초과 π × diameter 미만이 아님. 400 을 다 본 뒤 shapes 에 없는 모양은
+        501 E6501 — 이때 geometry 는 돌려주지 않는다. 원통의 width 는 읽지 않는다.
+        """
+        raw = content.get("geometry")
+        if raw is None:
+            if required:
+                return None, E.BAD_REQUEST, ("geometry(모재 모양 · 크기)가 없습니다 — "
+                                             "원점을 잡을 기준을 모릅니다")
+            return None, "", ""
+        if not isinstance(raw, dict):
+            return None, E.BAD_REQUEST, "geometry 는 객체여야 합니다"
+        shape = raw.get("shape")
+        if not isinstance(shape, str) or not shape.strip():
+            return None, E.BAD_REQUEST, "geometry.shape 가 없습니다"
+        shape = shape.strip()
+        diameter, height = _number(raw.get("diameter")), _number(raw.get("height"))
+        if diameter is None or diameter <= 0:
+            return None, E.BAD_REQUEST, "geometry.diameter 는 0 보다 큰 수여야 합니다"
+        if height is None or height <= 0:
+            return None, E.BAD_REQUEST, "geometry.height 는 0 보다 큰 수여야 합니다"
+        geometry: dict[str, Any] = {"shape": shape, "diameter": diameter, "height": height}
+        if shape == SHAPE_PLATE:
+            width = _number(raw.get("width"))
+            if width is None or not 0 < width < math.pi * diameter:
+                return None, E.BAD_REQUEST, (
+                    f"곡판 geometry.width 는 0 초과 π × diameter({math.pi * diameter:.0f} mm) "
+                    f"미만이어야 합니다 (받은 값 {raw.get('width')!r})")
+            geometry["width"] = width
+        if shape not in SHAPES:
+            return None, E.NOT_IMPLEMENTED, (f"받지 않는 모재 모양: {shape} "
+                                             f"(지원: {', '.join(SHAPES)})")
+        return geometry, "", ""
+
+    def _fits_origin(self, req_id: str, action: str, plan: GridPlan,
+                     geometry: dict | None = None) -> bool:
         """원점(모재 둘레 · 지름)에 기대는 값 검사. 안 맞으면 400 + error 로 답하고 False."""
+        if geometry is None and self._calibrated_geometry:
+            # geometry 없이 온 요청 — 원점을 잡을 때의 모재로 모재 밖 구역을 본다.
+            reason = outside_material(plan, self._calibrated_geometry)
+            if reason:
+                self._refuse(req_id, action, E.BAD_REQUEST, reason)
+                return False
         # 원통 이음매 (if-0.8 탭5 77행 · Q-25): start.x 는 0 이상 둘레 미만, 구역
         # 가로는 둘레 이하. end.x 는 둘레를 넘어도 된다 — 이음매를 지나 0 부터 감긴
         # 자리로 이어 훑는다(차량은 start.x 에 서고 팔이 이음매를 넘어 훑는다).
@@ -1090,6 +1260,7 @@ class ErutSession(QObject):
             scanned_distance_mm=int(round(float(scanned))),
             duration_ms=int((time.time() - self._started_at) * 1000),
             pos=pos, location=location,
+            **{k: v for k, v in self.battery_state().items() if k == "battery"},
         )
         self._record_last(req_id, "start", 200, job_id=self._job_id)
         self._prepare_req_id = ""
@@ -1542,10 +1713,12 @@ class ErutSession(QObject):
         """검사면 둘레 [mm] = π × 모재 지름. 좌표계가 서서 지름을 알 때만, 모르면 0.
 
         ERUT 의 x 는 이 둘레 위의 거리다(탭5 77행) — 이음매(둘레)를 넘는 x 는
-        감긴 자리(x − 둘레)로 읽는다.
+        감긴 자리(x − 둘레)로 읽는다. 곡판은 이음매가 없어 감기지 않으므로 0 이다.
         """
         diameter = float(self.area_diameter() or 0.0)
         if not self._calibrated or diameter <= 0:
+            return 0.0
+        if self._calibrated_geometry.get("shape") == SHAPE_PLATE:
             return 0.0
         return math.pi * diameter
 

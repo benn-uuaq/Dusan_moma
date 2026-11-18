@@ -79,7 +79,7 @@ def pc_press():
   # 끊김 없이 한 번에 보내 놓고, 센서가 걸리는 순간 세운다.
   mv_h = start_thread(pc_rush, (far,), detach_mode = False)
   while (True):
-    if (get_standard_digital_in(di_touch) or get_standard_digital_in(di_limit)):
+    if (get_tool_digital(di_touch) or get_tool_digital(di_limit)):
       stop_thread(mv_h)
       stopl(1.2)
       break
@@ -94,7 +94,7 @@ def pc_press():
 
   # 한계까지 들어갔으면 적정 눌림만 남을 때까지 뒤로(-Z) 뺀다.
   tries = 0
-  while (get_standard_digital_in(di_limit) and tries < seek_tries):
+  while (get_tool_digital(di_limit) and tries < seek_tries):
     tries = tries + 1
     pc_step(seek_step)
     sync()
@@ -102,13 +102,13 @@ def pc_press():
 
   # 아직 안 닿았으면 적정 눌림이 될 때까지 조금씩 더 민다.
   tries = 0
-  while (get_standard_digital_in(di_touch) == False and tries < seek_tries):
+  while (get_tool_digital(di_touch) == False and tries < seek_tries):
     tries = tries + 1
     pc_step(-seek_step)
     sync()
   end
 
-  if (get_standard_digital_in(di_touch)):
+  if (get_tool_digital(di_touch)):
     n_hit = n_hit + 1
     pc_push()
     return pose_dist(x_home, get_actual_tcp_pose())

@@ -61,6 +61,8 @@ class RosTopics:
     SPEED_SCALE = "robot/status/speed_scale"
     # 디지털 입출력 비트묶음(레지스터 0 = 표준 DI, 2 = 표준 DO).
     DIGITAL_IN = "robot/status/digital_in"
+    SAFETY_STOP = "robot/status/safety_stop"
+    CONFIG_DIGITAL_IN = "robot/status/config_digital_in"
     DIGITAL_OUT = "robot/status/digital_out"
     # 3점 측정 결과(300~305)와 접촉 자세(330~355).
     PROBE_RESULT = "robot/status/probe_result"
@@ -153,6 +155,11 @@ class RosStatusClient(QObject):
     # 디지털 입출력 비트묶음. (묶음값) 그대로 주고 화면이 비트를 푼다.
     # 10 Hz 로 오므로 바뀔 때만 나간다.
     digital_in_changed = pyqtSignal(int)
+    #: 로봇 안전정지(PLC 가 차량 이동 중에 거는 정지 등 — 비상정지 아님). 바뀔 때만.
+    safety_stop_changed = pyqtSignal(bool)
+    #: 레지스터 1 비트(xxxxTTTTCCCCCCCC) — 비트 0~7 Config 입력(CI0 · CI1 안전정지, CI2 · CI3 안전재설정),
+    #: 비트 8~11 툴 입력(T0 5축 홀더 밀착 · T1 8축 홀더 밀착 · T2 밀착 리미트). 바뀔 때만.
+    config_digital_in_changed = pyqtSignal(int)
     digital_out_changed = pyqtSignal(int)
     # 3점 측정 값. 정수 그대로 준다(위치 0.1mm, 회전 mrad).
     probe_result_changed = pyqtSignal(list)
@@ -229,6 +236,8 @@ class RosStatusClient(QObject):
         self._vehicle_ready_last: bool | None = None
         # 디지털 입출력도 10 Hz 로 오므로 바뀔 때만 내보낸다.
         self._digital_in_last: int | None = None
+        self._safety_stop_last: bool | None = None
+        self._config_digital_in_last: int | None = None
         self._digital_out_last: int | None = None
         self._probe_result_last: list[int] | None = None
         self._probe_poses_last: list[int] | None = None
@@ -337,6 +346,12 @@ class RosStatusClient(QObject):
             )
             self._node.create_subscription(
                 Int32, RosTopics.DIGITAL_OUT, self._on_digital_out, 10
+            )
+            self._node.create_subscription(
+                Int32, RosTopics.SAFETY_STOP, self._on_safety_stop, 10
+            )
+            self._node.create_subscription(
+                Int32, RosTopics.CONFIG_DIGITAL_IN, self._on_config_digital_in, 10
             )
             self._node.create_subscription(
                 Int32MultiArray, RosTopics.PROBE_RESULT, self._on_probe_result, 10
@@ -681,6 +696,20 @@ class RosStatusClient(QObject):
             return
         self._digital_in_last = bits
         self.digital_in_changed.emit(bits)
+
+    def _on_config_digital_in(self, msg) -> None:
+        bits = int(msg.data) & 0xFFFF
+        if bits == self._config_digital_in_last:
+            return
+        self._config_digital_in_last = bits
+        self.config_digital_in_changed.emit(bits)
+
+    def _on_safety_stop(self, msg) -> None:
+        stopped = bool(int(msg.data))
+        if stopped == self._safety_stop_last:
+            return
+        self._safety_stop_last = stopped
+        self.safety_stop_changed.emit(stopped)
 
     def _on_digital_out(self, msg) -> None:
         """표준 디지털 출력 비트묶음. 바뀔 때만 내보낸다."""

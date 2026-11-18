@@ -412,6 +412,8 @@ def test_assembly_pose_needs_no_register_address(qtbot, monkeypatch):
 
     monkeypatch.setattr(ros_status_client, "Float32MultiArray", FakeMessage, raising=False)
     client = RosStatusClient()
+    # 주소표를 못 읽은 상태로 시험한다 — ROS 를 소싱한 환경에서는 설치본 주소표를 읽어 온다.
+    client._registers = None
     client._pose_publishers = {"assembly_joint": _Publisher(), "home_joint": _Publisher()}
     assert client.writable("assembly_joint") is False
 

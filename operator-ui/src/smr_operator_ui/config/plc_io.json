@@ -1,247 +1,156 @@
 {
   "_comment": [
-    "입출력 목록. 신호가 늘어나면 이 파일만 고치면 되고 코드는 건드리지 않는다.",
-    "direction이 OUT인 신호에만 조작 버튼이 생긴다. IN은 장비가 정하는 값이라 조회만 한다.",
-    "group은 조작 버튼을 묶는 이름이며, 비워 두면 '기타'로 묶인다.",
-    "bus는 어디에 붙은 신호인지다. robot = 협동로봇 컨트롤러 디지털 IO(모드버스",
-    "레지스터 0 = 표준 DI, 2 = 표준 DO, 비트 번호가 곧 DO/DI 번호), plc = 차량용 PLC.",
-    "로봇 IO는 bit 로 비트 번호를 적는다. PLC 경로는 아직 실물이 없어 조회만 된다.",
-    "물 분사 밸브와 마킹기도 로봇 DO 에 붙을 예정이다 — 번호가 정해지면 name 만 고친다."
+    "I/O 상태 화면의 모니터링 목록(2026-11-12 — 조회만, 조작은 수동 제어 화면). 항목이 늘면 이 파일만 고친다.",
+    "bus 는 값이 어디서 오는지다.",
+    "  robot_config = 협동로봇 레지스터 1 (xxxxTTTTCCCCCCCC) — 비트 0~7 Config 입력(CI0 · CI1 안전정지, CI2 · CI3 안전재설정, 2채널), 비트 8~11 툴 입력(T0 5축 홀더 밀착 · T1 8축 홀더 밀착 · T2 밀착 리미트). 늘 갱신된다.",
+    "  vehicle    = 차량 제어 노드의 상태(RobotStatus). field = 그 칸 이름. PLC 는 차량 노드가 맡고 RCS 는 관여하지 않는다 —",
+    "               PLC 신호는 차량 노드가 RobotStatus 로 가공해 준다(RCS_AGV_인터페이스). 차량이 아직 못 채운 값은",
+    "               「모름」으로 보인다(battery_pct 255 · level_state -1 · standoff_meas < 0).",
+    "물 분사 · 마킹기는 ERUT 장비라 여기 없다. TPAC 스캔 동기 신호는 TPAC 설정 화면에서 본다."
   ],
   "signals": [
     {
-      "address": "DI0",
-      "name": "로봇 디지털 입력 0",
+      "address": "TDI0",
+      "name": "툴 입력 0 · 5축 홀더 밀착 감지",
       "direction": "IN",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
+      "value": "-",
+      "status": "-",
+      "bus": "robot_config",
+      "bit": 8
+    },
+    {
+      "address": "TDI1",
+      "name": "툴 입력 1 · 8축 홀더 밀착 감지",
+      "direction": "IN",
+      "value": "-",
+      "status": "-",
+      "bus": "robot_config",
+      "bit": 9
+    },
+    {
+      "address": "TDI2",
+      "name": "툴 입력 2 · 밀착 리미트 감지",
+      "direction": "IN",
+      "value": "-",
+      "status": "-",
+      "bus": "robot_config",
+      "bit": 10
+    },
+    {
+      "address": "CI0",
+      "name": "설정 입력 0 · 안전정지 1",
+      "direction": "IN",
+      "value": "-",
+      "status": "-",
+      "bus": "robot_config",
       "bit": 0
     },
     {
-      "address": "DI1",
-      "name": "로봇 디지털 입력 1",
+      "address": "CI1",
+      "name": "설정 입력 1 · 안전정지 2",
       "direction": "IN",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
+      "value": "-",
+      "status": "-",
+      "bus": "robot_config",
       "bit": 1
     },
     {
-      "address": "DI2",
-      "name": "로봇 디지털 입력 2",
+      "address": "CI2",
+      "name": "설정 입력 2 · 안전재설정 1",
       "direction": "IN",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
+      "value": "-",
+      "status": "-",
+      "bus": "robot_config",
       "bit": 2
     },
     {
-      "address": "DI3",
-      "name": "로봇 디지털 입력 3",
+      "address": "CI3",
+      "name": "설정 입력 3 · 안전재설정 2",
       "direction": "IN",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
+      "value": "-",
+      "status": "-",
+      "bus": "robot_config",
       "bit": 3
     },
     {
-      "address": "DI4",
-      "name": "로봇 디지털 입력 4",
+      "address": "SAFETY",
+      "name": "로봇 안전정지 (PLC · 차량 이동 중)",
       "direction": "IN",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
-      "bit": 4
+      "value": "-",
+      "status": "-",
+      "bus": "derived"
     },
     {
-      "address": "DI5",
-      "name": "로봇 디지털 입력 5",
+      "address": "ESTOP",
+      "name": "차량 비상정지",
       "direction": "IN",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
-      "bit": 5
+      "value": "-",
+      "status": "-",
+      "bus": "vehicle",
+      "field": "estop"
     },
     {
-      "address": "DI6",
-      "name": "로봇 디지털 입력 6",
+      "address": "SCAN",
+      "name": "접근 감지 정지 (안전 스캐너)",
       "direction": "IN",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
-      "bit": 6
+      "value": "-",
+      "status": "-",
+      "bus": "vehicle",
+      "field": "obstacle_stop"
     },
     {
-      "address": "DI7",
-      "name": "로봇 디지털 입력 7",
+      "address": "HOLD",
+      "name": "아웃트리거 고정",
       "direction": "IN",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
-      "bit": 7
+      "value": "-",
+      "status": "-",
+      "bus": "vehicle",
+      "field": "hold"
     },
     {
-      "address": "DO0",
-      "name": "로봇 디지털 출력 0 · 예비 (물 분사 밸브 예정)",
-      "direction": "OUT",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
-      "bit": 0,
-      "group": "협동로봇 출력(DO)"
-    },
-    {
-      "address": "DO1",
-      "name": "로봇 디지털 출력 1 · 예비 (마킹기 예정)",
-      "direction": "OUT",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
-      "bit": 1,
-      "group": "협동로봇 출력(DO)"
-    },
-    {
-      "address": "DO2",
-      "name": "로봇 디지털 출력 2 · 예비",
-      "direction": "OUT",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
-      "bit": 2,
-      "group": "협동로봇 출력(DO)"
-    },
-    {
-      "address": "DO3",
-      "name": "로봇 디지털 출력 3 · 예비",
-      "direction": "OUT",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
-      "bit": 3,
-      "group": "협동로봇 출력(DO)"
-    },
-    {
-      "address": "DO4",
-      "name": "로봇 디지털 출력 4 · 예비",
-      "direction": "OUT",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
-      "bit": 4,
-      "group": "협동로봇 출력(DO)"
-    },
-    {
-      "address": "DO5",
-      "name": "로봇 디지털 출력 5 · 예비",
-      "direction": "OUT",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
-      "bit": 5,
-      "group": "협동로봇 출력(DO)"
-    },
-    {
-      "address": "DO6",
-      "name": "로봇 디지털 출력 6 · 예비",
-      "direction": "OUT",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
-      "bit": 6,
-      "group": "협동로봇 출력(DO)"
-    },
-    {
-      "address": "DO7",
-      "name": "로봇 디지털 출력 7 · 예비",
-      "direction": "OUT",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "robot",
-      "bit": 7,
-      "group": "협동로봇 출력(DO)"
-    },
-    {
-      "address": "X000",
-      "name": "Emergency Stop",
+      "address": "LIFT",
+      "name": "리프트 높이",
       "direction": "IN",
-      "value": "OFF",
-      "status": "정상",
-      "bus": "plc"
+      "value": "-",
+      "status": "-",
+      "bus": "vehicle",
+      "field": "lift_h"
     },
     {
-      "address": "X001",
-      "name": "Safety Scanner",
+      "address": "LEVEL",
+      "name": "수평 (roll · pitch)",
       "direction": "IN",
-      "value": "ON",
-      "status": "정상",
-      "bus": "plc"
+      "value": "-",
+      "status": "-",
+      "bus": "vehicle",
+      "field": "level"
     },
     {
-      "address": "X010",
-      "name": "Outrigger 1 Contact",
+      "address": "BATT",
+      "name": "배터리 · 충전",
       "direction": "IN",
-      "value": "ON",
-      "status": "정상",
-      "bus": "plc"
+      "value": "-",
+      "status": "-",
+      "bus": "vehicle",
+      "field": "battery_pct"
     },
     {
-      "address": "X011",
-      "name": "Outrigger 2 Contact",
+      "address": "STANDOFF",
+      "name": "거리 유지 (잰 값)",
       "direction": "IN",
-      "value": "ON",
-      "status": "정상",
-      "bus": "plc"
+      "value": "-",
+      "status": "-",
+      "bus": "vehicle",
+      "field": "standoff_meas"
     },
     {
-      "address": "X012",
-      "name": "Outrigger 3 Contact",
+      "address": "STATE",
+      "name": "차량 상태 · 오류",
       "direction": "IN",
-      "value": "ON",
-      "status": "정상",
-      "bus": "plc"
-    },
-    {
-      "address": "Y000",
-      "name": "AMR Drive Enable",
-      "direction": "OUT",
-      "value": "OFF",
-      "status": "정상",
-      "group": "차량 PLC · AMR",
-      "bus": "plc"
-    },
-    {
-      "address": "Y010",
-      "name": "Lift Brake",
-      "direction": "OUT",
-      "value": "ON",
-      "status": "정상",
-      "group": "차량 PLC · 리프트",
-      "bus": "plc"
-    },
-    {
-      "address": "D100",
-      "name": "Lift Height",
-      "direction": "IN",
-      "value": "1200 mm",
-      "status": "정상",
-      "bus": "plc"
-    },
-    {
-      "address": "D110",
-      "name": "Roll",
-      "direction": "IN",
-      "value": "0.00°",
-      "status": "정상",
-      "bus": "plc"
-    },
-    {
-      "address": "D111",
-      "name": "Pitch",
-      "direction": "IN",
-      "value": "0.00°",
-      "status": "정상",
-      "bus": "plc"
+      "value": "-",
+      "status": "-",
+      "bus": "vehicle",
+      "field": "state"
     }
   ]
 }

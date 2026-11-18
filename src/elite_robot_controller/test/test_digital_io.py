@@ -2,9 +2,8 @@
 
 컨트롤러는 디지털 IO 를 레지스터 하나에 16비트로 모아 둔다(사용 설명서
 15.2: 0 표준 입력 / 2 표준 출력). 그래서 출력 하나만 바꾸려면 지금 값을
-읽어 그 비트만 뒤집어 다시 써야 한다. 물 분사 밸브와 마킹기가 이 경로로
-붙을 예정이라, 값을 못 읽었을 때 **쓰지 않는 것**이 중요하다 — 나머지
-출력이 한꺼번에 0 으로 꺼진다.
+읽어 그 비트만 뒤집어 다시 써야 한다. 값을 못 읽었을 때 **쓰지 않는 것**이
+중요하다 — 나머지 출력이 한꺼번에 0 으로 꺼진다.
 """
 
 from elite_robot_controller import register_map
@@ -117,3 +116,33 @@ def test_mark_go_is_written_to_its_register():
     assert register_map.load().read_entry('scan_arc').address == 286
     # 288/289(눌림 상태 · 보정량)까지 같이 읽는다(2026-10-19).
     assert register_map.load().read_entry('scan_arc').count == 4
+
+
+def test_config_and_tool_inputs_are_one_register():
+    """레지스터 1 = Config 입력 + 툴 입력(xxxxTTTTCCCCCCCC) — 그대로 robot/status/config_digital_in."""
+    node = make_node({1: [0b0000_0101_0000_0011]}, {
+        'scale': {'position_per_count': 0.1, 'rotation_per_count': 1.0},
+        'read': {'config_digital_in': {'address': 1, 'count': 1, 'kind': 'raw'}},
+        'write': {}})
+    pub = FakePublisher()
+    assert node.publish_code('config_digital_in', pub)
+    assert pub.messages[-1] == 0b0000_0101_0000_0011       # CI0 · CI1 + 툴 T0 · T2
+    import os
+    source = os.path.join(os.path.dirname(__file__), "..", "config", "modbus_registers.json")
+    loaded = register_map.load(source)
+    assert loaded.read_entry("config_digital_in").address == 1
+    assert not loaded.read_entry("tool_digital_in").available
+
+
+def test_safety_stop_comes_from_the_primary_state():
+    """로봇 안전정지(보호 정지 · 안전 IO) — 30001 상태로 판단해 robot/status/safety_stop 에 낸다."""
+    node = make_node({}, {'scale': {'position_per_count': 0.1, 'rotation_per_count': 1.0},
+                          'read': {}, 'write': {}})
+    node.pub_safety_stop = FakePublisher()
+    data = type("D", (), {"is_robot_protective_stopped": 0, "safety_mode": 1})()
+    node._publish_safety_stop(data)
+    data.safety_mode = 5                       # SAFEGUARD_STOP — PLC 가 안전 IO 로 건 정지
+    node._publish_safety_stop(data)
+    data.safety_mode, data.is_robot_protective_stopped = 1, 1
+    node._publish_safety_stop(data)
+    assert node.pub_safety_stop.messages == [0, 1, 1]

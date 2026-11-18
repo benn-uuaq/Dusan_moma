@@ -20,18 +20,19 @@ def test_connection_screen_collects_all_device_addresses(qtbot) -> None:
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     values = window.screens["connection"].values()
-    # 협동로봇, 차량용 PLC, ERUT 브로커가 한 화면에 모여 있어야 한다.
+    # 협동로봇, 차량 제어, ERUT 브로커가 한 화면에 모여 있어야 한다.
     for key in (
         "협동로봇 IP",
         "Dashboard 포트",
         "Primary 포트",
         "Modbus 포트",
-        "PLC IP",
-        "PLC 포트",
+        "차량 제어",
         "ERUT Broker 주소",
         "ERUT 포트",
     ):
         assert key in values
+    # PLC 통신은 차량(AMR) 노드가 맡는다 — RCS 에는 PLC 접속 칸이 없다(2026-11-17).
+    assert not any(key.startswith("PLC") for key in values)
     assert window.screens["connection"].settings_scope == "connection"
     window.close()
 
@@ -153,7 +154,7 @@ def test_connection_badges_all_have_the_same_width(qtbot) -> None:
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     badges = window.top_bar.badges
-    badges["PLC"].set_connected(True)            # "연결됨"
+    badges["Cobot"].set_connected(True)          # "연결됨"
     badges["AMR"].set_connected(False)           # "연결 안 됨"
     widths = {name: badge.width() for name, badge in badges.items()}
     assert len(set(widths.values())) == 1, widths

@@ -158,7 +158,7 @@
 - [x] `dusan_ws/mqtt_test/`에 MC 대역 시뮬레이션 MQTT 도구 작성 (tkinter, Operator UI와 독립)
 - [ ] robot_task/scripts/dus_init.script 재적용 필요 (오늘 수정한 pub_rel 반영) — 로봇에 넣기만 하면 됨
 - [ ] 조그 값 인코딩 확인 (축 번호와 방향을 한 레지스터에 담는 방식)
-- [x] I/O 화면의 로봇 디지털 출력 연결 (2026-09-22) — `robot/command/digital_out` [번호, 값] → 노드가 레지스터 2 의 그 비트만 바꿔 쓴다. 상태는 `robot/status/digital_in|out`. 물 분사 밸브·마킹기가 붙을 자리다
+- [x] I/O 화면의 로봇 디지털 출력 연결 (2026-09-22) — `robot/command/digital_out` [번호, 값] → 노드가 레지스터 2 의 그 비트만 바꿔 쓴다. 상태는 `robot/status/digital_in|out`. (물 분사 · 마킹기는 ERUT 장비라 여기 붙지 않는다 — 2026-11-12)
 - [ ] 차량용 PLC 출력(Y000 등)은 실물 PLC 경로가 생기면 잇는다 (지금은 화면에서 안내만)
 - [x] Cobot 수동 제어 화면의 대시보드 명령을 `robot/dashboard/*` 서비스에 연결 (연결·해제 포함)
 - [x] 로봇 미연결 시에도 노드가 살아 있도록 변경 (연결 버튼으로 재시도 가능)
@@ -174,8 +174,11 @@
 - [ ] 운영 UI(MQTT) ↔ ROS 2 브리지 구현 — 규격은 `docs/mqtt_topic_form.md`
 - [ ] 운영 UI의 Linux 실행 환경 확인 (PyQt6, PostgreSQL, MQTT Broker)
 - [x] 장비 없이 도는 회귀 시험 확장 (2026-09-22) — `mqtt_test/run_sim_test.py` 가 네 가지를 돈다: `mc`(격자 순회 + 원점 프로브 확인), `erut`(calibrate→prepare→start→complete), `io`(로봇 DO), `tpac`(스캔 구간 DO 신호). 로봇 시뮬레이터도 지금 태스크와 같은 상태 흐름(차량 고정 대기·원점 허가·구간 신호)으로 고쳤다
-- [ ] 물 분사(펌프·밸브) 제어 — 펌프가 준비되면 `dus_goto_zero` 의 TODO 자리에 DO 를 넣는다
-- [ ] 마킹 동작 — 마킹기가 준비되면 `dus_mark_point` 의 TODO 자리에 DO 펄스를 넣는다
+- [x] RCS ↔ AGV 추가 칸 (2026-11-17, docs/RCS_AGV_인터페이스_20261117.xlsx) — vehicle_interfaces 에 RobotStatus 칸(battery_pct · charging · estop · obstacle_stop · level_state · standoff_meas · plc_link · lap_*) · MeasureLap.srv · <ns>/start_request 를 정의하고, 모의기와 RCS 처리(비상정지 E1002 · 접근 감지 일시정지 · 309 조건 · 상단 PLC/배터리 · ERUT battery · measure_lap 캘리브레이션 · 차량 버튼 → 계측 시작)를 넣었다. 기본값 = 모름. AGV 노드가 채우면 바로 붙는다
+- [x] if-0.13 · 곡판 (2026-11-18) — ERUT geometry{shape · diameter · height · width} 를 읽고(맨 바깥 diameter 는 없다) evt/info shapes[cylinder, curved_plate] 를 싣는다. 검사 순서 400 → 501 → 409(E6104 에 모양 대조), 모재 밖 구역 400, evt/contact job_id 는 start 뒤만 · 단독 작업 닿음도 알림. 곡판 캘리브레이션 = 차량이 한 바퀴 돌지 않고 QR 정렬만(MeasureLap mode ALIGN, 차량 설정 「곡판 QR 정렬 최대 시간」), x 는 감지 않는다
+- [ ] 현장: vehicle_interfaces · vehicle_sim 다시 빌드(MeasureLap.mode) · AGV 노드에 mode ALIGN 구현 요청 · 곡판 QR 정렬 시간 실측해 차량 설정에 넣기
+- [x] 물 분사 · 마킹기 — 우리 쪽 제어가 아니다(2026-11-12). 로봇이 원점에 붙으면 RCS 가 ERUT 에 접촉을 알리고 ERUT 가 물을 켠다. 마커도 ERUT 것이다(mark_positioning). 태스크의 물 분사 TODO · I/O 화면의 「물 분사 밸브 · 마킹기 예정」 표기를 뺐다
+- [x] 밀착 센서 → 툴 디지털 입력(2026-11-12): 툴 T0 5축 홀더 밀착 · T1 8축 홀더 밀착 · T2 밀착 리미트. dus6_init 이 장착 홀더로 di_touch(0/1)를 고르고 di_limit = 2, 센서는 get_tool_digital 로 읽는다. RCS 는 레지스터 1(xxxxTTTTCCCCCCCC, 비트 8~11 툴 입력)에서 바로 읽어 I/O 화면에 보인다(2026-11-17 — 태스크가 279 에 써 주던 우회는 뺐다)
 - [ ] 수평 보정(2단계) 실제화 — IMU·아웃트리거 개별 제어. 센서 사양 회신 뒤
 - [ ] AMR 패키지 skeleton 생성 — 구성안은 `plan.md` 6절
 - [ ] 장비별 더미 드라이버 설계

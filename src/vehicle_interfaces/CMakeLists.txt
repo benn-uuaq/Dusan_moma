@@ -11,6 +11,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/RobotControl.srv"
   "srv/SetJob.srv"
   "srv/ManualCommand.srv"
+  "srv/MeasureLap.srv"
   DEPENDENCIES std_msgs
 )
 

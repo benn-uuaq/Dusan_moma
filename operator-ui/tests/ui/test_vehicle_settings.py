@@ -61,7 +61,7 @@ def test_defaults_keep_todays_behaviour_and_lift_limit_is_3500(qtbot) -> None:
     assert vehicle.reach_mm() == 1600                  # 로봇 상승 한계 — 베이스 위로
     assert vehicle.base_height_mm() == 0
     assert vehicle.arm_reach_mm() == 1600 and vehicle.top_limit_mm() == 5100
-    assert vehicle.speed_mm_s() == 300
+    assert vehicle.speed_mm_s() == 100                 # 차량 주행 속도 기본 0.1 m/s
     assert (vehicle.width_mm(), vehicle.standoff_mm()) == (0, 0)
     assert vehicle.travel_scale(1300) == 1.0          # 폭 · 거리 0 이면 예전처럼 1 배
     window.close()
@@ -169,13 +169,13 @@ def test_calibration_lap_drives_the_vehicle_path_and_reports_the_surface(qtbot) 
     targets: list[float] = []
     original = window.amr.move_to
 
-    def record(target, unit="", label=None):
+    def record(target, unit="", label=None, timeout_ms=None):
         targets.append(float(target))
         return original(target, unit, label=label) if label is not None else original(target, unit)
     window.amr.move_to = record
 
-    window.erut_session.handle_request("calibrate", {"req_id": "cal-v", "diameter": 1300,
-                                                     "height": 6000})
+    window.erut_session.handle_request("calibrate", {"req_id": "cal-v", "geometry": {"shape": "cylinder", "diameter": 1300,
+                                                     "height": 6000}})
     qtbot.waitUntil(lambda: bool(events), timeout=10000)
 
     scale = (650 + 1000) / 650
@@ -201,4 +201,56 @@ def test_robot_base_height_adds_to_what_the_arm_reaches(qtbot) -> None:
     assert window._zone_reach_blocker(4600, 600) == ""                 # 5200 ≤ 5607
     reason = window._zone_reach_blocker(5100, 600)                     # 5700 > 5607
     assert "5,700" in reason and "507" in reason and "5,607" in reason
+    window.close()
+
+
+# ---- 캘리브레이션 최대 시간 (2026-11-12) ------------------------------------------------
+def test_calibration_time_is_typed_or_computed_on_the_calibrate_command(qtbot) -> None:
+    """사람이 넣을 수 있지만, 캘리브레이션 명령을 받으면 계산값이 들어가고 그 값이 보인다.
+
+    한 바퀴 = 2π(R + 거리 유지 + 폭/2) ÷ 차량 설정 주행 속도 × 1.5(회전 · 가감속 여유).
+    """
+    window = _window(qtbot)
+    events, _responses = _tap(window)
+    window._start_robot_scan = lambda: None
+    window.outrigger.reset(0)
+    infos: list[dict] = []
+    window.erut_session.client.publish_info = lambda content: infos.append(content) or True
+    vehicle = _set(window, width=800, standoff=2000, speed=100)
+    vehicle.field(vehicle.CALIB_FIELD).setValue(120)          # 사람이 넣은 값
+    assert vehicle.calibration_time_s() == 120
+
+    limits: list = []
+    original = window.amr.move_to
+
+    def record(target, unit="", label=None, timeout_ms=None):
+        limits.append(timeout_ms)
+        return original(target, unit, label=label)
+    window.amr.move_to = record
+
+    window.erut_session.handle_request("calibrate", {"req_id": "cal-t", "geometry": {"shape": "cylinder", "diameter": 1690,
+                                                     "height": 2000}})
+    lap = 2 * math.pi * (845 + 2000 + 400)
+    expected = math.ceil(lap / 100 * 1.5 / 10) * 10                   # 310 s
+    assert vehicle.calibration_time_s() == expected
+    assert vehicle.field(vehicle.CALIB_FIELD).value() == expected     # 칸에도 계산값이 보인다
+    assert limits[-1] == expected * 1000, "한 바퀴 제한 시간도 계산값"
+    # ERUT 에 알린다 — evt/info timings.complete_within_ms.calibrate
+    assert infos and infos[-1]["timings"]["complete_within_ms"] == {"calibrate": expected * 1000}
+    window.close()
+
+
+def test_no_calibration_time_means_erut_default(qtbot) -> None:
+    window = _window(qtbot)
+    assert window.screens["vehicle"].calibration_time_s() == 0
+    assert "complete_within_ms" not in window.erut_session._info_content()["timings"]
+    window.close()
+
+
+def test_vehicle_keeps_the_standoff_the_rcs_sends(qtbot) -> None:
+    """거리 유지는 RCS 가 SetJob.standoff 로 보낸다(2026-11-12)."""
+    window = _window(qtbot)
+    vehicle = _set(window, standoff=1500)
+    vehicle.save_requested.emit("vehicle", vehicle.values())
+    assert window._vehicle_amr.standoff_m == pytest.approx(1.5)
     window.close()

@@ -26,6 +26,10 @@ class OrbitView(QWidget):
         # 않는다(ERUT 규격의 diameter 도 외경이다, if-0.10 탭5 77행).
         self._target_diameter_m = 1.6692
         self._target_height_m = 0.5
+        # 모재 모양(ERUT geometry.shape) — "cylinder" 원통 · "curved_plate" 곡판(2026-11-18).
+        # 곡판은 판 가로(바깥면을 따라 잰 길이)만큼만 링에 구간을 그린다.
+        self._target_shape = "cylinder"
+        self._target_width_m = 0.0
         # 지금 몇 번째 행(층)을 도는지. 열(구간)만으로는 알 수 없다.
         self._current_row = 1
         self._total_rows = 1
@@ -63,6 +67,25 @@ class OrbitView(QWidget):
         self._target_diameter_m = diameter_m
         self._target_height_m = height_m
         self.update()
+
+    def set_target_shape(self, shape: str, width_m: float = 0.0) -> None:
+        """모재 모양과 곡판 가로 [m] 를 바꾼다(원통이면 가로는 0)."""
+        self._target_shape = "curved_plate" if shape == "curved_plate" else "cylinder"
+        self._target_width_m = max(float(width_m), 0.0) if self._target_shape == "curved_plate" else 0.0
+        self.update()
+
+    def target_shape(self) -> tuple[str, float]:
+        """(모양, 곡판 가로 m). 원통이면 가로는 0."""
+        return self._target_shape, self._target_width_m
+
+    def _ring_span_deg(self) -> float:
+        """구간을 그릴 링의 각도 — 원통 360°, 곡판은 판 가로가 차지하는 몫."""
+        if self._target_shape != "curved_plate":
+            return 360.0
+        circumference = math.pi * self._target_diameter_m
+        if circumference <= 0 or self._target_width_m <= 0:
+            return 360.0
+        return max(1.0, min(360.0, 360.0 * self._target_width_m / circumference))
 
     def set_row_position(self, row: int, rows: int) -> None:
         """지금 몇 번째 행(층)을 도는지 갱신한다. 열(구간) 진행만으로는
@@ -127,7 +150,8 @@ class OrbitView(QWidget):
         if self._sections is not None:
             _circumference, _width, _step, current, done = self._sections
             count = self.section_count()
-            span = 360.0 / count
+            # 곡판은 판 몫(판 가로 ÷ 곡률 둘레)만 나눈다 — 판 밖에는 구간이 없다.
+            span = self._ring_span_deg() / count
             pending, finished, now = [], [], []
             for index in range(count):
                 center = index * span
@@ -155,7 +179,7 @@ class OrbitView(QWidget):
         """로봇을 놓을 자리 — 12시 기준 반시계 각도."""
         if self._sections is not None:
             current = self._sections[3]
-            return current * 360.0 / self.section_count()
+            return current * self._ring_span_deg() / self.section_count()
         total = max(1, self._state.total_segments)
         return (self._state.current_segment - 1) * 360.0 / total
 
@@ -202,12 +226,20 @@ class OrbitView(QWidget):
         target = self._target_rect()
         # 지름은 바깥 지름(외경)이다. 행(층)은 열(구간) 진행만으로는 알 수
         # 없는 정보라 같이 보여준다("몇층인지 알 수가 없음" 대응).
-        target_text = (
-            "검사 대상\n"
-            f"바깥 Ø {self._target_diameter_m:.2f} m\n"
-            f"H {self._target_height_m:.2f} m\n"
-            f"{self._current_row} / {self._total_rows} 층"
-        )
+        if self._target_shape == "curved_plate":
+            target_text = (
+                "검사 대상 · 곡판\n"
+                f"Ø {self._target_diameter_m:.2f} · 가로 {self._target_width_m:.2f} m\n"
+                f"H {self._target_height_m:.2f} m\n"
+                f"{self._current_row} / {self._total_rows} 층"
+            )
+        else:
+            target_text = (
+                "검사 대상\n"
+                f"바깥 Ø {self._target_diameter_m:.2f} m\n"
+                f"H {self._target_height_m:.2f} m\n"
+                f"{self._current_row} / {self._total_rows} 층"
+            )
         painter.setPen(QPen(QColor("#AAB3BC"), 1.5))
         painter.setBrush(QColor("#E4E7EA"))
         painter.drawEllipse(target)

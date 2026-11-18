@@ -1,11 +1,10 @@
 # Request
+# 차량은 받은 거리만큼 달리기만 한다 — 격자 · 구역 크기 · 리프트 높이는 RCS 가 관리한다(2026-11-12,
+# 예전 offset_dist · offset_height · total_distance · total_height 는 뺐다).
 string job_id          # 작업 식별자
-float64 set_dist       # 목표 이동 거리
-float64 set_speed      # 목표 속도
-float64 offset_dist    # 오프셋 거리
-float64 offset_height  # offset lift 높이
-float64 total_distance
-float64 total_height
+float64 set_dist       # 목표 이동 거리 [m] — 차량 중심 주행 거리, 부호 = 방향
+float64 set_speed      # 목표 속도 [m/s] — RCS 차량 설정 「차량 주행 속도」(기본 0.1)
+float64 standoff       # 거리 유지 [m] — 차량 안쪽 면 ↔ 모재 표면, 차량이 돌며 지킨다(RCS 차량 설정 「모재 거리 유지」)
 ---
 # Response
 bool success           # 명령 접수 성공 여부

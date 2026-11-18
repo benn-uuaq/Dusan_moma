@@ -503,7 +503,10 @@ def describe_mode(snap: dict[str, Any]) -> str:
         lines.append(f"  프로브 {probe}")
     target = snap.get("inspection_target") or {}
     if target:
-        lines.append(f"검사 대상: 바깥 지름 {num(target.get('diameter_m'), 3)} m × 높이 {num(target.get('height_m'), 3)} m"
+        plate = target.get("shape") == "curved_plate"
+        lines.append(f"검사 대상: {'곡판 ' if plate else ''}바깥 지름 {num(target.get('diameter_m'), 3)} m × "
+                     f"높이 {num(target.get('height_m'), 3)} m"
+                     + (f", 판 가로 {num(target.get('width_m'), 3)} m" if plate else "")
                      + (f", 이동거리 {num(target.get('target_distance_m'), 2)} m"
                         if target.get("target_distance_m") else ""))
     cobot = snap.get("cobot") or {}

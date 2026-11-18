@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -30,6 +31,8 @@ class MainScreen(QWidget):
     # 화면은 장비나 저장 서비스를 직접 호출하지 않고 동작을 요청한다.
     # OperatorWindow가 아래 시그널을 알맞은 서비스에 연결한다.
     start_requested = pyqtSignal()
+    #: 「계측 시작」 — 캘리브레이션(차량 한 바퀴)만 따로 한다(2026-11-12).
+    measure_requested = pyqtSignal()
     # 알림 상자에 뜬 문구. 운영 기록(알람이벤트)이 받아 적는다.
     activity_shown = pyqtSignal(str)
     pause_requested = pyqtSignal()
@@ -131,6 +134,13 @@ class MainScreen(QWidget):
         self.start_button.setObjectName("PrimaryButton")
         self.start_button.clicked.connect(self.start_requested)
         rail_layout.addWidget(self.start_button)
+        # 캘리브레이션만 — 차량이 모재를 한 바퀴 돌며 좌표계를 잡는다(검사는 하지 않는다).
+        # 차량에도 같은 일을 하는 물리 버튼이 생긴다(차량 담당, 2026-11-12).
+        self.measure_button = QPushButton("계측 시작")
+        self.measure_button.setObjectName("MeasureButton")
+        self.measure_button.setToolTip("캘리브레이션만 합니다 — 차량이 모재를 한 바퀴 돌며 좌표계를 잡습니다.")
+        self.measure_button.clicked.connect(self.measure_requested)
+        rail_layout.addWidget(self.measure_button)
         controls = QHBoxLayout()
         self.pause_button = QPushButton("일시정지")
         self.pause_button.setObjectName("PauseButton")
@@ -191,8 +201,11 @@ class MainScreen(QWidget):
         self.speed_bar.speed_changed.connect(self.speed_changed)
         root.addWidget(self.speed_bar)
 
+    #: 검사 대상 모양 — (ERUT geometry.shape, 화면 이름). 곡판은 판 가로도 받는다(2026-11-18).
+    TARGET_SHAPES = (("cylinder", "원통"), ("curved_plate", "곡판"))
+
     def _edit_target_dimensions(self) -> None:
-        """터치 전용 숫자 필드로 검사 대상의 지름과 높이를 입력받는다."""
+        """터치 전용 숫자 필드로 검사 대상의 모양 · 지름 · 높이(곡판은 가로)를 입력받는다."""
         dialog = QDialog(self)
         dialog.setWindowTitle("검사 대상 설정")
         dialog.setModal(True)
@@ -201,6 +214,13 @@ class MainScreen(QWidget):
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
         diameter_m, height_m = self.orbit_view.target_dimensions()
+        shape, width_m = self.orbit_view.target_shape()
+
+        shape_input = QComboBox()
+        shape_input.setObjectName("TargetShape")
+        for key, name in self.TARGET_SHAPES:
+            shape_input.addItem(name, key)
+        shape_input.setCurrentIndex(max(0, shape_input.findData(shape)))
 
         diameter_input = TouchDoubleSpinBox()
         diameter_input.dialog_title = "검사 대상 바깥 지름 입력"
@@ -218,8 +238,24 @@ class MainScreen(QWidget):
         height_input.setSuffix(" m")
         height_input.setValue(height_m)
 
-        form.addRow("바깥 지름", diameter_input)
+        width_input = TouchDoubleSpinBox()
+        width_input.dialog_title = "곡판 가로 입력 (바깥면을 따라 잰 길이)"
+        width_input.setRange(0.10, 100.00)
+        width_input.setDecimals(2)
+        width_input.setSingleStep(0.10)
+        width_input.setSuffix(" m")
+        width_input.setValue(width_m if width_m > 0 else 1.00)
+
+        def show_width() -> None:
+            width_input.setEnabled(shape_input.currentData() == "curved_plate")
+
+        shape_input.currentIndexChanged.connect(lambda _i: show_width())
+        show_width()
+
+        form.addRow("모양", shape_input)
+        form.addRow("바깥 지름 (곡판: 바깥면 반경 × 2)", diameter_input)
         form.addRow("높이", height_input)
+        form.addRow("곡판 가로", width_input)
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(
@@ -234,6 +270,10 @@ class MainScreen(QWidget):
             # 애플리케이션 계층에 요청한다.
             diameter_m = diameter_input.value()
             height_m = height_input.value()
+            shape = shape_input.currentData()
+            # 모양 · 가로를 먼저 바꾼다 — 받는 쪽(app)이 지름 · 높이와 함께 저장한다.
+            self.orbit_view.set_target_shape(
+                shape, width_input.value() if shape == "curved_plate" else 0.0)
             self.set_target_dimensions(diameter_m, height_m)
             self.target_dimensions_changed.emit(diameter_m, height_m)
 
@@ -437,8 +477,31 @@ class MainScreen(QWidget):
 
         self.start_button.setText("새 검사 시작" if cycle.phase is CyclePhase.COMPLETE else "검사 시작")
         self.start_button.setEnabled(not cycle.running or cycle.paused)
-        self.pause_button.setEnabled(cycle.running)
-        self.pause_button.setText("재개" if cycle.paused else "일시정지")
+        self._cycle_pause_state = (cycle.running, cycle.paused)
+        override = getattr(self, "_pause_override", None)
+        if override is None:
+            self.pause_button.setEnabled(cycle.running)
+            self.pause_button.setText("재개" if cycle.paused else "일시정지")
+        else:
+            self._apply_pause_override(override)
+
+    def set_pause_override(self, paused: bool | None) -> None:
+        """캘리브레이션(계측) 중에는 일시정지 · 재개 버튼이 차량을 맡는다(2026-11-12).
+
+        None 이면 검사 순서(사이클) 상태를 따른다. False 면 「일시정지」, True 면 「재개」로 켠다.
+        """
+        self._pause_override = paused
+        if paused is not None:
+            self._apply_pause_override(paused)
+            return
+        # 검사 순서(사이클)의 마지막 상태로 되돌린다.
+        running, cycle_paused = getattr(self, "_cycle_pause_state", (False, False))
+        self.pause_button.setEnabled(running)
+        self.pause_button.setText("재개" if cycle_paused else "일시정지")
+
+    def _apply_pause_override(self, paused: bool) -> None:
+        self.pause_button.setEnabled(True)
+        self.pause_button.setText("재개" if paused else "일시정지")
 
     def show_activity(self, message: str) -> None:
         """서비스 또는 시뮬레이터의 최근 활동 메시지를 표시한다."""

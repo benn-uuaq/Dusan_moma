@@ -25,8 +25,9 @@ class FakeVehicle(QObject):
         self.last_status: dict = {}
         self.accept = True
 
-    def set_job(self, job_id, set_dist, set_speed, **kw):
+    def set_job(self, job_id, set_dist, set_speed, standoff=0.0):
         self.calls.append(("set_job", job_id, round(set_dist, 6), set_speed))
+        self.standoff = standoff
         return True
 
     def control(self, state="", reset=False, job_cancel=False):
@@ -94,7 +95,7 @@ def test_amr_error_or_rejection_stops_waiting(car, qtbot) -> None:
 
 
 def test_amr_timeout(car, qtbot) -> None:
-    amr = VehicleAmrAdapter(car)
+    amr = VehicleAmrAdapter(car, speed_mps=10.0)     # 달릴 시간이 거의 없게 — 제한 ≈ TIMEOUT_MS
     amr.TIMEOUT_MS = 50
     got = _spy(amr)
     amr.move_to(100.0)
@@ -156,3 +157,22 @@ def test_switchable_motion_forwards_only_the_active_backend(car, qtbot) -> None:
     car.status(state="STOP", job_id="RCS-0001", set_dist=0.2, mv_dist=0.2)
     assert arrived == ["dummy", "vehicle"]
     assert not amr.select("nope")
+
+
+def test_amr_time_limit_grows_with_the_distance(car) -> None:
+    """기본 0.1 m/s 로 한 바퀴(캘리브레이션)처럼 멀리 가면 고정 120 초로는 모자란다(2026-11-12)."""
+    amr = VehicleAmrAdapter(car)
+    assert amr.speed_mps == 0.1                       # 차량 주행 속도 기본 0.1 m/s
+    amr.move_to(20000.0)                              # 20 m — 달릴 시간 200 초
+    assert amr._timer.interval() == 120_000 + int(200_000 * amr.TRAVEL_MARGIN)
+    # SetJob 은 거리 · 속도 · 거리 유지만 — 격자 · 크기(예전 total_* · offset_*)는 RCS 가 관리한다.
+    assert car.calls[-1] == ("set_job", "RCS-0001", 20.0, 0.1)
+
+
+def test_amr_explicit_time_limit_and_standoff(car) -> None:
+    """캘리브레이션 한 바퀴는 차량 설정의 최대 시간을 그대로 쓰고, 거리 유지를 SetJob 에 싣는다."""
+    amr = VehicleAmrAdapter(car)
+    amr.standoff_m = 2.0
+    amr.move_to(20000.0, timeout_ms=310_000)
+    assert amr._timer.interval() == 310_000
+    assert car.standoff == 2.0

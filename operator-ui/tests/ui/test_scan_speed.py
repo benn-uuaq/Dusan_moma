@@ -9,7 +9,7 @@
 from smr_operator_ui.app import OperatorWindow
 
 SCAN = {"pitch_left": 40, "pitch_right": 40, "speed_mm_s": 40, "speed_pct": 40, "overlap": 0}
-JOB = {"job_id": "jb-speed", "surface": "outer", "diameter": 1300, "height": 800,
+JOB = {"job_id": "jb-speed", "surface": "outer", "geometry": {"shape": "cylinder", "diameter": 1300, "height": 800},
        "area": {"start": {"x": 0, "y": 0}, "end": {"x": 300, "y": 200}}, "scan": SCAN}
 
 

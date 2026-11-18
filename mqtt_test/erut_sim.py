@@ -245,12 +245,17 @@ class ErutSimApp:
         self.seq += 1
         return f"req-{time.strftime('%Y%m%d')}-{self.seq:06d}"
 
+    def _geometry(self) -> dict:
+        """원통 geometry(if-0.13) — 이 시뮬레이터는 원통만 보낸다."""
+        return {"shape": "cylinder", "diameter": int(self.diameter_var.get()),
+                "height": int(self.height_var.get())}
+
     def _content(self, action: str) -> dict:
         """동작별 content 를 만든다. 규격의 payload 예시를 그대로 따른다."""
         c: dict[str, Any] = {"req_id": self._next_req_id()}
         if action == "calibrate":
-            c.update(diameter=int(self.diameter_var.get()),
-                     height=int(self.height_var.get()))
+            # if-0.13: 모재 모양 · 크기는 geometry 묶음이다(맨 바깥 diameter · height 는 없다).
+            c.update(geometry=self._geometry())
         elif action in ("prepare", "start"):
             # 규격 **20260812** 탭3 9·12번 그대로 보낸다: area + scan 만.
             # plan 블록은 0812 판에 없다. 반지름(바깥 지름 / 2)·EOAT 같은 장비 값은
@@ -274,8 +279,7 @@ class ErutSimApp:
                       "speed_pct": pct,
                       "speed_mm_s": round(pct / 100 * self._scan_speed_max, 3),
                       "overlap": int(float(self.overlap_var.get()))},
-                diameter=int(self.diameter_var.get()),
-                height=int(self.height_var.get()),
+                geometry=self._geometry(),
             )
             channels = self.channels_var.get().strip()
             if channels:

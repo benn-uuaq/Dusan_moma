@@ -6,7 +6,7 @@ from smr_operator_ui.app import OperatorWindow
 from smr_operator_ui.services.tpac_bridge.robot_map import RobotData
 
 SCAN = {"pitch_left": 25, "pitch_right": 35, "speed_mm_s": 40, "speed_pct": 40, "overlap": 10}
-JOB = {"job_id": "jb-mem", "surface": "outer", "diameter": 1300, "height": 800,
+JOB = {"job_id": "jb-mem", "surface": "outer", "geometry": {"shape": "cylinder", "diameter": 1300, "height": 800},
        "area": {"start": {"x": 0, "y": 0}, "end": {"x": 300, "y": 200}}, "scan": SCAN}
 
 

@@ -22,3 +22,17 @@ Position6D position
 
 # 리프트 높이
 float64 lift_h           # 리프트 높이 (단위: m)
+
+# ---- RCS 와 맞춘 칸 (2026-11-17 — docs/RCS_AGV_인터페이스_20261117.xlsx) ----------------
+# 값을 아직 못 채우면 기본값 그대로 둔다 — RCS 는 기본값을 「모름」으로 보고 조건에서 뺀다.
+uint8 battery_pct 255        # 배터리 잔량 [%] 0~100. 255 = 모름 · 배터리 없음(ERUT 에 싣지 않는다)
+bool charging false          # 충전 중
+bool estop false             # 차량 비상정지 눌림 → RCS 가 로봇 · 작업을 세우고 ERUT E1002
+bool obstacle_stop false     # 접근 감지(안전 스캐너)로 섰다 → RCS 가 작업을 일시정지
+int8 level_state -1          # 아웃트리거 수평: 1 맞음 · 0 안 맞음(로봇 검사 불가) · -1 모름
+float64 standoff_meas -1.0   # 지금 잰 거리 — 차량 안쪽 면 ↔ 모재 표면 [m]. 모르면 -1
+string lap_state "IDLE"      # 캘리브레이션 주행(MeasureLap — LAP 한 바퀴 · ALIGN QR 정렬): IDLE · RUNNING · DONE · FAILED
+float64 lap_path_m 0.0       # 이번 주행에서 차량 중심이 달린 거리 [m] (ALIGN 은 정렬하며 움직인 거리 · 참고)
+bool lap_origin_ok false     # LAP: 원점(QR)을 다시 찾아 원점에 섰다 · ALIGN: QR 마커에 맞춰 섰다
+string lap_error ""          # FAILED 일 때 까닭
+

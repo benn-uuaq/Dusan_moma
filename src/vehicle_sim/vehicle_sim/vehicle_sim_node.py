@@ -4,9 +4,12 @@
 차량 담당자가 준 인터페이스(vehicle_interfaces)를 **그대로** 쓴다.
 
   발행   <ns>/robot_status    RobotStatus   (rate_hz, 기본 10 Hz)
+         <ns>/start_request   std_msgs/Empty (차량 「작업 시작」 버튼 — 시험용 <ns>/sim/press_start 로 낸다)
   서비스 <ns>/robot_control   RobotControl
          <ns>/set_job         SetJob
          <ns>/manual_command  ManualCommand
+         <ns>/measure_lap     MeasureLap    (캘리브레이션 — LAP: expected_dist 만큼 돌고 DONE,
+                                            ALIGN: 곡판 QR 정렬 — align_s 동안 RUNNING 뒤 DONE)
   (<ns> 기본값 "vehicle" — 실제 이름은 차량 담당자 확인 필요)
 
 받은 자료에 없는 **동작 규칙은 아래처럼 가정**했다(RCS 쪽 vehicle_adapters 와 같다).
@@ -27,7 +30,13 @@
   6. RobotControl: "PAUSED" 멈춤, "RUNNING" 재개, "STOP" 정지,
      job_cancel=1 작업 취소, reset=1 오류 해제.
 
+  7. MeasureLap(mode LAP 또는 빈 글자) = 원점에서 expected_dist 만큼 돌고 서면 lap_state DONE ·
+     lap_path_m · lap_origin_ok. mode ALIGN(곡판) = 주행하지 않고 QR 정렬만(align_s 초 동안
+     RUNNING, lap_path_m 0) 하고 DONE · lap_origin_ok. 두 경우 모두 PAUSED · RUNNING 으로 멈추고
+     잇고, STOP 이면 lap_state FAILED.
+
 시험용으로 오류를 넣을 수 있다: ros2 param set /vehicle_sim fault_code 21
+비상정지 · 접근 감지 · 배터리도 파라미터로 바꾼다: estop, obstacle_stop, battery_pct
 움직이는 모습을 보려면 화면판을 쓴다: ros2 run vehicle_sim vehicle_sim_ui
 """
 
@@ -37,8 +46,10 @@ import math
 
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import Empty
+from std_srvs.srv import Trigger
 from vehicle_interfaces.msg import RobotStatus
-from vehicle_interfaces.srv import ManualCommand, RobotControl, SetJob
+from vehicle_interfaces.srv import ManualCommand, MeasureLap, RobotControl, SetJob
 
 
 class VehicleSim(Node):
@@ -55,7 +66,13 @@ class VehicleSim(Node):
         self.lift_max = float(p("lift_max", 3.0).value)             # m
         self.outrigger_s = float(p("outrigger_s", 1.5).value)       # 고정/해제 걸리는 시간
         self.deadman_s = float(p("deadman_s", 0.5).value)
+        self.align_s = float(p("align_s", 3.0).value)               # 곡판 QR 정렬 걸리는 시간
         p("fault_code", 0)                                          # 시험용 오류 주입
+        # RCS 와 맞춘 칸(2026-11-17) — 시험용으로 바꿀 수 있다.
+        p("battery_pct", 90)
+        p("charging", False)
+        p("estop", False)
+        p("obstacle_stop", False)
 
         self.state = "STOP"
         self.hold = "RELEASE"
@@ -79,11 +96,19 @@ class VehicleSim(Node):
         self.drive_after_release = False
         self.jog = (0.0, 0.0)       # (전후 속도, 회전 속도)
         self.jog_age = 0.0
+        self.standoff = -1.0        # 마지막으로 받은 거리 유지 [m]
+        self.lap_state = "IDLE"     # MeasureLap 진행
+        self.lap_origin_ok = False
+        self.lap_error = ""
+        self.align_left = 0.0       # ALIGN(곡판 QR 정렬) 남은 시간 [s]. 0 이면 정렬 중이 아니다
 
         self.pub = self.create_publisher(RobotStatus, f"{ns}/robot_status", 10)
         self.create_service(RobotControl, f"{ns}/robot_control", self.on_control)
         self.create_service(SetJob, f"{ns}/set_job", self.on_set_job)
         self.create_service(ManualCommand, f"{ns}/manual_command", self.on_manual)
+        self.create_service(MeasureLap, f"{ns}/measure_lap", self.on_measure_lap)
+        self.start_pub = self.create_publisher(Empty, f"{ns}/start_request", 10)
+        self.create_service(Trigger, f"{ns}/sim/press_start", self.on_press_start)
         self.dt = 1.0 / self.rate_hz
         self.create_timer(self.dt, self.tick)
         self.get_logger().info(f"차량 모의기 시작 — {ns}/robot_status, {ns}/robot_control, "
@@ -97,7 +122,57 @@ class VehicleSim(Node):
         self.job = req
         self.set_dist = float(req.set_dist)
         self.mv_dist = 0.0
+        self.standoff = float(getattr(req, "standoff", -1.0))
+        self.lap_state = "IDLE"
         res.success, res.message = True, f"Job {req.job_id} set: {req.set_dist:+.3f} m"
+        return res
+
+    def on_measure_lap(self, req, res):
+        """캘리브레이션 주행 — LAP 은 expected_dist 만큼 바로 출발한다(실물은 원점 QR 을 다시 볼 때까지).
+
+        ALIGN(곡판)은 주행하지 않는다 — QR 마커에 맞춰 정렬만 하고(align_s 초) 선다.
+        """
+        if self.state in ("RUNNING", "PAUSED", "ERROR"):
+            res.success, res.message = False, f"Rejected: {self.state.lower()}"
+            return res
+        mode = (getattr(req, "mode", "") or "LAP").strip().upper()
+        if mode not in ("LAP", "ALIGN"):
+            res.success, res.message = False, f"Rejected: unknown mode {mode}"
+            return res
+        if mode == "ALIGN":
+            self.job = SetJob.Request(job_id=req.job_id, set_dist=0.0, set_speed=float(req.speed))
+            self.set_dist = self.mv_dist = 0.0
+            self.standoff = float(req.standoff)
+            self.lap_state, self.lap_origin_ok, self.lap_error = "RUNNING", False, ""
+            self.align_left = max(self.align_s, self.dt)
+            if self.hold == "SET":
+                self._start_outrigger("RELEASE")
+                self.drive_after_release = True
+            else:
+                self.state = "RUNNING"
+            res.success, res.message = True, f"Align {req.job_id}: QR"
+            return res
+        if float(req.expected_dist) <= 0:
+            res.success, res.message = False, "Rejected: expected_dist <= 0"
+            return res
+        self.job = SetJob.Request(job_id=req.job_id, set_dist=float(req.expected_dist),
+                                  set_speed=float(req.speed))
+        self.set_dist = float(req.expected_dist)
+        self.mv_dist = 0.0
+        self.standoff = float(req.standoff)
+        self.lap_state, self.lap_origin_ok, self.lap_error = "RUNNING", False, ""
+        if self.hold == "SET":
+            self._start_outrigger("RELEASE")
+            self.drive_after_release = True
+        else:
+            self.state = "RUNNING"
+        res.success, res.message = True, f"Lap {req.job_id}: {req.expected_dist:.3f} m"
+        return res
+
+    def on_press_start(self, _req, res):
+        """시험용 — 차량 「작업 시작」 버튼을 누른 것처럼 start_request 를 낸다."""
+        self.start_pub.publish(Empty())
+        res.success, res.message = True, "start_request published"
         return res
 
     def on_control(self, req, res):
@@ -146,7 +221,7 @@ class VehicleSim(Node):
             return res
         res.success, res.message = True, "Done"
         fwd = (1.0 if req.cmd_mv_fwd else 0.0) - (1.0 if req.cmd_mv_rear else 0.0)
-        turn = (1.0 if req.cmd_trn_left else 0.0) - (1.0 if req.cmd_trl_right else 0.0)
+        turn = (1.0 if req.cmd_trn_left else 0.0) - (1.0 if req.cmd_trn_right else 0.0)
         if fwd or turn:
             if self.hold == "SET":
                 res.success, res.message = False, "Rejected: outriggers set"
@@ -181,6 +256,9 @@ class VehicleSim(Node):
         self.speed = 0.0
         self.jog = (0.0, 0.0)
         self.lift_target = None
+        if self.lap_state == "RUNNING":
+            self.lap_state, self.lap_error = "FAILED", "stopped"
+        self.align_left = 0.0
         if self.state in ("RUNNING", "PAUSED"):
             self.state = "HOLD" if self.hold == "SET" else "STOP"
 
@@ -259,7 +337,16 @@ class VehicleSim(Node):
                     self.drive_after_release = False
                     self.state = "RUNNING"
 
-        if self.state == "RUNNING" and self.job is not None:
+        if self.state == "RUNNING" and self.align_left > 0:
+            # 곡판 QR 정렬 — 제자리에서 맞추기만 한다(주행 거리 0).
+            self.speed = 0.0
+            self.align_left -= dt
+            if self.align_left <= 1e-9:
+                self.align_left = 0.0
+                self.state = "STOP"
+                if self.lap_state == "RUNNING":
+                    self.lap_state, self.lap_origin_ok = "DONE", True
+        elif self.state == "RUNNING" and self.job is not None:
             target_speed = float(self.job.set_speed) or self.default_speed
             remain = self.set_dist - self.mv_dist
             step = math.copysign(min(abs(remain), abs(target_speed) * dt), remain)
@@ -270,6 +357,8 @@ class VehicleSim(Node):
                 self.mv_dist = self.set_dist
                 self.speed = 0.0
                 self.state = "STOP"
+                if self.lap_state == "RUNNING":
+                    self.lap_state, self.lap_origin_ok = "DONE", True
 
         if self.state in ("STOP", "HOLD") and any(self.jog):
             self.jog_age += dt
@@ -305,6 +394,18 @@ class VehicleSim(Node):
         msg.position.x = self.odometer
         msg.position.yaw = self.yaw
         msg.lift_h = self.lift_h
+        param = lambda name: self.get_parameter(name).value          # noqa: E731
+        msg.battery_pct = int(param("battery_pct"))
+        msg.charging = bool(param("charging"))
+        msg.estop = bool(param("estop"))
+        msg.obstacle_stop = bool(param("obstacle_stop"))
+        # 수평은 아웃트리거가 고정돼 있을 때만 맞는다.
+        msg.level_state = 1 if self.hold == "SET" else 0
+        msg.standoff_meas = self.standoff
+        msg.lap_state = self.lap_state
+        msg.lap_path_m = self.mv_dist if self.lap_state != "IDLE" else 0.0
+        msg.lap_origin_ok = self.lap_origin_ok
+        msg.lap_error = self.lap_error
         self.pub.publish(msg)
 
 

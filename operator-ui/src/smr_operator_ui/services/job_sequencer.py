@@ -262,6 +262,9 @@ class JobSequencer(QObject):
     # 스캔 중 일시정지 / 재개 — 로봇 태스크를 그 자리에 세웠다가(pause) 잇는다(play).
     robot_pause_requested = pyqtSignal()
     robot_resume_requested = pyqtSignal()
+    #: 일시정지 · 재개 때 움직이던 차량 · 리프트 · 아웃트리거도 세우고 다시 보낸다(2026-11-12).
+    motion_pause_requested = pyqtSignal()
+    motion_resume_requested = pyqtSignal()
     # 아웃트리거로 차량을 고정해 달라는 요청. 더미 어댑터가 받는다.
     secure_requested = pyqtSignal()
     # 로봇을 안전 위치로 물리라는 요청. 더미 어댑터가 받는다.
@@ -408,6 +411,8 @@ class JobSequencer(QObject):
             self.robot_pause_requested.emit()
         else:
             self.robot_stop_requested.emit()
+        # 구간 이동 중인 차량 · 오르내리는 리프트도 그 자리에 세운다.
+        self.motion_pause_requested.emit()
         self.activity.emit(f"{self.current_cell()} 에서 일시정지했습니다.")
 
     def resume(self) -> None:
@@ -416,6 +421,8 @@ class JobSequencer(QObject):
             return
         self._set_state(self._resume_state)
         self.activity.emit(f"{self.current_cell()} 에서 재개했습니다.")
+        # 세워 둔 차량 · 리프트를 같은 목표로 다시 보낸다 — 닿으면 하던 순서를 잇는다.
+        self.motion_resume_requested.emit()
         arrival, self._arrival_during_pause = self._arrival_during_pause, None
         if arrival is not None:
             # 멈춰 있는 동안 차량·리프트가 자리에 닿았다 — 이어서 다음 단계로.

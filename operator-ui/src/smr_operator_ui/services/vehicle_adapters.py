@@ -73,10 +73,11 @@ class _VehicleStep(QObject):
         self.position_changed.emit(self._position)
 
     # ---- 공통 흐름 -----------------------------------------------------------
-    def _begin(self, label: str) -> None:
+    def _begin(self, label: str, timeout_ms: int | None = None) -> None:
         self._moving = True
         self._label = label
-        self._timer.start(self.TIMEOUT_MS)
+        self._timeout_ms = int(timeout_ms or self.TIMEOUT_MS)
+        self._timer.start(self._timeout_ms)
         self.activity.emit(f"[차량] {self._name} → {label}")
 
     def _finish(self, ok: bool) -> None:
@@ -96,7 +97,8 @@ class _VehicleStep(QObject):
         self.problem.emit(message)
 
     def _on_timeout(self) -> None:
-        self._fail(f"{self.TIMEOUT_MS // 1000}초 안에 끝나지 않았습니다")
+        limit_ms = getattr(self, "_timeout_ms", self.TIMEOUT_MS)
+        self._fail(f"{limit_ms // 1000}초 안에 끝나지 않았습니다")
 
     def _on_command_result(self, name: str, ok: bool, message: str) -> None:
         if self._moving and not ok and name in self._watched_commands():
@@ -121,11 +123,15 @@ class VehicleAmrAdapter(_VehicleStep):
     COMMAND = "set_job"
     TOLERANCE_M = 0.002
 
-    def __init__(self, client, speed_mps: float = 0.3, parent: QObject | None = None) -> None:
+    #: 제한 시간 = TIMEOUT_MS + 달릴 시간 × 이 배수 — 주행 속도가 느리거나(기본 0.1 m/s) 한 바퀴
+    #: (캘리브레이션)처럼 먼 이동이 고정 120 초에 걸려 실패하지 않게(2026-11-12).
+    TRAVEL_MARGIN = 1.5
+
+    def __init__(self, client, speed_mps: float = 0.1, parent: QObject | None = None) -> None:
         super().__init__("AMR", client, parent)
         self.speed_mps = float(speed_mps)
-        #: SetJob 의 total_distance / total_height 로 싣는 작업 전체 크기 [m].
-        self.totals = (0.0, 0.0)
+        #: 차량이 모재를 돌며 지킬 거리 [m] — SetJob.standoff (RCS 차량 설정 「모재 거리 유지」).
+        self.standoff_m = 0.0
         self._base = 0.0          # 이번 이동을 시작한 위치 [mm]
         self._set_dist = 0.0      # 이번 이동 거리 [m]
         self._job_id = ""
@@ -136,10 +142,15 @@ class VehicleAmrAdapter(_VehicleStep):
     def _watched_commands(self) -> tuple[str, ...]:
         return ("set_job", "robot_control")
 
-    def move_to(self, target: float | int, unit: str = "", label: str = "") -> None:
+    def move_to(self, target: float | int, unit: str = "", label: str = "",
+                timeout_ms: int | None = None) -> None:
+        """`timeout_ms` 를 주면 그 시간을 쓴다(캘리브레이션 한 바퀴 — 차량 설정의 최대 시간)."""
         self._target = float(target)
         delta_mm = self._target - self._position
-        self._begin(label or f"{target:g}{unit}")
+        travel_ms = (abs(delta_mm) / 1000.0 / self.speed_mps * 1000.0 * self.TRAVEL_MARGIN
+                     if self.speed_mps > 0 else 0.0)
+        self._begin(label or f"{target:g}{unit}",
+                    int(timeout_ms) if timeout_ms else self.TIMEOUT_MS + int(travel_ms))
         if abs(delta_mm) < 0.5:
             QTimer.singleShot(0, lambda: self._finish(True))
             return
@@ -149,9 +160,8 @@ class VehicleAmrAdapter(_VehicleStep):
         self._set_dist = delta_mm / 1000.0
         self._running_seen = False
         self._started = False
-        total_d, total_h = self.totals
         if not self._client.set_job(self._job_id, self._set_dist, self.speed_mps,
-                                    total_distance=total_d, total_height=total_h):
+                                    standoff=self.standoff_m):
             self._fail("SetJob 을 보내지 못했습니다")
 
     def _on_command_result(self, name: str, ok: bool, message: str) -> None:

@@ -3,9 +3,11 @@
 차량 담당자가 준 인터페이스(ROS 패키지 `vehicle_interfaces`)를 쓴다.
 
   구독   <ns>/robot_status    RobotStatus   상태 (주기 발행)
+         <ns>/start_request   std_msgs/Empty 차량 「작업 시작」 버튼 → RCS 계측 시작(2026-11-17)
   서비스 <ns>/robot_control   RobotControl  출발·일시정지·정지·리셋·작업 취소
          <ns>/set_job         SetJob        이동 작업 설정
          <ns>/manual_command  ManualCommand 수동 조그·아웃트리거·리프트
+         <ns>/measure_lap     MeasureLap    캘리브레이션 한 바퀴(2026-11-17 — 없으면 SetJob 으로 대신)
 
 <ns> 는 `SMR_VEHICLE_NS` 환경변수(기본 "vehicle"). 실제 이름은 차량 담당자와
 맞춰야 한다 — 받은 자료에 토픽·서비스 이름이 없었다.
@@ -31,10 +33,20 @@ try:
 except ImportError:  # pragma: no cover - 워크스페이스를 소싱하지 않은 환경
     VEHICLE_AVAILABLE = False
 
+try:  # 2026-11-17 에 더한 서비스 — 옛 빌드면 없다(그때는 SetJob 한 바퀴로 대신한다).
+    from vehicle_interfaces.srv import MeasureLap
+except ImportError:  # pragma: no cover
+    MeasureLap = None
+
+try:
+    from std_msgs.msg import Empty
+except ImportError:  # pragma: no cover
+    Empty = None
+
 #: ManualCommand 의 필드 기본값. 보내지 않은 필드는 "명령 없음"이다.
 MANUAL_FIELDS: dict[str, Any] = {
     "cmd_mv_fwd": False, "cmd_mv_rear": False,
-    "cmd_trn_left": False, "cmd_trl_right": False,   # 받은 자료의 이름 그대로
+    "cmd_trn_left": False, "cmd_trn_right": False,   # 받은 자료의 cmd_trl_right 는 오타라 고쳤다(2026-11-17)
     "cmd_outrg_set": 0, "cmd_man_outrg1": 0, "cmd_man_outrg2": 0, "cmd_man_outrg3": 0,
     "cmd_mv_lift": 0, "cmd_init": 0, "lift_height": 0.0,
 }
@@ -53,7 +65,36 @@ def status_to_dict(msg) -> dict[str, Any]:
         "roll": float(msg.position.roll), "pitch": float(msg.position.pitch),
         "yaw": float(msg.position.yaw),
         "lift_h": float(msg.lift_h),
+        **_added_fields(msg),
     }
+
+
+def _added_fields(msg) -> dict[str, Any]:
+    """2026-11-17 에 더한 칸(RCS_AGV_인터페이스). 「모름」 값은 싣지 않는다 — RCS 는 없는 칸을 조건에서 뺀다.
+
+      battery_pct 255 · level_state -1 · standoff_meas < 0 → 모름
+    옛 빌드(칸이 없는 메시지)여도 돈다.
+    """
+    out: dict[str, Any] = {}
+    battery = getattr(msg, "battery_pct", 255)
+    if 0 <= int(battery) <= 100:
+        out["battery_pct"] = int(battery)
+        out["charging"] = bool(getattr(msg, "charging", False))
+    for name in ("estop", "obstacle_stop"):
+        if hasattr(msg, name):
+            out[name] = bool(getattr(msg, name))
+    level = int(getattr(msg, "level_state", -1))
+    if level in (0, 1):
+        out["level_ok"] = level == 1
+    standoff = float(getattr(msg, "standoff_meas", -1.0))
+    if standoff >= 0:
+        out["standoff_meas"] = standoff
+    if hasattr(msg, "lap_state"):
+        out["lap_state"] = str(msg.lap_state or "IDLE")
+        out["lap_path_m"] = float(msg.lap_path_m)
+        out["lap_origin_ok"] = bool(msg.lap_origin_ok)
+        out["lap_error"] = str(msg.lap_error)
+    return out
 
 
 class VehicleClient(QObject):
@@ -63,8 +104,10 @@ class VehicleClient(QObject):
     status_changed = pyqtSignal(dict)
     #: 상태가 들어오는지(STALE_S 안에 받았는지). 바뀔 때만 나간다.
     online_changed = pyqtSignal(bool)
-    #: (명령 이름, 접수 성공, 문구) — "set_job" / "robot_control" / "manual_command"
+    #: (명령 이름, 접수 성공, 문구) — "set_job" / "robot_control" / "manual_command" / "measure_lap"
     command_result = pyqtSignal(str, bool, str)
+    #: 차량 「작업 시작」 버튼이 눌렸다(<ns>/start_request) — RCS 가 계측 시작을 돈다.
+    start_requested = pyqtSignal()
 
     STALE_S = 2.0
 
@@ -109,6 +152,11 @@ class VehicleClient(QObject):
             "set_job": node.create_client(SetJob, self.topic("set_job")),
             "manual_command": node.create_client(ManualCommand, self.topic("manual_command")),
         }
+        if MeasureLap is not None:
+            self._clients["measure_lap"] = node.create_client(MeasureLap, self.topic("measure_lap"))
+        if Empty is not None:
+            node.create_subscription(Empty, self.topic("start_request"),
+                                     lambda _msg: self.start_requested.emit(), 10)
 
     def _on_status(self, msg) -> None:
         self._last = status_to_dict(msg)
@@ -142,20 +190,50 @@ class VehicleClient(QObject):
 
     # ------------------------------------------------------------ 명령
     def set_job(self, job_id: str, set_dist: float, set_speed: float,
-                offset_dist: float = 0.0, offset_height: float = 0.0,
-                total_distance: float = 0.0, total_height: float = 0.0) -> bool:
-        """이동 작업 설정. 거리 m, 속도 m/s."""
+                standoff: float = 0.0) -> bool:
+        """이동 작업 설정. 거리 m, 속도 m/s, 거리 유지 m.
+
+        차량은 받은 거리만큼 달리기만 한다 — 격자 · 구역 크기는 RCS 가 관리한다(2026-11-12).
+        `standoff` 는 차량이 모재를 돌며 지킬 거리(RCS 차량 설정 「모재 거리 유지」).
+        """
         if not VEHICLE_AVAILABLE:
             return self._call("set_job", None)
         req = SetJob.Request()
         req.job_id = str(job_id)
         req.set_dist = float(set_dist)
         req.set_speed = float(set_speed)
-        req.offset_dist = float(offset_dist)
-        req.offset_height = float(offset_height)
-        req.total_distance = float(total_distance)
-        req.total_height = float(total_height)
+        req.standoff = float(standoff)
         return self._call("set_job", req)
+
+    def supports(self, name: str) -> bool:
+        """그 서비스를 차량 노드가 지금 내고 있는가(예: measure_lap — 없으면 다른 길로)."""
+        client = self._clients.get(name)
+        try:
+            return client is not None and bool(client.service_is_ready())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def measure_lap(self, job_id: str, speed: float, standoff: float, expected_dist: float,
+                    mode: str = "LAP") -> bool:
+        """캘리브레이션 주행(MeasureLap). 속도 m/s, 거리 m. 결과는 상태의 lap_* 로 온다.
+
+        mode: "LAP" 원통 한 바퀴 · "ALIGN" 곡판 QR 정렬만(expected_dist 0, 2026-11-18).
+        """
+        if not VEHICLE_AVAILABLE or MeasureLap is None:
+            return self._call("measure_lap", None)
+        req = MeasureLap.Request()
+        req.job_id = str(job_id)
+        if hasattr(req, "mode"):
+            req.mode = str(mode)
+        elif mode != "LAP":
+            # 옛 정의(mode 칸 없음)로 빌드된 차량 패키지 — 곡판 정렬을 보낼 수 없다.
+            self.command_result.emit("measure_lap", False,
+                                     "MeasureLap 에 mode 칸이 없습니다 — vehicle_interfaces 를 다시 빌드하세요")
+            return False
+        req.speed = float(speed)
+        req.standoff = float(standoff)
+        req.expected_dist = float(expected_dist)
+        return self._call("measure_lap", req)
 
     def control(self, state: str = "", reset: bool = False, job_cancel: bool = False) -> bool:
         """출발("RUNNING")·일시정지("PAUSED")·정지("STOP")·리셋·작업 취소."""

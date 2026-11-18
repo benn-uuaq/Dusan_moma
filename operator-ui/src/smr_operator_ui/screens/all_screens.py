@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import json
 import os
 from datetime import datetime
@@ -117,7 +119,7 @@ class ManualScreen(BaseScreen):
         pad = QGridLayout(); pad.setSpacing(8)
         self.jog_buttons: dict[str, QPushButton] = {}
         for text, key, r, c in (("전진", "cmd_mv_fwd", 0, 1), ("좌회전", "cmd_trn_left", 1, 0),
-                                ("우회전", "cmd_trl_right", 1, 2), ("후진", "cmd_mv_rear", 2, 1)):
+                                ("우회전", "cmd_trn_right", 1, 2), ("후진", "cmd_mv_rear", 2, 1)):
             b = QPushButton(text); b.setMinimumSize(88, 64)
             b.pressed.connect(lambda k=key: self._hold({k: True}))
             b.released.connect(self._release)
@@ -794,30 +796,28 @@ class SettingsMenuScreen(BaseScreen):
 
 
 class IOStatusScreen(BaseScreen):
-    """입출력을 조회하고 출력 신호를 조작하는 화면.
+    """로봇 밀착 센서와 차량 상태를 보는 모니터링 화면 — 조회만 한다(2026-11-12).
 
-    신호 목록은 `config/plc_io.json`에서 읽는다. 신호가 늘어나도 파일만
-    고치면 되고 화면 코드는 그대로 둔다. 신호마다 `bus`가 있어 어디로
-    보낼지 구분한다 — robot 은 협동로봇 디지털 IO, plc 는 차량용 PLC다.
+    조작(출력 켜고 끄기)은 수동 제어 · Cobot 수동 제어 화면에 있어 여기서는 뺐다. 목록은
+    `config/plc_io.json` 에서 읽는다 — 항목이 늘어도 파일만 고친다. 신호마다 `bus` 가 값의 출처다:
+    robot_config = 로봇 레지스터 1 비트(Config 입력 · 툴 입력), vehicle = 차량 제어 노드 상태(RobotStatus 칸),
+    derived = RCS 가 판단한 값(로봇 안전정지).
     """
 
-    # 출력 신호를 바꿔 달라는 요청. (주소, 켜기여부)를 전달한다.
-    output_requested = pyqtSignal(str, bool)
-
-    COLUMNS = ("주소", "신호명", "방향", "값", "상태")
+    COLUMNS = ("항목", "신호명", "방향", "값", "상태")
 
     def __init__(self, signals: list[dict] | None = None) -> None:
         super().__init__("I/O 상태",
-                         "왼쪽 목록은 조회 전용이고, 오른쪽에서 출력 신호를 켜고 끕니다. "
-                         "로봇 DO 는 바로 나가고, 차량 PLC 는 실물 연결 뒤에 붙습니다.")
+                         "로봇 밀착 센서와 차량 상태를 조회만 합니다 — 조작은 수동 제어 화면에서 합니다. "
+                         "툴 입력은 로봇 태스크가 도는 동안, 차량 값은 차량 제어 노드가 상태를 보내는 동안 "
+                         "갱신됩니다.")
         self.signals = signals if signals is not None else load_plc_signals()
-
-        columns = QHBoxLayout(); columns.setSpacing(12); self.body.addLayout(columns, 1)
 
         table = QTableWidget(len(self.signals), len(self.COLUMNS))
         table.setHorizontalHeaderLabels(list(self.COLUMNS))
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.value_items: dict[str, QTableWidgetItem] = {}
+        self.status_items: dict[str, QTableWidgetItem] = {}
         for row, signal in enumerate(self.signals):
             cells = (signal.get("address", ""), signal.get("name", ""),
                      signal.get("direction", ""), signal.get("value", ""),
@@ -826,96 +826,20 @@ class IOStatusScreen(BaseScreen):
                 item = QTableWidgetItem(str(text)); table.setItem(row, column, item)
                 if column == 3:
                     self.value_items[str(signal.get("address", ""))] = item
+                if column == 4:
+                    self.status_items[str(signal.get("address", ""))] = item
         header = table.horizontalHeader()
         table.resizeColumnsToContents()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(1, header.ResizeMode.Stretch)
-        columns.addWidget(table, 3)
-
-        # 조작 버튼을 표 칸 안에 두면 행이 답답해지므로 오른쪽에 모아 둔다.
-        controls, cl = self.surface("출력 제어")
-        self.output_buttons: dict[str, list[QPushButton]] = {}
-        self.output_state_labels: dict[str, QLabel] = {}
-
-        # 출력 신호가 얼마나 늘어날지 모르므로 목록은 스크롤되게 둔다.
-        inner = QWidget()
-        stack = QVBoxLayout(inner)
-        stack.setContentsMargins(0, 0, 0, 0); stack.setSpacing(8)
-        outputs = [s for s in self.signals if str(s.get("direction", "")).upper() == "OUT"]
-        current_group = None
-        for signal in outputs:
-            group = signal.get("group") or "기타"
-            if group != current_group:
-                current_group = group
-                header = QLabel(group); header.setObjectName("MetricLabel")
-                stack.addWidget(header)
-            stack.addWidget(self._output_row(signal))
-        if not outputs:
-            stack.addWidget(QLabel("조작할 출력 신호가 없습니다."))
-        stack.addStretch()
-
-        area = QScrollArea(); area.setWidget(inner); area.setWidgetResizable(True)
-        area.setFrameShape(QFrame.Shape.NoFrame)
-        # 카드 위에 얹히므로 스크롤 영역 자체는 배경을 그리지 않는다.
-        area.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
-        cl.addWidget(area, 1)
-        controls.setMinimumWidth(380)
-        columns.addWidget(controls, 2)
-
-        self.activity_label = QLabel("출력 신호를 바꾸면 PLC에 요청을 보냅니다.")
-        self.activity_label.setObjectName("Muted"); self.activity_label.setWordWrap(True)
-        self.body.addWidget(self.activity_label)
-
-    def _output_row(self, signal: dict) -> QWidget:
-        """출력 신호 한 줄: 이름과 현재 값, 그리고 ON/OFF 버튼."""
-        address = str(signal.get("address", ""))
-        row = QWidget(); layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(8)
-
-        names = QVBoxLayout(); names.setSpacing(0)
-        title = QLabel(f"{address}  {signal.get('name', '')}")
-        title.setObjectName("MetricLabel"); title.setWordWrap(True)
-        state = QLabel(f"현재  {signal.get('value', '')}")
-        state.setObjectName("MetricValue")
-        self.output_state_labels[address] = state
-        names.addWidget(title); names.addWidget(state)
-        layout.addLayout(names, 1)
-
-        buttons: list[QPushButton] = []
-        for text, turn_on in (("ON", True), ("OFF", False)):
-            button = QPushButton(text); button.setMinimumWidth(76)
-            # address와 turn_on을 기본 인자로 고정하지 않으면 모든 버튼이
-            # 반복문의 마지막 값을 전달하게 된다.
-            button.clicked.connect(
-                lambda _, a=address, on=turn_on: self._request_output(a, on)
-            )
-            buttons.append(button)
-            layout.addWidget(button)
-        self.output_buttons[address] = buttons
-        return row
-
-    def _request_output(self, address: str, turn_on: bool) -> None:
-        """조작 요청을 기록하고 상위 계층에 전달한다."""
-        self.activity_label.setText(
-            f"{address} 출력을 {'ON' if turn_on else 'OFF'}으로 요청했습니다."
-        )
-        self.output_requested.emit(address, turn_on)
-
-    def bus_of(self, address: str) -> str:
-        """그 신호가 어느 장비에 붙어 있는지(robot / plc)."""
-        signal = self._signal(address)
-        return str(signal.get("bus", "plc"))
-
-    def bit_of(self, address: str) -> int | None:
-        """로봇 디지털 IO 의 비트 번호. 없으면 None."""
-        bit = self._signal(address).get("bit")
-        return None if bit is None else int(bit)
+        header.setSectionResizeMode(3, header.ResizeMode.Stretch)
+        # 상태 글자(수신 없음 · 칸 없음 등)가 잘리지 않게 내용에 맞춘다.
+        for column in (0, 2, 4):
+            header.setSectionResizeMode(column, header.ResizeMode.ResizeToContents)
+        self.body.addWidget(table, 1)
 
     def set_bits(self, bus: str, direction: str, bits: int) -> None:
-        """비트묶음 하나로 그 장비의 신호 값을 한꺼번에 갱신한다.
-
-        로봇은 디지털 IO 16개를 레지스터 하나에 담아 보내 준다.
-        """
+        """비트묶음 하나로 그 장비의 신호 값을 한꺼번에 갱신한다(로봇 툴 입력)."""
         for signal in self.signals:
             if signal.get("bus") != bus or signal.get("direction") != direction:
                 continue
@@ -923,21 +847,61 @@ class IOStatusScreen(BaseScreen):
             if bit is None:
                 continue
             self.set_value(str(signal.get("address", "")),
-                           "ON" if bits >> int(bit) & 1 else "OFF")
+                           "ON" if bits >> int(bit) & 1 else "OFF", "정상")
 
-    def _signal(self, address: str) -> dict:
-        return next(
-            (s for s in self.signals if str(s.get("address")) == address), {}
-        )
+    def set_vehicle_status(self, status: dict | None) -> None:
+        """차량 제어 노드 상태(RobotStatus 사전)를 목록에 옮긴다. None 이면 수신 없음."""
+        for signal in self.signals:
+            if signal.get("bus") != "vehicle":
+                continue
+            address = str(signal.get("address", ""))
+            if status is None:
+                self.set_value(address, "-", "수신 없음")
+                continue
+            value, state = self._vehicle_value(str(signal.get("field", "")), status)
+            self.set_value(address, value, state)
 
-    def set_value(self, address: str, value: str) -> None:
-        """PLC가 알려준 현재 값을 목록과 출력 제어에 함께 반영한다."""
+    @staticmethod
+    def _vehicle_value(field: str, status: dict) -> tuple[str, str]:
+        """(값, 상태) 문자열. 차량이 아직 모르는 값이면 ("-", "모름")."""
+        if field == "level":
+            if "level_ok" in status:
+                ok = bool(status["level_ok"])
+                return ("맞음" if ok else "안 맞음"), ("정상" if ok else "확인")
+            if "roll" in status and "pitch" in status:
+                return (f"roll {math.degrees(float(status['roll'])):.2f}° · "
+                        f"pitch {math.degrees(float(status['pitch'])):.2f}°"), "정상"
+            return "-", "모름"
+        if field == "state":
+            state = str(status.get("state", "") or "-")
+            code = int(status.get("error_code", 0) or 0)
+            if code:
+                return f"{state} · 오류 {code}", "오류"
+            return state, ("오류" if state == "ERROR" else "정상")
+        if field not in status:
+            return "-", "모름"
+        value = status[field]
+        if field in ("estop", "obstacle_stop"):
+            return ("ON" if value else "OFF"), ("정지" if value else "정상")
+        if field == "hold":
+            text = {"SET": "고정", "RELEASE": "해제"}.get(str(value), str(value) or "-")
+            return text, "정상"
+        if field in ("lift_h", "standoff_meas"):
+            return f"{float(value) * 1000.0:,.0f} mm", "정상"
+        if field == "battery_pct":
+            charging = " · 충전 중" if status.get("charging") else ""
+            return f"{int(value)} %{charging}", "정상"
+        return str(value), "정상"
+
+    def set_value(self, address: str, value: str, status: str | None = None) -> None:
+        """한 항목의 값(과 상태)을 목록에 반영한다."""
         item = self.value_items.get(address)
         if item is not None:
             item.setText(value)
-        state = self.output_state_labels.get(address)
-        if state is not None:
-            state.setText(f"현재  {value}")
+        if status is not None:
+            state = self.status_items.get(address)
+            if state is not None:
+                state.setText(status)
 
 
 class FormScreen(BaseScreen):
@@ -1137,10 +1101,17 @@ class VehicleSettingsScreen(FormScreen):
     BASE_FIELD = "로봇 베이스 높이"
     REACH_FIELD = "로봇 상승 한계"
     SPEED_FIELD = "차량 주행 속도"
+    CALIB_FIELD = "캘리브레이션 최대 시간"
+    #: 곡판 캘리브레이션(한 바퀴 대신 원점 QR 정렬만) 최대 시간 [s] (2026-11-18). 곡판 calibrate 를
+    #: 받으면 이 값이 「캘리브레이션 최대 시간」에 들어간다.
+    ALIGN_FIELD = "곡판 QR 정렬 최대 시간"
+    #: 캘리브레이션 한 바퀴 계산 시간에 곱하는 여유 — 정방향을 맞추는 회전 · 가감속(2026-11-12).
+    CALIB_MARGIN = 1.5
     #: 처음 값. 폭 · 거리 0 이면 배율 1(예전과 같다), 베이스 높이 0 이면 팔은 시작 위치에서
     #: 상승 한계만큼만 닿는 것으로 본다(작게 잡는 쪽) — 실측값을 넣는다.
     DEFAULTS = {WIDTH_FIELD: 0, STANDOFF_FIELD: 0, LIFT_MAX_FIELD: 3500,
-                BASE_FIELD: 0, REACH_FIELD: 1600, SPEED_FIELD: 300}
+                BASE_FIELD: 0, REACH_FIELD: 1600, SPEED_FIELD: 100, CALIB_FIELD: 0,
+                ALIGN_FIELD: 120}
     DISPLAY_LABELS = {
         WIDTH_FIELD: "차량 폭 (모재 쪽 면 ↔ 바깥 면)",
         STANDOFF_FIELD: "모재 거리 유지 (벽 ↔ 차량 센서 면)",
@@ -1148,6 +1119,8 @@ class VehicleSettingsScreen(FormScreen):
         BASE_FIELD: "로봇 베이스 높이 (차량, 리프트 최하단)",
         REACH_FIELD: "로봇팔 상승 한계 (베이스에서 위로)",
         SPEED_FIELD: "차량 주행 속도",
+        CALIB_FIELD: "캘리브레이션 최대 시간",
+        ALIGN_FIELD: "곡판 QR 정렬 최대 시간",
     }
 
     def __init__(self):
@@ -1166,6 +1139,9 @@ class VehicleSettingsScreen(FormScreen):
         standoff = mm(self.DEFAULTS[self.STANDOFF_FIELD], 2000)
         speed = mm(self.DEFAULTS[self.SPEED_FIELD], 1000, " mm/s")
         speed.setMinimum(10)
+        calib = mm(self.DEFAULTS[self.CALIB_FIELD], 7200, " s")
+        align = mm(self.DEFAULTS[self.ALIGN_FIELD], 3600, " s")
+        align.setMinimum(10)
         lift_max = mm(self.DEFAULTS[self.LIFT_MAX_FIELD], 10000)
         base = mm(self.DEFAULTS[self.BASE_FIELD], 3000)
         reach = mm(self.DEFAULTS[self.REACH_FIELD], 3000)
@@ -1182,6 +1158,8 @@ class VehicleSettingsScreen(FormScreen):
                 ("벽 ↔ 차량 중심", self.center_label),
                 ("주행 배율", self.scale_label),
                 (self.SPEED_FIELD, speed),
+                (self.CALIB_FIELD, calib),
+                (self.ALIGN_FIELD, align),
                 ("리프트 · 로봇 높이", None),
                 (self.LIFT_MAX_FIELD, lift_max),
                 (self.BASE_FIELD, base),
@@ -1190,7 +1168,7 @@ class VehicleSettingsScreen(FormScreen):
             ],
             columns=2,
         )
-        for box in (width, standoff, lift_max, base, reach):
+        for box in (width, standoff, lift_max, base, reach, speed):
             box.valueChanged.connect(lambda _v: self._update_derived())
         self._update_derived()
 
@@ -1229,6 +1207,47 @@ class VehicleSettingsScreen(FormScreen):
     def speed_mm_s(self) -> float:
         return self._number(self.SPEED_FIELD)
 
+    def calibration_time_s(self) -> float:
+        """캘리브레이션 최대 시간 [s]. 0 이면 아직 없다(사람이 넣거나 캘리브레이션 때 계산)."""
+        return self._number(self.CALIB_FIELD)
+
+    def calibration_estimate(self, diameter_mm: float | None = None) -> dict | None:
+        """캘리브레이션 한 바퀴 계산 — {lap_mm, travel_s, seconds}. 지름 · 속도를 모르면 None.
+
+        한 바퀴 = 2π(R + 모재 거리 유지 + 차량 폭/2) — 차량 중심이 도는 궤적. 주행 속도(이 화면)로
+        나눈 시간에 여유(CALIB_MARGIN — 정방향을 맞추는 회전 · 가감속)를 곱해 10 초 단위로 올린다.
+        """
+        diameter = self._diameter_mm if diameter_mm is None else float(diameter_mm)
+        speed = self.speed_mm_s()
+        if diameter <= 0 or speed <= 0:
+            return None
+        lap = 2.0 * math.pi * (diameter / 2.0 + self.center_distance_mm())
+        travel = lap / speed
+        seconds = int(math.ceil(travel * self.CALIB_MARGIN / 10.0) * 10)
+        return {"lap_mm": lap, "travel_s": travel, "seconds": seconds}
+
+    def align_time_s(self) -> float:
+        """곡판 QR 정렬 최대 시간 [s]."""
+        return self._number(self.ALIGN_FIELD)
+
+    def apply_calibration_estimate(self, diameter_mm: float, shape: str | None = None) -> int:
+        """캘리브레이션 명령을 받았다 — 계산한 시간을 칸에 넣는다(사람이 넣은 값을 덮는다).
+
+        돌려준 값 [s] 을 그 주행의 제한 시간과 ERUT 에 알리는 시간으로 쓴다. 원통은 한 바퀴
+        계산값, 곡판(curved_plate)은 한 바퀴 돌지 않으므로 「곡판 QR 정렬 최대 시간」이다.
+        계산할 수 없으면 칸을 그대로 두고 그 값을 돌려준다.
+        """
+        self.set_target_diameter(diameter_mm)
+        if shape == "curved_plate":
+            self.field(self.CALIB_FIELD).setValue(int(self.align_time_s()))
+            self._update_derived()
+            return int(self.calibration_time_s())
+        estimate = self.calibration_estimate(diameter_mm)
+        if estimate is not None:
+            self.field(self.CALIB_FIELD).setValue(int(estimate["seconds"]))
+        self._update_derived()
+        return int(self.calibration_time_s())
+
     def center_distance_mm(self) -> float:
         """벽 ↔ 차량 중심(회전 · 주행 기준점) = 모재 거리 유지 + 차량 폭 ÷ 2."""
         return self.standoff_mm() + self.width_mm() / 2.0
@@ -1253,8 +1272,10 @@ class VehicleSettingsScreen(FormScreen):
             f"(베이스 + 리프트 한계 + 팔)")
         if self._diameter_mm > 0:
             scale = self.travel_scale()
+            # 예시 거리(표면 200)는 빼고 쓰는 값만 적는다 — 배율은 입력한 폭 · 거리 유지로 바로 바뀐다.
             self.scale_label.setText(
-                f"× {scale:.3f} (지름 {self._diameter_mm:,.0f} mm — 표면 200 → 차량 {200 * scale:,.0f} mm)")
+                f"× {scale:.3f} = (모재 지름/2 + 모재 거리 유지 + 차량 폭/2) ÷ (모재 지름/2), "
+                f"모재 지름 {self._diameter_mm:,.0f} mm")
         else:
             self.scale_label.setText("모재 지름을 받으면 계산합니다")
 
@@ -1426,7 +1447,7 @@ class ConnectionSettingsScreen(FormScreen):
     #: 차량이 안 움직이는 이유를 알기 어렵다(실제로 그렇게 헤맸다).
     vehicle_mode_changed = pyqtSignal(str)
 
-    """협동로봇, 차량용 PLC, ERUT 의 연결 정보를 한 화면에서 설정한다.
+    """협동로봇, 차량, ERUT 의 연결 정보를 한 화면에서 설정한다(PLC 는 차량 노드가 맡는다).
 
     로봇 연결/연결 해제도 **이 화면에서만** 한다. 예전에는 Cobot 수동 제어와
     TPAC 설정이 각자 연결 버튼을 갖고 있어서, 어느 화면에서 무엇에 붙어
@@ -1439,8 +1460,6 @@ class ConnectionSettingsScreen(FormScreen):
     DISPLAY_LABELS = {
         "협동로봇 IP": "IP", "Dashboard 포트": "Dashboard",
         "Primary 포트": "Primary", "Modbus 포트": "Modbus",
-        "PLC IP": "IP", "PLC 포트": "포트",
-        "PLC 프로토콜": "프로토콜", "PLC 국번": "국번",
         "ERUT Broker 주소": "주소", "ERUT 포트": "포트",
         "ERUT 장치 ID": "장치 ID", "ERUT 계정": "계정", "ERUT 비밀번호": "비밀번호",
     }
@@ -1456,7 +1475,6 @@ class ConnectionSettingsScreen(FormScreen):
     vnc_requested = pyqtSignal()
 
     def __init__(self):
-        plc_protocol=TouchComboBox(); plc_protocol.addItems(["KEYENCE MC Protocol","Modbus TCP"])
         # 차량(AMR·리프트·아웃트리거)을 무엇으로 움직일지. 더미는 장비 없이
         # 순서만 흉내 내고, ROS 차량 노드는 차량 담당자의 제어 노드
         # (vehicle_interfaces: robot_status / set_job / robot_control /
@@ -1473,12 +1491,9 @@ class ConnectionSettingsScreen(FormScreen):
                 ("Dashboard 포트",spin(29999,1,65535)),
                 ("Primary 포트",spin(30001,1,65535)),
                 ("Modbus 포트",spin(502,1,65535)),
-                ("차량용 PLC",None),
+                # PLC 통신은 차량(AMR) 노드가 맡는다 — RCS 에는 PLC 접속 칸이 없다(2026-11-17).
+                ("차량",None),
                 ("차량 제어",vehicle_mode),
-                ("PLC IP",line("192.168.0.10")),
-                ("PLC 포트",spin(5000,1,65535)),
-                ("PLC 프로토콜",plc_protocol),
-                ("PLC 국번",spin(1,0,255)),
                 # 외부 통신은 ERUT MQTT 하나다(사내 MC MQTT 는 2026-10-07 에 뺐다).
                 # 접속 정보는 ERUT 가 알려 준다(나중에는 랜선으로 ERUT 쪽 PC). 비어
                 # 있으면 붙지 않는다 — 예전에는 127.0.0.1 로 붙었다(2026-10-14).

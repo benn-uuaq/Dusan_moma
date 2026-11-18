@@ -57,7 +57,11 @@ class FakeClient:
         return True
 
     def publish_contact(self, state, job_id):
-        self.contact.append({"state": state, "job_id": job_id})
+        # 실제 클라이언트처럼 job_id 가 없으면 칸을 뺀다(빈 글자 금지 — Q-41).
+        entry = {"state": state}
+        if job_id:
+            entry["job_id"] = job_id
+        self.contact.append(entry)
         return True
 
     def publish_info(self, content):
@@ -93,7 +97,15 @@ def session(qtbot):
 
 
 def _req(action, **content):
+    """요청 하나. diameter · height(· shape · width) 를 넘기면 geometry 묶음으로 싣는다(if-0.13)."""
     content.setdefault("req_id", f"req-{action}-1")
+    if any(key in content for key in ("diameter", "height", "shape", "width")):
+        geometry = {"shape": content.pop("shape", "cylinder")}
+        for key in ("diameter", "height", "width"):
+            if key in content:
+                geometry[key] = content.pop(key)
+        geometry.setdefault("height", 6000)
+        content["geometry"] = geometry
     return action, content
 
 
@@ -333,7 +345,7 @@ def test_same_req_id_after_the_work_ended_runs_again(session, monkeypatch):
     """
     s, client, _seq = session
     asked: list = []
-    s.calibration_requested.connect(lambda d, h: asked.append(d))
+    s.calibration_requested.connect(lambda g: asked.append(g["diameter"]))
     _calibrate(s)
     s.finish_calibration(True, 0.0, total_length_mm=5309)
     s.handle_request(*_req("abort", req_id="ab-001"))
@@ -349,7 +361,7 @@ def test_same_req_id_with_new_content_is_a_new_request(session):
     """값이 바뀌었으면 재전송이 아니다 — 다시 따진다(돌고 있으면 409)."""
     s, client, _seq = session
     asked: list = []
-    s.calibration_requested.connect(lambda d, h: asked.append(d))
+    s.calibration_requested.connect(lambda g: asked.append(g["diameter"]))
     _calibrate(s)
     _calibrate(s, diameter=1700)          # 앞 캘리브레이션이 아직 돈다
 
@@ -376,7 +388,7 @@ def test_retransmission_while_the_work_runs_is_not_run_again(session, monkeypatc
     """돌고 있는 일의 재전송은 시간이 지나도 다시 실행하지 않는다."""
     s, client, _seq = session
     asked: list = []
-    s.calibration_requested.connect(lambda d, h: asked.append(d))
+    s.calibration_requested.connect(lambda g: asked.append(g["diameter"]))
     _calibrate(s)
     monkeypatch.setattr(type(s), "RETRANSMIT_WINDOW_S", 0.0)
     _calibrate(s)
@@ -390,7 +402,7 @@ def test_calibrate_accepts_then_completes(session):
     s, client, _seq = session
     s._calibrated = False
     asked: list[tuple] = []
-    s.calibration_requested.connect(lambda d, h: asked.append((d, h)))
+    s.calibration_requested.connect(lambda g: asked.append((g["diameter"], g["height"])))
     s.handle_request(*_req("calibrate", diameter=2500, height=6000))
 
     assert client.res[0]["status_code"] == 202
@@ -778,8 +790,10 @@ def test_info_introduces_the_device(session):
     s.publish_info()
 
     info = client.info[-1]
-    assert info["interface_version"] == INTERFACE_VERSION == "0.12"
+    assert info["interface_version"] == INTERFACE_VERSION == "0.13"
     assert info["vendor"] == "3S" and info["device_type"] == "articulated_arm"
+    # 받는 모재 모양(if-0.13 필수) — 없으면 브릿지가 [시작]을 막는다.
+    assert info["shapes"] == ["cylinder", "curved_plate"]
     assert "probe_contact" in info["capabilities"]
     assert "mark_positioning" in info["capabilities"]
     assert "home" in info["capabilities"]
@@ -793,7 +807,7 @@ def test_info_introduces_the_device(session):
 
 def test_contact_goes_out_on_change_with_the_job_id(session):
     s, client, _seq = session
-    _prepare(s)
+    _start(s)
     s.set_contact(False)
     s.set_contact(True)
     s.set_contact(True)
@@ -809,13 +823,24 @@ def test_contact_goes_out_on_change_with_the_job_id(session):
     assert client.contact[-1] == {"state": "detached", "job_id": "jb1"}
 
 
+def test_contact_carries_the_job_id_only_after_start(session):
+    """if-0.13 A1 — job_id 는 그 구역의 req/start 를 받은 뒤에만. prepare 만 받은 때는 뺀다."""
+    s, client, _seq = session
+    _prepare(s, req_id="p1", job_id="jb1")
+    s.set_contact(True)
+    assert client.contact[-1] == {"state": "attached"}
+    _start(s, req_id="s1", job_id="jb1")
+    s._publish_contact()
+    assert client.contact[-1] == {"state": "attached", "job_id": "jb1"}
+
+
 def test_a_new_job_republishes_contact_even_if_unchanged(session):
     """retain 이라 앞 구역 것이 남는다 — 새 구역이면 새 job_id 로 다시 낸다."""
     s, client, _seq = session
-    _prepare(s, req_id="p1", job_id="jb1")
+    _start(s, req_id="s1", job_id="jb1")
     s.set_contact(False)
     s.handle_request(*_req("abort", req_id="ab"))
-    _prepare(s, req_id="p2", job_id="jb2")
+    _start(s, req_id="s2", job_id="jb2")
     s.set_contact(False)
 
     assert client.contact[-1] == {"state": "detached", "job_id": "jb2"}
@@ -1246,14 +1271,15 @@ def test_home_timeout_fails_in_complete(session):
     assert (evt["action"], evt["status_code"]) == ("home", 500)
 
 
-def test_contact_outside_an_erut_section_is_detached(session):
-    """캘리브레이션 3점 측정·사내 MC 작업 중 닿는 것은 ERUT 검사가 아니다 — 물을 켜지 않는다."""
+def test_contact_outside_an_erut_section_goes_out_without_a_job_id(session):
+    """if-0.13 — RCS 단독 작업 · 수동 조작에서도 닿음 · 떨어짐을 알린다. job_id 가 없어
+    브릿지는 물을 켜지 않는다(빈 글자 job_id 는 쓰지 않는다 — Q-41)."""
     s, client, _seq = session
     s.set_contact(True)
     s.handle_request(*_req("calibrate", diameter=2500, height=6000))
-    s.set_contact(True)
+    s.set_contact(False)
 
-    assert all(c["state"] == "detached" for c in client.contact)
+    assert client.contact == [{"state": "attached"}, {"state": "detached"}]
 
 
 def test_area_wider_than_the_robot_can_reach_is_refused(session):
@@ -1316,7 +1342,7 @@ def test_area_limit_goes_into_info_once_the_diameter_is_known(session):
     s.finish_calibration(True, 0.0)
 
     assert infos[-1]["area_limit"] == {"diameter": 1690, "max_width": 721}
-    assert infos[-1]["interface_version"] == "0.12"
+    assert infos[-1]["interface_version"] == "0.13"
 
 
 def test_area_taller_than_the_limit_is_refused_with_area_height(session):
@@ -1471,37 +1497,50 @@ def test_area_must_grow_from_start_to_end(session, area):
     assert client.res[-1]["error"]["code"] == "E6001"
 
 
+def _origin(diameter, height=6000.0, shape="cylinder", width=None):
+    geometry = {"shape": shape, "diameter": float(diameter), "height": float(height)}
+    if width is not None:
+        geometry["width"] = float(width)
+    return geometry
+
+
 def test_calibrate_remembers_the_size_it_was_given(session):
     s, client, _seq = session
     s.handle_request(*_req("calibrate", req_id="c1", diameter=1669.2, height=1000))
     s.finish_calibration(True, 0.1)
-    assert s._calibrated is True and s._calibrated_size == (1669.2, 1000.0)
+    assert s._calibrated is True
+    assert s._calibrated_geometry == _origin(1669.2, 1000)
 
 
 def test_a_different_diameter_needs_a_new_origin(session):
     """원점을 잡을 때와 지름이 다르면 409 E6104 — 장비는 스스로 다시 잡지 않는다(Q-32)."""
     s, client, _seq = session
-    s._calibrated_size = (140.0, 140.0)
+    s._calibrated_geometry = _origin(140, 140)
     _prepare(s, req_id="p1", diameter=1669.2, height=1000)
     r = client.res[-1]
     assert (r["status_code"], r["error"]["code"]) == (409, "E6104")
     assert "1669.2" in r["error"]["detail"] and "140" in r["error"]["detail"]
 
     # 허용 오차 안이면 받는다. 높이는 원점과 상관이 없어 견주지 않는다.
-    s._calibrated_size = (1669.2, 140.0)
+    s._calibrated_geometry = _origin(1669.2, 140)
     _prepare(s, req_id="p2", diameter=1669.6, height=1000)
     assert client.res[-1]["status_code"] == 202
-    # 크기 칸이 없는 요청(손으로 쓴 요청 · 옛 브릿지)은 견주지 않는다.
+    # geometry 가 없는 요청은 받는다 — 견주지 않는다(if-0.13). 모재 밖 구역은 원점을 잡을 때의
+    # 모재 높이로 본다(구역 y 0~800).
     _prepare(s, req_id="p3", job_id="jb2")
+    assert client.res[-1]["status_code"] == 400
+    assert "모재 밖" in client.res[-1]["error"]["detail"]
+    s._calibrated_geometry = _origin(1669.2, 1000)
+    _prepare(s, req_id="p4", job_id="jb3")
     assert client.res[-1]["status_code"] == 202
 
 
 def test_origin_check_comes_before_the_circumference_check(session):
-    """둘레 범위 같은 원점 기준 검사보다 E6104 가 먼저다(탭5 157행)."""
+    """둘레 범위 같은 원점 기준 검사보다 E6104 가 먼저다(R-17)."""
     s, client, _seq = session
-    s._calibrated_size = (140.0, 140.0)
+    s._calibrated_geometry = _origin(140, 140)
     s.area_diameter = lambda: 140.0                      # 둘레 440 — 아래 구역은 둘레 밖
-    area = {"start": {"x": 1000, "y": 0}, "end": {"x": 1300, "y": 400}}
+    area = {"start": {"x": 1000, "y": 0}, "end": {"x": 1300, "y": 100}}
     _prepare(s, req_id="p1", area=area, diameter=1669.2, height=1000)
     assert client.res[-1]["error"]["code"] == "E6104"
     # 크기가 같으면 그때 둘레 검사로 거절된다.
@@ -1511,7 +1550,7 @@ def test_origin_check_comes_before_the_circumference_check(session):
 
 def test_start_with_a_different_diameter_is_refused_too(session):
     s, client, _seq = session
-    s._calibrated_size = (140.0, 140.0)
+    s._calibrated_geometry = _origin(140, 140)
     _start(s, req_id="s1", diameter=1669.2, height=1000)
     assert client.res[-1]["status_code"] == 409
     assert client.res[-1]["error"]["code"] == "E6104"
@@ -1560,7 +1599,7 @@ def test_calibrate_runs_again_for_every_new_request_even_when_calibrated(session
     """
     s, client, _seq = session
     runs: list[tuple] = []
-    s.calibration_requested.connect(lambda d, h: runs.append((d, h)))
+    s.calibration_requested.connect(lambda g: runs.append((g["diameter"], g["height"])))
     s.handle_request(*_req("calibrate", req_id="c1", diameter=1669.2, height=1000))
     s.finish_calibration(True, 0.1)
     s.handle_request(*_req("calibrate", req_id="c1", diameter=1669.2, height=1000))
@@ -1720,3 +1759,115 @@ def test_resume_sends_the_direction_with_what_is_left(session):
 
     assert [(m["dir"], m.get("remain_mm")) for m in client.motion] == [
         ("+x", 300), ("none", None), ("+x", 212.5)]
+
+
+# ---- if-0.13 geometry · 곡판 · 검사 순서(R-17) ---------------------------------------
+PLATE = {"shape": "curved_plate", "diameter": 3000, "height": 2000, "width": 1000}
+
+
+def _error(client):
+    r = client.res[-1]
+    return r["status_code"], (r.get("error") or {}).get("code")
+
+
+def test_calibrate_needs_the_geometry_object(session):
+    """맨 바깥 diameter · height 는 없다(if-0.13) — geometry 가 없으면 400 E6001."""
+    s, client, _seq = session
+    s.handle_request("calibrate", {"req_id": "c-old", "diameter": 1690, "height": 6000})
+    assert _error(client) == (400, "E6001")
+    s.handle_request("calibrate", {"req_id": "c-bad", "geometry": {"shape": "cylinder", "diameter": 0,
+                                                                   "height": 6000}})
+    assert _error(client) == (400, "E6001")
+
+
+def test_unknown_shape_is_501_after_the_400_checks(session):
+    s, client, _seq = session
+    s.handle_request("calibrate", {"req_id": "c1", "geometry": {"shape": "cone", "diameter": 1000,
+                                                                "height": 1000}})
+    assert _error(client) == (501, "E6501")
+    # 값이 틀린 칸이 함께 있으면 400 이 먼저다.
+    s.handle_request("calibrate", {"req_id": "c2", "geometry": {"shape": "cone", "diameter": -1,
+                                                                "height": 1000}})
+    assert _error(client) == (400, "E6001")
+
+
+def test_plate_geometry_needs_a_width_shorter_than_the_circle(session):
+    s, client, _seq = session
+    s.handle_request("calibrate", {"req_id": "c1", "geometry": {"shape": "curved_plate",
+                                                                "diameter": 1000, "height": 1000}})
+    assert _error(client) == (400, "E6001")
+    s.handle_request("calibrate", {"req_id": "c2", "geometry": {"shape": "curved_plate", "diameter": 1000,
+                                                                "height": 1000, "width": 3200}})
+    assert _error(client) == (400, "E6001")          # π × 1000 = 3142 이상
+
+
+def test_plate_calibrate_asks_for_qr_alignment_and_reports_no_length(session):
+    """곡판 원점 = QR 정렬만(한 바퀴 안 돈다) — total_length_mm 를 싣지 않는다(판 가로를 재지 않는다)."""
+    s, client, _seq = session
+    asked = []
+    s.calibration_requested.connect(asked.append)
+    s.handle_request("calibrate", {"req_id": "c1", "geometry": dict(PLATE)})
+    assert client.res[-1]["status_code"] == 202
+    assert asked == [{"shape": "curved_plate", "diameter": 3000.0, "height": 2000.0, "width": 1000.0}]
+    s.finish_calibration(True, 0.0, total_length_mm=0.0)
+    _topic, evt = client.events[-1]
+    assert evt["action"] == "calibrate" and "total_length_mm" not in evt
+    assert s._calibrated_geometry["shape"] == "curved_plate"
+
+
+def test_outside_the_material_is_400_before_the_origin_check(session):
+    """R-17 — 모재 밖 구역(400)과 모르는 모양(501)은 원점 판정(409 E6104)보다 먼저다."""
+    s, client, _seq = session
+    s._calibrated = False
+    tall = {"start": {"x": 0, "y": 5800}, "end": {"x": 600, "y": 6100}}
+    _start(s, req_id="s1", area=tall, diameter=1690, height=6000)
+    assert _error(client) == (400, "E6001")
+    assert "모재 밖" in client.res[-1]["error"]["detail"]
+    _start(s, req_id="s2", shape="cone", diameter=1690, height=6000)
+    assert _error(client) == (501, "E6501")
+    _start(s, req_id="s3", diameter=1690, height=6000)
+    assert _error(client) == (409, "E6104")
+
+
+def test_plate_area_must_stay_on_the_plate(session):
+    """곡판 x 는 0 ~ width, 감기지 않는다 — 넘으면 400 E6001."""
+    s, client, _seq = session
+    s._calibrated_geometry = dict(PLATE)
+    s.area_diameter = lambda: 3000.0
+    off = {"start": {"x": 800, "y": 0}, "end": {"x": 1100, "y": 400}}
+    _prepare(s, req_id="p1", area=off, **PLATE)
+    assert _error(client) == (400, "E6001")
+    edge = {"start": {"x": 750, "y": 0}, "end": {"x": 1000, "y": 400}}
+    _prepare(s, req_id="p2", job_id="jb2", area=edge, **PLATE)
+    assert client.res[-1]["status_code"] == 202
+    # geometry 없이 와도 원점을 잡을 때의 판 가로로 본다.
+    _prepare(s, req_id="p3", job_id="jb3", area=off)
+    assert _error(client) == (400, "E6001")
+
+
+def test_changing_the_shape_needs_a_new_origin(session):
+    """원통으로 원점을 잡은 뒤 같은 지름의 곡판 → 409 E6104(적합성 C 「원통 → 곡판」)."""
+    s, client, _seq = session
+    s._calibrated_geometry = {"shape": "cylinder", "diameter": 3000.0, "height": 2000.0}
+    _start(s, req_id="s1", area={"start": {"x": 0, "y": 0}, "end": {"x": 300, "y": 400}}, **PLATE)
+    assert _error(client) == (409, "E6104")
+    assert "곡판" in client.res[-1]["error"]["detail"]
+
+
+def test_plate_x_is_not_wrapped_in_reported_positions(session):
+    s, _client, _seq = session
+    s._calibrated_geometry = dict(PLATE)
+    s.area_diameter = lambda: 3000.0
+    assert s._circumference() == 0.0
+    s._calibrated_geometry = {"shape": "cylinder", "diameter": 3000.0, "height": 2000.0}
+    assert s._circumference() > 9000
+
+
+def test_start_reports_the_geometry_to_the_rcs(session):
+    s, _client, _seq = session
+    reported = []
+    s.target_reported.connect(reported.append)
+    s._calibrated_geometry = dict(PLATE)
+    s.area_diameter = lambda: 3000.0
+    _start(s, req_id="s1", area={"start": {"x": 0, "y": 0}, "end": {"x": 300, "y": 400}}, **PLATE)
+    assert reported == [{"shape": "curved_plate", "diameter": 3000.0, "height": 2000.0, "width": 1000.0}]

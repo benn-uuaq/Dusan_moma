@@ -274,7 +274,8 @@ def scenario_erut(h: Harness) -> list[str]:
 
     log("[erut] calibrate — 차량(AGV)이 모재를 따라 한 바퀴 돌며 좌표계를 잡는다")
     state_before = h.register(STATE_REG)[0]
-    session.handle_request("calibrate", {"req_id": "cal-1", "diameter": 1690, "height": 6000})
+    session.handle_request("calibrate", {"req_id": "cal-1", "geometry": {"shape": "cylinder",
+                                                                         "diameter": 1690, "height": 6000}})
     if not h.wait_until(lambda: tap.event("complete", "calibrate"), timeout=60):
         return problems + ["[erut] 캘리브레이션 완료(evt/complete)가 오지 않았습니다"]
     result = tap.event("complete", "calibrate")

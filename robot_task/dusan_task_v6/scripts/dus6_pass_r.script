@@ -155,10 +155,10 @@ def sr_servo_arc(end_pose):
     # 게 정상이다. 그때 뒤로 빼 버리면 더 누른 게 바로 풀린다. 그래서
     # 한계 센서로는 **이 루프가 스스로 더 민 만큼(sv_d > 0)** 만 되돌린다.
     # (push_offset 이 0 이면 예전과 똑같이 한계에서 곧바로 뺀다.)
-    if (get_standard_digital_in(di_limit) and (push_offset <= 0 or sv_d > 0)):
+    if (get_tool_digital(di_limit) and (push_offset <= 0 or sv_d > 0)):
       sv_d = sv_d - sv_stp
       sv_st = 3
-    elif (get_standard_digital_in(di_touch) == False):
+    elif (get_tool_digital(di_touch) == False):
       sv_d = sv_d + sv_stp
       sv_st = 2
     else:

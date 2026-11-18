@@ -60,7 +60,7 @@ def test_calibration_drives_the_vehicle_once_around(qtbot):
     window.outrigger.reset(1)                  # 고정돼 있던 차량
 
     window.erut_session.handle_request(
-        "calibrate", {"req_id": "cal-1", "diameter": 1690, "height": 6000})
+        "calibrate", {"req_id": "cal-1", "geometry": {"shape": "cylinder", "diameter": 1690, "height": 6000}})
     assert events == [], "한 바퀴 다 돌기 전에는 완료를 내지 않는다"
 
     qtbot.waitUntil(lambda: bool(events), timeout=10000)
@@ -92,7 +92,7 @@ def test_calibration_waits_for_the_robot_to_be_home(qtbot):
     window._on_robot_at_home(False)            # 팔이 나와 있다
 
     window.erut_session.handle_request(
-        "calibrate", {"req_id": "cal-2", "diameter": 1690, "height": 6000})
+        "calibrate", {"req_id": "cal-2", "geometry": {"shape": "cylinder", "diameter": 1690, "height": 6000}})
 
     assert homes == [1]
     assert not window.amr.moving, "홈에 닿기 전엔 차량을 움직이지 않는다"
@@ -106,7 +106,7 @@ def test_pause_stops_the_lap_and_resume_finishes_it(qtbot):
     events = _tap(window)
     window.outrigger.reset(0)
     window.erut_session.handle_request(
-        "calibrate", {"req_id": "cal-3", "diameter": 1000, "height": 6000})
+        "calibrate", {"req_id": "cal-3", "geometry": {"shape": "cylinder", "diameter": 1000, "height": 6000}})
     assert window.amr.moving
 
     window.erut_session.handle_request("pause", {"req_id": "pz"})
@@ -126,7 +126,7 @@ def test_abort_during_the_lap_sends_no_complete(qtbot):
     events = _tap(window)
     window.outrigger.reset(0)
     window.erut_session.handle_request(
-        "calibrate", {"req_id": "cal-4", "diameter": 1000, "height": 6000})
+        "calibrate", {"req_id": "cal-4", "geometry": {"shape": "cylinder", "diameter": 1000, "height": 6000}})
     window.erut_session.handle_request("abort", {"req_id": "ab"})
 
     qtbot.wait(1500)
@@ -339,9 +339,10 @@ def test_section_taller_than_1200mm_is_refused_and_area_limit_carries_it(qtbot):
     window.close()
 
 
-def test_vehicle_drives_at_0_3_m_per_s(qtbot):
+def test_vehicle_drives_at_0_1_m_per_s(qtbot):
+    """차량 주행 속도 기본 0.1 m/s (2026-11-12)."""
     window = _window(qtbot)
-    assert window.VEHICLE_SPEED_MPS == 0.3
+    assert window.VEHICLE_SPEED_MPS == 0.1
     window.close()
 
 

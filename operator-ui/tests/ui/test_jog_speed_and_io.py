@@ -23,65 +23,50 @@ def test_mode_slot_buttons_are_not_clipped(qtbot) -> None:
     window.close()
 
 
-def test_io_controls_are_outside_the_table(qtbot) -> None:
-    """조작 버튼은 표 칸이 아니라 별도 출력 제어 영역에 둔다."""
+def test_io_screen_is_monitoring_only(qtbot) -> None:
+    """I/O 화면은 조회만 한다 — 조작 버튼 · 출력 제어가 없다(2026-11-12, 수동 제어 화면에 있다)."""
+    from PyQt6.QtWidgets import QPushButton
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["io"]
     table = screen.findChild(QTableWidget)
 
     assert table.columnCount() == 5
-    embedded = [
-        (r, c)
-        for r in range(table.rowCount())
-        for c in range(table.columnCount())
-        if table.cellWidget(r, c) is not None
-    ]
-    assert embedded == []
+    assert all(s["direction"] == "IN" for s in screen.signals)
+    buttons = [b.text() for b in screen.findChildren(QPushButton)]
+    assert "ON" not in buttons and "OFF" not in buttons
+    assert not hasattr(screen, "output_requested")
     window.close()
 
 
-def test_io_screen_controls_only_outputs(qtbot) -> None:
-    """입력 신호에는 조작 버튼을 두지 않는다."""
+def test_io_list_keeps_only_holder_sensors_and_vehicle_state(qtbot) -> None:
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["io"]
-
-    outputs = {s["address"] for s in screen.signals if s["direction"] == "OUT"}
-    inputs = {s["address"] for s in screen.signals if s["direction"] != "OUT"}
-    assert set(screen.output_buttons) == outputs
-    assert not (set(screen.output_buttons) & inputs)
+    addresses = [s["address"] for s in screen.signals]
+    assert addresses == ["TDI0", "TDI1", "TDI2", "CI0", "CI1", "CI2", "CI3", "SAFETY",
+                         "ESTOP", "SCAN", "HOLD", "LIFT", "LEVEL", "BATT", "STANDOFF", "STATE"]
     window.close()
 
 
-def test_io_output_buttons_emit_address_and_state(qtbot) -> None:
-    window = OperatorWindow(start_ros=False, start_erut=False)
-    qtbot.addWidget(window)
-    window.show()
-    screen = window.screens["io"]
-    received: list[tuple[str, bool]] = []
-    screen.output_requested.connect(lambda a, on: received.append((a, on)))
-
-    on_button, off_button = screen.output_buttons["Y000"]
-    qtbot.mouseClick(on_button, Qt.MouseButton.LeftButton)
-    qtbot.mouseClick(off_button, Qt.MouseButton.LeftButton)
-    # 다른 신호의 버튼이 섞이지 않아야 한다.
-    other_on, _ = screen.output_buttons["Y010"]
-    qtbot.mouseClick(other_on, Qt.MouseButton.LeftButton)
-
-    assert received == [("Y000", True), ("Y000", False), ("Y010", True)]
-    window.close()
-
-
-def test_io_value_update_reaches_table_and_controls(qtbot) -> None:
+def test_vehicle_status_reaches_the_io_list(qtbot) -> None:
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     screen = window.screens["io"]
-
-    screen.set_value("Y000", "ON")
-
-    assert screen.value_items["Y000"].text() == "ON"
-    assert "ON" in screen.output_state_labels["Y000"].text()
+    window.vehicle.status_changed.emit({
+        "state": "HOLD", "hold": "SET", "error_code": 0, "lift_h": 1.2,
+        "roll": 0.0, "pitch": 0.01745, "estop": False})
+    value = lambda a: screen.value_items[a].text()        # noqa: E731
+    state = lambda a: screen.status_items[a].text()       # noqa: E731
+    assert value("HOLD") == "고정" and value("LIFT") == "1,200 mm"
+    assert value("ESTOP") == "OFF" and state("ESTOP") == "정상"
+    assert "pitch 1.00°" in value("LEVEL")
+    assert value("SCAN") == "-" and state("SCAN") == "모름"     # 차량이 아직 모르는 값
+    window.vehicle.status_changed.emit({"state": "ERROR", "error_code": 21, "estop": True})
+    assert value("STATE") == "ERROR · 오류 21" and state("STATE") == "오류"
+    assert state("ESTOP") == "정지"
+    window.vehicle.online_changed.emit(False)              # 차량 상태가 끊겼다
+    assert value("HOLD") == "-" and state("HOLD") == "수신 없음"
     window.close()
 
 
@@ -411,69 +396,6 @@ def test_jog_sends_once_and_stops_only_on_release(qtbot) -> None:
 
     screen._on_jog_released("tcp", 0)
     assert released == [("tcp", 0)]
-    window.close()
-
-
-def test_robot_output_button_reaches_the_robot(qtbot) -> None:
-    """로봇 DO 버튼은 제어 노드로 [번호, 값]이 나가야 한다."""
-    window = OperatorWindow(start_ros=False, start_erut=False)
-    qtbot.addWidget(window)
-    screen = window.screens["io"]
-    sent: list[tuple[int, bool]] = []
-    window.ros_status.send_digital_out = lambda index, on: sent.append((index, on)) or True
-
-    on_button, off_button = screen.output_buttons["DO1"]
-    qtbot.mouseClick(on_button, Qt.MouseButton.LeftButton)
-    qtbot.mouseClick(off_button, Qt.MouseButton.LeftButton)
-
-    assert sent == [(1, True), (1, False)]
-    window.close()
-
-
-def test_plc_output_button_says_it_is_not_wired_yet(qtbot) -> None:
-    """차량 PLC 출력은 아직 경로가 없다 — 로봇으로 보내면 안 된다."""
-    window = OperatorWindow(start_ros=False, start_erut=False)
-    qtbot.addWidget(window)
-    screen = window.screens["io"]
-    sent: list[tuple[int, bool]] = []
-    window.ros_status.send_digital_out = lambda index, on: sent.append((index, on)) or True
-
-    qtbot.mouseClick(screen.output_buttons["Y000"][0], Qt.MouseButton.LeftButton)
-
-    assert sent == []
-    assert "PLC" in screen.activity_label.text()
-    window.close()
-
-
-def test_robot_io_values_follow_the_bit_word(qtbot) -> None:
-    """레지스터 한 개(16비트)가 DO/DI 표시를 한꺼번에 갱신한다."""
-    window = OperatorWindow(start_ros=False, start_erut=False)
-    qtbot.addWidget(window)
-    screen = window.screens["io"]
-
-    window.ros_status.digital_out_changed.emit(0b0000_0110)
-    window.ros_status.digital_in_changed.emit(0b0000_0001)
-
-    assert screen.value_items["DO0"].text() == "OFF"
-    assert screen.value_items["DO1"].text() == "ON"
-    assert screen.value_items["DO2"].text() == "ON"
-    assert "ON" in screen.output_state_labels["DO1"].text()
-    assert screen.value_items["DI0"].text() == "ON"
-    assert screen.value_items["DI1"].text() == "OFF"
-    # 로봇 값이 PLC 신호를 건드리면 안 된다.
-    assert screen.value_items["Y000"].text() == "OFF"
-    window.close()
-
-
-def test_robot_output_failure_is_reported_on_screen(qtbot) -> None:
-    window = OperatorWindow(start_ros=False, start_erut=False)
-    qtbot.addWidget(window)
-    screen = window.screens["io"]
-    window.ros_status.send_digital_out = lambda index, on: False
-
-    qtbot.mouseClick(screen.output_buttons["DO0"][0], Qt.MouseButton.LeftButton)
-
-    assert "연결" in screen.activity_label.text()
     window.close()
 
 

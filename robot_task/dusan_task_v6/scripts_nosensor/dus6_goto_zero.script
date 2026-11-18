@@ -124,8 +124,8 @@ gz_veh_wait()
 # 10mm 를 직선으로 가도 곡면에서 벗어나는 양은 10^2/(2R) = 0.06mm 라
 # 무시할 수 있다.
 write_port_register(290, 8)
-# TODO: 여기에 물 분사 켜기를 넣는다. 비비기 전에 켜고 끝나면 끈다.
-#       (밸브 출력 배정되면 set_standard_digital_out(n, True/False) 로)
+# 물 분사는 이쪽 일이 아니다(2026-11-12) — 로봇이 원점에 붙으면(290 = 7) RCS 가 ERUT 에
+# 접촉(evt/contact attached)을 알리고, ERUT 가 물을 켜고 끈다.
 wet_ref = pose_trans(pose_inv(zero_pose), p_c_pose)
 wet_step = wet_amp
 if (wet_ref[0] < 0):
@@ -138,7 +138,6 @@ while (wet_i < wet_cycles):
   movel(zero_pose, a = a_scan, v = v_scan)
   wet_i = wet_i + 1
 end
-# TODO: 여기서 물 분사 끄기.
 
 # 여기서부터 스캔 구간이다 — 호를 그리는 패스뿐 아니라 줄을 바꾸는
 # 상승(dus6_up)까지 포함한다. 이 구간에서만 제로점 기준 좌표(280~285)가

@@ -110,7 +110,7 @@ def al_press(target):
   far = pose_trans(target, [0, 0, seek_limit * 0.001, 0, 0, 0])
   mv_h = start_thread(al_rush, (far,), detach_mode = False)
   while (True):
-    if (get_standard_digital_in(di_touch) or get_standard_digital_in(di_limit)):
+    if (get_tool_digital(di_touch) or get_tool_digital(di_limit)):
       stop_thread(mv_h)
       stopl(1.2)
       break
@@ -124,20 +124,20 @@ def al_press(target):
   end
 
   tries = 0
-  while (get_standard_digital_in(di_limit) and tries < seek_tries):
+  while (get_tool_digital(di_limit) and tries < seek_tries):
     tries = tries + 1
     al_step(seek_step)
     sync()
   end
 
   tries = 0
-  while (get_standard_digital_in(di_touch) == False and tries < seek_tries):
+  while (get_tool_digital(di_touch) == False and tries < seek_tries):
     tries = tries + 1
     al_step(-seek_step)
     sync()
   end
 
-  if (get_standard_digital_in(di_touch)):
+  if (get_tool_digital(di_touch)):
     n_hit = n_hit + 1
     al_push()
     return get_actual_tcp_pose()
