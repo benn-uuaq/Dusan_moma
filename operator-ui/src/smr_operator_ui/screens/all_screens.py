@@ -80,19 +80,26 @@ class BaseScreen(QWidget):
 
 
 class ManualScreen(BaseScreen):
-    """차량(AMR·리프트·아웃트리거) 수동 제어 — 차량 담당자의 ManualCommand 로 보낸다.
+    """차량(AMR·리프트·아웃트리거) 수동 제어 — 주행 · 아웃트리거 · 리프트 모두 ManualCommand.
 
-    조그(전진·후진·회전)와 아웃트리거 개별 상승·하강은 **누르는 동안만**
-    움직인다. 누르고 있으면 REPEAT_MS 마다 같은 명령을 다시 보내고, 떼면
-    "명령 없음"을 보낸다 — 떼는 신호를 놓쳐도 차량이 계속 가지 않게(차량 쪽
-    deadman). 리프트는 목표 높이로, 아웃트리거 고정/해제는 한 번 누르면 된다.
+    조그(전진·후진·회전)는 **누르는 동안만** 움직인다. 누르고 있으면 REPEAT_MS 마다
+    같은 명령을 다시 보내고, 떼면 "명령 없음"을 보낸다 — 떼는 신호를 놓쳐도 차량이
+    계속 가지 않게(차량 쪽 deadman). 아웃트리거는 균형 때문에 **전체로만** 내리고(고정)
+    올린다(해제) — 개별 버튼은 뺐다(2026-11-19). 리프트는 입력한 높이로 — 앱이
+    ManualCommand(cmd_mv_lift · lift_height)로 보내고 속도는 PLC 가 정한다(AGV 판 2026-11-20).
+    차량 위치(odometry)는 「위치 다시 맞추기」로 x · y · yaw 를 넣어 맞춘다(ResetOdometry).
 
-    화면은 명령만 알린다(manual_requested / stop_requested / reset_requested).
+    화면은 명령만 알린다(manual_requested / lift_requested / odometry_reset_requested /
+    stop_requested / reset_requested).
     앱이 차량 제어가 'ROS 차량 노드'이고 상태가 들어올 때만 버튼을 연다.
     로봇이 동작 중이면 주행·아웃트리거 해제·리프트 이동을 잠근다(set_interlock).
     """
 
     manual_requested = pyqtSignal(dict)
+    #: 리프트 목표 높이 [m] — 앱이 ManualCommand(cmd_mv_lift 1, lift_height)로 보낸다.
+    lift_requested = pyqtSignal(float)
+    #: 차량 위치 다시 맞추기 (x m, y m, yaw rad) — 앱이 ResetOdometry 로 보낸다(2026-11-20).
+    odometry_reset_requested = pyqtSignal(float, float, float)
     stop_requested = pyqtSignal()
     reset_requested = pyqtSignal()
 
@@ -148,31 +155,26 @@ class ManualScreen(BaseScreen):
         self.lift_button.clicked.connect(self._move_lift)
         row.addWidget(self.lift_target, 1); row.addWidget(self.lift_button)
         l.addLayout(row)
-        note = QLabel("아웃트리거가 고정돼 있을 때만 움직입니다."); note.setObjectName("Muted")
+        note = QLabel("아웃트리거가 고정돼 있을 때만 움직입니다. 수동 속도는 PLC 가 정합니다"
+                      "(차량 설정 「리프트 속도」는 자동 작업용). 멈추려면 「정지」.")
+        note.setObjectName("Muted"); note.setWordWrap(True)
         l.addWidget(note)
         l.addStretch()
         grid.addWidget(lift, 0, 1)
 
         out, o = self.surface("아웃트리거")
         sets = QHBoxLayout()
-        self.outrigger_set_button = QPushButton("전체 고정")
-        self.outrigger_release_button = QPushButton("전체 해제")
+        self.outrigger_set_button = QPushButton("전체 내리기 (고정)")
+        self.outrigger_release_button = QPushButton("전체 올리기 (해제)")
+        for b in (self.outrigger_set_button, self.outrigger_release_button):
+            b.setMinimumHeight(56)
         self.outrigger_set_button.clicked.connect(lambda: self._send({"cmd_outrg_set": 2}))
         self.outrigger_release_button.clicked.connect(lambda: self._send({"cmd_outrg_set": 1}))
         sets.addWidget(self.outrigger_set_button); sets.addWidget(self.outrigger_release_button)
         o.addLayout(sets)
-        og = QGridLayout(); og.setSpacing(8)
-        self.outrigger_buttons: list[QPushButton] = []
-        # 아웃트리거마다 [상승][하강] 을 옆으로 붙인다(한 줄로 — 화면 높이를 아낀다).
-        for i in range(1, 4):
-            og.addWidget(QLabel(f"아웃트리거 {i}"), 0, (i - 1) * 2, 1, 2)
-            for col, (text, value) in enumerate((("상승", 1), ("하강", 2))):
-                b = QPushButton(text)
-                b.pressed.connect(lambda k=f"cmd_man_outrg{i}", v=value: self._hold({k: v}))
-                b.released.connect(self._release)
-                self.outrigger_buttons.append(b)
-                og.addWidget(b, 1, (i - 1) * 2 + col)
-        o.addLayout(og)
+        out_note = QLabel("균형을 맞춰야 해서 세 개를 함께 내리고 올립니다(개별 조작 없음).")
+        out_note.setObjectName("Muted"); out_note.setWordWrap(True)
+        o.addWidget(out_note)
         grid.addWidget(out, 1, 0, 1, 2)
 
         status, st = self.surface("차량 상태")
@@ -193,6 +195,21 @@ class ManualScreen(BaseScreen):
         tools.addWidget(self.reset_button); tools.addWidget(self.init_button)
         st.addStretch()
         st.addLayout(tools)
+        # 차량 위치 다시 맞추기(ResetOdometry, AGV 판 2026-11-20) — 위 「위치 x / yaw」를 이 값으로.
+        pose_title = QLabel("위치 다시 맞추기 (x · y · yaw)"); pose_title.setObjectName("Muted")
+        st.addWidget(pose_title)
+        pose = QHBoxLayout(); pose.setSpacing(6)
+        self.pose_inputs: dict[str, TouchDoubleSpinBox] = {}
+        for key, suffix, lo, hi, decimals in (("x", " m", -9999, 9999, 3), ("y", " m", -9999, 9999, 3),
+                                              ("yaw", " °", -180, 180, 1)):
+            box = TouchDoubleSpinBox(); box.setRange(lo, hi); box.setDecimals(decimals)
+            box.setSuffix(suffix); box.setValue(0.0)
+            self.pose_inputs[key] = box
+            pose.addWidget(box, 1)
+        st.addLayout(pose)
+        self.pose_button = QPushButton("위치 다시 맞추기")
+        self.pose_button.clicked.connect(self._reset_odometry)
+        st.addWidget(self.pose_button)
         grid.addWidget(status, 0, 2, 2, 1)
         grid.setColumnStretch(0, 3); grid.setColumnStretch(1, 3); grid.setColumnStretch(2, 3)
 
@@ -228,7 +245,7 @@ class ManualScreen(BaseScreen):
     def _refresh_enabled(self, reason: str = "") -> None:
         free = self._enabled and not self._interlock
         for b in (*self.jog_buttons.values(), self.lift_button, self.outrigger_release_button,
-                  *self.outrigger_buttons):
+                  self.pose_button):
             b.setEnabled(free)
         for b in (self.outrigger_set_button, self.reset_button, self.init_button, self.stop_button):
             b.setEnabled(self._enabled)
@@ -250,7 +267,10 @@ class ManualScreen(BaseScreen):
         b["state"].set_value(status.get("state", "-") or "-")
         b["hold"].set_value({"SET": "고정", "RELEASE": "해제"}.get(status.get("hold"), status.get("hold") or "-"))
         code = int(status.get("error_code", 0) or 0)
-        b["error"].set_value("정상" if code == 0 else f"{code} {status.get('error_msg', '')}".strip())
+        message = str(status.get("error_msg", "") or "")
+        # error_msg 는 「번호 이름 — 상세」로 온다 — 번호가 이미 앞에 있으면 두 번 쓰지 않는다.
+        b["error"].set_value("정상" if code == 0 else
+                             message if message.startswith(str(code)) else f"{code} {message}".strip())
         b["job_id"].set_value(status.get("job_id") or "-")
         b["dist"].set_value(f"{status.get('mv_dist', 0.0):.3f} / {status.get('set_dist', 0.0):.3f} m")
         b["speed"].set_value(f"{status.get('speed', 0.0):.2f} m/s")
@@ -285,11 +305,20 @@ class ManualScreen(BaseScreen):
         self.stop_requested.emit()
 
     def _move_lift(self) -> None:
-        self._send({"cmd_mv_lift": 1, "lift_height": self.lift_target.value() / 1000.0})
+        if self._enabled and not self._interlock:
+            self.lift_requested.emit(self.lift_target.value() / 1000.0)
 
     def _init(self) -> None:
         if self.confirm("차량 원점/초기화를 보냅니다(수동 모드에서만 동작)."):
             self._send({"cmd_init": 1})
+
+    def _reset_odometry(self) -> None:
+        """입력한 x · y [m] · yaw [°] 로 차량 위치를 다시 맞춘다 — 보내는 값은 rad."""
+        if not self._enabled or self._interlock:
+            return
+        x, y, yaw_deg = (self.pose_inputs[k].value() for k in ("x", "y", "yaw"))
+        if self.confirm(f"차량 위치를 x {x:.3f} m · y {y:.3f} m · yaw {yaw_deg:.1f}° 로 다시 맞춥니다."):
+            self.odometry_reset_requested.emit(float(x), float(y), math.radians(yaw_deg))
 
 
 class StatusBlock(QWidget):
@@ -319,7 +348,8 @@ class CobotManualScreen(BaseScreen):
 
     command_requested = pyqtSignal(str)
     # 알람 목록에 올라간 알람. 운영 기록(알람이벤트)이 받아 적는다.
-    alarm_added = pyqtSignal(str)
+    #: (글, 번호) — 번호는 docs/RCS_알람_목록 의 코드(없으면 빈 글자).
+    alarm_added = pyqtSignal(str, str)
 
     # 버튼 문구와 명령 키를 함께 둔다. 명령 키는 robot_control_node가 제공하는
     # robot/dashboard/* 서비스 이름과 일치시켜 이후 연결을 단순하게 만든다.
@@ -540,18 +570,19 @@ class CobotManualScreen(BaseScreen):
         self._alarm_empty = not alarms
         self.alarm_list.addItems(alarms or ["활성 알람 없음"])
 
-    def add_alarm(self, text: str) -> None:
-        """수신한 알람을 최신 항목이 위에 오도록 추가한다."""
+    def add_alarm(self, text: str, code: str = "") -> None:
+        """수신한 알람을 최신 항목이 위에 오도록 추가한다 — 「시각  [번호] 글」."""
         if self._alarm_empty:
             # 비어 있음 안내 문구를 실제 알람과 섞이지 않게 먼저 지운다.
             self.alarm_list.clear()
             self._alarm_empty = False
         stamp = datetime.now().strftime("%H:%M:%S")
-        self.alarm_list.insertItem(0, f"{stamp}  {text}")
+        label = f"[{code}] {text}" if code else text
+        self.alarm_list.insertItem(0, f"{stamp}  {label}")
         while self.alarm_list.count() > self.MAX_ALARMS:
             self.alarm_list.takeItem(self.alarm_list.count() - 1)
         self.alarm_list.scrollToTop()
-        self.alarm_added.emit(text)
+        self.alarm_added.emit(text, code)
 
 
 class CobotJogScreen(BaseScreen):
@@ -1101,6 +1132,9 @@ class VehicleSettingsScreen(FormScreen):
     BASE_FIELD = "로봇 베이스 높이"
     REACH_FIELD = "로봇 상승 한계"
     SPEED_FIELD = "차량 주행 속도"
+    #: 리프트 속도 [mm/s] — 자동 작업의 SetMvLift.set_speed 로 싣는다. 수동 화면 리프트 속도는 PLC 가
+    #: 정한다(AGV 판 2026-11-20).
+    LIFT_SPEED_FIELD = "리프트 속도"
     CALIB_FIELD = "캘리브레이션 최대 시간"
     #: 곡판 캘리브레이션(한 바퀴 대신 원점 QR 정렬만) 최대 시간 [s] (2026-11-18). 곡판 calibrate 를
     #: 받으면 이 값이 「캘리브레이션 최대 시간」에 들어간다.
@@ -1111,11 +1145,12 @@ class VehicleSettingsScreen(FormScreen):
     #: 상승 한계만큼만 닿는 것으로 본다(작게 잡는 쪽) — 실측값을 넣는다.
     DEFAULTS = {WIDTH_FIELD: 0, STANDOFF_FIELD: 0, LIFT_MAX_FIELD: 3500,
                 BASE_FIELD: 0, REACH_FIELD: 1600, SPEED_FIELD: 100, CALIB_FIELD: 0,
-                ALIGN_FIELD: 120}
+                ALIGN_FIELD: 120, LIFT_SPEED_FIELD: 50}
     DISPLAY_LABELS = {
         WIDTH_FIELD: "차량 폭 (모재 쪽 면 ↔ 바깥 면)",
         STANDOFF_FIELD: "모재 거리 유지 (벽 ↔ 차량 센서 면)",
         LIFT_MAX_FIELD: "리프트 한계 높이",
+        LIFT_SPEED_FIELD: "리프트 속도",
         BASE_FIELD: "로봇 베이스 높이 (차량, 리프트 최하단)",
         REACH_FIELD: "로봇팔 상승 한계 (베이스에서 위로)",
         SPEED_FIELD: "차량 주행 속도",
@@ -1143,6 +1178,9 @@ class VehicleSettingsScreen(FormScreen):
         align = mm(self.DEFAULTS[self.ALIGN_FIELD], 3600, " s")
         align.setMinimum(10)
         lift_max = mm(self.DEFAULTS[self.LIFT_MAX_FIELD], 10000)
+        lift_speed = mm(self.DEFAULTS[self.LIFT_SPEED_FIELD], 500, " mm/s")
+        lift_speed.setMinimum(1)
+        lift_speed.setToolTip("자동 작업에서 리프트를 움직이는 속도(SetMvLift). 수동 제어 화면은 PLC 속도를 씁니다.")
         base = mm(self.DEFAULTS[self.BASE_FIELD], 3000)
         reach = mm(self.DEFAULTS[self.REACH_FIELD], 3000)
         super().__init__(
@@ -1162,6 +1200,7 @@ class VehicleSettingsScreen(FormScreen):
                 (self.ALIGN_FIELD, align),
                 ("리프트 · 로봇 높이", None),
                 (self.LIFT_MAX_FIELD, lift_max),
+                (self.LIFT_SPEED_FIELD, lift_speed),
                 (self.BASE_FIELD, base),
                 (self.REACH_FIELD, reach),
                 ("작업 가능 높이", self.reach_label),
@@ -1206,6 +1245,10 @@ class VehicleSettingsScreen(FormScreen):
 
     def speed_mm_s(self) -> float:
         return self._number(self.SPEED_FIELD)
+
+    def lift_speed_mm_s(self) -> float:
+        """리프트 속도 [mm/s] — SetMvLift.set_speed(m/s 로 바꿔 싣는다)."""
+        return self._number(self.LIFT_SPEED_FIELD)
 
     def calibration_time_s(self) -> float:
         """캘리브레이션 최대 시간 [s]. 0 이면 아직 없다(사람이 넣거나 캘리브레이션 때 계산)."""
@@ -1449,6 +1492,10 @@ class ConnectionSettingsScreen(FormScreen):
 
     """협동로봇, 차량, ERUT 의 연결 정보를 한 화면에서 설정한다(PLC 는 차량 노드가 맡는다).
 
+    PLC 와는 차량(AGV) 노드만 통신한다. 이 화면은 차량 상태로 본 PLC 연결(오류 701 PLC_COMM_LOST 면
+    「연결 실패」)을 보여 주고, 끊겼으면 「PLC 다시 연결」로 차량에 리셋을 보낸다(2026-11-20 — AGV 판
+    인터페이스에는 PLC 전용 필드 · 서비스가 없다).
+
     로봇 연결/연결 해제도 **이 화면에서만** 한다. 예전에는 Cobot 수동 제어와
     TPAC 설정이 각자 연결 버튼을 갖고 있어서, 어느 화면에서 무엇에 붙어
     있는지 알기 어려웠고 주소도 화면마다 따로 입력해야 했다.
@@ -1473,6 +1520,8 @@ class ConnectionSettingsScreen(FormScreen):
     disconnect_requested = pyqtSignal()
     #: 「로봇 VNC 열기」 — 이 로봇엔 티치 펜던트를 달지 않아 화면을 VNC 로 본다.
     vnc_requested = pyqtSignal()
+    #: PLC 다시 연결 — 앱이 차량에 리셋(RobotControl reset=1)을 보낸다(2026-11-20).
+    plc_reconnect_requested = pyqtSignal()
 
     def __init__(self):
         # 차량(AMR·리프트·아웃트리거)을 무엇으로 움직일지. 더미는 장비 없이
@@ -1482,6 +1531,9 @@ class ConnectionSettingsScreen(FormScreen):
         vehicle_mode=TouchComboBox(); vehicle_mode.addItems(list(self.VEHICLE_MODES))
         vehicle_mode.activated.connect(
             lambda index, c=vehicle_mode: self.vehicle_mode_changed.emit(c.itemText(index)))
+        # PLC 연결 상태 — 차량 상태(robot_status.error_code 701)로 본다(입력칸이 아니라 표시).
+        self.plc_state_label = QLabel("● 모름"); self.plc_state_label.setWordWrap(True)
+        self.plc_state_label.setProperty("plc", "unknown")
         super().__init__(
             "connection","연결 설정",
             "각 장비의 유선 연결 정보를 설정합니다. 변경한 값은 다음 연결 시도부터 적용됩니다.",
@@ -1491,9 +1543,11 @@ class ConnectionSettingsScreen(FormScreen):
                 ("Dashboard 포트",spin(29999,1,65535)),
                 ("Primary 포트",spin(30001,1,65535)),
                 ("Modbus 포트",spin(502,1,65535)),
-                # PLC 통신은 차량(AMR) 노드가 맡는다 — RCS 에는 PLC 접속 칸이 없다(2026-11-17).
+                # PLC 통신은 차량(AMR) 노드가 맡는다 — RCS 에는 PLC 접속 칸이 없고, 차량 상태로 본
+                # 연결 상태를 보이며 끊기면 다시 연결(차량 리셋)을 시킨다(2026-11-20).
                 ("차량",None),
                 ("차량 제어",vehicle_mode),
+                ("PLC 연결",self.plc_state_label),
                 # 외부 통신은 ERUT MQTT 하나다(사내 MC MQTT 는 2026-10-07 에 뺐다).
                 # 접속 정보는 ERUT 가 알려 준다(나중에는 랜선으로 ERUT 쪽 PC). 비어
                 # 있으면 붙지 않는다 — 예전에는 127.0.0.1 로 붙었다(2026-10-14).
@@ -1513,6 +1567,41 @@ class ConnectionSettingsScreen(FormScreen):
         self.vnc_btn=QPushButton("로봇 VNC 열기"); self.vnc_btn.setObjectName("SettingsButton")
         self.vnc_btn.clicked.connect(self.vnc_requested.emit)
         self._section_forms["협동로봇"].addRow(QLabel(""), self.vnc_btn)
+        self._build_plc_controls()
+
+    def _build_plc_controls(self) -> None:
+        """「PLC 다시 연결」 · 결과 줄 — 차량 칸 아래(2026-11-20)."""
+        self.plc_reconnect_btn = QPushButton("PLC 다시 연결"); self.plc_reconnect_btn.setObjectName("SettingsButton")
+        self.plc_reconnect_btn.clicked.connect(self.plc_reconnect_requested.emit)
+        self._section_forms["차량"].addRow(QLabel(""), self.plc_reconnect_btn)
+        self.plc_message = QLabel(""); self.plc_message.setObjectName("Muted"); self.plc_message.setWordWrap(True)
+        self._section_forms["차량"].addRow(QLabel(""), self.plc_message)
+        self.set_plc_reconnect_enabled(False, "차량 상태가 들어오지 않습니다.")
+
+    #: PLC 상태 → (표시 글자, 색 이름). "" = 모름(차량 상태가 안 온다).
+    PLC_TEXTS = {"CONNECTED": ("연결됨", "StatusGood"), "FAILED": ("연결 실패", "StatusDanger")}
+
+    def set_plc_state(self, state: str, error: str = "") -> None:
+        """차량 상태로 본 PLC 연결 — "CONNECTED" · "FAILED"(오류 701) · "" 모름."""
+        text, kind = self.PLC_TEXTS.get(state, ("모름", "Muted"))
+        if state == "FAILED" and error:
+            text += f" — {error}"
+        self.plc_state_label.setText(f"● {text}")
+        self.plc_state_label.setToolTip(
+            "차량 노드가 PLC 통신 끊김(오류 701 PLC_COMM_LOST)을 내면 「연결 실패」, 차량 상태가 오고 "
+            "701 이 없으면 「연결됨」입니다.")
+        if self.plc_state_label.objectName() != kind:
+            self.plc_state_label.setObjectName(kind)
+            self.plc_state_label.style().unpolish(self.plc_state_label)
+            self.plc_state_label.style().polish(self.plc_state_label)
+
+    def set_plc_reconnect_enabled(self, on: bool, reason: str = "") -> None:
+        """「PLC 다시 연결」을 누를 수 있는지 — PLC 가 끊겼을 때만. `reason` 은 못 누르는 까닭(풍선 도움말)."""
+        self.plc_reconnect_btn.setEnabled(bool(on))
+        self.plc_reconnect_btn.setToolTip("" if on else reason)
+
+    def set_plc_message(self, text: str) -> None:
+        self.plc_message.setText(text)
 
     def _build_connection_controls(self) -> None:
         """저장과는 별개로 지금 바로 연결/해제를 걸 수 있는 조작부."""

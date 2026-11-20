@@ -146,3 +146,17 @@ def test_safety_stop_comes_from_the_primary_state():
     data.safety_mode, data.is_robot_protective_stopped = 1, 1
     node._publish_safety_stop(data)
     assert node.pub_safety_stop.messages == [0, 1, 1]
+
+
+def test_estop_comes_from_the_primary_state():
+    """로봇 컨트롤러 비상정지 — 30001 is_emergency_stopped 를 robot/status/estop 에 낸다(안전정지와 따로)."""
+    node = make_node({}, {'scale': {'position_per_count': 0.1, 'rotation_per_count': 1.0},
+                          'read': {}, 'write': {}})
+    node.pub_estop = FakePublisher()
+    data = type("D", (), {"is_emergency_stopped": 0, "safety_mode": 1})()
+    node._publish_estop(data)
+    data.is_emergency_stopped = 1
+    node._publish_estop(data)
+    data.is_emergency_stopped = 0
+    node._publish_estop(data)
+    assert node.pub_estop.messages == [0, 1, 0]

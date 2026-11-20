@@ -10,7 +10,7 @@
     query     → res 200 (activity·resumable·calibrated·errors[]·last_job …)
     calibrate → res 202 → evt/complete (origin, calibration_error_mm, total_length_mm)
                 **차량(AGV) 캘리브레이션**: 원통은 모재 외벽을 따라 한 바퀴 돌며 좌표계(맵)를
-                잡고, 곡판은 한 바퀴 돌지 않고 판 왼쪽 끝의 QR 마커에 정렬만 한다(2026-11-18)
+                잡고, 곡판은 한 바퀴 돌지 않고 판 가운데의 QR 마커에 정렬만 한다(2026-11-18)
     prepare   → res 202 → evt/ready  (작업 값만 확인해 둔다 — 아무것도 움직이지 않는다)
     start     → res 202 → 차량 이동 → 아웃트리거 고정 → 리프트 → 로봇 3점 측정 →
                 시작점에 붙음 → evt/contact attached → 적심 → ㄹ자 스캔 →
@@ -71,7 +71,8 @@ CAPABILITIES = (
 
 #: 받는 모재 모양(evt/info shapes · geometry.shape, if-0.13). 없는 모양은 501 E6501 이다.
 #: 곡판은 원기둥에서 세로로 잘라낸 한 조각 — 로봇은 원통과 같은 곡률로 훑고, 차량은 한 바퀴
-#: 대신 QR 정렬만 한다(2026-11-18). x 는 0(판 왼쪽 끝) ~ width 이고 감기지 않는다.
+#: 대신 **판 가운데 QR** 에 정렬만 하고 스캔 때도 움직이지 않는다(2026-11-18). x 는 0(판 왼쪽
+#: 끝) ~ width 이고 감기지 않는다. 그래서 곡판 구역은 판 가운데를 중심으로 해야 한다.
 SHAPE_CYLINDER = "cylinder"
 SHAPE_PLATE = "curved_plate"
 SHAPES = (SHAPE_CYLINDER, SHAPE_PLATE)
@@ -191,6 +192,27 @@ def outside_material(plan: GridPlan, geometry: dict) -> str:
         if x0 < 0 or x1 > width + 1e-6:
             return (f"모재 밖 구역 — 곡판 x {x0:g}~{x1:g} mm 는 판 가로 0~{width:g} mm 안이어야 "
                     "합니다(감기지 않습니다)")
+        return off_plate_center(plan, width)
+    return ""
+
+
+#: 곡판 구역 가운데가 판 가운데(QR)에서 이만큼까지 벗어나도 받는다 [mm] — 정수 mm 좌표라
+#: 판 가로가 홀수면 가운데가 0.5 mm 어긋난다.
+PLATE_CENTER_TOLERANCE_MM = 1.0
+
+
+def off_plate_center(plan: GridPlan, width: float) -> str:
+    """곡판 구역이 판 가운데(QR)를 중심으로 하지 않으면 그 까닭, 맞으면 "" (400 E6001, 2026-11-18).
+
+    3S 차량은 판 가운데 QR 에 정렬한 뒤 스캔 때 움직이지 않고, 로봇은 차량 가운데에서 좌우로
+    구역 가로/2 씩 훑는다 — 가운데가 다른 구역은 그 자리를 훑을 수 없다.
+    """
+    center = plan.origin_x + plan.cell_width / 2.0
+    if abs(center - width / 2.0) > PLATE_CENTER_TOLERANCE_MM:
+        half = plan.cell_width / 2.0
+        return (f"곡판 구역은 판 가운데(x {width / 2.0:g} mm, QR 자리)를 중심으로 해야 합니다 — "
+                f"받은 구역 가운데 x {center:g} mm. 이 장비는 스캔 때 차량을 움직이지 않습니다 "
+                f"(가로 {plan.cell_width:g} mm 면 x {width / 2.0 - half:g}~{width / 2.0 + half:g})")
     return ""
 
 
@@ -835,7 +857,7 @@ class ErutSession(QObject):
         """모재 기준 좌표계 수립 (탭1 · 탭3 ②) — **차량(AGV) 캘리브레이션**이다.
 
         geometry(모재 모양 · 크기, if-0.13 필수)를 받아 좌표계(맵)를 잡는다. 원통은 차량이
-        외벽을 따라 붙어 한 바퀴 돌고, 곡판은 한 바퀴 돌지 않고 판 왼쪽 끝의 원점 QR 마커에
+        외벽을 따라 붙어 한 바퀴 돌고, 곡판은 한 바퀴 돌지 않고 판 가운데의 QR 마커에
         정렬만 한다(2026-11-18). 검사 시작 전 1회, 자리를 옮겼다 돌아왔을 때 다시 한다.
         로봇의 3점 측정은 여기가 아니라 구간 검사(start) 안에서 한다. 차량이 움직이므로
         로봇은 홈(이동 안전 자세)에 있어야 한다. 검사 순서는 400 → 501 → 409(R-17).
@@ -852,7 +874,7 @@ class ErutSession(QObject):
         self._calibrated = False
         self._answer(req_id, "calibrate", 202)
         self.activity.emit(f"ERUT 캘리브레이션 — {describe_geometry(geometry)} — " + (
-            "차량이 원점 QR 마커에 정렬합니다(한 바퀴 돌지 않습니다)."
+            "차량이 판 가운데 QR 마커에 정렬합니다(한 바퀴 돌지 않습니다)."
             if geometry["shape"] == SHAPE_PLATE
             else "차량이 외벽을 따라 한 바퀴 돌며 좌표계를 잡습니다."))
         self.calibration_requested.emit(dict(geometry))

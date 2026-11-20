@@ -7,8 +7,9 @@
               RCS 필요  — RCS 가 작업 순서 · 인터락 · 화면 · 수동 조작을 돌리려고 필요한 것
               공통      — 둘 다
   범위        ERUT <-> RCS(MQTT) 노드는 뺀다(ERUT 규격서). RCS <-> 로봇(Modbus)은 인터락에 쓰는 것만.
-  PLC         RCS 는 PLC 에 관여하지 않는다(통신 · 연결 상태 모두 차량 노드가 맡는다, 2026-11-17).
-              RCS 에 필요한 PLC 신호는 차량 노드가 차량 상태(RobotStatus)로 가공해 준다.
+  PLC         RCS 는 PLC 에 붙지 않는다(통신은 차량 노드가 맡는다, 2026-11-17). RCS 에 필요한 PLC 신호는
+              차량 노드가 차량 상태(RobotStatus)로 가공해 준다. PLC 연결은 error_code 701 로 본다(2026-11-20).
+  인터페이스  src/vehicle_interfaces 는 AGV 담당 판(2026-11-20)이 기준이다 — 3S 는 고치지 않고 맞춘다.
 
   0. 읽는 법           목적 · 역할 · 범례 · 단위
   1. 노드·통신         RCS <-> 차량 노드 토픽 · 서비스
@@ -17,7 +18,7 @@
   4. 명령 순서         주행 · 아웃트리거 · 리프트 · 일시정지 · 조그 · ERUT 구역 · 캘리브레이션
   5. 인터락·안전       로봇 홈(276) · 차량 고정 확인(309) · 오류 · 끊김 · 비상정지 · 수평
   6. ERUT 보고 값      차량 값이 ERUT 의 어느 칸으로 나가나 (ERUT 요청의 근거)
-  7. PLC              RCS 는 관여하지 않는다 — 차량 노드가 맡는다
+  7. PLC              RCS 는 PLC 에 붙지 않는다 — 차량 노드가 맡고, 연결은 701 로 본다
   8. 정할 것           RCS · 차량 담당이 함께 정할 것
 
 출처: src/vehicle_interfaces (msg · srv), src/vehicle_sim/vehicle_sim/vehicle_sim_node.py,
@@ -25,7 +26,7 @@
       operator-ui/src/smr_operator_ui/app.py, docs/vehicle_request_calibration_lap_battery.md,
       ERUT MQTT 표준 인터페이스 if-0.12
 
-값을 고칠 때는 코드를 먼저 고치고 이 스크립트를 다시 돌린다.
+값을 고칠 때는 코드(operator-ui · vehicle_sim)를 먼저 맞추고 이 스크립트를 다시 돌린다.
 실행:  python3 tools/build_vehicle_interface_xlsx.py
 """
 
@@ -125,6 +126,12 @@ NODES = [
      "차량 상태 · 위치 · 리프트 높이 · 오류 · (추가) 배터리 · 비상정지 · 수평", BOTH,
      "RCS: 도착 판정 · 인터락 · 화면 / ERUT: 배터리 · 충전 · 위치 · 오류 보고(6.ERUT 보고 값)",
      "있음 — 더한 칸은 정의됨, AGV 가 채운다(2.메시지)"),
+    ("토픽", "<ns>/robot_estop (2026-11-18)", "std_msgs/Bool", "RCS → 차량", "바뀌면 바로 + 0.5 초마다",
+     "로봇 컨트롤러 비상정지 상태 — true 면 차량도 비상정지(PLC 비상정지를 건다) · 움직이는 명령 거절", BOTH,
+     "로봇 쪽 비상정지 버튼이 눌려도 차량이 서게. 실제 동시 정지는 안전 회로 직결(5.인터락 13)이 맡는다", NEW),
+    ("토픽", "robot/status/estop (2026-11-18)", "std_msgs/Int32", "로봇 노드 → RCS", "10 Hz",
+     "로봇 컨트롤러 비상정지(30001 is_emergency_stopped) 1 = 비상정지", BOTH,
+     "RCS 가 받아 <ns>/robot_estop · ERUT E1002 로 옮긴다", "있음"),
     ("서비스", "<ns>/set_job", "vehicle_interfaces/srv/SetJob", "RCS → 차량", "이동마다",
      "자동 주행 한 번 설정(거리 · 속도 · 거리 유지)", BOTH,
      "ERUT: start 구역 x 로 이동 / RCS: RCS 격자 작업의 열 이동", "있음 — 이름은 가정"),
@@ -133,14 +140,20 @@ NODES = [
      "ERUT: pause · resume · abort · reset / RCS: 정지 버튼 · 수동 화면 오류 리셋", "있음 — 이름은 가정"),
     ("서비스", "<ns>/manual_command", "vehicle_interfaces/srv/ManualCommand", "RCS → 차량",
      "조그는 누르는 동안 200 ms 마다 다시",
-     "수동 조그 · 아웃트리거 고정/해제 · 개별 · 리프트 높이 · 원점/초기화", RCS,
-     "RCS 수동 제어 화면. 지금은 자동 순서의 아웃트리거 · 리프트도 이것으로 보낸다(8.정할 것 6)",
-     "있음 — 이름은 가정"),
+     "수동 조그 · 아웃트리거 전체 고정/해제 · 수동 리프트 · 원점/초기화", RCS,
+     "RCS 수동 제어 화면 + 자동 순서의 아웃트리거 고정/해제. 아웃트리거 개별은 뺐다(균형, 2026-11-19). "
+     "수동 리프트는 cmd_mv_lift · lift_height(속도는 PLC, AGV 판 2026-11-20)", "있음 — 이름은 가정"),
+    ("서비스", "<ns>/set_mv_lift", "vehicle_interfaces/srv/SetMvLift", "RCS → 차량", "구역마다 · 주행 전",
+     "리프트를 목표 높이 · 속도로 — 자동 동작 중(set_speed 는 auto 에서만, AGV 판 2026-11-20)", BOTH,
+     "ERUT: start 구역 높이(area y) / RCS: 격자 작업 · 주행 전 0", "있음 — 이름은 가정"),
     ("서비스", "<ns>/measure_lap (제안)", "vehicle_interfaces/srv/MeasureLap", "RCS → 차량", "캘리브레이션마다",
      "mode LAP(원통): 원점(QR)에서 출발해 모재를 한 바퀴 돌고 원점에 선다 — 달린 거리 · 원점 인식 결과. "
      "mode ALIGN(곡판, 2026-11-18): 한 바퀴 돌지 않고 원점 QR 마커에 정렬만 하고 선다", ERUT,
      "ERUT calibrate(geometry.shape 로 mode 를 고른다) → evt/complete · calibrated. 원통은 total_length_mm 도. "
      "없으면 원통은 SetJob 거리 이동으로 대신, 곡판은 실패", NEW),
+    ("서비스", "<ns>/reset_odometry", "vehicle_interfaces/srv/ResetOdometry", "RCS → 차량", "작업자가 누를 때",
+     "차량 위치(Position6D x · y · yaw)를 받은 값으로 다시 맞춘다(AGV 판 2026-11-20)", RCS,
+     "RCS 수동 제어 화면 「위치 다시 맞추기」 — 자동 작업 중에는 보내지 않는다", "있음 — 이름은 가정"),
     ("section", "참고 — RCS ↔ 로봇 (차량 인터락에 쓰는 것만, 차량 노드와 무관)"),
     ("토픽", "robot/status/at_home", "std_msgs/Int32 (레지스터 276)", "로봇 노드 → RCS", "10 Hz",
      "로봇이 홈(접힌 자세)인가 — 1 일 때만 RCS 가 차량 · 리프트 · 아웃트리거 해제를 보낸다", BOTH,
@@ -184,7 +197,8 @@ FIELDS = [
     ("RobotStatus", "battery_pct", "uint8", "%", "0~100 정수, 모르면 255", "배터리 잔량", ERUT,
      "ERUT evt/status · query 의 battery (규격: 배터리가 없으면 칸을 뺀다)", NEW),
     ("RobotStatus", "charging", "bool", "-", "", "충전 중", ERUT, "ERUT evt/status · query 의 charging", NEW),
-    ("RobotStatus", "estop", "bool", "-", "", "차량 비상정지 눌림", BOTH,
+    ("RobotStatus", "estop", "bool", "-", "",
+     "차량(PLC) 비상정지 중 — 차량 버튼이든, robot_estop · 안전 회로로 PLC 가 건 비상정지든 true", BOTH,
      "ERUT: evt/error E1002 E_STOP(estop) / RCS: 로봇 · 작업을 세운다", NEW),
     ("RobotStatus", "obstacle_stop", "bool", "-", "", "접근 감지(라이다 · 근접 센서)로 선 상태", RCS,
      "작업을 일시정지로 보고 알람(구매사양: 설정 거리 안 접근 시 일시정지). ERUT 에는 지금 칸이 없다 — "
@@ -198,7 +212,8 @@ FIELDS = [
      "캘리브레이션 주행 결과 — LAP: 한 바퀴 달린 거리 · 원점(QR)을 다시 찾았나 / ALIGN: QR 에 맞춰 섰나", ERUT,
      "ERUT evt/complete(calibrate) · calibrated. total_length_mm 는 원통만(곡판은 판 가로를 재지 않는다)", NEW),
     ("section", "Position6D.msg"),
-    ("Position6D", "x · y · z / roll · pitch · yaw", "float64", "m / rad", "", "위치 · 자세", RCS, "표시용", CHECK),
+    ("Position6D", "x · y · z / roll · pitch · yaw", "float64", "m / rad", "", "위치 · 자세", RCS,
+     "표시용(수동 화면 「위치 x / yaw」). ResetOdometry 로 x · y · yaw 를 다시 맞춘다", CHECK),
     ("section", "SetJob.srv — RCS → 차량, <ns>/set_job (자동 주행 한 번 — 받은 거리 · 속도로 달리기만 한다)"),
     ("SetJob 요청", "job_id", "string", "-", "RCS-0001, RCS-0002 … (이동마다 1씩)", "작업 식별자", RCS,
      "상태의 job_id 로 자기 이동을 가려낸다", DEFINED),
@@ -213,14 +228,16 @@ FIELDS = [
      "뺐음"),
     ("SetJob 요청", "standoff", "float64", "m", "0 ~ 2.0", "거리 유지 목표 — 차량 안쪽 면 ↔ 모재 표면", RCS,
      "차량이 모재를 돌며 지킬 거리. RCS 가 차량 설정 「모재 거리 유지」를 이동마다 보낸다(2026-11-12 정함)", DEFINED),
+    ("SetJob 요청", "radius (AGV 판 2026-11-20)", "float64", "m", "모르면 0", "목표 대상(모재) 반지름", RCS,
+     "검사 대상 바깥 지름 / 2 — 보낼 때마다 지금 값(메인 화면 「검사 대상」 · ERUT calibrate 로 바뀐다)", DEFINED),
     ("SetJob 응답", "success · message", "bool · string", "-", "", "접수 여부 · 사유", RCS,
      "success 면 RobotControl(RUNNING)으로 출발. false 면 이동 실패", DEFINED),
     ("section", "RobotControl.srv — RCS → 차량, <ns>/robot_control"),
     ("RobotControl 요청", "state", "string", "-", "RUNNING · PAUSED · STOP",
      "RUNNING 출발 · 재개, PAUSED 일시정지, STOP 정지", BOTH,
      "ERUT: pause · resume · abort / RCS: 출발(SetJob 뒤) · 정지 버튼 · 이동 취소", CHECK),
-    ("RobotControl 요청", "reset", "uint8", "-", "1 = 오류 리셋", "오류 해제", BOTH,
-     "ERUT: reset(장애 해제) / RCS: 수동 화면 「오류 리셋」", CHECK),
+    ("RobotControl 요청", "reset", "uint8", "-", "1 = 오류 리셋", "오류 해제 — PLC 끊김(701)이면 PLC 에 다시 붙어 본다", BOTH,
+     "ERUT: reset(장애 해제) / RCS: 수동 화면 「오류 리셋」 · 연결 설정 「PLC 다시 연결」", CHECK),
     ("RobotControl 요청", "job_cancel", "uint8", "-", "1 = 작업 취소", "SetJob 취소", BOTH,
      "ERUT: abort / RCS: 정지 — 지금은 STOP 으로 대신(예약)", CHECK),
     ("RobotControl 응답", "success · message", "bool · string", "-", "", "접수 여부 · 사유", RCS,
@@ -232,32 +249,47 @@ FIELDS = [
      "수동 화면 (받은 자료의 cmd_trl_right 는 오타라 cmd_trn_right 로 고쳤다, 2026-11-17)", DEFINED),
     ("ManualCommand 요청", "cmd_outrg_set", "uint8", "-", "0 없음 · 1 해제 · 2 고정", "아웃트리거 전체 고정/해제", RCS,
      "수동 화면 + 자동 순서(주행 전 해제 · 도착 후 고정). hold 로 끝 판정", CHECK),
-    ("ManualCommand 요청", "cmd_man_outrg1 · 2 · 3", "uint8", "-", "0 없음 · 1 상승 · 2 하강", "아웃트리거 개별 상하",
-     RCS, "수동 화면", DEFINED),
-    ("ManualCommand 요청", "cmd_mv_lift + lift_height", "uint8 + float64", "- / m",
-     "1 = 이동, lift_height = 목표 절대 높이", "리프트를 목표 높이로(아웃트리거 고정에서만)", BOTH,
-     "ERUT: start 구역 높이(area y) / RCS: 수동 화면 · 주행 전 0", CHECK),
+    ("ManualCommand 요청", "cmd_mv_lift · lift_height", "uint8 · float64", "- · m", "1 = lift_height 로 이동 · 목표 절대 높이",
+     "수동 리프트 — 아웃트리거 고정에서만, 속도는 PLC 가 정한다(AGV 판 2026-11-20)", RCS,
+     "수동 화면 「이 높이로 이동」. 도착 = |lift_h − lift_height| ≤ 2 mm", DEFINED),
     ("ManualCommand 요청", "cmd_init", "uint8", "-", "1 = 원점/초기화", "수동 모드 원점/초기화", RCS,
      "수동 화면 「원점/초기화」", DEFINED),
     ("ManualCommand 응답", "success · message", "bool · string", "-",
      "수동 모드가 아니면 false", "접수 여부", RCS, "false 면 그 동작 실패", DEFINED),
+    ("section", "SetMvLift.srv — RCS → 차량, <ns>/set_mv_lift (자동 동작 중, AGV 판 2026-11-20)"),
+    ("SetMvLift 요청", "job_id", "string", "-", "RCS-L0001 …", "명령마다 새 번호", BOTH, "", DEFINED),
+    ("SetMvLift 요청", "set_height", "float64", "m", "목표 절대 높이(맨 아래 0)", "리프트를 목표 높이로(아웃트리거 고정에서만)",
+     BOTH, "ERUT: start 구역 높이(area y) / RCS: 주행 전 0. 도착 = |lift_h − set_height| ≤ 2 mm", DEFINED),
+    ("SetMvLift 요청", "set_speed", "float64", "m/s", "RCS 차량 설정 「리프트 속도」(기본 0.05)",
+     "리프트 속도 — auto mode 에서만 적용(수동 모드는 PLC 속도)", RCS, "", DEFINED),
+    ("SetMvLift 응답", "success · message", "bool · string", "-", "", "접수 여부 · 사유", BOTH,
+     "false 면 그 동작 실패. 리프트가 움직이면 PLC 가 로봇 안전정지 → RCS 는 safety reset 수신을 확인한 뒤 로봇을 "
+     "출발시킨다(srv 주석 · 5.인터락)", DEFINED),
     ("section", "MeasureLap.srv (제안) — RCS → 차량, <ns>/measure_lap"),
     ("MeasureLap 요청", "job_id · speed · standoff", "string · float64 · float64", "- · m/s · m", "",
      "캘리브레이션 주행 시작 — 속도는 RCS 차량 설정 「차량 주행 속도」, 거리 유지는 「모재 거리 유지」", ERUT,
      "ERUT calibrate · RCS 「계측 시작」 · 차량 「작업 시작」 버튼", NEW),
     ("MeasureLap 요청", "mode (2026-11-18)", "string", "-", "LAP · ALIGN (빈 글자 = LAP)",
-     "LAP = 원통 한 바퀴. ALIGN = 곡판 — 한 바퀴 돌지 않고 판 왼쪽 끝의 원점 QR 마커에 정렬(거리 · 방향)만",
+     "LAP = 원통 한 바퀴. ALIGN = 곡판 — 한 바퀴 돌지 않고 판 가운데의 QR 마커에 정렬(거리 · 방향)만. "
+     "곡판은 스캔 때도 차량이 움직이지 않는다",
      ERUT, "RCS 가 geometry.shape(cylinder · curved_plate)로 고른다", NEW),
     ("MeasureLap 요청", "expected_dist", "float64", "m", "",
      "LAP: 한 바퀴 거리 2π(R + 거리 유지 + 폭/2) — 안전 한도 · 참고. ALIGN: 0", ERUT, "RCS 계산", NEW),
     ("MeasureLap 응답", "success · message", "bool · string", "-", "", "접수 여부", ERUT,
      "거절 → ERUT calibrate 실패", NEW),
+    ("section", "ResetOdometry.srv — RCS → 차량, <ns>/reset_odometry (AGV 판 2026-11-20)"),
+    ("ResetOdometry 요청", "x · y · yaw", "float64", "m · m · rad", "작업자가 넣은 값(화면은 °)",
+     "차량 위치를 이 값으로 다시 맞춘다(z · roll · pitch 는 그대로)", RCS, "수동 화면 「위치 다시 맞추기」 — 확인 뒤", NEW),
+    ("ResetOdometry 응답", "success · message", "bool · string", "-", "", "접수 여부 · 사유", RCS,
+     "알림 줄에 결과. 움직이는 중이면 거절해도 된다", NEW),
 ]
+
+# ================================================================= 4. 명령 순서]
 
 # ================================================================= 4. 명령 순서
 SEQUENCES = [
     ("section", "A. 자동 주행 한 번"),
-    ("A 주행", BOTH, "1", "SetJob(job_id, set_dist[m, 차량 주행 거리], set_speed, standoff)",
+    ("A 주행", BOTH, "1", "SetJob(job_id, set_dist[m, 차량 주행 거리], set_speed, standoff, radius)",
      "접수하면 success = true", "-", "거절 → 이동 실패(알람 · ERUT E2001)"),
     ("A 주행", BOTH, "2", "RobotControl(state = RUNNING)", "출발. state RUNNING, mv_dist 증가", "-",
      "거절 → 이동 실패"),
@@ -268,8 +300,10 @@ SEQUENCES = [
     ("B 아웃트리거", RCS, "1", "ManualCommand(cmd_outrg_set = 2 고정 / 1 해제)",
      "고정되면 hold SET(state HOLD), 풀리면 hold RELEASE", "hold 가 목표가 되면 끝", "30 초 · ERROR · 거절 → 실패"),
     ("section", "C. 리프트 높이"),
-    ("C 리프트", BOTH, "1", "ManualCommand(cmd_mv_lift = 1, lift_height = 목표 m)",
+    ("C 리프트", BOTH, "1", "SetMvLift — set_mv_lift(job_id, set_height = 목표 m, set_speed)",
      "아웃트리거 고정(hold SET)에서만 움직인다", "|lift_h − 목표| ≤ 2 mm", "180 초 · ERROR · 거절 → 실패"),
+    ("C 리프트", BOTH, "2", "(로봇 출발 전)", "리프트가 움직이는 동안 PLC 가 로봇을 안전정지 → 끝나면 안전재설정",
+     "RCS 가 safety reset 수신(CI2 · CI3)을 보고 안전정지가 풀린 뒤에 로봇을 출발시킨다", "-"),
     ("section", "D. 일시정지 · 재개 · 정지 · 리셋"),
     ("D 제어", BOTH, "일시정지", "RobotControl(PAUSED) — ERUT pause · RCS 일시정지", "그 자리에 선다(PAUSED)",
      "-", "-"),
@@ -277,11 +311,17 @@ SEQUENCES = [
     ("D 제어", BOTH, "정지", "RobotControl(STOP) — ERUT abort · RCS 정지 · 이동 취소", "선다(STOP)", "-", "-"),
     ("D 제어", BOTH, "리셋", "RobotControl(reset = 1) — ERUT reset · 수동 화면 오류 리셋", "오류를 풀고 STOP/HOLD",
      "-", "-"),
-    ("section", "E. 수동 조그 · 아웃트리거 개별 (RCS 수동 제어 화면)"),
+    ("section", "E. 수동 제어 화면 — 조그 · 아웃트리거 전체 · 리프트 · 위치 (아웃트리거 개별은 2026-11-19 뺐다)"),
     ("E 조그", RCS, "누르는 동안", "ManualCommand(cmd_mv_fwd 등 = true) 200 ms 마다 다시",
      "명령이 오는 동안만 움직이고 끊기면 스스로 선다(모의기 deadman 0.5 초)", "-",
      "로봇이 홈이 아니거나 동작 중이면 RCS 가 버튼을 잠근다"),
     ("E 조그", RCS, "뗄 때", "ManualCommand(모든 필드 0/false)", "선다", "-", "-"),
+    ("E 아웃트리거", RCS, "누를 때", "ManualCommand(cmd_outrg_set = 2 전체 내리기 / 1 전체 올리기)",
+     "세 개를 균형 맞춰 함께 움직인다", "hold SET / RELEASE", "-"),
+    ("E 리프트", RCS, "누를 때", "ManualCommand(cmd_mv_lift = 1, lift_height = 입력 m) — 속도는 PLC",
+     "아웃트리거 고정에서만 움직인다", "lift_h 목표 ±2 mm", "-"),
+    ("E 위치", RCS, "누를 때", "ResetOdometry(x, y, yaw) — 작업자가 넣은 값(확인 뒤)",
+     "position x · y · yaw 를 그 값으로", "robot_status.position", "-"),
     ("section", "F. ERUT 구역 검사 한 번 (start) — 차량이 하는 부분"),
     ("F 구역", ERUT, "1", "(로봇이 홈이고 태스크가 안 돌 때만)", "-", "at_home = 1", "아니면 기다린다"),
     ("F 구역", ERUT, "2", "C(리프트 0) → B(해제) — 올라가 있거나 고정돼 있으면", "주행 전 내리고 풀기",
@@ -304,9 +344,9 @@ SEQUENCES = [
      "lap_state FAILED + lap_error → ERUT 실패"),
     ("section", "G-2. ERUT 캘리브레이션 = 곡판 QR 정렬 (geometry.shape = curved_plate, 2026-11-18)"),
     ("G-2 곡판", ERUT, "앞 순서", "로봇 홈 확인 → C(리프트 0) → B(해제)", "원통과 같다", "-",
-     "차량은 판 왼쪽 끝의 QR 앞에 놓여 있다(작업자가 놓는다)"),
+     "QR 은 판 가운데에 붙이고, 차량은 그 앞에 놓여 있다(작업자가 놓는다)"),
     ("G-2 곡판", ERUT, "요청", "MeasureLap(job_id, mode = ALIGN, speed, standoff, expected_dist = 0)",
-     "한 바퀴 돌지 않는다 — QR 마커에 맞춰 거리(standoff) · 방향을 정렬하고 선다. 그 자리가 x = 0(판 왼쪽 끝)",
+     "한 바퀴 돌지 않는다 — QR 마커에 맞춰 거리(standoff) · 방향을 정렬하고 선다. 그 자리가 판 가운데(x = 판 가로/2)",
      "lap_state DONE · lap_origin_ok = true", "lap_origin_ok false · FAILED · 최대 시간 넘김 → ERUT 실패(E1004)"),
     ("G-2 곡판", ERUT, "최대 시간", "-", "RCS 차량 설정 「곡판 QR 정렬 최대 시간」(기본 120 초)",
      "곡판 calibrate 를 받으면 그 값이 「캘리브레이션 최대 시간」이 되고 ERUT 에 complete_within_ms.calibrate 로 알린다",
@@ -314,10 +354,19 @@ SEQUENCES = [
     ("G-2 곡판", ERUT, "결과", "-", "evt/complete(calibrate) — origin (0,0) · calibration_error_mm",
      "total_length_mm 는 싣지 않는다(판 가로를 재지 않는다 — 규격상 「싣기를 권한다」 선택 칸)",
      "measure_lap 이 없는 차량이면 곡판 원점을 못 잡는다 → 실패"),
-    ("G-2 곡판", ERUT, "그 뒤 구역 이동", "A(set_dist = 구역 x 가운데 × 주행 배율)",
-     "x 는 판 왼쪽 끝(QR)에서 오른쪽(+)으로 판 가로까지 — 이음매가 없어 감지 않는다. 배율은 원통과 같다(같은 곡률)",
-     "F 와 같다", "판 밖 구역은 RCS 가 ERUT 400 E6001 로 미리 거절"),
+    ("G-2 곡판", ERUT, "그 뒤 구역", "차량 이동 없음 — B(고정) → C(구역 높이) → 로봇",
+     "차량은 QR(판 가운데)에 정렬한 자리 그대로다. 로봇이 차량 가운데에서 좌우로 구역 가로/2 씩 훑고, "
+     "리프트가 높이를 맞춘다. 좌표 x 는 규격대로 판 왼쪽 끝 0 ~ 판 가로",
+     "F 의 4~5 와 같다", "판 밖 구역 · 판 가운데를 중심으로 하지 않는 구역은 RCS 가 ERUT 400 E6001 로 미리 거절"),
+    ("section", "H. PLC 연결 — 끊김 · 다시 연결 (2026-11-20 — PLC 전용 필드 · 서비스 없이 error_code 701 · reset 으로)"),
+    ("H PLC", RCS, "끊김", "-", "error_code 701 PLC_COMM_LOST · state ERROR — 하던 동작을 멈춘다",
+     "RCS 상단 PLC 「연결 실패」 · 알람 [E2001]", "작업 중이면 RCS 가 작업을 세운다(ERUT E2001)"),
+    ("H PLC", RCS, "다시 연결", "RobotControl(reset = 1) — 연결 설정 「PLC 다시 연결」(701 일 때만). AGV 가 스스로 "
+     "다시 시도해도 된다(권장 5 초)", "PLC 에 다시 붙어 본다 — success = 시작했다", "error_code 0 · state STOP/HOLD",
+     "못 붙으면 701 그대로"),
 ]
+
+# ================================================================= 5. 인터락·안전]
 
 # ================================================================= 5. 인터락·안전
 INTERLOCKS = [
@@ -338,12 +387,21 @@ INTERLOCKS = [
     ("7", RCS, "리프트", "차량 노드", "아웃트리거 고정(hold SET)에서만 움직인다", "거절(success false)", CHECK),
     ("8", RCS, "주행", "차량 노드", "아웃트리거가 고정돼 있으면 거절하거나 먼저 푼다(RCS 는 먼저 푼다)", "-", CHECK),
     ("9", RCS, "수동 명령", "차량 노드", "RUNNING · PAUSED · ERROR 에서는 받지 않는다", "success false", CHECK),
-    ("10", BOTH, "비상정지", "차량 노드 → RCS", "차량 비상정지를 estop 으로 알린다",
-     "RCS 가 로봇 · 작업을 세우고 ERUT E1002 E_STOP", NEW),
+    ("10", BOTH, "비상정지(차량 버튼)", "차량 노드 → RCS", "차량(PLC) 비상정지를 estop 으로 알린다",
+     "RCS 가 로봇 태스크 · 작업을 세우고 ERUT E1002 E_STOP(detail 「차량(PLC)」)", NEW),
+    ("10-2", BOTH, "비상정지(로봇 컨트롤러 버튼)", "RCS → 차량 노드",
+     "robot_estop = true 를 받으면 차량도 비상정지(PLC 비상정지 걸기) · 움직이는 명령 거절 · estop = true 로 알린다. "
+     "false 가 되면 차량 쪽 리셋 규칙대로 푼다",
+     "RCS 가 작업을 세우고 ERUT E1002(detail 「로봇 컨트롤러」). 두 쪽 다 풀려야 E1002 를 푼다", NEW),
     ("11", RCS, "접근 감지", "차량 노드 → RCS", "안전 스캐너 정지를 obstacle_stop 으로 알린다",
      "RCS 가 작업을 일시정지 · 알람(ERUT 에는 지금 칸 없음)", NEW),
     ("12", RCS, "수평 보정", "차량 노드 → RCS", "아웃트리거 고정 뒤 roll · pitch 가 허용 범위면 level_state = 1",
      "false 면 309 = 0(로봇 검사 불가)", NEW),
+    ("section", "안전 회로 — 통신과 따로 (ERUT R-18: MQTT 로 사람 안전을 보장하지 않는다)"),
+    ("13", BOTH, "비상정지 직결", "PLC ↔ 로봇 컨트롤러 (안전 IO, 2채널)",
+     "PLC 비상정지 → 로봇 컨트롤러 외부 비상정지 입력, 로봇 컨트롤러 비상정지 출력 → PLC 비상정지 입력. "
+     "어느 버튼이든 둘 다 바로 선다 — RCS · 노드 · 통신이 죽어도",
+     "robot_estop · estop 칸은 알림 · 작업 정리 · ERUT 보고용이다. 배선 · 핀 · 리셋 순서는 8.정할 것 22", NEW),
 ]
 
 # ================================================================= 6. ERUT 보고 값
@@ -359,7 +417,8 @@ ERUT_VALUES = [
      "차량 주행 거리 → 표면 거리(÷ 주행 배율)", CHECK),
     ("주행 오류", "RobotStatus.state ERROR · error_code · error_msg", "evt/error E2001 DRIVE_ERROR (stop)",
      "detail = error_msg", CHECK),
-    ("비상정지", "RobotStatus.estop", "evt/error E1002 E_STOP (estop)", "-", NEW),
+    ("비상정지", "RobotStatus.estop · robot/status/estop(로봇 컨트롤러)", "evt/error E1002 E_STOP (estop)",
+     "어느 쪽이든 E1002 하나 — detail 에 차량(PLC) · 로봇 컨트롤러. 둘 다 풀리면 cleared", NEW),
     ("자리 이탈", "(차량이 원점 자리를 떴다 — 충전 이동 등)", "evt/error E1003 CALIBRATION_LOST · calibrated = false",
      "차량이 스스로 자리를 뜨는 기능이 있으면 알려 줘야 한다", CHECK),
     ("캘리브레이션 결과", "MeasureLap → lap_path_m · lap_origin_ok", "evt/complete(calibrate).total_length_mm",
@@ -386,19 +445,22 @@ ERUT_VALUES = [
 # ================================================================= 7. PLC
 PLC = [
     ("section", "원칙 (2026-11-17)"),
-    ("RCS ↔ PLC", "관여하지 않는다", "PLC 통신 · 연결 상태 · 주소표 · 입출력 · 프로토콜은 모두 차량(AMR) 노드(3S 차량 "
-     "담당)가 맡는다. RCS 는 PLC 연결 상태도 보지 않는다 — PLC 가 끊겨 차량이 움직이지 못하면 차량 노드가 "
-     "error_code · state ERROR 로 알린다", RCS, "-"),
+    ("RCS ↔ PLC", "붙지 않는다", "PLC 통신 · 주소표 · 입출력 · 프로토콜은 모두 차량(AMR) 노드(차량 담당)가 맡는다. "
+     "PLC 가 끊겨 차량이 움직이지 못하면 차량 노드가 error_code 701 · state ERROR 로 알리고, RCS 는 그것으로 PLC 연결을 "
+     "보인다(2026-11-20 — AGV 판 인터페이스에 PLC 전용 필드 · 서비스는 없다)", RCS, "-"),
     ("section", "PLC 신호가 필요한 RCS 기능 — 차량 노드가 RobotStatus 로 가공해 준다"),
-    ("비상정지", "→ RobotStatus.estop", "로봇 · 작업 정지, ERUT E1002", BOTH, NEW),
+    ("비상정지", "→ RobotStatus.estop  ·  ← <ns>/robot_estop(로봇 쪽 비상정지를 PLC 에 건다)",
+     "로봇 · 작업 정지, ERUT E1002 — 실제 동시 정지는 안전 회로 직결", BOTH, NEW),
     ("안전 스캐너", "→ RobotStatus.obstacle_stop", "작업 일시정지 · 알람", RCS, NEW),
     ("아웃트리거 접지", "→ RobotStatus.hold (SET · RELEASE)", "고정 판정 · 309", RCS, DEFINED),
     ("리프트 높이", "→ RobotStatus.lift_h", "리프트 도착 · ERUT location.lift_mm", BOTH, DEFINED),
     ("수평(roll · pitch)", "→ RobotStatus.level_state (+ roll · pitch)", "309 조건", RCS, NEW),
     ("주행 허가 · 리프트 브레이크 등 출력", "차량 노드 안에서만", "RCS 는 쓰지 않는다", RCS, "-"),
     ("section", "RCS 할 일"),
-    ("상단 PLC 표시", "뺐다(2026-11-17)", "상단에는 AMR(차량 상태 수신)만 있다", RCS, "했음"),
-    ("연결 설정의 PLC 칸", "뺐다(2026-11-17)", "IP · 포트 · 프로토콜 · 국번 — RCS 는 PLC 에 붙지 않는다", RCS, "했음"),
+    ("상단 PLC 표시", "다시 넣었다(2026-11-20)", "차량 상태가 안 오면 「모름」 · 701 이면 「연결 실패」 · 그 밖에는 「연결됨」"
+     "(11-17 에 뺀 것은 늘 「연결됨」인 자리표시자였다)", RCS, "했음"),
+    ("연결 설정의 PLC 칸", "접속 칸은 없다(2026-11-17)", "IP · 포트 · 프로토콜 · 국번 — RCS 는 PLC 에 붙지 않는다. 차량 칸에 "
+     "「PLC 연결」 상태와 「PLC 다시 연결」(701 일 때 robot_control reset = 1)을 두었다(2026-11-20)", RCS, "했음"),
     ("I/O 화면의 PLC 자리표시자", "X000 · X001 · X010~ · Y000 · Y010 · D100 · D110 (config/plc_io.json)",
      "뺐다(2026-11-12) — I/O 화면은 밀착 센서(툴 입력)와 차량 상태(RobotStatus)만 본다", RCS, "했음"),
 ]
@@ -415,10 +477,13 @@ DECISIONS = [
      "도착 · 고정 확인 · ERUT activity", "차량 담당"),
     ("5", RCS, "주행 전 아웃트리거", "고정된 채 주행 명령이 오면 먼저 푸는지, 거절하는지", "RCS 는 먼저 풀고 보낸다",
      "차량 담당"),
-    ("6", BOTH, "자동 순서의 리프트 · 아웃트리거", "ManualCommand 가 수동 모드 전용이면 자동 순서(ERUT 구역 높이)는 "
-     "무엇으로 보내나 — 자동용 서비스를 따로 둘지", "ERUT 구역 높이 · 고정", "같이"),
+    ("6", BOTH, "자동 순서의 리프트 · 아웃트리거", "리프트 — 자동 동작 중은 SetMvLift(set_mv_lift, set_speed), 수동 화면은 "
+     "ManualCommand(cmd_mv_lift · lift_height, 속도는 PLC) — AGV 판 2026-11-20. 아웃트리거는 ManualCommand cmd_outrg_set "
+     "전체로만(개별 없음, 2026-11-19)", "ERUT 구역 높이 · 고정", "정함 — 서비스 이름 set_mv_lift 는 차량 확인"),
     ("7", RCS, "조그 유지 방식", "200 ms 재전송 · deadman 시간", "떼는 신호를 놓쳐도 서야 한다", "같이"),
-    ("8", BOTH, "error_code 표", "번호 · 뜻 · 리셋으로 풀리는지 · 정지 수준", "RCS 알람 · ERUT 장애 레벨 · detail",
+    ("8", BOTH, "error_code 표", "3S 제안 표를 RCS_AGV_인터페이스_20261119.xlsx 1.노드 4) 에 두었다(1xx 주행 · 2xx 리프트 · "
+     "3xx 아웃트리거 · 4xx 센서 · 5xx 전원 · 6xx 안전 장치 · 7xx 통신 · 9xx 내부). 차량 담당이 PLC · 드라이버 알람에 맞춰 "
+     "번호 · 뜻 · 리셋으로 풀리는지를 확정한다", "RCS 알람 [E2001] · ERUT E2001 detail (작업 중이면 작업을 세운다)",
      "차량 담당"),
     ("9", RCS, "sen1/sen2 · Position6D", "뜻 · 단위 · 좌표계 · 설치 위치", "거리 유지 확인 · 수평", "차량 담당"),
     ("10", ERUT, "배터리 · 충전", "battery_pct(기본 255 = 모름) · charging 칸은 정의됨 · RCS 완료 — 차량이 채운다",
@@ -428,8 +493,9 @@ DECISIONS = [
      "ERUT calibrate 본체 — measure_lap 이 없으면 원통은 RCS 가 거리 이동으로 대신(곡판은 못 한다)", "차량 담당"),
     ("12", BOTH, "비상정지 · 접근 감지 · 수평", "estop · obstacle_stop · level_state(허용 기울기) — 칸은 정의됨",
      "로봇 검사 허가 · ERUT E1002", "차량 담당"),
-    ("13", RCS, "PLC 연결 상태", "정함 — RCS 는 관여하지 않는다. PLC 가 끊겨 차량이 못 움직이면 차량 노드가 "
-     "error_code · state ERROR 로 알린다", "-", "정함"),
+    ("13", RCS, "PLC 연결 상태", "정함 — RCS 는 PLC 에 붙지 않는다. 차량 노드가 PLC 끊김을 error_code 701 로 알리면 RCS 가 "
+     "상단 PLC · 연결 설정에 「연결 실패」로 보이고, 「PLC 다시 연결」로 robot_control reset = 1 을 보낸다(2026-11-20). "
+     "reset 으로 다시 붙어 보는지는 차량 확인", "-", "정함"),
     ("14", RCS, "PLC 진단 값", "정함 — RCS I/O 화면에 PLC 입출력은 보이지 않는다. 차량 값은 RobotStatus 칸으로만 본다",
      "-", "정함"),
     ("15", BOTH, "속도 · 제한 시간", "set_speed 허용 범위 · 기본값(0.1 m/s) · 리프트 속도. 제한 시간은 고정값이 "
@@ -450,7 +516,12 @@ DECISIONS = [
      "로봇이 펴진 채 차량이 돌면 안 된다 · ERUT 에 calibrating 으로 보여야 한다", "정함"),
     ("21", ERUT, "곡판 QR 정렬(mode ALIGN)", "QR 에 무엇을 맞추는지(거리 standoff · 방향 · 판 끝줄), 허용 오차, "
      "걸리는 시간, 차량을 QR 앞에 어떻게 놓는지. 한 바퀴는 돌지 않는다(2026-11-18 정함)",
-     "곡판 원점 = 판 왼쪽 끝(x = 0). RCS 「곡판 QR 정렬 최대 시간」 기본 120 초", "차량 담당"),
+     "곡판 QR 은 판 가운데(x = 판 가로/2)에 붙인다. 스캔 때 차량은 움직이지 않는다. RCS 「곡판 QR 정렬 최대 시간」 "
+     "기본 120 초", "차량 담당"),
+    ("22", BOTH, "비상정지 직결 · 리셋", "PLC ↔ 로봇 컨트롤러 비상정지 배선(로봇 쪽 외부 비상정지 입력 · 비상정지 "
+     "출력 핀, PLC 쪽 입력 · 출력), 2채널. 풀 때 순서(버튼 해제 → 차량 리셋 → 로봇 리셋)와 robot_estop 이 false "
+     "가 됐을 때 차량이 스스로 풀지 사람이 풀지",
+     "어느 쪽 버튼이든 차량 · 로봇이 같이 서야 한다(2026-11-18). RCS 는 E1002 를 둘 다 풀릴 때 푼다", "같이"),
 ]
 
 

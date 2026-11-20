@@ -122,6 +122,8 @@ class RobotControlNode(Node):
         # 로봇 안전정지(보호 정지 · 안전 IO 정지 — 비상정지와 다르다, 2026-11-17). 차량이 움직이는
         # 동안 PLC 가 걸고, 차량이 서면 안전재설정으로 푼다. 1 = 안전정지 중. 바뀔 때 · 주기마다 낸다.
         self.pub_safety_stop = self.create_publisher(Int32, 'robot/status/safety_stop', 10)
+        # 로봇 컨트롤러 비상정지(티치 펜던트 · 컨트롤러 비상정지 버튼 · 외부 비상정지 입력, 2026-11-18).
+        self.pub_estop = self.create_publisher(Int32, 'robot/status/estop', 10)
         self.pub_connected = self.create_publisher(Bool, 'robot/status/connected', 10)
         # 로봇 태스크가 쓰는 스캔 진행 상태(290~298). 운영 UI의 격자 순회가
         # 이 값으로 한 셀의 완료(state==5 && finished==1)를 판정한다.
@@ -419,10 +421,11 @@ class RobotControlNode(Node):
         self.publish_raw('probe_result', self.pub_probe_result)
         self.publish_raw('probe_poses', self.pub_probe_poses)
 
-        # 30001 포트 비동기 백그라운드 실시간 알람 스트림 처리. 상태 묶음이 오면 안전정지를 본다.
+        # 30001 포트 비동기 백그라운드 실시간 알람 스트림 처리. 상태 묶음이 오면 안전정지 · 비상정지를 본다.
         data = self.robot_primary.get_data()
         if data is not None:
             self._publish_safety_stop(data)
+            self._publish_estop(data)
         while not self.robot_primary.alarm_queue.empty():
             alarm = self.robot_primary.alarm_queue.get()
             if self.alarm_mgr.process(alarm):
@@ -442,6 +445,16 @@ class RobotControlNode(Node):
         stopped = protective or (mode in self.SAFETY_STOP_MODES)
         self._safety_stop = stopped
         self.pub_safety_stop.publish(Int32(data=1 if stopped else 0))
+
+    def _publish_estop(self, data):
+        """로봇 컨트롤러가 비상정지 중인가(30001 is_emergency_stopped) — robot/status/estop (1 = 비상정지).
+
+        안전정지(safety_stop)와 다르다. RCS 는 이 값으로 차량에도 비상정지를 요청하고(<ns>/robot_estop)
+        ERUT 에 E1002 를 낸다. 실제 차량 · 로봇의 동시 정지는 안전 회로(직결)가 맡는다 — 이 값은 알림이다.
+        """
+        stopped = bool(getattr(data, 'is_emergency_stopped', False))
+        self._estop = stopped
+        self.pub_estop.publish(Int32(data=1 if stopped else 0))
 
     def _link_lost(self):
         """로봇 응답이 끊겼다. 연결 끊김을 알리고 소켓을 정리한다(재연결은 배경 스레드)."""

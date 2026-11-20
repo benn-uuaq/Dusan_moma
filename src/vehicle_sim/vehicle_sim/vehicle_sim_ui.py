@@ -197,7 +197,8 @@ class VehicleSimUI:
     def _text(self, s: dict) -> None:
         hold = {"SET": "고정", "RELEASE": "해제"}.get(s["hold"], s["hold"])
         error = "정상" if not s["error_code"] else f"{s['error_code']} {s['error_msg']}"
-        self.state_var.set(f"상태 {s['state']}   아웃트리거 {hold}   오류 {error}")
+        plc = s.get("plc_state", "-") + (f" ({s['plc_error']})" if s.get("plc_error") else "")
+        self.state_var.set(f"상태 {s['state']}   아웃트리거 {hold}   오류 {error}   PLC {plc}")
         self.info_var.set(
             f"작업 {s['job_id'] or '-'}    이동 {s['mv_dist']:.3f} / {s['set_dist']:.3f} m    "
             f"속도 {s['speed']:.2f} m/s    누적 {s['odometer']:.3f} m    "

@@ -60,7 +60,7 @@ from smr_operator_ui.services.motion_adapters import SwitchableMotion
 from smr_operator_ui.services.vehicle_adapters import (
     VehicleAmrAdapter, VehicleLiftAdapter, VehicleOutriggerAdapter,
 )
-from smr_operator_ui.services.vehicle_client import VehicleClient
+from smr_operator_ui.services.vehicle_client import PLC_COMM_LOST, VehicleClient
 from smr_operator_ui.services.job_sequencer import (
     PROBE_COVERAGE_MM, SCAN_ROW_LIMIT, CellStatus, scan_row_heights,
 )
@@ -238,11 +238,16 @@ class TopBar(QFrame):
         # connected_changed 신호로 실제 상태를 받으므로 TPAC과 마찬가지로
         # "연결 안 됨"에서 시작해, 실제 연결이 확인돼야 초록으로 바뀐다
         # (버그 리포트: "Cobot 실제로 연결 안되어 있는데 연결됨으로 뜸").
-        # AMR = 차량(주행 · 리프트 · 아웃트리거). PLC 통신은 차량(AMR) 노드가 맡고 RCS 는 관여하지
-        # 않는다 — PLC 표시는 뺐다(2026-11-17).
+        # AMR = 차량(주행 · 리프트 · 아웃트리거). PLC 통신은 차량(AMR) 노드가 맡는다 — PLC 표시는
+        # 차량 상태로 본다: 상태가 안 오면 「모름」, 차량 노드가 오류 701(PLC_COMM_LOST)을 내면 「연결 실패」
+        # (2026-11-20 다시 넣음. 11-17 에 뺀 것은 실제 신호 없이 늘 「연결됨」인 자리표시자였다).
         amr_badge = ConnectionBadge("AMR")
         self.badges["AMR"] = amr_badge
         layout.addWidget(amr_badge)
+        plc_badge = ConnectionBadge("PLC", initial_connected=False)
+        plc_badge.set_state("모름")
+        self.badges["PLC"] = plc_badge
+        layout.addWidget(plc_badge)
         cobot_badge = ConnectionBadge("Cobot", initial_connected=False)
         self.badges["Cobot"] = cobot_badge
         layout.addWidget(cobot_badge)
@@ -550,7 +555,7 @@ class OperatorWindow(QMainWindow):
         self.ros_status.operation_mode_changed.connect(
             lambda _code, name: self.cobot_manual_screen.apply_status({"operation_mode": name})
         )
-        self.ros_status.alarm_received.connect(self.cobot_manual_screen.add_alarm)
+        self.ros_status.alarm_received.connect(lambda text: self._add_alarm("E9201", text))
         self.ros_status.alarm_received.connect(self._handle_robot_alarm)
         self.ros_status.joint_position_changed.connect(self._remember_joint)
         self.ros_status.command_result.connect(self._show_command_result)
@@ -561,6 +566,7 @@ class OperatorWindow(QMainWindow):
         self.ros_status.connected_changed.connect(self._show_cobot_link)
         # 로봇 안전정지 — 화면에만 보인다(외부로 내보내지 않는다, 2026-11-17).
         self.ros_status.safety_stop_changed.connect(self._on_robot_safety_stop)
+        self.ros_status.estop_changed.connect(self._on_robot_estop)
         # 안전정지 · 안전재설정 입력(Config IO CI0~CI3) — 모니터링(2026-11-17).
         self.ros_status.config_digital_in_changed.connect(self._on_config_inputs)
         # robot_control_node가 이미 로봇에 Modbus로 붙어 있는데 TPAC 화면에서
@@ -798,6 +804,7 @@ class OperatorWindow(QMainWindow):
         self.erut_session.abort_requested.connect(self._abort_job)
         self.erut_session.reset_requested.connect(
             lambda: self._zero_scan_outputs("ERUT 초기화"))
+        self.erut_session.reset_requested.connect(self._reset_vehicle_error)
         self.erut_session.target_reported.connect(self._keep_erut_target)
         # ERUT 스캔 속도는 ㄹ자 스캔에만 건다(307) — 스캔 밖 이동은 느려지지 않는다.
         self.erut_session.speed_requested.connect(self._apply_scan_speed_ratio)
@@ -1006,9 +1013,14 @@ class OperatorWindow(QMainWindow):
         plan = self.sequencer.plan
         pitch = plan.column_pitch if plan is not None else 0.0
         if plan is not None and plan is getattr(self, "_erut_layout_plan", None):
-            # ERUT 구역: 로봇 중심이 구역 가운데에 오게 선다 — 로봇이 거기서 좌우로
-            # 가로/2 씩 훑어 start.x ~ end.x 를 덮는다(0~150 구역이면 차량 75).
-            distance = self._vehicle_x(plan.section_center_x)
+            if self.main_screen.orbit_view.target_shape()[0] == SHAPE_PLATE:
+                # 곡판: 차량은 캘리브레이션 때 판 가운데 QR 에 정렬한 자리에 그대로 선다 —
+                # 구역은 판 가운데 기준이라(erut_session) 리프트 · 로봇만 움직인다(2026-11-18).
+                distance = self.amr.position
+            else:
+                # ERUT 구역: 로봇 중심이 구역 가운데에 오게 선다 — 로봇이 거기서 좌우로
+                # 가로/2 씩 훑어 start.x ~ end.x 를 덮는다(0~150 구역이면 차량 75).
+                distance = self._vehicle_x(plan.section_center_x)
         else:
             # RCS 격자: 1구역(지금 자리 0)에서 열 간격(가로 - 겹침)씩 간다.
             distance = max(0, int(column) - 1) * pitch
@@ -1033,8 +1045,12 @@ class OperatorWindow(QMainWindow):
         더 달린다(한 바퀴 실측 ÷ π × 지름, 재기 전에는 1).
         """
         x = float(surface_x)
-        # 곡판은 이음매가 없다 — x 는 판 왼쪽 끝(QR)에서 잰 그대로다(2026-11-18).
-        if self.main_screen.orbit_view.target_shape()[0] != SHAPE_PLATE:
+        shape, width_m = self.main_screen.orbit_view.target_shape()
+        if shape == SHAPE_PLATE:
+            # 곡판은 이음매가 없고, 차량이 정렬하는 QR 이 판 가운데(x = 판 가로/2)다 — 차량 위치
+            # 0 이 판 가운데다(2026-11-18). 스캔 때는 차량을 움직이지 않는다(_move_amr_to_column).
+            x -= width_m * 500.0
+        else:
             circumference = math.pi * self.main_screen.orbit_view.target_dimensions()[0] * 1000.0
             if circumference > 0:
                 x %= circumference
@@ -1231,7 +1247,7 @@ class OperatorWindow(QMainWindow):
                    f"({MAX_PROBE_CHORD_MM:.0f} mm)를 초과합니다. "
                    f"가능한 최대는 {limit:.0f} mm 이며, 그 값으로 진행합니다.")
         self.main_screen.show_activity(message)
-        self.cobot_manual_screen.add_alarm(message)
+        self._add_alarm("M2001", message)
         # 장애가 아니다 — 줄여서 그대로 진행하므로 알림(evt/message)으로 낸다.
         # ERUT 가 시킨 일이 있을 때만(ERUT 구간은 넘으면 앞에서 400 으로 거절한다).
         if self.erut_session.has_work():
@@ -1389,7 +1405,7 @@ class OperatorWindow(QMainWindow):
                        f"{self._task_state_note()}. "
                        f"조건이 풀리면 자동으로 다시 보냅니다.")
             self.main_screen.show_activity(message)
-            self.cobot_manual_screen.add_alarm(message)
+            self._add_alarm("M2002", message)
             # 장애가 아니다 — 조건이 풀리면 스스로 다시 보내므로 알림으로 낸다.
             # ERUT 에는 내부 통신 사정(연결·태스크 상태)을 싣지 않는다. ERUT 가
             # 시킨 일이 있을 때만 알린다 — 프로그램을 켤 때마다 저장된 작업 영역을
@@ -1635,6 +1651,7 @@ class OperatorWindow(QMainWindow):
             # 이동 중에 팔이 펴지면 스스로 멈춘다(ERUT if-0.5 탭2 30행).
             for motion in (self.amr, self.lift):
                 motion.cancel()
+            self._add_alarm("E2003", "차량·리프트가 움직이는 중에 로봇이 홈을 벗어나 이동을 멈췄습니다")
             self.erut_session.raise_error({
                 # if-0.10 표준 번호(예전 3S E9303 ROBOT_LEFT_HOME_WHILE_MOVING, 탭11 Q-33).
                 "code": "E2003", "name": "HOME_LOST_WHILE_MOVING",
@@ -1714,7 +1731,7 @@ class OperatorWindow(QMainWindow):
         text = (f"로봇 태스크가 {ROBOT_START_TIMEOUT_MS // 1000}초 안에 시작되지 않았습니다"
                 f"{cause}")
         self.main_screen.show_activity(text)
-        self.cobot_manual_screen.add_alarm(text)
+        self._add_alarm("E9203", text)
         self.erut_session.raise_error({
             "code": "E9203", "name": "ROBOT_START_FAILED", "detail": text,
             "level": "stop", "recovery": "reset_required",
@@ -1741,7 +1758,7 @@ class OperatorWindow(QMainWindow):
         text = (f"작업 영역의 {'·'.join(missing)}이(가) 0 이라 스캔을 시작하지 않습니다"
                 " — 캘리브레이션(모재 지름)과 구간 설정을 먼저 받아야 합니다.")
         self.main_screen.show_activity(text)
-        self.cobot_manual_screen.add_alarm(text)
+        self._add_alarm("E9304", text)
         self.erut_session.raise_error({
             "code": "E9304", "name": "WORK_AREA_NOT_SET", "level": "stop",
             "recovery": "manual", "detail": text,
@@ -1885,7 +1902,7 @@ class OperatorWindow(QMainWindow):
         text = (f"ERUT 홀더 채널 수 {channels} 가 RCS 의 장착 홀더 {mounted} 와 다릅니다 — "
                 f"로봇은 RCS 설정({mounted})으로 움직입니다. 홀더 설정을 확인하세요.")
         self.main_screen.show_activity(text)
-        self.cobot_manual_screen.add_alarm(text)
+        self._add_alarm("M2003", text)
         self.erut_session.notify(*MSG_HOLDER_MISMATCH, text,
                                  channel_count=channels, eoat_type=probes)
 
@@ -1930,7 +1947,7 @@ class OperatorWindow(QMainWindow):
         text = (f"스캔 중 눌림 센서가 {self.PRESS_LOST_MS / 1000:g}초 넘게 떨어져 멈췄습니다"
                 " — 탐촉자가 벽에서 떨어졌습니다")
         self.main_screen.show_activity(text)
-        self.cobot_manual_screen.add_alarm(text)
+        self._add_alarm("E3002", text)
         self.erut_session.raise_error({
             "code": "E3002", "name": "PROBE_CONTACT_LOST",
             "level": "stop", "recovery": "manual", "probe": "center", "detail": text,
@@ -2268,7 +2285,7 @@ class OperatorWindow(QMainWindow):
         if "E2002" in self.erut_session.error_codes():
             return
         self.main_screen.show_activity(f"E2002 HOME_FAILED — {detail}")
-        self.cobot_manual_screen.add_alarm(f"홈 거두기 실패 — {detail}")
+        self._add_alarm("E2002", f"홈 거두기 실패 — {detail}")
         self.erut_session.raise_error({
             "code": "E2002", "name": "HOME_FAILED", "level": "stop",
             "recovery": "reset_required", "detail": detail,
@@ -2443,7 +2460,7 @@ class OperatorWindow(QMainWindow):
                 f"{self._task_state_note()} 멈춘 자리에서 이을 수 없습니다. "
                 f"{self.sequencer.current_cell()} 구간을 처음부터 다시 합니다.")
         self.main_screen.show_activity(text)
-        self.cobot_manual_screen.add_alarm(text)
+        self._add_alarm("E9208", text)
         self._start_robot_scan()
 
     def _on_pause_command_result(self, name: str, ok: bool, message: str) -> None:
@@ -2458,7 +2475,7 @@ class OperatorWindow(QMainWindow):
             return
         text = f"로봇이 일시정지(pause)를 거절했습니다 — {message}. 대신 정지(stop)합니다."
         self.main_screen.show_activity(text)
-        self.cobot_manual_screen.add_alarm(text)
+        self._add_alarm("E9207", text)
         self._resume_needs_restart = True
         self._stop_robot_scan()
 
@@ -2731,7 +2748,7 @@ class OperatorWindow(QMainWindow):
             return
         else:
             text = "로봇 연결이 끊겼습니다 — 연결 가능해지면 자동으로 다시 연결합니다."
-            self.cobot_manual_screen.add_alarm(text)
+            self._add_alarm("E9205", text)
         conn.set_link_message(text)
         self.main_screen.show_activity(text)
 
@@ -2850,7 +2867,7 @@ class OperatorWindow(QMainWindow):
             text = (f"작업 영역 세로 {height:g} mm 는 한 구간 최대 {MAX_AREA_HEIGHT_MM} mm 를"
                     " 넘어 시작하지 않습니다 — 작업 영역 세로를 줄이세요.")
             self.main_screen.show_activity(text)
-            self.cobot_manual_screen.add_alarm(text)
+            self._add_alarm("E9404", text)
             return
         if self._side_pitch:
             rows_needed = len(scan_row_heights(round(height), *self._side_pitch)) - 1
@@ -2859,7 +2876,7 @@ class OperatorWindow(QMainWindow):
                         f"높이 {height:g} mm 에 줄이 {SCAN_ROW_LIMIT} 개를 넘어 시작하지 않습니다 — "
                         "작업 영역에서 상승 높이를 키우거나 0 (자동)으로 두세요.")
                 self.main_screen.show_activity(text)
-                self.cobot_manual_screen.add_alarm(text)
+                self._add_alarm("E9404", text)
                 return
         diameter_m, target_h_m = self.main_screen.orbit_view.target_dimensions()
         column_pitch = max(width - overlap, 1.0)
@@ -2963,7 +2980,7 @@ class OperatorWindow(QMainWindow):
             self.main_screen.show_activity(
                 f"ERUT 스캔 속도 {percent} % ({mm_s} mm/s)를 로봇에 보냈습니다 — 스캔 줄에만 걸립니다.")
         else:
-            self.cobot_manual_screen.add_alarm(
+            self._add_alarm("E9209",
                 f"ERUT 스캔 속도 {percent} % ({mm_s} mm/s)를 로봇에 보내지 못했습니다 — "
                 f"제어 노드 · 로봇 연결을 확인하세요. 스캔은 로봇에 남은 속도로 돕니다.")
 
@@ -3017,7 +3034,7 @@ class OperatorWindow(QMainWindow):
         percent, source = self._scan_ratio_now()
         sent = self._send_scan_ratio(percent, source)
         if not sent and alarm:
-            self.cobot_manual_screen.add_alarm(
+            self._add_alarm("E9209",
                 f"스캔 속도 {percent} % ({source})를 로봇에 보내지 못했습니다 — "
                 f"제어 노드 · 로봇 연결을 확인하세요.")
         return sent, percent, source
@@ -3396,7 +3413,7 @@ class OperatorWindow(QMainWindow):
             self._show_eoat_choice(current)
             message = "작업 중에는 장착 홀더를 바꿀 수 없습니다 — 작업을 마친 뒤 바꾸세요."
             self.main_screen.show_activity(message)
-            self.cobot_manual_screen.add_alarm(message)
+            self._add_alarm("E9405", message)
             return
         extra = dict(self._work_area_extra)
         extra["eoat_type"] = float(probes)
@@ -3442,7 +3459,7 @@ class OperatorWindow(QMainWindow):
             self.cobot_manual_screen.activity_label.setText(text)
             if not success:
                 self.main_screen.show_activity(f"로봇 {name} 실패: {message}")
-                self.cobot_manual_screen.add_alarm(f"로봇 {name} 실패: {message}")
+                self._add_alarm("E9206", f"로봇 {name} 실패: {message}")
                 # 출발 확인(_check_robot_started)이 까닭으로 싣는다.
                 self._last_scan_command_failure = f"로봇 {name} 실패: {message}"
         elif name == "task_status":
@@ -3534,7 +3551,7 @@ class OperatorWindow(QMainWindow):
         err_code, err_name, text, fields = self._PROBE_ERROR_MESSAGES.get(
             code, (f"E91{code:02d}", "ROBOT_TASK_STOPPED", "로봇 태스크가 멈췄습니다", {}))
         self.main_screen.show_activity(f"{text} (레지스터 299={code})")
-        self.cobot_manual_screen.add_alarm(text)
+        self._add_alarm(err_code, text)
         if err_code in self.erut_session.error_codes():
             # 같은 장애를 이미 알렸다 — 예: 눌림이 1초 넘게 떨어져 RCS 가 E3002 를
             # 낸 뒤 로봇 태스크도 보정 한계로 멈췄다(299 = 6). 두 번 내지 않는다.
@@ -3586,8 +3603,10 @@ class OperatorWindow(QMainWindow):
         """ERUT 캘리브레이션: 차량이 좌표계를 잡는다 — geometry{shape, diameter, height[, width]} [mm].
 
         원통(cylinder): 차량이 모재 외벽을 따라 한 바퀴 돌아 원점(QR)에 선다.
-        곡판(curved_plate): 한 바퀴 돌지 않는다 — 판 왼쪽 끝의 원점 QR 마커에 정렬만 하고 선다
-        (2026-11-18). 그 자리가 x = 0 이고, 곡판 스캔은 거기서 판을 따라 오른쪽으로 간다.
+        곡판(curved_plate): 한 바퀴 돌지 않는다 — **판 가운데**의 QR 마커에 정렬만 하고 선다
+        (2026-11-18). 그 자리가 판 가운데(x = 판 가로/2)이고, 스캔 때 차량은 더 움직이지 않는다 —
+        로봇이 거기서 좌우로 구역 가로/2 씩 훑고 리프트가 높이를 맞춘다. 좌표 x 는 규격대로
+        판 왼쪽 끝이 0 이다.
 
         로봇의 3점 측정은 여기서 하지 않는다 — 구간 검사(start) 안에서 한다.
         순서: 모재 지름으로 작업 영역 반지름을 고친다 → 리프트를 내리고 아웃트리거를 푼다(차량이
@@ -3622,8 +3641,8 @@ class OperatorWindow(QMainWindow):
         if plate:
             self.main_screen.show_activity(
                 f"캘리브레이션: 곡판(지름 {diameter_mm:g} mm, 판 가로 "
-                f"{float(geometry.get('width') or 0):g} mm) — 차량이 원점 QR 마커에 정렬합니다"
-                "(한 바퀴 돌지 않습니다).")
+                f"{float(geometry.get('width') or 0):g} mm) — 차량이 판 가운데 QR 마커에 정렬합니다"
+                "(한 바퀴 돌지 않고, 스캔 때도 움직이지 않습니다).")
         else:
             self.main_screen.show_activity(
                 f"캘리브레이션: 차량이 모재(지름 {diameter_mm:g} mm, 둘레 {planned:.0f} mm)를 따라 "
@@ -3718,7 +3737,7 @@ class OperatorWindow(QMainWindow):
         expected_m = lap["planned"] * lap["scale"] / 1000.0
         if mode == "ALIGN":
             self.main_screen.show_activity(
-                "캘리브레이션 QR 정렬 — 차량이 원점 QR 마커에 맞춰 섭니다"
+                "캘리브레이션 QR 정렬 — 차량이 판 가운데 QR 마커에 맞춰 섭니다"
                 + (f", 최대 {limit_s} s" if limit_s else ""))
         else:
             self.main_screen.show_activity(
@@ -3760,7 +3779,7 @@ class OperatorWindow(QMainWindow):
             # 곡판 — 판 가로는 재지 않는다(total_length_mm 를 싣지 않는다). 오차는 차량이 QR 에 맞춘 것.
             self._calibration_lap = None
             self.amr.reset(0.0)
-            self._finish_calibration(True, f"곡판 — 차량이 원점 QR 마커에 정렬했습니다"
+            self._finish_calibration(True, f"곡판 — 차량이 판 가운데 QR 마커에 정렬했습니다"
                                      f"(정렬하며 {driven_mm:.0f} mm 움직임)", 0.0, total_length_mm=0.0)
             return
         scale = lap.get("scale") or 1.0
@@ -3798,20 +3817,7 @@ class OperatorWindow(QMainWindow):
         estop = bool(status.get("estop", False))
         if estop != getattr(self, "_vehicle_estop", False):
             self._vehicle_estop = estop
-            if estop:
-                text = "차량 비상정지 — 로봇 · 차량 · 작업을 세웁니다."
-                self.main_screen.show_activity(text)
-                self.cobot_manual_screen.add_alarm(text)
-                self.erut_session.raise_error({
-                    "code": "E1002", "name": "E_STOP", "level": "estop",
-                    "recovery": "reset_required", "detail": "차량 비상정지가 눌렸습니다"})
-                self._cancel_measured_lap()
-                self._stop_job_locally()
-                self._stop_robot_scan()
-            else:
-                if "E1002" in self.erut_session.error_codes():
-                    self.erut_session.clear_error("E1002")
-                self.main_screen.show_activity("차량 비상정지가 풀렸습니다 — 확인 뒤 다시 시작하세요.")
+            self._update_estop()
         obstacle = bool(status.get("obstacle_stop", False))
         if obstacle != getattr(self, "_vehicle_obstacle", False):
             self._vehicle_obstacle = obstacle
@@ -3827,9 +3833,94 @@ class OperatorWindow(QMainWindow):
                 text = ("접근 감지로 차량이 섰습니다"
                         + (" — 작업을 일시정지했습니다. 주변을 확인하고 「재개」하세요." if paused else "."))
                 self.main_screen.show_activity(text)
-                self.cobot_manual_screen.add_alarm(text)
+                self._add_alarm("E9305", text)
             else:
                 self.main_screen.show_activity("접근 감지가 풀렸습니다 — 주변을 확인하고 재개하세요.")
+        self._on_vehicle_error(status)
+
+    # ---- 비상정지 — 차량(PLC) · 로봇 컨트롤러 어느 쪽이든 (2026-11-18) ------------------------
+    def _on_robot_estop(self, pressed: bool) -> None:
+        """로봇 컨트롤러 비상정지(robot/status/estop). 차량에도 비상정지를 요청한다(<ns>/robot_estop)."""
+        self._robot_estop = bool(pressed)
+        self.vehicle.send_robot_estop(self._robot_estop)
+        self._update_estop()
+
+    def _estop_sources(self) -> list[str]:
+        sources = []
+        if getattr(self, "_vehicle_estop", False):
+            sources.append("차량(PLC)")
+        if getattr(self, "_robot_estop", False):
+            sources.append("로봇 컨트롤러")
+        return sources
+
+    def _update_estop(self) -> None:
+        """비상정지 — 어느 쪽 버튼이 눌려도 로봇 · 차량 · 작업을 세우고 ERUT 에 E1002 하나를 낸다.
+
+        차량(PLC) 비상정지는 robot_status.estop, 로봇 컨트롤러 비상정지는 robot/status/estop 로 온다.
+        로봇 쪽이 눌리면 차량에 <ns>/robot_estop 을 true 로 보내 차량도 비상정지하게 한다. 실제로
+        같이 서는 것은 안전 회로(PLC ↔ 로봇 컨트롤러 비상정지 직결)가 맡고, 이 처리는 작업을 접고
+        알리는 쪽이다(ERUT R-18). 둘 다 풀려야 E1002 를 푼다.
+        """
+        sources = self._estop_sources()
+        robot = getattr(self, "_robot_estop", False)
+        self.screens["io"].set_value("R_ESTOP", "눌림" if robot else "정상", "정지" if robot else "정상")
+        self._show_cobot_link(getattr(self, "_cobot_link", True))
+        before = getattr(self, "_estop_active", [])
+        self._estop_active = sources
+        if sources == before:
+            return
+        names = " · ".join(sources)
+        if sources and not before:
+            text = f"비상정지 — {names} 비상정지가 눌렸습니다. 로봇 · 차량 · 작업을 세웁니다."
+            self.main_screen.show_activity(text)
+            self._add_alarm("E1002", text)
+            self.erut_session.raise_error({
+                "code": "E1002", "name": "E_STOP", "level": "estop",
+                "recovery": "reset_required", "detail": f"{names} 비상정지가 눌렸습니다"})
+            self._cancel_measured_lap()
+            self._stop_job_locally()
+            self._stop_robot_scan()
+            return
+        if sources:
+            self.main_screen.show_activity(f"비상정지 — {names} 비상정지가 아직 눌려 있습니다.")
+            return
+        if "E1002" in self.erut_session.error_codes():
+            self.erut_session.clear_error("E1002")
+        self.main_screen.show_activity("비상정지가 모두 풀렸습니다 — 확인 뒤 다시 시작하세요.")
+
+    def _on_vehicle_error(self, status: dict) -> None:
+        """차량 오류(error_code ≠ 0)가 생기거나 풀렸다 — RCS_AGV 인터페이스 「차량 오류 번호」(2026-11-19).
+
+        움직이던 동작이면 그 동작이 실패로 끝나며 이미 E2001 이 났다(_on_vehicle_problem). 서 있을 때
+        생긴 오류는 작업 중(구역 검사 · 마킹 · 캘리브레이션)이면 E2001 로 작업을 세우고 — 예를 들어
+        로봇이 스캔하는 동안 아웃트리거 접지가 풀렸다 — 쉬는 중이면 알람 목록에만 올린다.
+        """
+        code = int(status.get("error_code", 0) or 0)
+        before = getattr(self, "_vehicle_error_code", 0)
+        if code == before:
+            return
+        self._vehicle_error_code = code
+        if not code:
+            self.main_screen.show_activity("차량 오류가 풀렸습니다.")
+            return
+        text = f"차량 오류 {code} {status.get('error_msg', '')}".strip()
+        if "E2001" in self.erut_session.error_codes() or any(
+                m.moving and getattr(m, "active", "") == "vehicle"
+                for m in (self.amr, self.lift, self.outrigger)):
+            return                       # 실제 차량이 움직이던 동작의 실패로 이미 알렸다(또는 곧 알린다)
+        self.main_screen.show_activity(text)
+        if (self._job_running() or self.erut_session.has_work()
+                or self._calibration_in_progress()):
+            self._on_vehicle_problem(text)
+        else:
+            self._add_alarm("E2001", f"차량: {text}")
+
+    def _reset_vehicle_error(self) -> None:
+        """알람 리셋 · ERUT reset — 차량이 오류 상태면 차량에도 리셋(robot_control reset = 1)을 보낸다."""
+        status = self.vehicle.last_status if self.vehicle.online else {}
+        if int(status.get("error_code", 0) or 0) or status.get("state") == "ERROR":
+            self.vehicle.control(reset=True)
+            self.main_screen.show_activity("차량에 오류 리셋을 보냈습니다.")
 
     def _show_vehicle_extras(self, status: dict) -> None:
         """상단 배터리, ERUT 자기소개(배터리 기능)를 차량 상태로 맞춘다."""
@@ -3917,7 +4008,7 @@ class OperatorWindow(QMainWindow):
         self.erut_session.begin_local_calibration()
         if plate:
             self.main_screen.show_activity(
-                "계측 시작 — 곡판: 차량이 원점 QR 마커에 정렬합니다(한 바퀴 돌지 않습니다). 멈추려면 「정지」.")
+                "계측 시작 — 곡판: 차량이 판 가운데 QR 마커에 정렬합니다(한 바퀴 돌지 않습니다). 멈추려면 「정지」.")
         else:
             self.main_screen.show_activity(
                 f"계측 시작 — 차량이 모재(지름 {diameter_m * 1000:.0f} mm)를 한 바퀴 돌며 좌표계를 잡습니다. "
@@ -3991,9 +4082,11 @@ class OperatorWindow(QMainWindow):
             text = f"계측 {'완료' if ok else '실패'} — {detail}"
             self.main_screen.show_activity(text)
             if not ok:
-                self.cobot_manual_screen.add_alarm(text)
+                self._add_alarm("E9310", text)
             return
         self.main_screen.show_activity(f"캘리브레이션 결과 — {detail}")
+        if not ok:
+            self._add_alarm("E1004", f"캘리브레이션 실패 — {detail}")
         self.erut_session.finish_calibration(ok, error_mm, detail,
                                              total_length_mm=total_length_mm)
 
@@ -4077,7 +4170,7 @@ class OperatorWindow(QMainWindow):
             self.erut_session.clear_at_origin()
             self.main_screen.show_activity("스캔 시작 허가를 보냈습니다 — 적심 후 스캔.")
         else:
-            self.cobot_manual_screen.add_alarm(
+            self._add_alarm("E9209",
                 "스캔 시작 허가를 보내지 못했습니다 — 로봇 연결을 확인하세요.")
         return sent
 
@@ -4091,7 +4184,9 @@ class OperatorWindow(QMainWindow):
     def _show_cobot_link(self, connected: bool) -> None:
         self._cobot_link = bool(connected)
         badge = self.top_bar.badges["Cobot"]
-        if connected and getattr(self, "_robot_safety_stop", False):
+        if connected and getattr(self, "_robot_estop", False):
+            badge.set_state("비상정지", "StatusDanger")
+        elif connected and getattr(self, "_robot_safety_stop", False):
             badge.set_state(self._safety_label(), "StatusWarn")
         else:
             badge.set_connected(bool(connected))
@@ -4227,13 +4322,21 @@ class OperatorWindow(QMainWindow):
             cause = f" — 로봇 알람: {alarm[1]}"
         text = f"스캔 중 로봇 태스크가 멈췄습니다{cause}"
         self.main_screen.show_activity(text)
-        self.cobot_manual_screen.add_alarm(text)
+        self._add_alarm("E9202", text)
         self.erut_session.raise_error({
             "code": "E9202", "name": "ROBOT_TASK_STOPPED", "detail": text,
             "level": "stop", "recovery": "reset_required",
         })
         if self.sequencer.state is SequencerState.SCANNING:
             self.sequencer.stop()
+
+    def _add_alarm(self, code: str, text: str) -> None:
+        """RCS 알람 목록에 번호를 붙여 올린다 — 번호는 docs/RCS_알람_목록 과 같다(2026-11-19).
+
+        ERUT 로 보내는 detail 에는 번호를 붙이지 않는다(error.code 가 따로 있다). 운영 기록
+        (알람이벤트)의 코드 칸에도 같은 번호가 남는다.
+        """
+        self.cobot_manual_screen.add_alarm(text, code)
 
     def _reset_alarms(self) -> None:
         """화면에 남은 알림·알람을 지우고, 걸려 있던 장애도 해제한다.
@@ -4247,6 +4350,7 @@ class OperatorWindow(QMainWindow):
             self.data_recorder.log_event("해제", "운영자 알람 리셋", code=code)
         self.cobot_manual_screen.set_alarms([])
         self.main_screen.clear_activity()
+        self._reset_vehicle_error()
         if cleared:
             self.main_screen.show_activity(f"장애 해제: {', '.join(cleared)}")
 
@@ -4302,7 +4406,8 @@ class OperatorWindow(QMainWindow):
         rec.problem.connect(self._show_recorder_problem)
         # 알람·이벤트
         self.main_screen.activity_shown.connect(lambda text: rec.log_event("정보", text))
-        self.cobot_manual_screen.alarm_added.connect(lambda text: rec.log_event("알람", text))
+        self.cobot_manual_screen.alarm_added.connect(
+            lambda text, code: rec.log_event("알람", text, code=code))
         self.erut_session.error_published.connect(self._record_erut_error)
         self.erut_session.error_cleared.connect(
             lambda code, message: self.data_recorder.log_event("해제", message, code=code))
@@ -4349,6 +4454,9 @@ class OperatorWindow(QMainWindow):
         if amr is not None:
             amr.speed_mps = vehicle.speed_mm_s() / 1000.0
             amr.standoff_m = vehicle.standoff_mm() / 1000.0
+        lift = getattr(self, "_vehicle_lift", None)
+        if lift is not None:
+            lift.speed_mps = vehicle.lift_speed_mm_s() / 1000.0
         lift_max = int(vehicle.lift_max_mm())
         if lift_max > 0:
             self.screens["manual"].lift_target.setMaximum(lift_max)
@@ -4454,17 +4562,24 @@ class OperatorWindow(QMainWindow):
         self._vehicle_amr = VehicleAmrAdapter(self.vehicle, self.VEHICLE_SPEED_MPS, parent=self)
         # 차량 설정이 먼저 불러와졌으면 그 속도를 쓴다.
         self._vehicle_amr.speed_mps = self.screens["vehicle"].speed_mm_s() / 1000.0
+        # SetJob.radius = 목표 대상(모재) 반지름 [m] — 보낼 때마다 검사 대상 바깥 지름 / 2 를 묻는다.
+        self._vehicle_amr.radius_source = lambda: self._outer_radius_mm() / 1000.0
         self.amr.add_backend("vehicle", self._vehicle_amr)
-        self.lift.add_backend("vehicle", VehicleLiftAdapter(self.vehicle, parent=self))
+        # 리프트 — 자동 동작 중에는 SetMvLift(set_mv_lift), 속도는 차량 설정 「리프트 속도」.
+        self._vehicle_lift = VehicleLiftAdapter(
+            self.vehicle, self.screens["vehicle"].lift_speed_mm_s() / 1000.0, parent=self)
+        self.lift.add_backend("vehicle", self._vehicle_lift)
         self.outrigger.add_backend("vehicle", VehicleOutriggerAdapter(self.vehicle, parent=self))
         self._vehicle_hinted = False
         for motion in (self.amr, self.lift, self.outrigger):
             motion.problem.connect(self._on_vehicle_problem)
         self.vehicle.online_changed.connect(self._apply_vehicle_mode)
         self.vehicle.online_changed.connect(self._hint_vehicle_available)
-        # 수동 제어 화면 — ManualCommand / RobotControl 로 보낸다.
+        # 수동 제어 화면 — ManualCommand(리프트 포함) / ResetOdometry / RobotControl 로 보낸다.
         manual = self.screens["manual"]
         manual.manual_requested.connect(lambda fields: self.vehicle.manual(**fields))
+        manual.lift_requested.connect(self._manual_lift)
+        manual.odometry_reset_requested.connect(self._reset_vehicle_odometry)
         manual.stop_requested.connect(lambda: self.vehicle.control("STOP"))
         manual.reset_requested.connect(lambda: self.vehicle.control(reset=True))
         self.vehicle.status_changed.connect(manual.set_status)
@@ -4482,6 +4597,11 @@ class OperatorWindow(QMainWindow):
         self.vehicle.status_changed.connect(self._track_measured_lap)
         self.vehicle.command_result.connect(self._on_measure_lap_result)
         self.vehicle.start_requested.connect(self._on_vehicle_start_button)
+        # PLC 연결 — 차량 상태로 본다(상단 PLC · 연결 설정), 끊기면 「PLC 다시 연결」 = 차량 리셋(2026-11-20).
+        self.vehicle.status_changed.connect(self._show_plc_status)
+        self.vehicle.online_changed.connect(lambda online: None if online else self._show_plc_status(None))
+        self.vehicle.command_result.connect(self._on_plc_reconnect_result)
+        self.screens["connection"].plc_reconnect_requested.connect(self._request_plc_reconnect)
         # 목록에서 고르는 즉시 적용한다(저장은 값을 남길 뿐이다).
         self.screens["connection"].vehicle_mode_changed.connect(
             lambda _text: self._apply_vehicle_mode())
@@ -4591,11 +4711,88 @@ class OperatorWindow(QMainWindow):
         message = (f"차량 상태({self.vehicle.topic('robot_status')})가 들어오는데 차량 제어가 "
                    "'더미'로 고정돼 있습니다 — 연결 설정에서 '자동'이나 'ROS 차량 노드 고정'으로 바꾸세요.")
         self.main_screen.show_activity(message)
-        self.cobot_manual_screen.add_alarm(message)
+        self._add_alarm("E9309", message)
+
+    # ---- PLC 연결 (2026-11-20) -----------------------------------------------------
+    # AGV 판 인터페이스에는 PLC 전용 필드 · 서비스가 없다 — 차량 상태로 본다. 상태가 안 오면 모름,
+    # 오류 701(PLC_COMM_LOST)이면 연결 실패, 그 밖에는 연결됨(차량 노드가 PLC 값을 싣고 있다).
+    PLC_BADGE = {"CONNECTED": ("연결됨", "StatusGood"), "FAILED": ("연결 실패", "StatusDanger")}
+
+    @staticmethod
+    def _plc_state_of(status: dict | None) -> str:
+        """차량 상태 → "CONNECTED" · "FAILED" · ""(모름)."""
+        if not status:
+            return ""
+        return "FAILED" if int(status.get("error_code", 0) or 0) == PLC_COMM_LOST else "CONNECTED"
+
+    def _show_plc_status(self, status: dict | None) -> None:
+        """상단 PLC · 연결 설정의 PLC 연결을 차량 상태로 맞춘다. None = 차량 상태가 안 온다."""
+        state = self._plc_state_of(status)
+        error = str((status or {}).get("error_msg", "") or "") if state == "FAILED" else ""
+        text, kind = self.PLC_BADGE.get(state, ("모름", "StatusWarn"))
+        self.top_bar.badges["PLC"].set_state(text, kind)
+        connection = self.screens["connection"]
+        connection.set_plc_state(state, error)
+        connection.set_plc_reconnect_enabled(
+            state == "FAILED",
+            "차량 상태가 들어오지 않습니다 — PLC 는 차량 노드를 거쳐서만 봅니다." if not state
+            else "PLC 가 연결돼 있습니다.")
+        before = getattr(self, "_plc_state", None)
+        self._plc_state = state
+        if state == before:
+            return
+        if not state:
+            connection.set_plc_message("차량 상태가 들어오지 않습니다 — PLC 는 차량 노드를 거쳐서만 봅니다.")
+        elif state == "FAILED":
+            connection.set_plc_message("")
+            self.main_screen.show_activity(
+                f"PLC 연결 실패{' — ' + error if error else ''}. 연결 설정의 「PLC 다시 연결」로 다시 시도할 수 있습니다.")
+        elif before == "FAILED":
+            connection.set_plc_message("PLC 가 다시 연결됐습니다.")
+            self.main_screen.show_activity("PLC 가 다시 연결됐습니다.")
+        else:
+            connection.set_plc_message("")
+
+    def _request_plc_reconnect(self) -> None:
+        """「PLC 다시 연결」 — 차량에 리셋(RobotControl reset=1)을 보낸다. 차량 노드가 PLC 에 다시 붙고,
+        붙으면 701 을 푼다. 결과는 command_result(robot_control)로 온다(_on_plc_reconnect_result)."""
+        connection = self.screens["connection"]
+        if getattr(self, "_plc_state", None) != "FAILED":
+            connection.set_plc_message("PLC 가 끊겨 있지 않습니다 — 다시 연결할 것이 없습니다.")
+            return
+        self._plc_reconnect_pending = True
+        connection.set_plc_message("PLC 다시 연결 — 차량에 리셋을 보냅니다…")
+        self.vehicle.control(reset=True)
+
+    def _on_plc_reconnect_result(self, name: str, ok: bool, message: str) -> None:
+        if name != "robot_control" or not getattr(self, "_plc_reconnect_pending", False):
+            return
+        self._plc_reconnect_pending = False
+        if ok:
+            text = ("PLC 다시 연결 — 차량이 리셋을 받았습니다. 다시 붙으면 위 상태가 「연결됨」으로 바뀝니다"
+                    + (f" ({message})" if message else ""))
+        else:
+            text = f"PLC 다시 연결을 못 했습니다 — {message}"
+        self.screens["connection"].set_plc_message(text)
+        self.main_screen.show_activity(text)
+
+    def _manual_lift(self, height_m: float) -> None:
+        """수동 제어 화면의 리프트 — ManualCommand(cmd_mv_lift 1, lift_height). 속도는 PLC 가 정한다."""
+        if self.vehicle.manual_lift(height_m):
+            self.main_screen.show_activity(f"[차량] 리프트(수동) → {height_m * 1000:,.0f} mm")
+
+    def _reset_vehicle_odometry(self, x: float, y: float, yaw: float) -> None:
+        """수동 제어 화면 「위치 다시 맞추기」 — ResetOdometry(x m, y m, yaw rad)."""
+        self._odometry_pose = (x, y, yaw)
+        self.vehicle.reset_odometry(x, y, yaw)
 
     def _show_vehicle_command_result(self, name: str, ok: bool, message: str) -> None:
         if not ok:
             self.main_screen.show_activity(f"차량 {name} 거절: {message}")
+        elif name == "reset_odometry":
+            x, y, yaw = getattr(self, "_odometry_pose", (0.0, 0.0, 0.0))
+            self.main_screen.show_activity(
+                f"[차량] 위치를 x {x:.3f} m · y {y:.3f} m · yaw {math.degrees(yaw):.1f}° 로 맞췄습니다.")
 
     def _sync_manual_interlock(self, *_args) -> None:
         """로봇이 동작 중이거나 홈을 벗어나 있으면 수동 주행·리프트를 잠근다.
@@ -4618,7 +4815,7 @@ class OperatorWindow(QMainWindow):
             "code": "E2001", "name": "DRIVE_ERROR", "level": "stop",
             "recovery": "manual", "detail": f"차량 동작 실패 — {message}",
         })
-        self.cobot_manual_screen.add_alarm(f"차량: {message}")
+        self._add_alarm("E2001", f"차량: {message}")
         # 「계측 시작」 주행이 실패했다 — 계측을 접는다. ERUT 캘리브레이션은 장애(stop)로 세션이 접는다.
         self._end_local_calibration(f"차량 동작 실패 — {message}")
         if not self.erut_session._calibrate_req_id:
@@ -4640,11 +4837,11 @@ class OperatorWindow(QMainWindow):
                 " (연결 설정 > 차량 제어).")
             return
         if not self.vehicle.available:
-            self.cobot_manual_screen.add_alarm(
+            self._add_alarm("E9308",
                 "차량 인터페이스를 쓸 수 없습니다 — ROS 워크스페이스를 소싱하고 RCS 를 다시 띄우세요"
                 " (source install/setup.bash).")
         elif not self.vehicle.online:
-            self.cobot_manual_screen.add_alarm(
+            self._add_alarm("E9307",
                 f"차량 상태({self.vehicle.topic('robot_status')})가 들어오지 않습니다 —"
                 " 차량 제어 노드를 확인하세요. 이대로 두면 첫 동작에서 멈춥니다.")
 
@@ -4772,7 +4969,7 @@ class OperatorWindow(QMainWindow):
 
     def _show_recorder_problem(self, message: str) -> None:
         self.main_screen.show_activity(f"운영 기록 문제: {message}")
-        self.cobot_manual_screen.add_alarm(message)
+        self._add_alarm("E9506", message)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         """창 종료 전에 ERUT 접속과 ROS 구독을 정리한다."""

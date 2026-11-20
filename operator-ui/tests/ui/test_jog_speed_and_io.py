@@ -45,7 +45,7 @@ def test_io_list_keeps_only_holder_sensors_and_vehicle_state(qtbot) -> None:
     screen = window.screens["io"]
     addresses = [s["address"] for s in screen.signals]
     assert addresses == ["TDI0", "TDI1", "TDI2", "CI0", "CI1", "CI2", "CI3", "SAFETY",
-                         "ESTOP", "SCAN", "HOLD", "LIFT", "LEVEL", "BATT", "STANDOFF", "STATE"]
+                         "R_ESTOP", "ESTOP", "SCAN", "HOLD", "LIFT", "LEVEL", "BATT", "STANDOFF", "STATE"]
     window.close()
 
 

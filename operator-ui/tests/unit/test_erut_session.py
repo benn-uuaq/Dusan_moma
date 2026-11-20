@@ -1837,19 +1837,37 @@ def test_plate_area_must_stay_on_the_plate(session):
     off = {"start": {"x": 800, "y": 0}, "end": {"x": 1100, "y": 400}}
     _prepare(s, req_id="p1", area=off, **PLATE)
     assert _error(client) == (400, "E6001")
-    edge = {"start": {"x": 750, "y": 0}, "end": {"x": 1000, "y": 400}}
-    _prepare(s, req_id="p2", job_id="jb2", area=edge, **PLATE)
+    centered = {"start": {"x": 250, "y": 0}, "end": {"x": 750, "y": 400}}
+    _prepare(s, req_id="p2", job_id="jb2", area=centered, **PLATE)
     assert client.res[-1]["status_code"] == 202
     # geometry 없이 와도 원점을 잡을 때의 판 가로로 본다.
     _prepare(s, req_id="p3", job_id="jb3", area=off)
     assert _error(client) == (400, "E6001")
 
 
+def test_plate_area_must_be_centred_on_the_plate(session):
+    """2026-11-18 — 3S 차량은 판 가운데 QR 에 정렬한 뒤 스캔 때 움직이지 않는다. 판 안이어도
+    가운데가 다른 구역은 400 E6001(요청 자체 검사라 원점 판정보다 먼저)."""
+    s, client, _seq = session
+    s._calibrated_geometry = dict(PLATE)
+    s.area_diameter = lambda: 3000.0
+    edge = {"start": {"x": 750, "y": 0}, "end": {"x": 1000, "y": 400}}
+    _prepare(s, req_id="p1", area=edge, **PLATE)
+    assert _error(client) == (400, "E6001")
+    assert "판 가운데" in client.res[-1]["error"]["detail"]
+    whole = {"start": {"x": 0, "y": 0}, "end": {"x": 1000, "y": 400}}
+    _prepare(s, req_id="p2", job_id="jb2", area=whole, **PLATE)
+    assert client.res[-1]["status_code"] == 202
+    odd = {"start": {"x": 0, "y": 0}, "end": {"x": 999, "y": 400}}       # 가운데 0.5 mm 어긋남 — 받는다
+    _prepare(s, req_id="p3", job_id="jb3", area=odd, **PLATE)
+    assert client.res[-1]["status_code"] == 202
+
+
 def test_changing_the_shape_needs_a_new_origin(session):
     """원통으로 원점을 잡은 뒤 같은 지름의 곡판 → 409 E6104(적합성 C 「원통 → 곡판」)."""
     s, client, _seq = session
     s._calibrated_geometry = {"shape": "cylinder", "diameter": 3000.0, "height": 2000.0}
-    _start(s, req_id="s1", area={"start": {"x": 0, "y": 0}, "end": {"x": 300, "y": 400}}, **PLATE)
+    _start(s, req_id="s1", area={"start": {"x": 350, "y": 0}, "end": {"x": 650, "y": 400}}, **PLATE)
     assert _error(client) == (409, "E6104")
     assert "곡판" in client.res[-1]["error"]["detail"]
 
@@ -1869,5 +1887,5 @@ def test_start_reports_the_geometry_to_the_rcs(session):
     s.target_reported.connect(reported.append)
     s._calibrated_geometry = dict(PLATE)
     s.area_diameter = lambda: 3000.0
-    _start(s, req_id="s1", area={"start": {"x": 0, "y": 0}, "end": {"x": 300, "y": 400}}, **PLATE)
+    _start(s, req_id="s1", area={"start": {"x": 350, "y": 0}, "end": {"x": 650, "y": 400}}, **PLATE)
     assert reported == [{"shape": "curved_plate", "diameter": 3000.0, "height": 2000.0, "width": 1000.0}]

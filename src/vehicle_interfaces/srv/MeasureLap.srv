@@ -1,6 +1,7 @@
 # 캘리브레이션 주행 (2026-11-17 · 2026-11-18 mode 추가). 모재 모양에 따라 두 가지다.
 #   LAP   (원통) 원점(QR)에서 출발해 모재를 한 바퀴 돌고 원점(QR)에 선다.
-#   ALIGN (곡판) 한 바퀴 돌지 않는다 — 원점 QR 마커에 맞춰 정렬만 하고 선다(차량은 QR 앞에 놓여 있다).
+#   ALIGN (곡판) 한 바퀴 돌지 않는다 — 판 가운데의 QR 마커에 맞춰 정렬만 하고 선다(차량은 QR 앞에 놓여
+#                있다). 곡판은 스캔 때도 차량이 움직이지 않는다 — 리프트 · 로봇만 움직인다(2026-11-18).
 # 진행 · 결과는 두 경우 모두 RobotStatus 의 lap_state · lap_path_m · lap_origin_ok · lap_error 로 낸다.
 # 일시정지 · 재개는 RobotControl(PAUSED · RUNNING), 그만두기는 RobotControl(STOP) → lap_state FAILED.
 # Request

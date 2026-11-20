@@ -81,8 +81,16 @@
       "bus": "derived"
     },
     {
+      "address": "R_ESTOP",
+      "name": "로봇 컨트롤러 비상정지",
+      "direction": "IN",
+      "value": "-",
+      "status": "-",
+      "bus": "derived"
+    },
+    {
       "address": "ESTOP",
-      "name": "차량 비상정지",
+      "name": "차량 비상정지 (PLC)",
       "direction": "IN",
       "value": "-",
       "status": "-",

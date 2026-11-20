@@ -40,7 +40,7 @@ def test_status_dict_keeps_known_values_and_drops_unknown_defaults() -> None:
                               lap_origin_ok=True)
     d = status_to_dict(msg)
     assert (d["battery_pct"], d["charging"], d["level_ok"]) == (72, True, False)
-    assert "plc_connected" not in d and not hasattr(msg, "plc_link"), "PLC 는 차량 노드가 맡는다"
+    assert "plc_connected" not in d and "plc_state" not in d, "PLC 전용 필드는 없다(AGV 판) — 701 로 본다"
     assert d["standoff_meas"] == 1.5 and d["estop"] is True
     assert (d["lap_state"], d["lap_path_m"], d["lap_origin_ok"]) == ("DONE", 4.2, True)
 
@@ -99,13 +99,18 @@ def test_level_and_estop_block_the_robot_ready_signal(qtbot) -> None:
     window.close()
 
 
-def test_battery_follows_the_vehicle_and_there_is_no_plc_lamp(qtbot) -> None:
-    """PLC 는 차량(AMR) 노드가 맡는다 — 상단에 PLC 표시가 없다(2026-11-17)."""
+def test_battery_follows_the_vehicle_and_the_plc_lamp_is_not_a_placeholder(qtbot) -> None:
+    """PLC 는 차량(AMR) 노드가 맡는다 — 상단 PLC 는 차량 상태로 본다(2026-11-20).
+
+    11-17 에 뺀 PLC 표시는 늘 「연결됨」인 자리표시자였다. 다시 넣은 것은 차량 상태가 안 오면 「모름」,
+    오면 「연결됨」, 차량 노드가 701(PLC_COMM_LOST)을 내면 「연결 실패」다.
+    """
     window = _window(qtbot)
     infos: list[dict] = []
     window.erut_session.client.publish_info = lambda content: infos.append(content) or True
-    assert "PLC" not in window.top_bar.badges
+    assert "모름" in window.top_bar.badges["PLC"].state_label.text()
     _vehicle_mode(window, {"state": "STOP", "battery_pct": 64, "charging": False})
+    assert "연결됨" in window.top_bar.badges["PLC"].state_label.text(), "차량 상태가 오고 701 이 없다"
     assert window.top_bar.battery_label.text() == "배터리  64%"
     # ERUT 에도 싣는다 — 상태 · 기능 목록.
     assert window.erut_session.battery_state() == {"battery": 64, "charging": False}
@@ -169,3 +174,107 @@ def test_calibration_uses_measure_lap_with_the_simulator(qtbot, tmp_path, monkey
         sim.destroy_node()
         window.ros_status.stop()
         window.close()
+
+
+# ---- 비상정지 — 차량(PLC) · 로봇 컨트롤러 어느 쪽이든 (2026-11-18) -----------------------------
+def test_robot_controller_estop_stops_all_and_asks_the_vehicle_to_estop(qtbot) -> None:
+    window = _window(qtbot)
+    raised: list[dict] = []
+    original = window.erut_session.raise_error
+    window.erut_session.raise_error = lambda fields: raised.append(fields) or original(fields)
+    sent: list[bool] = []
+    window.vehicle.send_robot_estop = lambda pressed: sent.append(pressed) or True
+    stops: list[int] = []
+    window._stop_robot_scan = lambda: stops.append(1)
+    window.ros_status.estop_changed.emit(True)
+    assert sent == [True], "차량에도 비상정지를 요청한다(<ns>/robot_estop)"
+    assert raised[-1]["code"] == "E1002" and "로봇 컨트롤러" in raised[-1]["detail"]
+    assert stops == [1]
+    assert "비상정지" in window.top_bar.badges["Cobot"].state_label.text()
+    # 차량도 비상정지로 알려 와도 E1002 는 하나뿐이다.
+    _vehicle_mode(window, {"state": "STOP", "estop": True})
+    assert [f["code"] for f in raised].count("E1002") == 1
+    # 로봇 쪽만 풀면 아직 비상정지다 — 둘 다 풀려야 푼다.
+    window.ros_status.estop_changed.emit(False)
+    assert sent == [True, False]
+    assert "E1002" in window.erut_session.error_codes()
+    _vehicle_mode(window, {"state": "STOP", "estop": False})
+    assert "E1002" not in window.erut_session.error_codes()
+    window.close()
+
+
+def test_robot_estop_reaches_the_simulator(qtbot, tmp_path, monkeypatch) -> None:
+    """RCS 가 <ns>/robot_estop 을 내면 모의기는 서고 estop = true 로 알린다 — RCS 는 E1002 를 하나만 낸다."""
+    pytest.importorskip("rclpy")
+    vehicle_sim_node = pytest.importorskip("vehicle_sim.vehicle_sim_node")
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.parameter import Parameter
+    ns = f"ve{int(time.time() * 1000) % 100000}"
+    monkeypatch.setenv("SMR_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SMR_VEHICLE_NS", ns)
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    window.erut.publish_event = lambda *a, **k: True
+    window.erut.publish_res = lambda *a, **k: True
+    window.ros_status.call_command = lambda name: True
+    window.ros_status.send_value = lambda *a: True
+    window._stop_robot_scan = lambda: None
+    window.ros_status.start()
+    sim = vehicle_sim_node.VehicleSim(parameter_overrides=[Parameter("namespace", value=ns)])
+    executor = SingleThreadedExecutor()
+    executor.add_node(sim)
+    threading.Thread(target=executor.spin, daemon=True).start()
+    try:
+        qtbot.waitUntil(lambda: window.vehicle.online, timeout=5000)
+        window.ros_status.estop_changed.emit(True)
+        qtbot.waitUntil(lambda: sim.robot_estop, timeout=5000)
+        qtbot.waitUntil(lambda: window.vehicle.last_status.get("estop") is True, timeout=5000)
+        assert "E1002" in window.erut_session.error_codes()
+        from vehicle_interfaces.srv import SetJob
+        res = sim.on_set_job(SetJob.Request(job_id="J-1", set_dist=1.0, set_speed=0.1), SetJob.Response())
+        assert res.success is False and "estop" in res.message      # 비상정지 동안 움직이는 명령을 거절한다
+        window.ros_status.estop_changed.emit(False)
+        qtbot.waitUntil(lambda: not sim.robot_estop, timeout=5000)
+        qtbot.waitUntil(lambda: "E1002" not in window.erut_session.error_codes(), timeout=5000)
+    finally:
+        executor.shutdown()
+        sim.destroy_node()
+        window.ros_status.stop()
+        window.close()
+
+
+# ---- 차량 오류 번호(error_code) — 서 있을 때 생긴 오류 · 리셋 (2026-11-19) ---------------------------
+def _alarm_texts(window) -> list[str]:
+    lst = window.cobot_manual_screen.alarm_list
+    return [lst.item(i).text() for i in range(lst.count())]
+
+
+def test_vehicle_error_while_idle_only_alarms(qtbot) -> None:
+    window = _window(qtbot)
+    _vehicle_mode(window, {"state": "STOP", "error_code": 0})
+    _vehicle_mode(window, {"state": "ERROR", "error_code": 301, "error_msg": "OUTRIGGER_SET_FAILED"})
+    assert "[E2001] 차량: 차량 오류 301 OUTRIGGER_SET_FAILED" in _alarm_texts(window)[0]
+    assert "E2001" not in window.erut_session.error_codes(), "쉬는 중이면 ERUT 장애로 올리지 않는다"
+    window.close()
+
+
+def test_vehicle_error_during_a_job_stops_it_with_e2001(qtbot) -> None:
+    window = _window(qtbot)
+    window._start_robot_scan = lambda: None
+    window._start_inspection()
+    assert window._job_running()
+    _vehicle_mode(window, {"state": "ERROR", "error_code": 304, "error_msg": "OUTRIGGER_LOST"})
+    assert "E2001" in window.erut_session.error_codes()
+    assert window.sequencer.state in (SequencerState.STOPPED, SequencerState.IDLE)
+    window.close()
+
+
+def test_alarm_reset_also_resets_the_vehicle(qtbot) -> None:
+    window = _window(qtbot)
+    sent: list[dict] = []
+    window.vehicle.control = lambda state="", reset=False, job_cancel=False: sent.append(
+        {"state": state, "reset": reset}) or True
+    _vehicle_mode(window, {"state": "ERROR", "error_code": 201, "error_msg": "LIFT_MOTOR_FAULT"})
+    window._reset_alarms()
+    assert {"state": "", "reset": True} in sent
+    window.close()

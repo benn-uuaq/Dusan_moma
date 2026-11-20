@@ -1,8 +1,8 @@
 """곡판(curved_plate) 모재 — if-0.13 geometry · 2026-11-18 결정.
 
-  · 곡판 calibrate = 차량이 한 바퀴 돌지 않고 원점 QR 마커에 정렬만 한다(MeasureLap mode ALIGN).
-  · x 는 판 왼쪽 끝(QR) 0 ~ 판 가로, 감기지 않는다 — 차량 이동도 감지 않는다.
-  · 로봇은 원통과 같은 곡률(geometry.diameter)로 훑는다.
+  · 곡판 calibrate = 차량이 한 바퀴 돌지 않고 **판 가운데** QR 마커에 정렬만 한다(MeasureLap ALIGN).
+  · 스캔 때 차량은 움직이지 않는다 — 리프트 · 로봇만. 구역은 판 가운데 기준(erut_session).
+  · x 는 판 왼쪽 끝 0 ~ 판 가로, 감기지 않는다. 로봇은 원통과 같은 곡률(geometry.diameter)로 훑는다.
 """
 
 import threading
@@ -53,7 +53,9 @@ def test_plate_x_is_not_wrapped_for_the_vehicle(qtbot) -> None:
     wrapped = window._vehicle_x(3300) / window._travel_scale()
     assert wrapped == pytest.approx(3300 - 3141.59, abs=1)
     window._set_target_geometry(dict(PLATE))
-    assert window._vehicle_x(900) / window._travel_scale() == pytest.approx(900)
+    # 차량 위치 0 = 판 가운데 QR(x 500) — 감기지 않는다.
+    assert window._vehicle_x(900) / window._travel_scale() == pytest.approx(400)
+    assert window._vehicle_x(500) == pytest.approx(0)
     assert window._target_length_mm() == pytest.approx(1000)
     window.close()
 
@@ -79,7 +81,7 @@ def test_erut_plate_start_keeps_the_plate_as_the_rcs_target(qtbot) -> None:
                                                 for k, v in PLATE.items()}
     window.erut_session.handle_request("prepare", {
         "req_id": "p1", "job_id": "jb-plate", "surface": "outer", "geometry": dict(PLATE),
-        "area": {"start": {"x": 750, "y": 0}, "end": {"x": 1000, "y": 200}},
+        "area": {"start": {"x": 250, "y": 0}, "end": {"x": 750, "y": 200}},
         "scan": {"pitch_left": 20, "pitch_right": 20, "overlap": 0, "speed_pct": 50}})
     assert window.main_screen.orbit_view.target_shape() == ("curved_plate", 1.0)
     window.close()
@@ -143,3 +145,29 @@ def test_plate_calibration_aligns_with_the_simulator(qtbot, tmp_path, monkeypatc
         sim.destroy_node()
         window.ros_status.stop()
         window.close()
+
+
+def test_plate_scan_does_not_drive_the_vehicle(qtbot) -> None:
+    """곡판 구역 — 차량은 QR 에 정렬한 자리 그대로, 리프트 · 로봇만 움직인다(2026-11-18)."""
+    window = _window(qtbot)
+    window.erut.publish_event = lambda *a, **k: True
+    window._start_robot_scan = lambda: None
+    window.erut_session._calibrated = True
+    window.erut_session._calibrated_geometry = {k: float(v) if k != "shape" else v
+                                                for k, v in PLATE.items()}
+    window._set_target_geometry(dict(PLATE))
+    window.amr.reset(0.0)
+    window._robot_at_home = True            # 로봇이 홈 · 태스크 정지 — 차량 이동을 미루지 않는다
+    window._on_robot_task_state(3)
+    moves: list[float] = []
+    original = window.amr.move_to
+    window.amr.move_to = lambda target, *a, **k: moves.append(float(target)) or original(target, *a, **k)
+    window.erut_session.handle_request("start", {
+        "req_id": "s1", "job_id": "jb-plate", "surface": "outer", "geometry": dict(PLATE),
+        # 판 가운데(500) 기준 600 mm — 지름 3000 에서 팔이 한 번에 훑는 가로(약 700) 안
+        "area": {"start": {"x": 200, "y": 0}, "end": {"x": 800, "y": 200}},
+        "scan": {"pitch_left": 20, "pitch_right": 20, "overlap": 0, "speed_pct": 50}})
+    qtbot.waitUntil(lambda: bool(moves), timeout=5000)
+    assert all(m == pytest.approx(0.0) for m in moves), moves
+    assert window.outrigger.position == 0 or window.outrigger.target != 0, "주행이 없으니 아웃트리거도 풀지 않는다"
+    window.close()

@@ -5,6 +5,7 @@
 작업 조건 묶음 저장·불러오기.
 """
 
+import math
 from pathlib import Path
 
 import pytest
@@ -215,10 +216,54 @@ def test_manual_jog_repeats_while_held_and_stops_on_release(window, qtbot) -> No
     assert sent.count({"cmd_mv_fwd": True}) >= 2, "누르는 동안 다시 보낸다"
     assert sent[-1] == {}, "떼면 '명령 없음'으로 멈춘다"
 
+    # 리프트 — 화면은 높이 [m] 만 알린다. 앱이 ManualCommand(cmd_mv_lift · lift_height)로 보낸다.
     sent.clear()
+    lifts = []
+    screen.lift_requested.connect(lifts.append)
     screen.lift_target.setValue(1200)
     screen.lift_button.click()
-    assert sent == [{"cmd_mv_lift": 1, "lift_height": 1.2}]
+    assert sent == [] and lifts == [pytest.approx(1.2)]
+
+
+def test_manual_outriggers_move_together_only(window) -> None:
+    """아웃트리거는 균형 때문에 전체 내리기(고정) · 올리기(해제)만 — 개별 버튼이 없다(2026-11-19)."""
+    screen = window.screens["manual"]
+    sent = []
+    screen.manual_requested.connect(sent.append)
+    screen.set_available(True)
+    assert not hasattr(screen, "outrigger_buttons")
+    screen.outrigger_set_button.click()
+    screen.outrigger_release_button.click()
+    assert sent == [{"cmd_outrg_set": 2}, {"cmd_outrg_set": 1}]
+
+
+def test_manual_lift_goes_by_manual_command_at_plc_speed(window) -> None:
+    """수동 화면 리프트 → ManualCommand(cmd_mv_lift 1, lift_height m) — 속도 필드 없음, PLC 가 정한다(AGV 판)."""
+    calls = []
+    window.vehicle.manual = lambda **fields: calls.append(fields) or True
+    window.vehicle.lift = lambda *a, **k: pytest.fail("수동 리프트는 SetMvLift 로 보내지 않는다")
+    window.screens["manual"].lift_requested.emit(0.8)
+    assert calls == [{"cmd_mv_lift": 1, "lift_height": 0.8}]
+
+
+def test_manual_odometry_reset_sends_x_y_and_yaw_in_radians(window) -> None:
+    """「위치 다시 맞추기」 → ResetOdometry(x m, y m, yaw rad) — 확인을 받고, 작업 중에는 잠긴다."""
+    screen = window.screens["manual"]
+    calls = []
+    window.vehicle.reset_odometry = lambda x, y, yaw: calls.append((x, y, yaw)) or True
+    screen.confirm = lambda _text: True
+    screen.set_available(True)
+    screen.pose_inputs["x"].setValue(1.25)
+    screen.pose_inputs["y"].setValue(-0.5)
+    screen.pose_inputs["yaw"].setValue(90.0)
+    screen.pose_button.click()
+    assert calls == [(pytest.approx(1.25), pytest.approx(-0.5), pytest.approx(math.pi / 2))]
+
+    screen.confirm = lambda _text: False
+    screen.pose_button.click()
+    assert len(calls) == 1, "확인을 거절하면 보내지 않는다"
+    screen.set_interlock(True, "작업이 진행 중입니다")
+    assert not screen.pose_button.isEnabled()
 
 
 def test_manual_interlock_while_the_robot_works(window) -> None:

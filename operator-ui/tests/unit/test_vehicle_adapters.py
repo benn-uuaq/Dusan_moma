@@ -1,9 +1,9 @@
 """차량 어댑터 시험 — 가짜 차량 클라이언트로 명령 순서와 도착 판정을 본다.
 
 가정한 규칙(vehicle_adapters / vehicle_sim 과 같다):
-  AMR     SetJob(이번 이동 거리 m) -> RUNNING -> STOP 이고 mv_dist≈set_dist 면 도착
-  아웃트리거 ManualCommand(cmd_outrg_set 2/1) -> hold SET/RELEASE
-  리프트   ManualCommand(cmd_mv_lift=1, lift_height m) -> lift_h ≈ 목표
+  AMR     SetJob(이번 이동 거리 m, radius 모재 반지름 m) -> RUNNING -> STOP 이고 mv_dist≈set_dist 면 도착
+  아웃트리거 ManualCommand(cmd_outrg_set 2/1, 전체로만) -> hold SET/RELEASE
+  리프트   SetMvLift(set_mv_lift: job_id, set_height m, set_speed m/s) -> lift_h ≈ 목표 (자동 동작 중)
 """
 
 import pytest
@@ -25,9 +25,10 @@ class FakeVehicle(QObject):
         self.last_status: dict = {}
         self.accept = True
 
-    def set_job(self, job_id, set_dist, set_speed, standoff=0.0):
+    def set_job(self, job_id, set_dist, set_speed, standoff=0.0, radius=0.0):
         self.calls.append(("set_job", job_id, round(set_dist, 6), set_speed))
         self.standoff = standoff
+        self.radius = radius
         return True
 
     def control(self, state="", reset=False, job_cancel=False):
@@ -36,6 +37,10 @@ class FakeVehicle(QObject):
 
     def manual(self, **fields):
         self.calls.append(("manual", fields))
+        return True
+
+    def lift(self, job_id, height_m, speed_mps):
+        self.calls.append(("lift", job_id, round(height_m, 6), speed_mps))
         return True
 
     def status(self, **values):
@@ -120,20 +125,24 @@ def test_outrigger_set_and_release(car, qtbot) -> None:
 
 
 def test_lift_moves_in_metres_and_reports_mm(car, qtbot) -> None:
-    lift = VehicleLiftAdapter(car)
+    lift = VehicleLiftAdapter(car, speed_mps=0.04)
     got = _spy(lift)
     car.status(hold="SET", lift_h=0.0)
     lift.move_to(960.0, " mm")
-    assert car.calls[-1] == ("manual", {"cmd_mv_lift": 1, "lift_height": 0.96})
+    # 자동 동작 중 — 자동 서비스(manual=False)로, 차량 설정의 리프트 속도를 싣는다.
+    assert car.calls[-1] == ("lift", "RCS-L0001", 0.96, 0.04)
     car.status(hold="SET", lift_h=0.5)
     assert lift.position == pytest.approx(500.0) and got["arrived"] == 0
     car.status(hold="SET", lift_h=0.9595)
     assert got["arrived"] == 1
 
-    car.command_result.emit("manual_command", False, "Rejected: outriggers not set")
+    car.command_result.emit("set_mv_lift", False, "Rejected: outriggers not set")
     assert got["problem"] == [], "움직이지 않을 때 온 거절은 무시한다"
     lift.move_to(1500.0)
-    car.command_result.emit("manual_command", False, "Rejected: outriggers not set")
+    assert car.calls[-1][1] == "RCS-L0002", "명령마다 새 job_id"
+    car.command_result.emit("manual_command", False, "Rejected: busy")
+    assert got["problem"] == [], "리프트는 수동 명령(manual_command) 거절을 보지 않는다"
+    car.command_result.emit("set_mv_lift", False, "Rejected: outriggers not set")
     assert "outriggers not set" in got["problem"][0]
 
 
@@ -176,3 +185,19 @@ def test_amr_explicit_time_limit_and_standoff(car) -> None:
     amr.move_to(20000.0, timeout_ms=310_000)
     assert amr._timer.interval() == 310_000
     assert car.standoff == 2.0
+
+
+def test_amr_sends_the_target_radius_each_time(car) -> None:
+    """SetJob.radius = 목표 대상(모재) 반지름 [m] — 보낼 때마다 묻는다(AGV 판 2026-11-20)."""
+    amr = VehicleAmrAdapter(car)
+    amr.move_to(100.0)
+    assert car.radius == 0.0, "모르면 0"
+    radius = {"m": 2.5}
+    amr.radius_source = lambda: radius["m"]
+    amr.reset(0.0)
+    amr.move_to(100.0)
+    assert car.radius == 2.5
+    radius["m"] = 3.0                      # 검사 대상 지름이 바뀌면 다음 이동부터
+    amr.reset(0.0)
+    amr.move_to(100.0)
+    assert car.radius == 3.0

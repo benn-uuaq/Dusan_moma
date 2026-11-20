@@ -40,12 +40,29 @@ def test_vehicle_moves_through_the_real_interfaces(qtbot, tmp_path, monkeypatch)
         with qtbot.waitSignal(window.amr.arrived, timeout=8000):
             window.amr.move_to(300.0, " mm")
         assert window.amr.position == 300.0
+        # SetJob.radius = 검사 대상 바깥 지름 / 2 [m] (AGV 판 2026-11-20)
+        assert sim.radius == pytest.approx(window._outer_radius_mm() / 1000.0) and sim.radius > 0
         with qtbot.waitSignal(window.outrigger.arrived, timeout=5000):
             window.outrigger.move_to(1, " 고정")
+        # 자동 리프트 속도는 RCS 차량 설정 「리프트 속도」가 SetMvLift.set_speed 로 간다.
+        vehicle = window.screens["vehicle"]
+        vehicle.field(vehicle.LIFT_SPEED_FIELD).setValue(500)
+        window._apply_vehicle_settings()
+        assert window._vehicle_lift.speed_mps == pytest.approx(0.5)
         with qtbot.waitSignal(window.lift.arrived, timeout=8000):
-            window.lift.move_to(400.0, " mm")
+            window.lift.move_to(400.0, " mm")          # 자동 — set_mv_lift
         assert window.vehicle.last_status["lift_h"] == pytest.approx(0.4)
         assert window.screens["manual"].lift_value.text() == "400 mm"
+        window._manual_lift(0.6)                        # 수동 화면 — ManualCommand(cmd_mv_lift · lift_height)
+        qtbot.waitUntil(lambda: abs(window.vehicle.last_status["lift_h"] - 0.6) < 1e-6, timeout=5000)
+        # 위치 다시 맞추기 — ResetOdometry(x · y · yaw)
+        said: list[str] = []
+        window.main_screen.show_activity = said.append
+        window._reset_vehicle_odometry(1.5, -0.25, 0.3)
+        qtbot.waitUntil(lambda: window.vehicle.last_status.get("y") == pytest.approx(-0.25), timeout=3000)
+        status = window.vehicle.last_status
+        assert status["x"] == pytest.approx(1.5) and status["yaw"] == pytest.approx(0.3)
+        qtbot.waitUntil(lambda: any("위치를 x 1.500 m" in text for text in said), timeout=3000)
         # 수동 제어는 차량 상태가 들어오면 열린다. 로봇 태스크가 도는 중이면
         # 안전 인터락이 잠그므로(다른 노드가 500=1 을 내보낼 수 있다) 쉬는 것으로 둔다.
         window._on_robot_task_state(3)

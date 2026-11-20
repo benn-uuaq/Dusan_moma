@@ -8,11 +8,11 @@ position / target / moving, 시그널 arrived / activity / position_changed.
 받은 자료에 없는 동작 규칙은 이렇게 가정했다(vehicle_sim 과 같다 — 실제
 차량 규칙이 다르면 여기와 모의기를 같이 고친다).
 
-  AMR     : SetJob(set_dist = 이번 이동 거리 m, 부호 = 방향) -> RobotControl("RUNNING")
-            -> RUNNING 을 한 번 본 뒤 STOP/HOLD 이고 mv_dist ≈ set_dist 면 도착.
-  아웃트리거: ManualCommand(cmd_outrg_set = 2 고정 / 1 해제) -> hold 가 SET/RELEASE 면 도착.
-  리프트   : ManualCommand(cmd_mv_lift = 1, lift_height = 목표 m) -> lift_h ≈ 목표면 도착.
-            (받은 자료대로 아웃트리거 고정에서만 움직인다.)
+  AMR     : SetJob(set_dist = 이번 이동 거리 m, 부호 = 방향, radius = 모재 반지름 m)
+            -> RobotControl("RUNNING") -> RUNNING 을 한 번 본 뒤 STOP/HOLD 이고 mv_dist ≈ set_dist 면 도착.
+  아웃트리거: ManualCommand(cmd_outrg_set = 2 고정 / 1 해제, 전체로만) -> hold 가 SET/RELEASE 면 도착.
+  리프트   : SetMvLift(set_height = 목표 m, set_speed) 서비스 set_mv_lift -> lift_h ≈ 목표면 도착
+            (자동 동작 중 — AGV 판 2026-11-20). 아웃트리거 고정에서만 움직인다.
 
 차량이 ERROR 가 되거나, 명령이 거절되거나, 제한 시간을 넘기면 도착을 내지
 않고 `problem` 으로 알린다 — 시퀀서는 거기서 기다린 채로 멈춘다(정지로 끝낸다).
@@ -132,6 +132,9 @@ class VehicleAmrAdapter(_VehicleStep):
         self.speed_mps = float(speed_mps)
         #: 차량이 모재를 돌며 지킬 거리 [m] — SetJob.standoff (RCS 차량 설정 「모재 거리 유지」).
         self.standoff_m = 0.0
+        #: 목표 대상(모재) 반지름 [m]을 돌려주는 함수 — SetJob.radius(AGV 판 2026-11-20). 보낼 때마다
+        #: 묻는다(검사 대상 지름은 작업 · ERUT calibrate 로 바뀐다). 없으면 0.
+        self.radius_source = None
         self._base = 0.0          # 이번 이동을 시작한 위치 [mm]
         self._set_dist = 0.0      # 이번 이동 거리 [m]
         self._job_id = ""
@@ -160,8 +163,9 @@ class VehicleAmrAdapter(_VehicleStep):
         self._set_dist = delta_mm / 1000.0
         self._running_seen = False
         self._started = False
+        radius = float(self.radius_source()) if self.radius_source is not None else 0.0
         if not self._client.set_job(self._job_id, self._set_dist, self.speed_mps,
-                                    standoff=self.standoff_m):
+                                    standoff=self.standoff_m, radius=max(radius, 0.0)):
             self._fail("SetJob 을 보내지 못했습니다")
 
     def _on_command_result(self, name: str, ok: bool, message: str) -> None:
@@ -214,13 +218,20 @@ class VehicleOutriggerAdapter(_VehicleStep):
 
 
 class VehicleLiftAdapter(_VehicleStep):
-    """리프트. 목표·위치는 mm (차량은 m 로 주고받는다)."""
+    """리프트. 목표·위치는 mm (차량은 m 로 주고받는다).
 
+    자동 동작 중이라 SetMvLift(set_mv_lift)로 보낸다 — set_speed 는 차량 설정 「리프트 속도」.
+    수동 제어 화면은 앱이 ManualCommand(cmd_mv_lift · lift_height)로 따로 보낸다(AGV 판 2026-11-20).
+    """
+
+    COMMAND = "set_mv_lift"
     TOLERANCE_MM = 2.0
     TIMEOUT_MS = 180_000
 
-    def __init__(self, client, parent: QObject | None = None) -> None:
+    def __init__(self, client, speed_mps: float = 0.05, parent: QObject | None = None) -> None:
         super().__init__("리프트", client, parent)
+        self.speed_mps = float(speed_mps)    # SetMvLift.set_speed — 차량 설정 「리프트 속도」
+        self._count = 0
 
     def move_to(self, target: float | int, unit: str = "", label: str = "") -> None:
         self._target = float(target)
@@ -228,7 +239,8 @@ class VehicleLiftAdapter(_VehicleStep):
         if abs(self._position - self._target) <= self.TOLERANCE_MM and self._client.last_status:
             QTimer.singleShot(0, lambda: self._finish(True))
             return
-        if not self._client.manual(cmd_mv_lift=1, lift_height=self._target / 1000.0):
+        self._count += 1
+        if not self._client.lift(f"RCS-L{self._count:04d}", self._target / 1000.0, self.speed_mps):
             self._fail("명령을 보내지 못했습니다")
 
     def _track(self, status: dict) -> None:

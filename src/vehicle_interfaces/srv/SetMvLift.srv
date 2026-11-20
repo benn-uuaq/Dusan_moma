@@ -1,0 +1,9 @@
+# Request
+# 리프트는 개별 서비르로 동작한다. 리프트 동작시 rcs는 협동로봇의 safety reset 명령 수신 확인이 필요하다.
+string job_id          # 작업 식별자
+float64 set_height       # 목표 높이 [m] — 리프트 높이 
+float64 set_speed      # 목표 속도 [m/s] — 리프트 속도, auto mode에서만 적용, 수동 모드는 PLC 속도 조절
+---
+# Response
+bool success           # 명령 접수 성공 여부
+string message         # 처리 결과 또는 실패 사유
