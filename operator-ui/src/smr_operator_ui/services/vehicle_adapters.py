@@ -13,6 +13,8 @@ position / target / moving, 시그널 arrived / activity / position_changed.
   아웃트리거: ManualCommand(cmd_outrg_set = 2 고정 / 1 해제, 전체로만) -> hold 가 SET/RELEASE 면 도착.
   리프트   : SetMvLift(set_height = 목표 m, set_speed) 서비스 set_mv_lift -> lift_h ≈ 목표면 도착
             (자동 동작 중 — AGV 판 2026-11-20). 아웃트리거 고정에서만 움직인다.
+  작업 끝  : RobotControl(job_finish = 1) -> 받아들여지고 hold 가 RELEASE 이며 서 있으면 끝(2026-11-20).
+            차량이 홀딩을 풀고 아웃트리거를 올려 이동할 수 있는 상태가 된다 — 다음 주행 전에 보낸다.
 
 차량이 ERROR 가 되거나, 명령이 거절되거나, 제한 시간을 넘기면 도착을 내지
 않고 `problem` 으로 알린다 — 시퀀서는 거기서 기다린 채로 멈춘다(정지로 끝낸다).
@@ -214,6 +216,45 @@ class VehicleOutriggerAdapter(_VehicleStep):
         hold = status.get("hold")
         self._position = 1.0 if hold == "SET" else 0.0
         if self._moving and hold == self._goal:
+            self._finish(True)
+
+
+class VehicleFinishAdapter(_VehicleStep):
+    """그 자리 작업 끝(RobotControl job_finish = 1, 2026-11-20).
+
+    차량은 SetJob · MeasureLap 으로 도착한 뒤 홀딩(브레이크)을 잡고 RCS 의 끝 신호를 기다린다. 받으면
+    홀딩을 풀고 아웃트리거를 올려 이동할 수 있는 상태가 된다. 그래서 받아들여진 뒤 hold 가 RELEASE 이고
+    차량이 서 있으면(RUNNING · PAUSED · ERROR 가 아니면) 끝이다. 앱은 다음 주행 전 순서(리프트 0 → 이것 → 주행)에 쓴다.
+    move_to 의 목표 값은 쓰지 않는다(다른 장비와 같은 모양으로 부르려고 받기만 한다).
+    """
+
+    COMMAND = "job_finish"
+    TIMEOUT_MS = 30_000          # 아웃트리거를 올리는 시간 포함 — 아웃트리거 해제와 같다
+
+    def __init__(self, client, parent: QObject | None = None) -> None:
+        super().__init__("작업 끝", client, parent)
+        self._accepted = False
+
+    def move_to(self, target: float | int = 0, unit: str = "", label: str = "") -> None:
+        self._target = float(target)
+        self._accepted = False
+        self._begin(label or "홀딩 해제 · 아웃트리거 올림")
+        if not self._client.finish_job():
+            self._fail("job_finish 를 보내지 못했습니다")
+
+    def cancel(self) -> None:
+        # 홀딩 해제 · 아웃트리거 올림은 차량이 마저 한다 — 기다리기만 그만둔다(STOP 을 보내지 않는다).
+        self._finish(False)
+
+    def _on_command_result(self, name: str, ok: bool, message: str) -> None:
+        super()._on_command_result(name, ok, message)
+        if self._moving and ok and name == self.COMMAND:
+            self._accepted = True
+            self._track(self._client.last_status)
+
+    def _track(self, status: dict) -> None:
+        if (self._moving and self._accepted and status.get("hold") == "RELEASE"
+                and status.get("state") not in ("RUNNING", "PAUSED", "ERROR")):
             self._finish(True)
 
 

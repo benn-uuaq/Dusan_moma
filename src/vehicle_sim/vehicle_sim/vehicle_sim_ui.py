@@ -200,7 +200,9 @@ class VehicleSimUI:
         plc = s.get("plc_state", "-") + (f" ({s['plc_error']})" if s.get("plc_error") else "")
         self.state_var.set(f"상태 {s['state']}   아웃트리거 {hold}   오류 {error}   PLC {plc}")
         self.info_var.set(
-            f"작업 {s['job_id'] or '-'}    이동 {s['mv_dist']:.3f} / {s['set_dist']:.3f} m    "
+            f"작업 {s['job_id'] or '-'}"
+            + ("(홀딩 — job_finish 기다림)" if s.get("finish_wait") else "")
+            + f"    이동 {s['mv_dist']:.3f} / {s['set_dist']:.3f} m    "
             f"속도 {s['speed']:.2f} m/s    누적 {s['odometer']:.3f} m    "
             f"리프트 {s['lift_h'] * 1000:,.0f} mm    다리 "
             + " ".join(f"{v * 100:3.0f}%" for v in s["legs"]))

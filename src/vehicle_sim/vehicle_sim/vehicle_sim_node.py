@@ -32,12 +32,17 @@
   5. 전진·후진·회전 조그는 명령이 끊기면(deadman_s) 선다 — RCS 는 누르는
      동안 주기적으로 다시 보낸다.
   6. RobotControl: "PAUSED" 멈춤, "RUNNING" 재개, "STOP" 정지,
-     job_cancel=1 작업 취소, reset=1 오류 해제.
+     job_cancel=1 작업 취소, reset=1 오류 해제, job_finish=1 작업 끝(아래 8).
 
   7. MeasureLap(mode LAP 또는 빈 글자) = 원점에서 expected_dist 만큼 돌고 서면 lap_state DONE ·
      lap_path_m · lap_origin_ok. mode ALIGN(곡판) = 주행하지 않고 QR 정렬만(align_s 초 동안
      RUNNING, lap_path_m 0) 하고 DONE · lap_origin_ok. 두 경우 모두 PAUSED · RUNNING 으로 멈추고
      잇고, STOP 이면 lap_state FAILED.
+  8. 작업 끝(2026-11-20): SetJob · MeasureLap 이 끝까지 가서 서면 홀딩(브레이크)을 잡고 RCS 의
+     RobotControl job_finish=1 을 기다린다 — 그동안 새 SetJob · MeasureLap 은 거절한다(require_finish,
+     기본 true). job_finish 를 받으면 홀딩을 풀고 아웃트리거를 올리고(hold RELEASE) 작업을 잊는다
+     (job_id ""). 서 있을 때는 끝낼 작업이 없어도 받는다. STOP 으로 도중에 멈춘 이동은 기다리지 않는다
+     (RCS 일시정지 · 재개가 남은 거리로 새 SetJob 을 보낸다).
 
 시험용으로 오류를 넣을 수 있다: ros2 param set /vehicle_sim fault_code 21
 PLC 끊김 흉내: ros2 param set /vehicle_sim plc_fail true — error_code 701 PLC_COMM_LOST · state ERROR.
@@ -76,6 +81,8 @@ class VehicleSim(Node):
         self.outrigger_s = float(p("outrigger_s", 1.5).value)       # 고정/해제 걸리는 시간
         self.deadman_s = float(p("deadman_s", 0.5).value)
         self.align_s = float(p("align_s", 3.0).value)               # 곡판 QR 정렬 걸리는 시간
+        # 도착한 뒤 job_finish 를 받아야 다음 작업을 받는다(2026-11-20, 규칙 8). false 면 예전처럼 바로 받는다.
+        self.require_finish = bool(p("require_finish", True).value)
         p("fault_code", 0)                                          # 시험용 오류 주입
         # RCS 와 맞춘 칸(2026-11-17) — 시험용으로 바꿀 수 있다.
         p("battery_pct", 90)
@@ -115,6 +122,7 @@ class VehicleSim(Node):
         self.lap_origin_ok = False
         self.lap_error = ""
         self.align_left = 0.0       # ALIGN(곡판 QR 정렬) 남은 시간 [s]. 0 이면 정렬 중이 아니다
+        self.finish_wait = False    # 작업이 끝까지 가서 섰다 — 홀딩을 잡고 job_finish 를 기다린다(규칙 8)
         self.robot_estop = False    # 로봇 컨트롤러 비상정지(RCS 가 <ns>/robot_estop 으로 알린다)
         # PLC 연결(모의기 안쪽 값 — 밖으로는 701 로만 낸다). 처음엔 바로 붙는다(plc_fail 이면 실패로 시작).
         self.plc_state = "CONNECTED"
@@ -154,6 +162,9 @@ class VehicleSim(Node):
         if self.state == "ERROR":       # 오류 중에는 움직이는 명령을 거절한다(RCS_AGV 인터페이스 차량 오류 규칙)
             res.success, res.message = False, "Rejected: error — reset first"
             return res
+        if self._finish_pending():
+            res.success, res.message = False, self.FINISH_FIRST
+            return res
         self.job = req
         self.set_dist = float(req.set_dist)
         self.mv_dist = 0.0
@@ -177,6 +188,9 @@ class VehicleSim(Node):
             return res
         if self.state in ("RUNNING", "PAUSED", "ERROR"):
             res.success, res.message = False, f"Rejected: {self.state.lower()}"
+            return res
+        if self._finish_pending():
+            res.success, res.message = False, self.FINISH_FIRST
             return res
         mode = (getattr(req, "mode", "") or "LAP").strip().upper()
         if mode not in ("LAP", "ALIGN"):
@@ -267,8 +281,42 @@ class VehicleSim(Node):
         res.success, res.message = True, "start_request published"
         return res
 
+    #: 끝난 작업에 job_finish 를 받기 전에 새 작업이 오면 이 까닭으로 거절한다(규칙 8).
+    FINISH_FIRST = "Rejected: previous job not finished — send job_finish"
+
+    def _finish_pending(self) -> bool:
+        return self.require_finish and self.finish_wait
+
+    def _arrived(self) -> None:
+        """작업이 끝까지 가서 섰다 — 홀딩을 잡고 job_finish 를 기다린다."""
+        self.state = "HOLD" if self.hold == "SET" else "STOP"
+        self.finish_wait = True
+        if self.lap_state == "RUNNING":
+            self.lap_state, self.lap_origin_ok = "DONE", True
+
+    def _on_finish(self, res) -> None:
+        """RobotControl job_finish = 1 — 홀딩을 풀고 아웃트리거를 올리고 작업을 잊는다."""
+        if self.estop_now:
+            res.success, res.message = False, "Rejected: estop"
+        elif self.state in ("RUNNING", "PAUSED"):
+            res.success, res.message = False, "Rejected: moving"
+        elif self.state == "ERROR":
+            res.success, res.message = False, "Rejected: error — reset first"
+        else:
+            had_job = self.finish_wait or self.job is not None
+            self.finish_wait = False
+            self.job = None
+            if self.hold == "SET" or self.outrigger_goal == "SET":
+                self._start_outrigger("RELEASE")
+            res.success, res.message = True, ("Job finished — hold released" if had_job
+                                              else "No job — ready")
+
     def on_control(self, req, res):
         res.success, res.message = True, "Done"
+        if getattr(req, "job_finish", 0):
+            self._on_finish(res)
+            if not res.success or not (req.state or req.reset or req.job_cancel):
+                return res
         if req.reset and self.plc_state != "CONNECTED":
             # PLC 가 안 붙어 있다 — 다시 연결을 시작한다. 붙을 때까지 701 은 그대로(붙으면 스스로 푼다).
             if self.plc_state == "FAILED":
@@ -429,7 +477,7 @@ class VehicleSim(Node):
             "lift_h": self.lift_h, "lift_max": self.lift_max,
             "lift_moving": self.lift_moving,
             "legs": list(self.legs), "outrigger_moving": self.outrigger_goal is not None,
-            "jog": self.jog,
+            "jog": self.jog, "finish_wait": self.finish_wait,
             "plc_state": self.plc_state, "plc_error": self.plc_error, "plc_retries": self.plc_retries,
         }
 
@@ -472,9 +520,7 @@ class VehicleSim(Node):
             self.align_left -= dt
             if self.align_left <= 1e-9:
                 self.align_left = 0.0
-                self.state = "STOP"
-                if self.lap_state == "RUNNING":
-                    self.lap_state, self.lap_origin_ok = "DONE", True
+                self._arrived()
         elif self.state == "RUNNING" and self.job is not None:
             target_speed = float(self.job.set_speed) or self.default_speed
             remain = self.set_dist - self.mv_dist
@@ -485,9 +531,7 @@ class VehicleSim(Node):
             if abs(self.set_dist - self.mv_dist) < 1e-6:
                 self.mv_dist = self.set_dist
                 self.speed = 0.0
-                self.state = "STOP"
-                if self.lap_state == "RUNNING":
-                    self.lap_state, self.lap_origin_ok = "DONE", True
+                self._arrived()
 
         if self.state in ("STOP", "HOLD") and any(self.jog):
             self.jog_age += dt

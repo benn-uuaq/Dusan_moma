@@ -4,6 +4,7 @@
   AMR     SetJob(이번 이동 거리 m, radius 모재 반지름 m) -> RUNNING -> STOP 이고 mv_dist≈set_dist 면 도착
   아웃트리거 ManualCommand(cmd_outrg_set 2/1, 전체로만) -> hold SET/RELEASE
   리프트   SetMvLift(set_mv_lift: job_id, set_height m, set_speed m/s) -> lift_h ≈ 목표 (자동 동작 중)
+  작업 끝  RobotControl(job_finish = 1) -> 받아들여지고 hold RELEASE · 서 있으면 끝 (2026-11-20)
 """
 
 import pytest
@@ -11,7 +12,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from smr_operator_ui.services.motion_adapters import DummyMotionAdapter, SwitchableMotion
 from smr_operator_ui.services.vehicle_adapters import (
-    VehicleAmrAdapter, VehicleLiftAdapter, VehicleOutriggerAdapter,
+    VehicleAmrAdapter, VehicleFinishAdapter, VehicleLiftAdapter, VehicleOutriggerAdapter,
 )
 
 
@@ -41,6 +42,10 @@ class FakeVehicle(QObject):
 
     def lift(self, job_id, height_m, speed_mps):
         self.calls.append(("lift", job_id, round(height_m, 6), speed_mps))
+        return True
+
+    def finish_job(self):
+        self.calls.append(("finish",))
         return True
 
     def status(self, **values):
@@ -201,3 +206,46 @@ def test_amr_sends_the_target_radius_each_time(car) -> None:
     amr.reset(0.0)
     amr.move_to(100.0)
     assert car.radius == 3.0
+
+
+def test_finish_waits_for_the_hold_release_after_it_is_accepted(car, qtbot) -> None:
+    """작업 끝 — 차량이 받아들이고, 홀딩을 풀고 아웃트리거를 올려(hold RELEASE) 서 있어야 끝이다."""
+    finish = VehicleFinishAdapter(car)
+    got = _spy(finish)
+    car.status(hold="SET", state="HOLD")
+    finish.move_to(0)
+    assert car.calls == [("finish",)]
+    car.status(hold="RELEASE", state="STOP")
+    assert got["arrived"] == 0, "받아들였다는 답 전에는 끝으로 보지 않는다"
+    car.status(hold="SET", state="HOLD")
+    car.command_result.emit("robot_control", True, "Done")
+    assert got["arrived"] == 0, "다른 robot_control 결과는 작업 끝이 아니다"
+    car.command_result.emit("job_finish", True, "Job finished — hold released")
+    assert got["arrived"] == 0, "아웃트리거가 아직 내려가 있다"
+    car.status(hold="RELEASE", state="STOP")
+    assert got["arrived"] == 1 and got["problem"] == []
+
+
+def test_finish_on_an_already_released_vehicle_ends_on_the_answer(car, qtbot) -> None:
+    """캘리브레이션 주행 뒤처럼 아웃트리거가 올라가 있으면 받았다는 답으로 바로 끝난다."""
+    finish = VehicleFinishAdapter(car)
+    got = _spy(finish)
+    car.status(hold="RELEASE", state="STOP")
+    finish.move_to(0)
+    car.command_result.emit("job_finish", True, "Job finished — hold released")
+    assert got["arrived"] == 1
+
+
+def test_finish_rejected_or_error_is_a_problem(car, qtbot) -> None:
+    finish = VehicleFinishAdapter(car)
+    got = _spy(finish)
+    car.status(hold="SET", state="HOLD")
+    finish.move_to(0)
+    car.command_result.emit("job_finish", False, "Rejected: moving")
+    assert got["arrived"] == 0 and "Rejected: moving" in got["problem"][-1]
+
+    finish.move_to(0)
+    car.status(state="ERROR", error_code=21, error_msg="모의 오류 21", hold="SET")
+    assert "차량 오류 21" in got["problem"][-1]
+    finish.cancel()
+    assert ("control", "STOP", False, False) not in car.calls, "기다리기만 그만두고 차량을 세우지 않는다"

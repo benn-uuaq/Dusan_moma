@@ -58,7 +58,7 @@ from smr_operator_ui.services import calibration
 from smr_operator_ui.services.data_recorder import DataRecorder
 from smr_operator_ui.services.motion_adapters import SwitchableMotion
 from smr_operator_ui.services.vehicle_adapters import (
-    VehicleAmrAdapter, VehicleLiftAdapter, VehicleOutriggerAdapter,
+    VehicleAmrAdapter, VehicleFinishAdapter, VehicleLiftAdapter, VehicleOutriggerAdapter,
 )
 from smr_operator_ui.services.vehicle_client import PLC_COMM_LOST, VehicleClient
 from smr_operator_ui.services.job_sequencer import (
@@ -931,7 +931,7 @@ class OperatorWindow(QMainWindow):
         self._calibration_lap = None
         self.main_screen.set_pause_override(None)
         self.sequencer.stop()
-        for adapter in (self.lift, self.amr, self.outrigger, self.retractor):
+        for adapter in (self.lift, self.amr, self.outrigger, self.retractor, self._vehicle_finish):
             adapter.cancel()
         self.simulator.stop_cycle()
         # 마킹 중이었으면 마킹을 접고 스캔 태스크로 되돌린다(cancel 이 한다).
@@ -1064,6 +1064,11 @@ class OperatorWindow(QMainWindow):
         시퀀서가 다시 고정(1단계) → 리프트를 그 구간 높이로(2단계) 한다.
         예전에는 리프트를 올린 채, 아웃트리거를 고정한 채 차량을 달렸다.
 
+        실제 차량이면 아웃트리거 해제 대신 **작업 끝**(RobotControl job_finish, 2026-11-20)을 보낸다 —
+        차량은 도착한 뒤 홀딩(브레이크)을 잡고 이 신호를 기다리며, 받으면 홀딩을 풀고 아웃트리거를
+        올려 이동할 수 있는 상태가 된다. 아웃트리거가 이미 올라가 있어도 보낸다(캘리브레이션 주행 뒤처럼
+        홀딩만 잡고 있을 수 있다). 빌드에 job_finish 가 없으면 예전처럼 아웃트리거만 푼다.
+
         `guard()` 는 단계마다 "go"/"wait"/"drop" 을 돌려준다 — 그 사이 작업이
         일시정지되면 기다렸다 재개 때 잇고, 정지되면 버린다.
         """
@@ -1071,7 +1076,11 @@ class OperatorWindow(QMainWindow):
         if self.lift.position > self.DRIVE_TOLERANCE_MM:
             steps.append((self.lift, "주행 전에 리프트를 내립니다.",
                           lambda: self.lift.move_to(0.0, " mm", label="주행 전 0 mm")))
-        if self.outrigger.position >= 1:
+        if self.amr.active == "vehicle" and self.vehicle.can_finish():
+            steps.append((self._vehicle_finish,
+                          "주행 전에 차량에 작업 끝(finish)을 보냅니다 — 홀딩 해제 · 아웃트리거 올림.",
+                          lambda: self._vehicle_finish.move_to(0)))
+        elif self.outrigger.position >= 1:
             steps.append((self.outrigger, "주행 전에 아웃트리거를 풉니다.",
                           lambda: self.outrigger.move_to(0, " 해제")))
 
@@ -2186,7 +2195,7 @@ class OperatorWindow(QMainWindow):
         self.simulator.stop_cycle()
         self.sequencer.stop()
         self.mark_runner.cancel()
-        for adapter in (self.lift, self.amr, self.outrigger, self.retractor):
+        for adapter in (self.lift, self.amr, self.outrigger, self.retractor, self._vehicle_finish):
             adapter.cancel()
         self._origin_waiting = False
         self.erut_session.interrupt_active_job()
@@ -4570,8 +4579,12 @@ class OperatorWindow(QMainWindow):
             self.vehicle, self.screens["vehicle"].lift_speed_mm_s() / 1000.0, parent=self)
         self.lift.add_backend("vehicle", self._vehicle_lift)
         self.outrigger.add_backend("vehicle", VehicleOutriggerAdapter(self.vehicle, parent=self))
+        # 그 자리 작업 끝(RobotControl job_finish, 2026-11-20) — 차량이 홀딩을 풀고 아웃트리거를 올린다.
+        # 다음 주행 전에 보낸다(_prepare_to_drive). 더미 차량에는 없다.
+        self._vehicle_finish = VehicleFinishAdapter(self.vehicle, parent=self)
+        self._vehicle_finish.activity.connect(self.main_screen.show_activity)
         self._vehicle_hinted = False
-        for motion in (self.amr, self.lift, self.outrigger):
+        for motion in (self.amr, self.lift, self.outrigger, self._vehicle_finish):
             motion.problem.connect(self._on_vehicle_problem)
         self.vehicle.online_changed.connect(self._apply_vehicle_mode)
         self.vehicle.online_changed.connect(self._hint_vehicle_available)

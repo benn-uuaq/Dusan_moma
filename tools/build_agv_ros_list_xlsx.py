@@ -6,6 +6,8 @@ RCS_AGV_인터페이스 문서가 읽기 어렵다고 해서 AGV 쪽에서 보�
 2026-11-20: AGV 담당이 고친 vehicle_interfaces 에 맞췄다 — 리프트 자동은 SetMvLift(set_mv_lift) 하나, 수동은
 ManualCommand(cmd_mv_lift · lift_height, 속도는 PLC), SetJob.radius · ResetOdometry 추가, PLC 전용 필드 · 서비스
 없음(PLC 끊김은 error_code 701 로 보고 다시 연결은 robot_control reset). vehicle_interfaces 는 AGV 쪽 판이 기준이다.
+2026-11-20 오후: RobotControl 에 job_finish 를 더했다 — 차량은 도착한 뒤 홀딩을 잡고 기다리다가, 받으면 홀딩을 풀고
+아웃트리거를 올려 이동할 수 있는 상태가 된다. RCS 는 다음 주행 전에(리프트를 내린 뒤) 보낸다.
 
   1.한눈에        두 노드 사이에 오가는 9개를 그림으로
   2.목록          AGV 노드가 발행 · 구독 · 서버로 열 것 9개 — 이름 · 타입은 그대로 복사
@@ -63,7 +65,7 @@ DIAGRAM = [
     ("topic", "━━━", f"{NS}/robot_estop", "std_msgs/Bool  ·  로봇 비상정지 — 바뀔 때 + 0.5 초마다", "━━▶"),
     ("sub", "서비스 — RCS 가 부르면(▶ 요청) AGV 가 바로 답한다(◀ 응답)"),
     ("service", "◀━━", f"{NS}/set_job", "SetJob  ·  주행 한 번 설정(거리 · 속도 · 거리 유지 · 모재 반지름)", "━━▶"),
-    ("service", "◀━━", f"{NS}/robot_control", "RobotControl  ·  출발 · 정지 · 일시정지 · 리셋(PLC 다시 연결 포함)", "━━▶"),
+    ("service", "◀━━", f"{NS}/robot_control", "RobotControl  ·  출발 · 정지 · 일시정지 · 리셋(PLC 다시 연결 포함) · 작업 끝", "━━▶"),
     ("service", "◀━━", f"{NS}/manual_command", "ManualCommand  ·  수동 조그 · 아웃트리거 전체 · 수동 리프트 · 원점", "━━▶"),
     ("service", "◀━━", f"{NS}/set_mv_lift", "SetMvLift  ·  리프트 높이 — 자동 동작 중(작업 순서)", "━━▶"),
     ("service", "◀━━", f"{NS}/measure_lap", "MeasureLap  ·  캘리브레이션 주행(원통 한 바퀴 · 곡판 QR 정렬)", "━━▶"),
@@ -219,6 +221,10 @@ FIELDS = [
      "PLC 끊김(701) 중이면 PLC 에 다시 붙어 보고, 붙으면 701 을 푼다", "1",
      "수동 화면 「오류 리셋」 · RCS 알람 리셋 · ERUT reset · 연결 설정 「PLC 다시 연결」"),
     ("job_cancel", "uint8", "-", "0", "1 = 작업 취소 — 하던 이동을 멈추고 잊는다", "0", "지금은 보내지 않는다(STOP 으로 대신)"),
+    ("job_finish", "uint8", "-", "0",
+     "1 = 작업 끝 — 그 자리 일이 끝났다. 홀딩(브레이크)을 풀고 아웃트리거를 올려 이동할 수 있는 상태로(hold RELEASE · "
+     "state STOP), 작업을 잊는다(job_id \"\"). 서 있으면 끝낼 작업이 없어도 받는다. 움직이는 중이면 거절", "1",
+     "다음 주행 전 — 리프트를 0 으로 내린 뒤 보내고 hold RELEASE 를 기다린다(RCS 제한 30 초). 2026-11-20 추가"),
     ("sub", "응답 — AGV 가 채워 답한다"),
     ("success", "bool", "-", "-", "받았으면 true. 못 받으면 false(4.상태·값 의 표)", "false", "false 면 알람"),
     ("message", "string", "-", "-", "결과 · 거절 까닭", "\"Rejected: error — reset first\"", "알람 글"),
@@ -301,6 +307,9 @@ STATES = [
     ("ERROR", "차량 오류 — error_code ≠ 0", "오류가 나면 바로. robot_control reset = 1 로 풀면 STOP 또는 HOLD"),
     ("note", "리프트 · 아웃트리거가 움직일 때는 state 를 바꾸지 않는다(STOP / HOLD 그대로) — RCS 는 lift_h · hold 로 끝을 본다. "
              "비상정지는 state 가 아니라 estop 필드로 알린다"),
+    ("note", "set_job · measure_lap 이 끝까지 가서 서면(STOP) 홀딩(브레이크)을 잡고 robot_control job_finish 를 기다린다 — "
+             "state 는 STOP 그대로. 그동안 새 set_job · measure_lap 은 거절한다. STOP 으로 도중에 멈춘 이동은 기다리지 않는다"
+             "(RCS 일시정지 · 재개는 남은 거리로 새 set_job 을 보낸다)"),
 ]
 
 VALUE_HEAD = ["필드", "값", "뜻"]
@@ -314,6 +323,7 @@ VALUES = [
     ("section", "RCS 가 보내는 값"),
     ("robot_control.state", "RUNNING · STOP · PAUSED · \"\"", "출발 · 재개 / 정지 / measure_lap 일시정지 / 그대로(reset 만)"),
     ("robot_control.reset", "0 · 1", "없음 · 오류 리셋(PLC 끊김이면 다시 연결)"),
+    ("robot_control.job_finish", "0 · 1", "없음 · 작업 끝(홀딩 해제 · 아웃트리거 올림 · 이동 가능)"),
     ("manual_command.cmd_outrg_set", "0 · 1 · 2", "그대로 · 해제(전체 올리기) · 고정(전체 내리기)"),
     ("manual_command.cmd_mv_lift", "0 · 1", "그대로 · lift_height 로 이동(수동, 속도는 PLC)"),
     ("리프트 명령", "set_mv_lift · manual_command.cmd_mv_lift", "자동 동작 중(RCS 작업 순서, set_speed) · 수동 제어 화면(PLC 속도)"),
@@ -324,11 +334,14 @@ VALUES = [
 
 ACCEPT_HEAD = ["명령  /  지금 상태 →", "STOP", "HOLD", "RUNNING", "PAUSED", "ERROR", "비상정지 중", "거절할 때 message 예"]
 ACCEPT = [
-    ("set_job", "O", "O", "X", "X", "X", "X", "\"Rejected: busy\" · \"Rejected: error — reset first\""),
+    ("set_job", "O", "O", "X", "X", "X", "X", "\"Rejected: busy\" · \"Rejected: error — reset first\" · "
+     "\"Rejected: previous job not finished — send job_finish\""),
     ("robot_control  RUNNING", "O\n(set_job 뒤)", "O\n먼저 해제", "O", "O 재개", "X", "X",
      "\"Rejected: no job\" · \"Rejected: estop\""),
     ("robot_control  PAUSED", "X", "X", "O", "-", "X", "-", "\"Rejected: not running\""),
     ("robot_control  STOP", "O", "O", "O", "O", "O", "O", "(언제든 받는다)"),
+    ("robot_control  job_finish = 1", "O", "O\n아웃트리거 올림", "X", "X", "X", "X",
+     "\"Rejected: moving\" · \"Rejected: error — reset first\" · \"Rejected: estop\""),
     ("robot_control  reset = 1", "O", "O", "O", "O", "O 풀림", "O",
      "원인이 남으면 false + 까닭. estop 은 버튼을 풀어야 풀린다. 701 은 다시 연결을 시작하고 true — 붙으면 풀린다"),
     ("manual_command  조그", "O", "X", "X", "X", "X", "X", "\"Rejected: outriggers set\" · \"Rejected: Not in manual mode\""),
@@ -337,10 +350,12 @@ ACCEPT = [
      "\"Rejected: outriggers not set\" · \"Rejected: height … out of …\""),
     ("set_mv_lift", "X", "O", "X", "X", "X", "X",
      "\"Rejected: outriggers not set\" · \"Rejected: height … out of …\""),
-    ("measure_lap", "O", "O\n먼저 해제", "X", "X", "X", "X", "\"Rejected: running\" · \"Rejected: unknown mode …\""),
+    ("measure_lap", "O", "O\n먼저 해제", "X", "X", "X", "X", "\"Rejected: running\" · \"Rejected: unknown mode …\" · "
+     "\"Rejected: previous job not finished — send job_finish\""),
     ("reset_odometry", "O", "O", "X", "X", "O", "O", "\"Rejected: moving\""),
     ("note", "O 받는다 · X 거절(success = false) · - 해당 없음. 「먼저 해제」 = 아웃트리거를 스스로 풀고 출발한다"
-             "(RCS 는 보통 먼저 cmd_outrg_set = 1 을 보낸다). 거절은 그 명령에만 답하는 것이고 error_code 를 쓰지 않는다"),
+             "(RCS 는 보통 먼저 job_finish 를 보내 홀딩을 풀고 아웃트리거를 올린다). 거절은 그 명령에만 답하는 것이고 "
+             "error_code 를 쓰지 않는다. set_job · measure_lap 은 끝난 작업에 job_finish 를 받기 전이면 거절한다"),
     ("note", "PLC 통신이 끊긴 동안은 error_code 701 · state ERROR 다 — 위 ERROR 열대로 움직이는 명령을 거절한다"
              "(\"Rejected: PLC not connected\" 처럼 까닭을 적는다). robot_control reset = 1 을 받으면 PLC 에 다시 붙어 본다"),
 ]
@@ -354,8 +369,9 @@ FLOWS = [
     ("1", "set_mv_lift\n{job_id: RCS-L0006, set_height: 0.0, set_speed: 0.05}", R, "", "리프트를 내린다(올라가 있을 때만)"),
     ("", "", L, "success: true", "바로 답한다"),
     ("", "", L, "robot_status  lift_h → 0.000", "|lift_h − 0| ≤ 2 mm 면 다음으로 (RCS 제한 180 초)"),
-    ("2", "manual_command\n{cmd_outrg_set: 1}", R, "", "아웃트리거 해제(고정돼 있을 때만)"),
-    ("", "", L, "success: true  →  robot_status  hold: RELEASE · state: STOP", "(RCS 제한 30 초)"),
+    ("2", "robot_control\n{job_finish: 1}", R, "", "작업 끝 — 앞 자리 일이 끝났다(2026-11-20)"),
+    ("", "", L, "success: true  →  홀딩 해제 · 아웃트리거 올림  →  robot_status  hold: RELEASE · state: STOP · job_id: \"\"",
+     "hold RELEASE 면 다음으로 (RCS 제한 30 초). 끝낼 작업이 없어도 success"),
     ("3", "set_job\n{job_id: RCS-0007, set_dist: 0.35, set_speed: 0.1, standoff: 2.0, radius: 2.5}", R, "",
      "이번에 갈 거리 · 모재 반지름"),
     ("", "", L, "success: true", "아직 출발하지 않는다 · mv_dist = 0"),
@@ -363,7 +379,8 @@ FLOWS = [
     ("", "", L, "success: true  →  robot_status  state: RUNNING · job_id: RCS-0007 · mv_dist 0 → 늘어남",
      "RUNNING 이 적어도 한 번은 실려야 한다"),
     ("5", "", L, "robot_status  state: STOP · mv_dist: 0.350",
-     "|mv_dist − set_dist| ≤ 2 mm → 도착 (RCS 제한 120 초 + 달릴 시간 × 1.5)"),
+     "|mv_dist − set_dist| ≤ 2 mm → 도착 (RCS 제한 120 초 + 달릴 시간 × 1.5). AGV 는 홀딩(브레이크)을 잡고 "
+     "job_finish 를 기다린다"),
     ("6", "manual_command\n{cmd_outrg_set: 2}", R, "", "아웃트리거 고정"),
     ("", "", L, "success: true  →  robot_status  hold: SET · state: HOLD · level_state: 1", ""),
     ("7", "set_mv_lift\n{job_id: RCS-L0007, set_height: 1.2, set_speed: 0.05}", R, "", "구역 높이로"),
@@ -372,24 +389,28 @@ FLOWS = [
      "로봇 출발을 미룬다"),
     ("8", "", L, "robot_status (10 Hz 계속)",
      "로봇이 스캔하는 동안 그대로 서 있는다. hold SET · error_code 0 · estop false · level_state ≠ 0 이 깨지면 RCS 가 로봇을 세운다"),
+    ("9", "(다음 구역 — 로봇이 홈에 온 뒤 다음 A 의 1 · 2)", R, "",
+     "리프트 0 → job_finish. 같은 세로 줄의 다음 구역(리프트만 옮김)이면 job_finish 없이 7 부터"),
 
     ("section", "B. 캘리브레이션 — 원통 (mode LAP)"),
     ("0", "", L, "start_request  {}", "차량 「작업 시작」 버튼으로 시작할 때만"),
-    ("1", "(A 의 1 · 2 — 리프트 0 · 아웃트리거 해제)", R, "", ""),
+    ("1", "(A 의 1 · 2 — 리프트 0 · job_finish)", R, "", ""),
     ("2", "measure_lap\n{job_id: LAP-0001, mode: LAP, speed: 0.1, standoff: 2.0, expected_dist: 15.708}", R, "", ""),
     ("", "", L, "success: true  →  바로 출발", ""),
     ("3", "", L, "robot_status  lap_state: RUNNING · state: RUNNING · lap_path_m 늘어남", "모재를 따라 한 바퀴"),
     ("4", "", L, "robot_status  lap_state: DONE · lap_origin_ok: true · lap_path_m: 15.692 · state: STOP",
-     "원점 QR 에 다시 섰다 — RCS 가 lap_path_m 으로 둘레를 잡는다 (제한 = RCS 「캘리브레이션 최대 시간」)"),
+     "원점 QR 에 다시 섰다 — RCS 가 lap_path_m 으로 둘레를 잡는다 (제한 = RCS 「캘리브레이션 최대 시간」). "
+     "홀딩을 잡고 job_finish 를 기다린다 — 다음 주행(A 의 2) 때 온다"),
     ("실패", "", L, "robot_status  lap_state: FAILED · lap_error: \"QR not found\"", "RCS 는 캘리브레이션 실패로 끝낸다"),
 
     ("section", "C. 캘리브레이션 — 곡판 (mode ALIGN) · QR 은 판 가운데, 차량은 그 앞에 놓여 있다"),
-    ("1", "(A 의 1 · 2 — 리프트 0 · 아웃트리거 해제)", R, "", ""),
+    ("1", "(A 의 1 · 2 — 리프트 0 · job_finish)", R, "", ""),
     ("2", "measure_lap\n{job_id: ALN-0001, mode: ALIGN, speed: 0.1, standoff: 2.0, expected_dist: 0.0}", R, "", ""),
     ("", "", L, "success: true", ""),
     ("3", "", L, "robot_status  lap_state: RUNNING · state: RUNNING", "QR 에 맞춰 거리 · 방향만 정렬한다(한 바퀴 돌지 않는다)"),
     ("4", "", L, "robot_status  lap_state: DONE · lap_origin_ok: true · state: STOP",
-     "그 자리가 판 가운데. 곡판은 그 뒤 set_job 을 보내지 않는다 (제한 = 「곡판 QR 정렬 최대 시간」 기본 120 초)"),
+     "그 자리가 판 가운데. 곡판은 그 뒤 set_job 을 보내지 않는다 (제한 = 「곡판 QR 정렬 최대 시간」 기본 120 초). "
+     "홀딩을 잡은 채 스캔하고, job_finish 는 다음 주행(다음 캘리브레이션 등) 전에 온다"),
 
     ("section", "D. 일시정지 · 재개 · 정지"),
     ("measure_lap 중", "robot_control  {state: PAUSED}", R, "success: true  →  state: PAUSED · speed 0", "일시정지"),
@@ -470,6 +491,8 @@ COMMANDS = [
      "멈춘다"),
     ("5", "오류 리셋", "ros2 service call /vehicle/robot_control vehicle_interfaces/srv/RobotControl \"{reset: 1}\"",
      "error_code 0 · state STOP/HOLD"),
+    ("5", "작업 끝", "ros2 service call /vehicle/robot_control vehicle_interfaces/srv/RobotControl \"{job_finish: 1}\"",
+     "홀딩 해제 · 아웃트리거 올림 → hold RELEASE · state STOP · job_id 빈 글자. 이 뒤에 다음 set_job 을 받는다"),
     ("6", "아웃트리거 고정",
      "ros2 service call /vehicle/manual_command vehicle_interfaces/srv/ManualCommand \"{cmd_outrg_set: 2}\"",
      "hold SET · state HOLD"),

@@ -73,3 +73,87 @@ def test_vehicle_moves_through_the_real_interfaces(qtbot, tmp_path, monkeypatch)
         sim.destroy_node()
         window.ros_status.stop()
         window.close()
+
+
+def test_next_drive_sends_job_finish_after_lowering_the_lift(qtbot, tmp_path, monkeypatch) -> None:
+    """작업 끝(RobotControl job_finish, 2026-11-20) — 차량은 도착한 뒤 홀딩을 잡고 finish 를 기다린다.
+
+    다음 주행 전 순서: 리프트 0 → job_finish(홀딩 해제 · 아웃트리거 올림) → SetJob · RUNNING.
+    모의기는 finish 없이 온 새 SetJob 을 거절한다(require_finish).
+    """
+    ns = f"vf{int(time.time() * 1000) % 100000}"
+    monkeypatch.setenv("SMR_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SMR_VEHICLE_NS", ns)
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    window.ros_status.start()
+    sim = vehicle_sim_node.VehicleSim(parameter_overrides=[
+        Parameter("namespace", value=ns), Parameter("outrigger_s", value=0.3),
+        Parameter("lift_speed", value=0.5), Parameter("drive_speed", value=0.5)])
+    executor = SingleThreadedExecutor()
+    executor.add_node(sim)
+    threading.Thread(target=executor.spin, daemon=True).start()
+    said: list[str] = []
+    try:
+        qtbot.waitUntil(lambda: window.vehicle.online, timeout=5000)
+        assert window.amr.active == "vehicle" and window.vehicle.can_finish()
+        vehicle = window.screens["vehicle"]
+        vehicle.field(vehicle.LIFT_SPEED_FIELD).setValue(500)   # 리프트 0.5 m/s — 시험을 빨리
+        window._apply_vehicle_settings()
+        with qtbot.waitSignal(window.amr.arrived, timeout=8000):
+            window.amr.move_to(300.0, " mm")
+        assert sim.finish_wait, "도착한 뒤에는 홀딩을 잡고 finish 를 기다린다"
+        with qtbot.waitSignal(window.outrigger.arrived, timeout=5000):
+            window.outrigger.move_to(1, " 고정")
+        with qtbot.waitSignal(window.lift.arrived, timeout=8000):
+            window.lift.move_to(400.0, " mm")
+
+        window.main_screen.show_activity = said.append
+        with qtbot.waitSignal(window.amr.arrived, timeout=15000):
+            window._prepare_to_drive(lambda: window.amr.move_to(600.0, " mm", label="다음 구역"))
+        assert window.amr.position == 600.0
+        assert any("작업 끝(finish)" in text for text in said)
+        lowered = next(i for i, t in enumerate(said) if "리프트를 내립니다" in t)
+        finished = next(i for i, t in enumerate(said) if "작업 끝(finish)" in t)
+        assert lowered < finished, "리프트를 내린 뒤에 finish 를 보낸다"
+        assert sim.lift_h == pytest.approx(0.0) and sim.hold == "RELEASE"
+        assert sim.finish_wait, "새 도착 — 다시 finish 를 기다린다"
+        alarms = window.cobot_manual_screen.alarm_list
+        texts = [alarms.item(i).text() for i in range(alarms.count())]
+        assert not any("E2001" in text for text in texts), texts   # 거절 · 알람 없이 갔다
+    finally:
+        executor.shutdown()
+        sim.destroy_node()
+        window.ros_status.stop()
+        window.close()
+
+
+def test_simulator_refuses_a_new_job_until_finish(qtbot) -> None:
+    """모의기 규칙 8 — 끝난 작업에 job_finish 를 받기 전에는 새 SetJob 을 거절한다."""
+    from vehicle_interfaces.srv import RobotControl, SetJob
+    context = rclpy.context.Context()
+    rclpy.init(context=context)
+    sim = vehicle_sim_node.VehicleSim(context=context, parameter_overrides=[
+        Parameter("namespace", value=f"vr{int(time.time() * 1000) % 100000}")])
+    try:
+        res = sim.on_set_job(SetJob.Request(job_id="J1", set_dist=0.01, set_speed=1.0), SetJob.Response())
+        assert res.success
+        sim.on_control(RobotControl.Request(state="RUNNING"), RobotControl.Response())
+        for _ in range(20):
+            sim.tick()
+        assert sim.state == "STOP" and sim.finish_wait
+        res = sim.on_set_job(SetJob.Request(job_id="J2", set_dist=0.01, set_speed=1.0), SetJob.Response())
+        assert not res.success and "job_finish" in res.message
+        res = sim.on_control(RobotControl.Request(job_finish=1), RobotControl.Response())
+        assert res.success and res.message == "Job finished — hold released"
+        assert not sim.finish_wait and sim.job is None
+        res = sim.on_control(RobotControl.Request(job_finish=1), RobotControl.Response())
+        assert res.success and res.message == "No job — ready", "서 있으면 끝낼 작업이 없어도 받는다"
+        res = sim.on_set_job(SetJob.Request(job_id="J2", set_dist=0.01, set_speed=1.0), SetJob.Response())
+        assert res.success
+        sim.on_control(RobotControl.Request(state="RUNNING"), RobotControl.Response())
+        res = sim.on_control(RobotControl.Request(job_finish=1), RobotControl.Response())
+        assert not res.success and res.message == "Rejected: moving"
+    finally:
+        sim.destroy_node()
+        rclpy.shutdown(context=context)

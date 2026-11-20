@@ -5,7 +5,8 @@
 
 자세한 근거(요구 출처 · 정할 것 · 원주 거리 환산)는 docs/3S-AGV_PLC_연계_인터페이스_20261106.xlsx.
 값을 고칠 때는 코드(operator-ui services/vehicle_* · src/vehicle_sim)를 먼저 맞추고 다시 만든다.
-src/vehicle_interfaces 는 AGV 담당 판(2026-11-20)을 그대로 쓴다 — 3S 가 고치지 않는다.
+src/vehicle_interfaces 는 AGV 담당 판(2026-11-20)을 그대로 쓴다 — 3S 가 고치지 않는다. 같은 날 협의로
+RobotControl.job_finish 한 줄만 더했다(작업 끝 → 홀딩 해제 · 아웃트리거 올림 · 이동 가능).
 실행:  python3 tools/build_rcs_agv_interface_xlsx.py
 """
 
@@ -126,6 +127,9 @@ FIELDS = [
      "RUNNING = 출발 · 재개, STOP = 정지 · 일시정지, PAUSED = 캘리브레이션 주행(measure_lap) 일시정지. 빈 글자 = 상태 안 바꿈"),
     ("", "요청", "reset", "uint8", "-", "0", "1 = 오류 리셋. PLC 끊김(701) 중이면 PLC 에 다시 붙어 본다(RCS 「PLC 다시 연결」)"),
     ("", "요청", "job_cancel", "uint8", "-", "0", "1 = 작업 취소(지금은 RCS 가 STOP 으로 대신)"),
+    ("", "요청", "job_finish", "uint8", "-", "0",
+     "1 = 작업 끝(2026-11-20). 차량은 도착한 뒤 홀딩(브레이크)을 잡고 기다리다가, 받으면 홀딩을 풀고 아웃트리거를 올려 "
+     "이동할 수 있는 상태로(hold RELEASE · STOP). RCS 는 다음 주행 전 리프트를 내린 뒤 보낸다"),
     ("", "응답", "success · message", "bool · string", "-", "-", "false 면 실패(RCS 알람)"),
     ("section", f"{NS}/manual_command — vehicle_interfaces/srv/ManualCommand (RCS 호출 → AGV 서버)"),
     ("manual_command", "요청", "cmd_mv_fwd · cmd_mv_rear", "bool", "-", "false", "true 동안 전진 · 후진(누르는 동안 200 ms 마다 다시 옴, 끊기면 선다)"),
@@ -221,13 +225,14 @@ SEQUENCES = [
     ("A", "1", "RCS 안", "-", "로봇이 홈이고 태스크가 안 도는지 본다 — 아니면 로봇을 홈으로 보내고 기다린다", "로봇 홈"),
     ("A", "2", "RCS → AGV", "set_mv_lift", "set_height = 0, set_speed (리프트가 올라가 있을 때만)",
      "robot_status.lift_h ≈ 0 (±2 mm)"),
-    ("A", "3", "RCS → AGV", "manual_command", "cmd_outrg_set = 1 해제 (고정돼 있을 때만)",
-     "robot_status.hold = RELEASE"),
+    ("A", "3", "RCS → AGV", "robot_control", "job_finish = 1 — 앞 작업 끝: 홀딩 해제 · 아웃트리거 올림 (늘 보낸다)",
+     "success · robot_status.hold = RELEASE (제한 30 초)"),
     ("A", "4", "RCS → AGV", "set_job", "(measure_lap 이 없을 때) set_dist = π × 모재 지름 × 주행 배율, set_speed, standoff, radius",
      "success = true"),
     ("A", "5", "RCS → AGV", "robot_control", "state = RUNNING", "state RUNNING · mv_dist 증가"),
     ("A", "6", "AGV → RCS", "robot_status", "한 바퀴 돌고 선다",
-     "STOP/HOLD 이고 |mv_dist − set_dist| ≤ 2 mm → 끝. 제한 = 차량 설정 「캘리브레이션 최대 시간」"),
+     "STOP/HOLD 이고 |mv_dist − set_dist| ≤ 2 mm → 끝. 제한 = 차량 설정 「캘리브레이션 최대 시간」. "
+     "AGV 는 홀딩을 잡고 job_finish 를 기다린다(다음 주행 전 B-3 에서 온다)"),
     ("A", "4~6 (measure_lap 이 있으면 이쪽)", "RCS → AGV · AGV → RCS", "measure_lap · robot_status",
      "measure_lap(job_id, mode = LAP, speed, standoff, expected_dist) → lap_state RUNNING",
      "lap_state DONE · lap_origin_ok true → lap_path_m 로 끝 (FAILED · 원점 못 찾음 · 최대 시간 넘김 = 실패)"),
@@ -238,7 +243,7 @@ SEQUENCES = [
      "-"),
     ("section", "A-2. 캘리브레이션(곡판, 2026-11-18) — 한 바퀴 돌지 않고 원점 QR 마커에 정렬만 한다. "
              "QR 은 판 가운데에 붙이고, 차량은 그 앞에 놓여 있다. 스캔 때도 차량은 움직이지 않는다"),
-    ("A-2", "1~3", "RCS 안 · RCS → AGV", "set_mv_lift · manual_command", "A 의 1~3 과 같다 — 로봇 홈 확인, 리프트 0, 아웃트리거 해제",
+    ("A-2", "1~3", "RCS 안 · RCS → AGV", "set_mv_lift · robot_control", "A 의 1~3 과 같다 — 로봇 홈 확인, 리프트 0, job_finish",
      "lift_h ≈ 0 · hold = RELEASE"),
     ("A-2", "4", "RCS → AGV", "measure_lap",
      "measure_lap(job_id, mode = ALIGN, speed, standoff, expected_dist = 0) — QR 에 맞춰 거리 · 방향을 정렬한다",
@@ -253,12 +258,14 @@ SEQUENCES = [
     ("section", "B. 스캔 중 구간 이동 — ERUT 구역 검사(start) · RCS 「검사 시작」의 구간 사이"),
     ("B", "1", "RCS 안", "-", "로봇이 홈이고 태스크가 안 도는지 본다", "로봇 홈"),
     ("B", "2", "RCS → AGV", "set_mv_lift", "set_height = 0, set_speed (올라가 있을 때만)", "lift_h ≈ 0"),
-    ("B", "3", "RCS → AGV", "manual_command", "cmd_outrg_set = 1 해제 (고정돼 있을 때만)", "hold = RELEASE"),
+    ("B", "3", "RCS → AGV", "robot_control", "job_finish = 1 — 앞 자리 작업 끝: 홀딩 해제 · 아웃트리거 올림 (2026-11-20)",
+     "success · hold = RELEASE (제한 30 초)"),
     ("B", "4", "RCS → AGV", "set_job", "set_dist = 구간 사이 표면 거리 × 주행 배율, set_speed, standoff, radius",
-     "success. 곡판은 이 순서 2~6(리프트 내림 · 아웃트리거 해제 · 주행)을 하지 않는다 — 차량은 QR(판 가운데)에 "
+     "success. 곡판은 이 순서 2~6(리프트 내림 · job_finish · 주행)을 하지 않는다 — 차량은 QR(판 가운데)에 "
      "정렬한 자리 그대로이고 7 부터(고정 · 리프트 · 로봇) 한다"),
     ("B", "5", "RCS → AGV", "robot_control", "state = RUNNING", "state RUNNING"),
-    ("B", "6", "AGV → RCS", "robot_status", "구간 가운데에 선다", "STOP/HOLD · |mv_dist − set_dist| ≤ 2 mm"),
+    ("B", "6", "AGV → RCS", "robot_status", "구간 가운데에 선다 — 홀딩(브레이크)을 잡고 job_finish 를 기다린다",
+     "STOP/HOLD · |mv_dist − set_dist| ≤ 2 mm"),
     ("B", "7", "RCS → AGV", "manual_command", "cmd_outrg_set = 2 고정", "hold = SET"),
     ("B", "8", "RCS → AGV", "set_mv_lift",
      "set_height = 구역 높이, set_speed (팔로 닿으면 리프트는 그대로)",
@@ -266,7 +273,8 @@ SEQUENCES = [
     ("B", "9", "AGV → RCS", "robot_status", "로봇 스캔 동안 그대로 서 있는다",
      "RCS 가 계속 본다 — hold SET · error_code 0 · state STOP/HOLD · estop false · level_state ≠ 0 "
      "이 아니면 로봇이 멈춰 기다린다"),
-    ("B", "10", "RCS 안", "-", "스캔이 끝나면 로봇이 홈으로 → 다음 구간은 2 부터", "-"),
+    ("B", "10", "RCS 안", "-", "스캔이 끝나면 로봇이 홈으로 → 다음 구간은 2 부터(리프트 0 → job_finish → 주행). "
+     "같은 세로 줄이면 차량은 그대로 — job_finish 없이 8 부터", "-"),
     ("B", "일시정지", "RCS → AGV", "robot_control · set_mv_lift · manual_command",
      "움직이던 주행 · 리프트 · 아웃트리거를 세운다(robot_control state = STOP). 재개하면 같은 목표로 다시 "
      "(set_job 남은 거리 + RUNNING / set_mv_lift · manual_command 같은 값). 로봇 스캔 중이면 로봇만 멈추고 차량에는 보내지 않는다",

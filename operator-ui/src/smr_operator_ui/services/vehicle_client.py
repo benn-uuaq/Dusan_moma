@@ -62,6 +62,10 @@ LIFT_SERVICE = "set_mv_lift"
 #: PLC 통신 끊김 — 차량 노드가 error_code 로 낸다(RCS_AGV 인터페이스 오류 표). PLC 연결 표시가 이것을 본다.
 PLC_COMM_LOST = 701
 
+#: 작업 끝(RobotControl job_finish) 결과의 command_result 이름 — 같은 robot_control 서비스지만
+#: 출발 · 정지 · 리셋 결과와 섞이지 않게 따로 낸다(2026-11-20).
+FINISH_RESULT = "job_finish"
+
 try:
     from std_msgs.msg import Bool, Empty
 except ImportError:  # pragma: no cover
@@ -224,16 +228,18 @@ class VehicleClient(QObject):
             self._online = online
             self.online_changed.emit(online)
 
-    def _call(self, name: str, request) -> bool:
+    def _call(self, name: str, request, result_name: str = "") -> bool:
+        """서비스 `name` 을 부른다. 결과는 command_result(result_name 또는 name, …)로 낸다."""
+        label = result_name or name
         client = self._clients.get(name)
         if client is None:
-            self.command_result.emit(name, False, "차량 인터페이스를 쓸 수 없습니다(ROS·vehicle_interfaces 확인)")
+            self.command_result.emit(label, False, "차량 인터페이스를 쓸 수 없습니다(ROS·vehicle_interfaces 확인)")
             return False
         if not client.service_is_ready():
-            self.command_result.emit(name, False, f"차량 서비스가 없습니다: {self.topic(name)}")
+            self.command_result.emit(label, False, f"차량 서비스가 없습니다: {self.topic(name)}")
             return False
         future = client.call_async(request)
-        future.add_done_callback(lambda f, n=name: self._on_done(n, f))
+        future.add_done_callback(lambda f, n=label: self._on_done(n, f))
         return True
 
     def _on_done(self, name: str, future) -> None:
@@ -302,6 +308,25 @@ class VehicleClient(QObject):
         req.reset = 1 if reset else 0
         req.job_cancel = 1 if job_cancel else 0
         return self._call("robot_control", req)
+
+    @staticmethod
+    def can_finish() -> bool:
+        """이 빌드의 RobotControl 에 job_finish 가 있는가(2026-11-20 추가 — 없으면 예전처럼 아웃트리거만 푼다)."""
+        return VEHICLE_AVAILABLE and hasattr(RobotControl.Request(), "job_finish")
+
+    def finish_job(self) -> bool:
+        """그 자리 작업을 끝낸다 — RobotControl(job_finish = 1). 결과는 command_result("job_finish", …).
+
+        차량은 받으면 홀딩을 풀고 아웃트리거를 올려 이동할 수 있는 상태가 된다(hold RELEASE).
+        RCS 는 다음 주행 전에, 리프트를 내린 뒤 보낸다(VehicleFinishAdapter).
+        """
+        if not self.can_finish():
+            self.command_result.emit(FINISH_RESULT, False,
+                                     "차량 인터페이스에 job_finish 가 없습니다(RobotControl.srv 확인)")
+            return False
+        req = RobotControl.Request()
+        req.job_finish = 1
+        return self._call("robot_control", req, result_name=FINISH_RESULT)
 
     def lift(self, job_id: str, height_m: float, speed_mps: float) -> bool:
         """자동 동작 중 리프트를 목표 높이로(SetMvLift, set_mv_lift). 높이 m(절대, 맨 아래 0) · 속도 m/s.
