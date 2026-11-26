@@ -24,8 +24,28 @@ def _code(folder: str, name: str) -> str:
 def test_gripper_position_is_used_as_a_flange_pose(folder):
     """티칭한 그리퍼 접촉 위치를 그대로 플랜지 pose 로 쓴다 — 어떤 홀더 오프셋도 빼지 않는다."""
     code = _code(folder, "dus6_init.script")
-    assert re.search(r"^gripper_touch_flange = gripper_target_pose\s*$", code, re.M)
+    assert re.search(r"^gripper_touch_flange = \[gripper_target_pose\[0\], gripper_target_pose\[1\], "
+                     r"gripper_target_pose\[2\],\s*gripper_target_pose\[3\], gripper_target_pose\[4\], "
+                     r"gripper_target_pose\[5\]\]", code, re.M)
     assert "teach_ofs" not in code
+
+
+@pytest.mark.parametrize("folder", FOLDERS)
+def test_arm_raise_does_not_pile_up_on_the_taught_gripper_position(folder):
+    """EliteScript 는 파이썬 규칙 — `a = b` 는 같은 리스트다. 예전 `gripper_touch_flange = gripper_target_pose`
+    뒤 [2] 를 고쳐 펜던트 변수가 구역마다 팔 올림(358)만큼 올라갔다(2026-11-24 현장: B 구역이 A1 그리퍼 접촉
+    위치가 아니라 앞 구역에서 올린 높이에서 시작). 스크립트 두 줄을 파이썬으로 돌려 원본이 그대로인지 본다."""
+    code = _code(folder, "dus6_init.script")
+    start = code.index("gripper_touch_flange = ")
+    copy = code[start:code.index("]]", start) + 2]
+    raise_line = re.search(r"^gripper_touch_flange\[2\] = .*$", code, re.M).group(0)
+    taught = [-0.9, -0.02, -0.34, 1.5, 0.0, -1.5]
+    env = {"gripper_target_pose": taught}
+    for scan_z_ofs in (0, 580, 0, 0):                  # A-01 · A-02(팔 580 mm) · A-03 · B-01
+        env["scan_z_ofs"] = scan_z_ofs
+        exec(copy + "\n" + raise_line, env)
+        assert env["gripper_touch_flange"][2] == pytest.approx(-0.34 + scan_z_ofs * 0.001)
+    assert taught == [-0.9, -0.02, -0.34, 1.5, 0.0, -1.5], "티칭한 그리퍼 접촉 위치는 그대로다"
 
 
 @pytest.mark.parametrize("folder", FOLDERS)

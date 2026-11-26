@@ -130,3 +130,17 @@ def test_launched_node_dies_with_the_ui(tmp_path) -> None:
     os.kill(child, 9)
     pytest.fail("UI 가 죽었는데 노드가 남았다")
 
+
+
+def test_node_is_launched_with_the_saved_robot_address(monkeypatch, tmp_path) -> None:
+    """주소 없이 띄우면 노드가 기본값(192.168.227.134)에만 붙으려 한다(2026-11-24) — 연결 설정 주소를 넘긴다."""
+    exe = tmp_path / "lib" / "elite_robot_controller" / "robot_control_node"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setenv("AMENT_PREFIX_PATH", str(tmp_path))
+    supervisor = RobotNodeSupervisor()
+    supervisor.robot_ip, supervisor.modbus_port = "192.168.11.30", 502
+
+    assert supervisor.node_command() == [str(exe), "--ros-args", "-p", "robot_ip:=192.168.11.30",
+                                         "-p", "modbus_port:=502"]

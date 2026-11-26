@@ -6,7 +6,7 @@ TPAC(Modbus TCP 502)뿐이라, 도구도 그 둘을 흉내 낸다. (사내 MC MQ
 
 | 도구 | 하는 일 |
 |---|---|
-| `erut_sim.py` | ERUT Robot Service(로봇 브릿지) 대역 — 규격 시나리오를 자동으로 밟는다 |
+| `erut_sim.py` | ERUT Robot Service(MQTT 브릿지) 대역 — 모재 · 격자 · 스캔 값을 넣고 버튼으로 명령, 자동 진행 (if-0.13) |
 | `alarm_sim.py` | RCS 를 찔러 `evt/error` 를 내게 하는 장애 조작판 |
 | `tpac_encoder_sim.py` | RCS TPAC 브리지에 붙어 동기 신호를 보는 모니터 |
 | `tpac_tcp_sim.py` | TPAC 쪽 Modbus TCP 서버 단독 모의기 |
@@ -51,7 +51,11 @@ python3 mqtt_test/alarm_sim.py
 
 ## ERUT 시뮬레이터 (`erut_sim.py`)
 
-협력사 ERUT 의 Robot Service(로봇 브릿지) 역할을 대신해 RCS와 통신을 시험한다. 규격은 이 폴더의 `MQTT_인터페이스/ERUT_검사로봇_MQTT_표준인터페이스_if-0.10.xlsx`(탭6·7 은 ERUT 내부라 3S 무관). 답의 결과는 맨 바깥 `status_code`, 거절 · 실패의 까닭은 `content.error{code, name, detail}` 로 로그에 보인다.
+협력사 ERUT 의 Robot Service(MQTT 브릿지) 역할을 대신해 RCS와 통신을 시험한다. 규격은 이 폴더의 `MQTT_인터페이스/ERUT_검사로봇_MQTT_표준인터페이스_if-0.13.xlsx`(탭6·7 은 ERUT 내부라 3S 무관). 답의 결과는 맨 바깥 `status_code`, 거절 · 실패의 까닭은 `content.error{code, name, detail}` 로 로그 · 「명령별 마지막 결과」에 보인다.
+
+- 값: 모재(원통 · 곡판 — `geometry`), 격자(시작 x · y, 구역 가로 · 세로, 열 · 행, 겹침 → 구역마다 `area`), 스캔(좌 · 우 끝 이동높이, 속도 %, 홀더 채널 수), Job ID.
+- 버튼: query · calibrate · prepare · start · mark · home · pause · resume(리스타트) · abort(스탑) · reset, 구역 앞 · 뒤, ▶ 자동 진행(지금 구역부터 끝까지).
+- 「현재 값 저장」 — 브로커 · 모재 · 격자 · 스캔 · 체크박스 · 고른 구역을 `~/.config/smr-erut-sim/settings.json`(본인만 읽기 0600, 저장소 밖 — `ERUT_SIM_SETTINGS` 로 바꾼다)에 남기고, 켤 때 저장값을 불러온다. 「저장값 불러오기」로 언제든 되돌린다. 브로커 계정 · 비밀번호도 이 파일에만 남는다(저장소에는 적지 않는다). 요청을 만드는 부분(`Plan` · `Requests`)은 RCS 시험(`operator-ui/tests/unit/test_erut_sim_requests.py`)이 RCS 코드로 직접 확인한다.
 
 ```bash
 python3 mqtt_test/erut_sim.py
@@ -165,7 +169,7 @@ python3 mqtt_test/run_sim_test.py --only rcs io # 고른 것만
 | 시나리오 | 확인하는 것 |
 |---|---|
 | `rcs` | RCS 단독 작업('검사 시작'과 같은 격자 순회)이 `1A → 1B → … → 2A …` 를 빠짐없이 도는지. ERUT 가 없으므로 셀마다 원점에서 RCS 가 접촉 2초 뒤 스스로 `scan_go` 를 쓰는지. 작업 영역 레지스터(256~259)가 셀 치수로 실리는지 |
-| `erut` | ERUT 표준 if-0.10 한 바퀴 — 자기소개(`evt/info`) → `calibrate`(차량이 모재를 한 바퀴 — `total_length_mm` ≈ π·지름, 로봇은 움직이지 않고 query `home` 이 home) → `prepare`(값 확인만 — 장비는 그대로, 바로 `evt/ready`) → `start`(차량 이동 → 아웃트리거 고정 → 리프트 → 로봇 3점 측정 → 시작점에서 `evt/contact` attached → 2초 뒤 스캔 · 정수 진행률 · `pos`/`location` 이 실린 `evt/complete`) → `mark`(점에서 로봇이 서서 `evt/mark_ready` ↔ `req/mark_next`) → `home`(`evt/complete action=home`) → 비상정지 → `reset`(`cleared=true`, idle 복귀) |
+| `erut` | ERUT 표준 if-0.10 한 바퀴 — 자기소개(`evt/info`) → `calibrate`(차량이 QR 에 정렬 → 아웃트리거 고정 — 한 바퀴는 작업자가 미리 돈다, `total_length_mm` = π·지름, 로봇은 움직이지 않고 query `home` 이 home) → `prepare`(값 확인만 — 장비는 그대로, 바로 `evt/ready`) → `start`(차량 이동 → 아웃트리거 고정 → 리프트 → 로봇 3점 측정 → 시작점에서 `evt/contact` attached → 2초 뒤 스캔 · 정수 진행률 · `pos`/`location` 이 실린 `evt/complete`) → `mark`(점에서 로봇이 서서 `evt/mark_ready` ↔ `req/mark_next`) → `home`(`evt/complete action=home`) → 비상정지 → `reset`(`cleared=true`, idle 복귀) |
 | `io` | I/O 화면의 로봇 디지털 출력이 레지스터 2 의 그 비트만 바꾸는지, 화면 표시가 로봇 값을 따라오는지 |
 | `tpac` | 스캔 구간 신호 DO[0..2] 가 전진·후진·동결 순서대로 나가는지, 스캔 중에 리셋이 서지 않는지 |
 

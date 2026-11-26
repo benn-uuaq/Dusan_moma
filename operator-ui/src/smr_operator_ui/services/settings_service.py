@@ -73,7 +73,12 @@ class SettingsService(QObject):
             self._repository = PostgreSQLSettingsRepository()
         else:
             self._repository = JsonFileSettingsRepository()
-        self._pool = QThreadPool.globalInstance()
+        # 저장 · 읽기를 한 줄로 세운다(스레드 1 개, 들어온 순서대로 — 2026-11-25). JSON 저장소는 「파일 읽기 →
+        # 범위 고치기 → 파일 다시 쓰기」라, 여러 스레드가 동시에 하면 늦게 쓴 쪽이 먼저 쓴 범위를 지웠다
+        # (운전 모드를 불러오면 시스템 · 연결 · 차량 · Cobot · 작업 영역 · 지금 운전 모드를 한꺼번에 저장한다).
+        # 같은 범위를 두 번 저장해도 나중 값이 남는다.
+        self._pool = QThreadPool(self)
+        self._pool.setMaxThreadCount(1)
         self._workers: set[_DatabaseWorker] = set()
         # 범위별로 마지막에 불러오거나 저장한 값. 운전 모드 슬롯이 "지금
         # 설정"을 한데 묶을 때 쓴다 — 저장소를 다시 읽지 않아도 된다.

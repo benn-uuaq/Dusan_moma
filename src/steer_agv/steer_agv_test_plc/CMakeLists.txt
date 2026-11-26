@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.10)
+project(steer_agv_test_plc)
+find_package(ament_cmake REQUIRED)
+install(PROGRAMS scripts/test_plc_ui.py DESTINATION lib/${PROJECT_NAME} RENAME test_plc_ui)
+ament_package()

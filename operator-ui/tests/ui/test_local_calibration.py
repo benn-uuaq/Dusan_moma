@@ -1,4 +1,4 @@
-"""주요 제어 「계측 시작」 — 캘리브레이션(차량 한 바퀴)만 RCS 에서 따로 한다 (2026-11-12)."""
+"""주요 제어 「계측 시작」 — 캘리브레이션(QR 정렬 + 아웃트리거 고정)만 RCS 에서 따로 한다 (2026-11-12, 2026-11-24)."""
 
 from smr_operator_ui.app import OperatorWindow
 
@@ -28,7 +28,7 @@ def test_measure_button_sits_under_the_start_button(qtbot) -> None:
     window.close()
 
 
-def test_measure_runs_only_the_calibration_lap(qtbot) -> None:
+def test_measure_runs_only_the_alignment_and_hold(qtbot) -> None:
     window, events, responses = _window(qtbot)
     targets: list[float] = []
     original = window.amr.move_to
@@ -45,14 +45,13 @@ def test_measure_runs_only_the_calibration_lap(qtbot) -> None:
     assert responses[-1]["status_code"] == 409
 
     qtbot.waitUntil(lambda: not window.erut_session.local_calibrating, timeout=15000)
-    assert targets, "차량이 한 바퀴 돌지 않았다"
+    assert targets == [], "한 바퀴는 작업자가 돈다 — 차량을 달리지 않는다"
+    assert window.outrigger.position == 1, "정렬 뒤 아웃트리거를 고정한다"
     assert "계측 완료" in window.main_screen.activity_label.text()
     # ERUT 가 시킨 일이 아니다 — 결과를 내지 않고 원점(calibrated)도 그대로.
     assert not any(name == "complete" and action == "calibrate" for name, action, _ in events)
     assert window.erut_session._calibrated is False
     assert window.erut_session.activity_state() == "idle"
-    # 캘리브레이션 최대 시간도 이때 계산해 넣는다.
-    assert window.screens["vehicle"].calibration_time_s() > 0
     window.close()
 
 
@@ -119,10 +118,12 @@ def test_rcs_pause_of_an_erut_calibration_shows_paused_to_erut(qtbot) -> None:
     assert pause.isEnabled()
     pause.click()
     assert window.erut_session.calibration_paused and not window.amr.moving
-    assert window.erut_session.activity_state() == "paused"
-    # ERUT 의 resume 로도 잇는다.
+    # 아웃트리거 고정은 마저 하고 선 뒤 paused (선 다음에야 ERUT 에 paused).
+    qtbot.waitUntil(lambda: window.erut_session.activity_state() == "paused", timeout=5000)
+    # ERUT 의 resume 로도 잇는다 — 고정까지 끝났으니 바로 결과를 낸다.
     window.erut_session.handle_request("resume", {"req_id": "res-1"})
     assert not window.erut_session.calibration_paused
     assert pause.text() == "일시정지"
+    qtbot.waitUntil(lambda: any(n == "complete" and a == "calibrate" for n, a, _ in events), timeout=3000)
     window.close()
 

@@ -42,6 +42,8 @@ class MainScreen(QWidget):
     settings_requested = pyqtSignal()
     # 로봇을 홈 자세로 보낸다. 언제든 누를 수 있다(작업 중이면 확인 후).
     home_requested = pyqtSignal()
+    # 로봇 팔을 받침대 위(거치 위치)로 보낸다 — 홈에서만(2026-11-26).
+    rest_requested = pyqtSignal()
     alarm_reset_requested = pyqtSignal()
     target_dimensions_changed = pyqtSignal(float, float)
     # 너비/높이/스캐너 높이/겹침. Modbus 256~259와 같은 mm 단위다.
@@ -127,6 +129,15 @@ class MainScreen(QWidget):
         rail_layout = QVBoxLayout(rail)
         rail_layout.setContentsMargins(24, 10, 24, 10)
         rail_layout.setSpacing(7)
+        # 지금 운전 모드(운전 모드 저장 슬롯) — 모재마다 받침대 높이 · 기준 위치가 달라 무엇으로 도는지 보인다
+        # (2026-11-25). 껐다 켜면 마지막 운전 모드를 다시 불러온다(앱).
+        mode_title = QLabel("운전 모드")
+        mode_title.setObjectName("NoticeTitle")
+        rail_layout.addWidget(mode_title)
+        self.mode_label = QLabel("없음 — 설정 / 로그 › 운전 모드 저장에서 불러오세요")
+        self.mode_label.setObjectName("CurrentMode")
+        self.mode_label.setWordWrap(True)
+        rail_layout.addWidget(self.mode_label)
         title = QLabel("주요 제어")
         title.setObjectName("SectionTitle")
         rail_layout.addWidget(title)
@@ -156,18 +167,24 @@ class MainScreen(QWidget):
         # "사이클 요약"은 상단 타일(현재 구간·현재 행·원주 진행률·현재 단계)과
         # 내용이 겹쳐 뺐다. 남은 자리는 아래 알림 상자가 받는다.
         rail_layout.addSpacing(12)
-        # 홈 이동은 자주 쓰므로 메인 화면에 둔다. 설정/로그와 한 줄에 놓아
-        # 오른쪽 줄 높이를 늘리지 않는다 — 알림 상자 자리를 뺏지 않게.
+        # 홈 이동 · 거치는 자주 쓰므로 메인 화면에 둔다. 설정/로그는 그 아래 줄(2026-11-26 — 검사 시작 ·
+        # 계측 시작을 조금 줄여 한 줄을 냈다).
         bottom = QHBoxLayout()
         self.home_button = QPushButton("로봇 홈")
         self.home_button.setObjectName("HomeButton")
-        self.home_button.setToolTip("벽에서 물러난 뒤 홈 높이로 올라가 홈 자세로 갑니다.")
+        self.home_button.setToolTip("벽에서 물러난 뒤 홈 높이로 올라가 홈 자세로 갑니다. "
+                                    "팔이 받침대 위면 받침대에서 들어 홈으로 되돌립니다.")
         self.home_button.clicked.connect(self.home_requested)
-        settings = QPushButton("설정 / 로그")
-        settings.clicked.connect(self.settings_requested)
+        self.rest_button = QPushButton("로봇 거치")
+        self.rest_button.setObjectName("HomeButton")
+        self.rest_button.setToolTip("홈에서 팔을 받침대 위(거치 위치)로 올립니다 — 차량 주행 전 자세.")
+        self.rest_button.clicked.connect(self.rest_requested)
         bottom.addWidget(self.home_button)
-        bottom.addWidget(settings)
+        bottom.addWidget(self.rest_button)
         rail_layout.addLayout(bottom)
+        self.settings_button = QPushButton("설정 / 로그")
+        self.settings_button.clicked.connect(self.settings_requested)
+        rail_layout.addWidget(self.settings_button)
         # 알림·장애 통보 자리. 예전에는 남는 공간에 얹혀 있어 다른 항목에
         # 밀리면 글자가 잘렸다("알람 띄우는 영역이 너무 좁음"). 자리를 미리
         # 잡아 두는 상자로 만들어 메시지가 없어도 높이가 유지되게 한다.
@@ -502,6 +519,10 @@ class MainScreen(QWidget):
     def _apply_pause_override(self, paused: bool) -> None:
         self.pause_button.setEnabled(True)
         self.pause_button.setText("재개" if paused else "일시정지")
+
+    def set_current_mode(self, text: str) -> None:
+        """지금 운전 모드(슬롯 번호 · 이름). 빈 글자면 「없음」."""
+        self.mode_label.setText(text or "없음 — 설정 / 로그 › 운전 모드 저장에서 불러오세요")
 
     def show_activity(self, message: str) -> None:
         """서비스 또는 시뮬레이터의 최근 활동 메시지를 표시한다."""

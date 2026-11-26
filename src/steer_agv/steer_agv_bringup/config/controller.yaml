@@ -1,0 +1,12 @@
+QUAD_STEER_AGV_CONTROLLER:
+  ros__parameters:
+    job_feedback_topic: "/vehicle/last_job_request"
+    plc_host: "192.168.11.10"
+    plc_port: 8501
+    plc_fast_period: 0.01
+    plc_slow_period: 0.1
+    plc_life_timeout: 3.0
+    manual_timeout: 0.4
+    turn_sign: 1  # 원 중심은 차체 왼쪽(+Y)의 레이저 가이드 센서 방향
+    jerk_ratio: 1.0
+    body_offset: 0.6

@@ -111,6 +111,9 @@ class ManualScreen(BaseScreen):
         self._enabled = False
         self._interlock = False
         self._interlock_reason = ""
+        # 리프트만 따로 잠근다(2026-11-26) — 팔이 받침대 위면 주행은 되지만 리프트는 안 된다.
+        self._lift_interlock = False
+        self._lift_interlock_reason = ""
         self.confirm = lambda text: QMessageBox.question(
             self, "차량 원점/초기화", text,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -132,10 +135,7 @@ class ManualScreen(BaseScreen):
             b.released.connect(self._release)
             self.jog_buttons[key] = b
             pad.addWidget(b, r, c)
-        self.stop_button = QPushButton("정지"); self.stop_button.setObjectName("DangerButton")
-        self.stop_button.setMinimumSize(88, 64)
-        self.stop_button.clicked.connect(self._stop)
-        pad.addWidget(self.stop_button, 1, 1)
+        # 조그는 누르는 동안만 움직여 「정지」가 따로 없다(2026-11-24 — 정지는 리프트 카드로 옮겼다).
         # 제목은 카드 위에 붙이고(리프트 카드와 같게) 십자 버튼은 남는 자리 가운데에
         # 둔다. 예전에는 남는 높이를 제목이 받아 제목이 카드 가운데에 떠 있었고,
         # 버튼 묶음은 왼쪽 아래로 몰려 있었다(2026-11-03).
@@ -155,8 +155,14 @@ class ManualScreen(BaseScreen):
         self.lift_button.clicked.connect(self._move_lift)
         row.addWidget(self.lift_target, 1); row.addWidget(self.lift_button)
         l.addLayout(row)
-        note = QLabel("아웃트리거가 고정돼 있을 때만 움직입니다. 수동 속도는 PLC 가 정합니다"
-                      "(차량 설정 「리프트 속도」는 자동 작업용). 멈추려면 「정지」.")
+        # 정지(2026-11-24) — RobotControl STOP. AGV 노드가 리프트를 그 자리 높이에 붙잡는다(halt_lift).
+        # (올리기 · 내리기 버튼은 같은 날 뺐다 — 높이를 넣고 「이 높이로 이동」만 쓴다.)
+        self.stop_button = QPushButton("정지"); self.stop_button.setObjectName("DangerButton")
+        self.stop_button.setMinimumHeight(56)
+        self.stop_button.clicked.connect(self._stop)
+        l.addWidget(self.stop_button)
+        note = QLabel("아웃트리거가 고정돼 있을 때만 움직입니다. 「정지」로 그 자리에 섭니다. 수동 속도는 PLC 가 "
+                      "정합니다(차량 설정 「리프트 속도」는 자동 작업용).")
         note.setObjectName("Muted"); note.setWordWrap(True)
         l.addWidget(note)
         l.addStretch()
@@ -172,6 +178,13 @@ class ManualScreen(BaseScreen):
         self.outrigger_release_button.clicked.connect(lambda: self._send({"cmd_outrg_set": 1}))
         sets.addWidget(self.outrigger_set_button); sets.addWidget(self.outrigger_release_button)
         o.addLayout(sets)
+        # 홀드 확인 램프(2026-11-24) — 차량 상태의 hold(SET · RELEASE) · state(HOLD).
+        hold_row = QHBoxLayout(); hold_row.setSpacing(8)
+        self.hold_lamp = QLabel(); self.hold_lamp.setFixedSize(22, 22)
+        self.hold_text = QLabel("")
+        hold_row.addWidget(QLabel("홀드 확인")); hold_row.addWidget(self.hold_lamp); hold_row.addWidget(self.hold_text, 1)
+        o.addLayout(hold_row)
+        self.set_hold_lamp(None)
         out_note = QLabel("균형을 맞춰야 해서 세 개를 함께 내리고 올립니다(개별 조작 없음).")
         out_note.setObjectName("Muted"); out_note.setWordWrap(True)
         o.addWidget(out_note)
@@ -224,7 +237,17 @@ class ManualScreen(BaseScreen):
         self.notice = QLabel("")
         self.notice.setObjectName("StatusWarn"); self.notice.setWordWrap(True)
         self.body.addWidget(self.notice)
+        # 마지막 명령 결과 — 차량이 거절하면 까닭을 한글로(2026-11-24, 예: PLC 가 자동 모드).
+        self.result_label = QLabel("")
+        self.result_label.setObjectName("StatusDanger"); self.result_label.setWordWrap(True)
+        self.result_label.setVisible(False)
+        self.body.addWidget(self.result_label)
         self.set_available(False, "차량 제어가 '더미'입니다 — 연결 설정에서 'ROS 차량 노드'로 바꾸면 쓸 수 있습니다.")
+
+    def show_result(self, text: str) -> None:
+        """차량이 거절한 까닭(빈 글자면 숨긴다)."""
+        self.result_label.setText(text)
+        self.result_label.setVisible(bool(text))
 
     # ---- 상태 --------------------------------------------------------------
     def set_available(self, on: bool, reason: str = "") -> None:
@@ -232,31 +255,42 @@ class ManualScreen(BaseScreen):
         self._enabled = bool(on)
         self._refresh_enabled(reason)
 
-    def set_interlock(self, on: bool, reason: str = "") -> None:
+    def set_interlock(self, on: bool, reason: str = "", lift_reason: str | None = None) -> None:
         """로봇이 동작 중이거나 홈을 벗어나 있으면 주행·리프트를 잠근다.
 
         `reason` 은 왜 잠겼는지다(예: "로봇이 홈 위치가 아님"). 안 주면
-        기본 문구를 쓴다.
+        기본 문구를 쓴다. `lift_reason` 이 있으면 리프트만 따로 잠근다 — 팔이 받침대 위면
+        주행 · 아웃트리거 해제는 되지만 리프트는 안 된다(2026-11-26). 안 주면 주행과 같다.
         """
         self._interlock = bool(on)
         self._interlock_reason = reason
+        if lift_reason is None:
+            lift_reason = reason if on else ""
+        self._lift_interlock = bool(on) or bool(lift_reason)
+        self._lift_interlock_reason = lift_reason or reason
         self._refresh_enabled()
 
     def _refresh_enabled(self, reason: str = "") -> None:
         free = self._enabled and not self._interlock
-        for b in (*self.jog_buttons.values(), self.lift_button, self.outrigger_release_button,
-                  self.pose_button):
+        for b in (*self.jog_buttons.values(), self.outrigger_release_button, self.pose_button):
             b.setEnabled(free)
+        self.lift_button.setEnabled(free and not self._lift_interlock)
         for b in (self.outrigger_set_button, self.reset_button, self.init_button, self.stop_button):
             b.setEnabled(self._enabled)
         if not free and self._held is not None:
             self._release()
         if not self._enabled:
+            self.set_hold_lamp(None)
             self.notice.setText(reason or "차량 상태가 들어오지 않습니다 — 차량 제어 노드를 확인하세요.")
         elif self._interlock:
             why = getattr(self, "_interlock_reason", "") or "로봇이 동작 중입니다"
             self.notice.setText(
                 f"안전 인터락 — {why}. 주행·아웃트리거 해제·리프트 이동을 잠갔습니다.")
+        elif self._lift_interlock:
+            why = self._lift_interlock_reason or "로봇이 홈 위치에 있지 않습니다"
+            self.notice.setText(
+                f"안전 인터락 — {why}. 리프트 이동을 잠갔습니다(주행은 됩니다) — "
+                "「로봇 홈」으로 팔을 받침대에서 되돌린 뒤 움직이세요.")
         else:
             self.notice.setText("")
         # 할 말이 없으면 줄을 숨겨 화면 높이를 돌려준다.
@@ -277,6 +311,7 @@ class ManualScreen(BaseScreen):
         b["sensors"].set_value(f"{status.get('sen1_dist', 0.0):.3f} / {status.get('sen2_dist', 0.0):.3f} m")
         b["position"].set_value(f"{status.get('x', 0.0):.3f} m / {status.get('yaw', 0.0):.2f} rad")
         self.lift_value.setText(f"{status.get('lift_h', 0.0) * 1000:,.0f} mm")
+        self.set_hold_lamp(status)
 
     # ---- 명령 --------------------------------------------------------------
     def _send(self, fields: dict) -> None:
@@ -305,8 +340,26 @@ class ManualScreen(BaseScreen):
         self.stop_requested.emit()
 
     def _move_lift(self) -> None:
-        if self._enabled and not self._interlock:
+        if self._enabled and not self._interlock and not self._lift_interlock:
             self.lift_requested.emit(self.lift_target.value() / 1000.0)
+
+    #: 홀드 램프 색 — 켜짐(고정) · 꺼짐(해제) · 모름.
+    HOLD_LAMP_COLORS = {"on": "#198754", "off": "#9AA5B1", "unknown": "#D5DBE1"}
+
+    def set_hold_lamp(self, status: dict | None) -> None:
+        """아웃트리거 홀드 확인 램프 — hold SET 이면 켠다(state HOLD 면 「HOLD」까지 적는다)."""
+        hold = (status or {}).get("hold")
+        state = (status or {}).get("state")
+        if hold == "SET":
+            kind, text = "on", "고정됨" + (" — HOLD" if state == "HOLD" else "")
+        elif hold == "RELEASE":
+            kind, text = "off", "해제됨"
+        else:
+            kind, text = "unknown", "모름 — 차량 상태가 안 옵니다"
+        color = self.HOLD_LAMP_COLORS[kind]
+        self.hold_lamp.setStyleSheet(f"background: {color}; border-radius: 11px; border: 1px solid #6B7785;")
+        self.hold_lamp.setProperty("lamp", kind)
+        self.hold_text.setText(text)
 
     def _init(self) -> None:
         if self.confirm("차량 원점/초기화를 보냅니다(수동 모드에서만 동작)."):
@@ -1119,7 +1172,7 @@ class SystemSettingsScreen(FormScreen):
         super().__init__("system","시스템 설정","운영 환경과 기록 정책을 설정합니다. 데이터 저장 위치·로그 보존 기간은 로그 파일·오류 로그 화면이 따릅니다.",[("장비 이름",line("SMR Operator Console")),("언어",lang),("상태 갱신 주기",spin(200,50,5000)),("로그 보존 기간",spin(365,1,3650)),("데이터 저장 위치",FolderPathEdit("D:/SMR/Data", title="데이터 저장 위치 선택")),("안전 설정",QLabel("PLC 관리 · 읽기 전용"))])
 
 class VehicleSettingsScreen(FormScreen):
-    """차량(AGV · 리프트) 설정 — 원주 거리 환산 · 리프트 한계 · 로봇 베이스 높이 · 상승 한계 · 주행 속도.
+    """차량(AGV · 리프트) 설정 — 원주 거리 환산 · 리프트 한계 · 그리퍼 접촉 위치 높이 · 상승 한계 · 주행 속도.
 
     차량은 모재(벽)에서 「모재 거리 유지」만큼 떨어져, 차량 폭의 가운데를 기준으로
     모재를 돈다. 모재 표면에서 s 만큼 옮기려면 차량은 s × (R + 거리 + 폭/2) ÷ R 만큼
@@ -1129,33 +1182,38 @@ class VehicleSettingsScreen(FormScreen):
     WIDTH_FIELD = "차량 폭"
     STANDOFF_FIELD = "모재 거리 유지"
     LIFT_MAX_FIELD = "리프트 한계 높이"
-    BASE_FIELD = "로봇 베이스 높이"
+    #: 그리퍼 접촉 위치(작업 높이 0 = 모재 아래 끝, 리프트 최하단에서 티칭)의 높이 — 로봇 베이스 기준 [mm],
+    #: 베이스보다 아래면 음수(2026-11-23). 예전 「로봇 베이스 높이」(시작 위치 ↔ 베이스, 손으로 넣던 값)를 바꿨다.
+    #: RCS 에 그리퍼 접촉 위치를 저장했으면 그 Z 를 그대로 쓴다(set_saved_contact_height).
+    CONTACT_FIELD = "그리퍼 접촉 높이"
     REACH_FIELD = "로봇 상승 한계"
     SPEED_FIELD = "차량 주행 속도"
     #: 리프트 속도 [mm/s] — 자동 작업의 SetMvLift.set_speed 로 싣는다. 수동 화면 리프트 속도는 PLC 가
     #: 정한다(AGV 판 2026-11-20).
     LIFT_SPEED_FIELD = "리프트 속도"
-    CALIB_FIELD = "캘리브레이션 최대 시간"
-    #: 곡판 캘리브레이션(한 바퀴 대신 원점 QR 정렬만) 최대 시간 [s] (2026-11-18). 곡판 calibrate 를
-    #: 받으면 이 값이 「캘리브레이션 최대 시간」에 들어간다.
-    ALIGN_FIELD = "곡판 QR 정렬 최대 시간"
-    #: 캘리브레이션 한 바퀴 계산 시간에 곱하는 여유 — 정방향을 맞추는 회전 · 가감속(2026-11-12).
-    CALIB_MARGIN = 1.5
-    #: 처음 값. 폭 · 거리 0 이면 배율 1(예전과 같다), 베이스 높이 0 이면 팔은 시작 위치에서
-    #: 상승 한계만큼만 닿는 것으로 본다(작게 잡는 쪽) — 실측값을 넣는다.
-    DEFAULTS = {WIDTH_FIELD: 0, STANDOFF_FIELD: 0, LIFT_MAX_FIELD: 3500,
-                BASE_FIELD: 0, REACH_FIELD: 1600, SPEED_FIELD: 100, CALIB_FIELD: 0,
+    #: AGV 노드가 받는 상한 — 주행 SetJob.set_speed ≤ 0.98 m/s, 자동 리프트 0 < set_speed ≤ 0.2 m/s(2026-11-23).
+    MAX_SPEED_MM_S = 980
+    MAX_LIFT_SPEED_MM_S = 200
+    #: 정렬 최대 시간 [s] (2026-11-24) — 캘리브레이션 = 차량 QR 정렬(measure_lap ALIGN) + 아웃트리거 고정의 한도.
+    #: 한 바퀴는 작업자가 수동으로 돌므로 예전 「캘리브레이션 최대 시간」(한 바퀴 계산)과 「곡판 QR 정렬 최대
+    #: 시간」을 이것 하나로 합쳤다. ERUT 에 알리는 calibrate 시간(evt/info complete_within_ms.calibrate)도 이 값.
+    ALIGN_FIELD = "정렬 최대 시간"
+    #: 예전 칸 이름 — 저장된 설정에 이것만 있으면 그 값을 옮겨 쓴다.
+    OLD_ALIGN_FIELD = "곡판 QR 정렬 최대 시간"
+    #: 처음 값. 폭 · 거리 0 이면 배율 1(예전과 같다), 그리퍼 접촉 높이 0 이면 팔은 접촉 위치에서
+    #: 상승 한계만큼만 닿는 것으로 본다 — 그리퍼 접촉 위치를 저장하거나 실측값을 넣는다.
+    DEFAULTS = {WIDTH_FIELD: 0, STANDOFF_FIELD: 0, LIFT_MAX_FIELD: 5000,
+                CONTACT_FIELD: 0, REACH_FIELD: 1600, SPEED_FIELD: 100,
                 ALIGN_FIELD: 120, LIFT_SPEED_FIELD: 50}
     DISPLAY_LABELS = {
         WIDTH_FIELD: "차량 폭 (모재 쪽 면 ↔ 바깥 면)",
         STANDOFF_FIELD: "모재 거리 유지 (벽 ↔ 차량 센서 면)",
         LIFT_MAX_FIELD: "리프트 한계 높이",
         LIFT_SPEED_FIELD: "리프트 속도",
-        BASE_FIELD: "로봇 베이스 높이 (차량, 리프트 최하단)",
-        REACH_FIELD: "로봇팔 상승 한계 (베이스에서 위로)",
+        CONTACT_FIELD: "그리퍼 접촉 위치 높이 (로봇 베이스 기준, 아래면 −)",
+        REACH_FIELD: "로봇팔 상승 한계 (로봇 베이스 기준 플랜지 높이)",
         SPEED_FIELD: "차량 주행 속도",
-        CALIB_FIELD: "캘리브레이션 최대 시간",
-        ALIGN_FIELD: "곡판 QR 정렬 최대 시간",
+        ALIGN_FIELD: "정렬 최대 시간 (QR 정렬 + 아웃트리거 고정)",
     }
 
     def __init__(self):
@@ -1172,23 +1230,30 @@ class VehicleSettingsScreen(FormScreen):
             label.setWordWrap(True)
         width = mm(self.DEFAULTS[self.WIDTH_FIELD], 5000)
         standoff = mm(self.DEFAULTS[self.STANDOFF_FIELD], 2000)
-        speed = mm(self.DEFAULTS[self.SPEED_FIELD], 1000, " mm/s")
+        # 상한은 AGV 노드가 받는 값(SetJob.set_speed ≤ 0.98 m/s — 차량 MAX_SPEED 980 mm/s, 2026-11-23).
+        speed = mm(self.DEFAULTS[self.SPEED_FIELD], self.MAX_SPEED_MM_S, " mm/s")
         speed.setMinimum(10)
-        calib = mm(self.DEFAULTS[self.CALIB_FIELD], 7200, " s")
         align = mm(self.DEFAULTS[self.ALIGN_FIELD], 3600, " s")
         align.setMinimum(10)
+        align.setToolTip("calibrate 를 받으면 차량이 QR 마커에 맞춰 정렬하고 아웃트리거를 고정하기까지의 한도 — "
+                         "ERUT 에 알리는 calibrate 시간도 이 값입니다(한 바퀴는 작업자가 미리 돕니다).")
         lift_max = mm(self.DEFAULTS[self.LIFT_MAX_FIELD], 10000)
-        lift_speed = mm(self.DEFAULTS[self.LIFT_SPEED_FIELD], 500, " mm/s")
+        lift_speed = mm(self.DEFAULTS[self.LIFT_SPEED_FIELD], self.MAX_LIFT_SPEED_MM_S, " mm/s")
         lift_speed.setMinimum(1)
-        lift_speed.setToolTip("자동 작업에서 리프트를 움직이는 속도(SetMvLift). 수동 제어 화면은 PLC 속도를 씁니다.")
-        base = mm(self.DEFAULTS[self.BASE_FIELD], 3000)
+        lift_speed.setToolTip("자동 작업에서 리프트를 움직이는 속도(SetMvLift · lift_control). 수동 제어 화면은 "
+                              f"PLC 속도를 씁니다. 상한 {self.MAX_LIFT_SPEED_MM_S} mm/s — AGV 노드 max_lift_speed.")
+        contact = mm(self.DEFAULTS[self.CONTACT_FIELD], 3000)
+        contact.setMinimum(-3000)
         reach = mm(self.DEFAULTS[self.REACH_FIELD], 3000)
+        self._saved_contact_mm: float | None = None
         super().__init__(
             "vehicle", "차량 설정",
             "차량은 모재(벽)에서 「모재 거리 유지」만큼 떨어져 차량 폭의 가운데를 기준으로 모재를 돕니다 — "
             "모재 표면에서 200 mm 옮기려면 차량은 그보다 더 달려야 해서, 두 값으로 이동 거리를 환산합니다. "
-            "높이 0 은 모재 아래 끝 = 리프트 최하단의 로봇 시작 위치입니다. 구역이 팔로 닿는 높이(베이스 높이 + "
-            "상승 한계) 안이면 리프트를 올리지 않고 로봇이 팔을 들어 스캔하고, 리프트는 한계 높이까지만 올립니다.",
+            "높이 0 은 모재 아래 끝 = 리프트 최하단에서 그리퍼를 붙인 그리퍼 접촉 위치입니다. 리프트를 그대로 두고 팔로 "
+            "닿는 높이 = 로봇팔 상승 한계 − 그리퍼 접촉 위치 높이(로봇 베이스 기준) — 구역 위 끝이 그 안이면 리프트를 "
+            "올리지 않고 로봇이 팔을 들어 스캔하고, 리프트는 한계 높이까지만 올립니다. 그리퍼 접촉 위치를 조그 화면에서 "
+            "저장했으면 그 Z 를 씁니다.",
             [
                 ("주행 · 원주 이동 환산", None),
                 (self.WIDTH_FIELD, width),
@@ -1196,19 +1261,19 @@ class VehicleSettingsScreen(FormScreen):
                 ("벽 ↔ 차량 중심", self.center_label),
                 ("주행 배율", self.scale_label),
                 (self.SPEED_FIELD, speed),
-                (self.CALIB_FIELD, calib),
                 (self.ALIGN_FIELD, align),
                 ("리프트 · 로봇 높이", None),
                 (self.LIFT_MAX_FIELD, lift_max),
                 (self.LIFT_SPEED_FIELD, lift_speed),
-                (self.BASE_FIELD, base),
+                (self.CONTACT_FIELD, contact),
                 (self.REACH_FIELD, reach),
                 ("작업 가능 높이", self.reach_label),
             ],
             columns=2,
         )
-        for box in (width, standoff, lift_max, base, reach, speed):
+        for box in (width, standoff, lift_max, contact, reach, speed):
             box.valueChanged.connect(lambda _v: self._update_derived())
+        self.set_saved_contact_height(None)
         self._update_derived()
 
     def _number(self, field: str) -> float:
@@ -1224,22 +1289,51 @@ class VehicleSettingsScreen(FormScreen):
         return self._number(self.LIFT_MAX_FIELD)
 
     def reach_mm(self) -> float:
-        """로봇 상승 한계 — 로봇 베이스 위로 닿는 높이 [mm]."""
+        """로봇팔 상승 한계 — 로봇 베이스 기준으로 플랜지가 오를 수 있는 높이 [mm]."""
         return self._number(self.REACH_FIELD)
 
-    def base_height_mm(self) -> float:
-        """리프트 최하단에서 시작 위치(높이 0 = 모재 아래 끝) ↔ 로봇 베이스 [mm]."""
-        return self._number(self.BASE_FIELD)
+    def contact_height_mm(self) -> float:
+        """그리퍼 접촉 위치(높이 0)의 높이 — 로봇 베이스 기준 [mm], 아래면 음수.
+
+        RCS 에 저장한 그리퍼 접촉 위치가 있으면 그 Z, 없으면 이 화면에 넣은 값(펜던트 티칭값의 Z).
+        """
+        if self._saved_contact_mm is not None:
+            return self._saved_contact_mm
+        return self._number(self.CONTACT_FIELD)
+
+    def contact_from_saved_pose(self) -> bool:
+        return self._saved_contact_mm is not None
+
+    def set_saved_contact_height(self, z_mm: float | None) -> None:
+        """저장된 그리퍼 접촉 위치의 Z [mm](로봇 베이스 기준)를 쓴다. None 이면 이 화면 값을 쓴다."""
+        self._saved_contact_mm = None if z_mm is None else float(z_mm)
+        box = self.field(self.CONTACT_FIELD)
+        if box is None:
+            return
+        if self._saved_contact_mm is not None:
+            box.blockSignals(True)
+            box.setValue(int(round(self._saved_contact_mm)))
+            box.blockSignals(False)
+            box.setEnabled(False)
+            box.setToolTip("조그 화면에 저장한 그리퍼 접촉 위치의 Z 를 씁니다 — 다시 저장하면 바뀝니다.")
+        else:
+            box.setEnabled(True)
+            box.setToolTip("그리퍼 접촉 위치를 RCS 에 저장하지 않았을 때 씁니다 — 펜던트에서 티칭한 그리퍼 접촉 "
+                           "위치의 Z(로봇 베이스 기준, 아래면 −)를 넣으세요.")
+        self._update_derived()
 
     def arm_reach_mm(self) -> float:
-        """리프트를 그대로 두고 시작 위치에서 팔로 닿는 높이 = 베이스 높이 + 상승 한계."""
-        return self.base_height_mm() + self.reach_mm()
+        """리프트를 그대로 두고 그리퍼 접촉 위치(높이 0)에서 팔로 닿는 높이 = 상승 한계 − 접촉 위치 높이.
+
+        예: 상승 한계 960, 그리퍼 접촉 위치가 베이스보다 300 아래(−300)면 1260 — 구역 위 끝이 그 안이면
+        리프트를 올리지 않고 팔을 든다.
+        """
+        return self.reach_mm() - self.contact_height_mm()
 
     def top_limit_mm(self) -> float:
-        """최대 작업 가능 높이 = 로봇 베이스 높이 + 리프트 한계 + 로봇팔 상승 한계.
+        """최대 작업 가능 높이 = 리프트 한계 + 로봇팔 상승 한계 − 그리퍼 접촉 위치 높이.
 
-        로봇팔 상승 한계는 베이스에서 팔을 위로 뻗었을 때의 한계다 — 시작 자세에서 잰 값이
-        아니다. 로봇 태스크에는 이 검사가 없고 RCS 가 구역을 받을 때 · 리프트를 정할 때 본다.
+        로봇 태스크에는 이 검사가 없고 RCS 가 구역을 받을 때 · 리프트를 정할 때 본다.
         """
         return self.lift_max_mm() + self.arm_reach_mm()
 
@@ -1250,46 +1344,13 @@ class VehicleSettingsScreen(FormScreen):
         """리프트 속도 [mm/s] — SetMvLift.set_speed(m/s 로 바꿔 싣는다)."""
         return self._number(self.LIFT_SPEED_FIELD)
 
-    def calibration_time_s(self) -> float:
-        """캘리브레이션 최대 시간 [s]. 0 이면 아직 없다(사람이 넣거나 캘리브레이션 때 계산)."""
-        return self._number(self.CALIB_FIELD)
-
-    def calibration_estimate(self, diameter_mm: float | None = None) -> dict | None:
-        """캘리브레이션 한 바퀴 계산 — {lap_mm, travel_s, seconds}. 지름 · 속도를 모르면 None.
-
-        한 바퀴 = 2π(R + 모재 거리 유지 + 차량 폭/2) — 차량 중심이 도는 궤적. 주행 속도(이 화면)로
-        나눈 시간에 여유(CALIB_MARGIN — 정방향을 맞추는 회전 · 가감속)를 곱해 10 초 단위로 올린다.
-        """
-        diameter = self._diameter_mm if diameter_mm is None else float(diameter_mm)
-        speed = self.speed_mm_s()
-        if diameter <= 0 or speed <= 0:
-            return None
-        lap = 2.0 * math.pi * (diameter / 2.0 + self.center_distance_mm())
-        travel = lap / speed
-        seconds = int(math.ceil(travel * self.CALIB_MARGIN / 10.0) * 10)
-        return {"lap_mm": lap, "travel_s": travel, "seconds": seconds}
-
     def align_time_s(self) -> float:
-        """곡판 QR 정렬 최대 시간 [s]."""
+        """정렬 최대 시간 [s] — 캘리브레이션(QR 정렬 + 아웃트리거 고정)의 한도이자 ERUT 에 알리는 시간."""
         return self._number(self.ALIGN_FIELD)
 
-    def apply_calibration_estimate(self, diameter_mm: float, shape: str | None = None) -> int:
-        """캘리브레이션 명령을 받았다 — 계산한 시간을 칸에 넣는다(사람이 넣은 값을 덮는다).
-
-        돌려준 값 [s] 을 그 주행의 제한 시간과 ERUT 에 알리는 시간으로 쓴다. 원통은 한 바퀴
-        계산값, 곡판(curved_plate)은 한 바퀴 돌지 않으므로 「곡판 QR 정렬 최대 시간」이다.
-        계산할 수 없으면 칸을 그대로 두고 그 값을 돌려준다.
-        """
-        self.set_target_diameter(diameter_mm)
-        if shape == "curved_plate":
-            self.field(self.CALIB_FIELD).setValue(int(self.align_time_s()))
-            self._update_derived()
-            return int(self.calibration_time_s())
-        estimate = self.calibration_estimate(diameter_mm)
-        if estimate is not None:
-            self.field(self.CALIB_FIELD).setValue(int(estimate["seconds"]))
-        self._update_derived()
-        return int(self.calibration_time_s())
+    def calibration_time_s(self) -> float:
+        """ERUT 에 알리는 캘리브레이션 시간 [s] — 정렬 최대 시간과 같다(2026-11-24)."""
+        return self.align_time_s()
 
     def center_distance_mm(self) -> float:
         """벽 ↔ 차량 중심(회전 · 주행 기준점) = 모재 거리 유지 + 차량 폭 ÷ 2."""
@@ -1310,9 +1371,10 @@ class VehicleSettingsScreen(FormScreen):
 
     def _update_derived(self) -> None:
         self.center_label.setText(f"{self.center_distance_mm():,.0f} mm (거리 유지 + 폭 ÷ 2)")
+        source = "저장한 그리퍼 접촉 위치" if self.contact_from_saved_pose() else "이 화면 값"
         self.reach_label.setText(
-            f"리프트 그대로 {self.arm_reach_mm():,.0f} mm · 최대 작업 가능 높이 {self.top_limit_mm():,.0f} mm "
-            f"(베이스 + 리프트 한계 + 팔)")
+            f"리프트 그대로 {self.arm_reach_mm():,.0f} mm (상승 한계 − 접촉 높이 {self.contact_height_mm():,.0f}, "
+            f"{source}) · 최대 작업 가능 높이 {self.top_limit_mm():,.0f} mm (+ 리프트 한계)")
         if self._diameter_mm > 0:
             scale = self.travel_scale()
             # 예시 거리(표면 200)는 빼고 쓰는 값만 적는다 — 배율은 입력한 폭 · 거리 유지로 바로 바뀐다.
@@ -1323,8 +1385,12 @@ class VehicleSettingsScreen(FormScreen):
             self.scale_label.setText("모재 지름을 받으면 계산합니다")
 
     def apply_values(self, values: dict[str, object]) -> None:
+        values = dict(values)
+        if self.ALIGN_FIELD not in values and values.get(self.OLD_ALIGN_FIELD):
+            values[self.ALIGN_FIELD] = values[self.OLD_ALIGN_FIELD]     # 예전 「곡판 QR 정렬 최대 시간」
         super().apply_values(values)
-        self._update_derived()
+        # 저장한 그리퍼 접촉 위치가 있으면 그 값이 이긴다(설정 파일의 옛 값으로 덮지 않는다).
+        self.set_saved_contact_height(self._saved_contact_mm)
 
 
 class CobotSettingsScreen(FormScreen):
@@ -1489,6 +1555,18 @@ class ConnectionSettingsScreen(FormScreen):
     #: 목록에서 고르는 즉시 나간다 — 저장을 눌러야만 바뀌면, 바꿔 놓고도
     #: 차량이 안 움직이는 이유를 알기 어렵다(실제로 그렇게 헤맸다).
     vehicle_mode_changed = pyqtSignal(str)
+    #: RCS 명령을 받는 AGV 제어 노드(AGV 담당 steer_agv)가 어디 있나(2026-11-24). 내부면 차량 제어가 「ROS 차량
+    #: 노드 고정」일 때 RCS 가 자식으로 띄운다(같은 ROS 도메인). 외부 PC 면 그 PC 에서 띄운 노드에 붙는다.
+    AGV_NODE_MODES = {"RCS 내부 프로그램 (이 PC)": "internal", "외부 PC (그 PC 에서 실행)": "external"}
+    #: 예전 저장값 → 지금 이름.
+    OLD_AGV_NODE_LABELS = {"RCS 에서 실행 (내장)": "RCS 내부 프로그램 (이 PC)",
+                           "외부 (다른 PC · 따로 실행)": "외부 PC (그 PC 에서 실행)"}
+    EXTERNAL_PC_FIELD = "외부 PC 주소"
+    #: 내부 프로그램에만 쓰는 칸 — 외부 PC 면 그 PC 의 노드 설정이 정한다.
+    INTERNAL_ONLY_FIELDS = ("PLC 명령 쓰기", "AGV 조작 패널")
+    PLC_WRITE_MODES = {"켬 (명령을 PLC 에 씀)": True, "끔 (읽기만)": False}
+    AGV_PANEL_MODES = {"끔": False, "켬 (AGV 담당 조작 패널 창)": True}
+    AGV_FIELDS = ("AGV 제어 노드", "PLC 주소", "PLC 포트", "PLC 명령 쓰기", "AGV 조작 패널")
 
     """협동로봇, 차량, ERUT 의 연결 정보를 한 화면에서 설정한다(PLC 는 차량 노드가 맡는다).
 
@@ -1509,6 +1587,8 @@ class ConnectionSettingsScreen(FormScreen):
         "Primary 포트": "Primary", "Modbus 포트": "Modbus",
         "ERUT Broker 주소": "주소", "ERUT 포트": "포트",
         "ERUT 장치 ID": "장치 ID", "ERUT 계정": "계정", "ERUT 비밀번호": "비밀번호",
+        "AGV 제어 노드": "받는 노드 위치", "AGV 노드 상태": "받는 노드",
+        "PLC 연결": "PLC (노드 보고)",
     }
 
     #: 값이 바뀌면 ERUT 에 다시 붙는 항목. 비워 둘 수 있다 — 주소나 장치 ID 가
@@ -1518,10 +1598,19 @@ class ConnectionSettingsScreen(FormScreen):
 
     connect_requested = pyqtSignal()
     disconnect_requested = pyqtSignal()
+    # ERUT 브로커 접속 · 해제(2026-11-26) — 해제하고 값을 바꾼 뒤 다시 접속할 수 있게.
+    erut_connect_requested = pyqtSignal()
+    erut_disconnect_requested = pyqtSignal()
     #: 「로봇 VNC 열기」 — 이 로봇엔 티치 펜던트를 달지 않아 화면을 VNC 로 본다.
     vnc_requested = pyqtSignal()
     #: PLC 다시 연결 — 앱이 차량에 리셋(RobotControl reset=1)을 보낸다(2026-11-20).
     plc_reconnect_requested = pyqtSignal()
+    #: 「PLC 포트 확인」 — 노드와 따로, 이 PC 에서 PLC 주소:포트로 TCP 접속해 본다(2026-11-24).
+    plc_check_requested = pyqtSignal()
+    #: 「외부 PC 확인」 — 외부 PC 주소로 ping, ROS 로 그 노드가 보이는지(2026-11-24).
+    external_check_requested = pyqtSignal()
+    #: 받는 노드 위치를 바꿨다(내부 ↔ 외부 PC) — 저장 전에도 칸을 켜고 끈다.
+    agv_node_mode_changed = pyqtSignal(str)
 
     def __init__(self):
         # 차량(AMR·리프트·아웃트리거)을 무엇으로 움직일지. 더미는 장비 없이
@@ -1531,6 +1620,18 @@ class ConnectionSettingsScreen(FormScreen):
         vehicle_mode=TouchComboBox(); vehicle_mode.addItems(list(self.VEHICLE_MODES))
         vehicle_mode.activated.connect(
             lambda index, c=vehicle_mode: self.vehicle_mode_changed.emit(c.itemText(index)))
+        def combo(items) -> TouchComboBox:
+            box = TouchComboBox(); box.addItems(list(items))
+            return box
+        # AGV 제어 노드 — 어디서 띄우나 · PLC 주소(2026-11-24). 상태는 입력칸이 아니라 표시.
+        self.agv_state_label = QLabel("꺼짐"); self.agv_state_label.setWordWrap(True)
+        self.agv_state_label.setObjectName("Muted")
+        self.ros_domain_label = QLabel()
+        self.ros_domain_label.setWordWrap(True); self.ros_domain_label.setObjectName("Muted")
+        self._ros_domain_pending = False
+        ros_domain = line(""); ros_domain.setPlaceholderText("비우면 셸 환경 그대로 — 저장하면 바로 다시 붙습니다")
+        # 외부 PC 주소 — 외부 PC 에서 받을 때 그 PC 를 확인(ping)하는 데 쓴다. ROS 는 주소가 아니라 같은 도메인으로 붙는다.
+        external_pc = line(""); external_pc.setPlaceholderText("예: 192.168.11.13 (확인용)")
         # PLC 연결 상태 — 차량 상태(robot_status.error_code 701)로 본다(입력칸이 아니라 표시).
         self.plc_state_label = QLabel("● 모름"); self.plc_state_label.setWordWrap(True)
         self.plc_state_label.setProperty("plc", "unknown")
@@ -1547,6 +1648,15 @@ class ConnectionSettingsScreen(FormScreen):
                 # 연결 상태를 보이며 끊기면 다시 연결(차량 리셋)을 시킨다(2026-11-20).
                 ("차량",None),
                 ("차량 제어",vehicle_mode),
+                ("AGV 제어 노드",combo(self.AGV_NODE_MODES)),
+                (self.EXTERNAL_PC_FIELD,external_pc),
+                ("PLC 주소",line("192.168.11.10")),
+                ("PLC 포트",spin(8501,1,65535)),
+                ("PLC 명령 쓰기",combo(self.PLC_WRITE_MODES)),
+                ("AGV 조작 패널",combo(self.AGV_PANEL_MODES)),
+                ("AGV 노드 상태",self.agv_state_label),
+                ("ROS 도메인 ID",ros_domain),
+                ("ROS 도메인",self.ros_domain_label),
                 ("PLC 연결",self.plc_state_label),
                 # 외부 통신은 ERUT MQTT 하나다(사내 MC MQTT 는 2026-10-07 에 뺐다).
                 # 접속 정보는 ERUT 가 알려 준다(나중에는 랜선으로 ERUT 쪽 PC). 비어
@@ -1561,13 +1671,92 @@ class ConnectionSettingsScreen(FormScreen):
             ],
             columns=3,
         )
-        self._build_connection_controls()
         # 로봇 화면(티치 펜던트 대신) — Modbus 칸 바로 아래(2026-11-05). 입력칸의
         # IP 를 그대로 쓴다(저장 전 값이어도).
         self.vnc_btn=QPushButton("로봇 VNC 열기"); self.vnc_btn.setObjectName("SettingsButton")
         self.vnc_btn.clicked.connect(self.vnc_requested.emit)
         self._section_forms["협동로봇"].addRow(QLabel(""), self.vnc_btn)
+        self._build_connection_controls()       # 그 아래 연결 상태 · [연결] [연결 해제]
         self._build_plc_controls()
+        self._build_check_controls()
+        # 「ROS 도메인」 표시는 칸을 고치는 대로 · 저장 뒤 바로 바뀐다(2026-11-26).
+        domain_field = self.field("ROS 도메인 ID")
+        if domain_field is not None:
+            domain_field.textChanged.connect(lambda _text: self.set_ros_domain_state())
+        self.set_ros_domain_state()
+
+    def _insert_below(self, field: str, widget: QWidget) -> None:
+        """차량 칸의 `field` 줄 바로 아래에 이름 없는 줄을 넣는다."""
+        form = self._section_forms["차량"]
+        row, _role = form.getWidgetPosition(self._fields[field])
+        form.insertRow(row + 1, QLabel(""), widget)
+
+    def _check_row(self, text: str, signal) -> tuple[QPushButton, QLabel, QWidget]:
+        box = QWidget(); column = QVBoxLayout(box); column.setContentsMargins(0, 0, 0, 0); column.setSpacing(4)
+        button = QPushButton(text); button.setObjectName("SettingsButton"); button.clicked.connect(signal.emit)
+        result = QLabel(""); result.setObjectName("Muted"); result.setWordWrap(True)
+        column.addWidget(button); column.addWidget(result)
+        return button, result, box
+
+    def _build_check_controls(self) -> None:
+        """「외부 PC 확인」(외부 PC 주소 아래) · 「PLC 포트 확인」(PLC 포트 아래) — 2026-11-24."""
+        self.external_check_btn, self.external_check_label, box = self._check_row(
+            "외부 PC 확인", self.external_check_requested)
+        self.external_check_btn.setToolTip("외부 PC 주소로 ping 하고, ROS 로 그 PC 의 AGV 노드(차량 상태)가 보이는지 봅니다.")
+        self._insert_below(self.EXTERNAL_PC_FIELD, box)
+        self.plc_check_btn, self.plc_check_label, box = self._check_row("PLC 포트 확인", self.plc_check_requested)
+        self.plc_check_btn.setToolTip("AGV 노드와 따로, 이 PC 에서 PLC 주소:포트로 TCP 접속만 해 보고 바로 끊습니다"
+                                      "(아무것도 보내지 않습니다).")
+        self._insert_below("PLC 포트", box)
+        mode = self.field("AGV 제어 노드")
+        mode.currentIndexChanged.connect(lambda _i: self._update_agv_mode_fields())
+        mode.currentIndexChanged.connect(lambda _i: self.agv_node_mode_changed.emit(self.agv_node_mode()))
+        self._update_agv_mode_fields()
+
+    def _update_agv_mode_fields(self) -> None:
+        """받는 노드 위치에 맞게 칸을 켜고 끈다 — 외부 PC 주소는 외부일 때만, 쓰기 · 조작 패널은 내부일 때만."""
+        if not hasattr(self, "external_check_btn"):
+            return
+        external = self.agv_node_mode() == "external"
+        for name, on in ((self.EXTERNAL_PC_FIELD, external), *((n, not external) for n in self.INTERNAL_ONLY_FIELDS)):
+            widget = self.field(name)
+            if widget is not None:
+                widget.setEnabled(on)
+                widget.setToolTip("" if on else ("외부 PC 에서 받을 때만 씁니다." if name == self.EXTERNAL_PC_FIELD
+                                                 else "RCS 내부 프로그램일 때만 씁니다 — 외부 PC 노드는 그 PC 설정을 따릅니다."))
+        self.external_check_btn.setEnabled(external)
+
+    def apply_values(self, values: dict[str, object]) -> None:
+        values = dict(values)
+        old = str(values.get("AGV 제어 노드", ""))
+        if old in self.OLD_AGV_NODE_LABELS:
+            values["AGV 제어 노드"] = self.OLD_AGV_NODE_LABELS[old]
+        super().apply_values(values)
+        self._update_agv_mode_fields()
+
+    def external_pc_address(self) -> str:
+        return str(self.values().get(self.EXTERNAL_PC_FIELD, "") or "").strip()
+
+    @staticmethod
+    def _set_kind(label: QLabel, kind: str) -> None:
+        """글자 색 — "StatusGood" · "StatusWarn" · "StatusDanger" · "Muted"."""
+        if label.objectName() != kind:
+            label.setObjectName(kind)
+            label.style().unpolish(label)
+            label.style().polish(label)
+
+    def set_receiver(self, text: str, kind: str = "Muted") -> None:
+        """받는 노드 — 지금 RCS 명령을 실제로 받는 AGV 노드가 어디인지(내부 프로그램 · 외부 PC · 없음)."""
+        self.agv_state_label.setText(text)
+        self._set_kind(self.agv_state_label, kind)
+
+    def set_plc_check(self, text: str, kind: str = "Muted") -> None:
+        self.plc_check_label.setText(text)
+        self._set_kind(self.plc_check_label, kind)
+
+    def set_external_check(self, text: str, kind: str = "Muted") -> None:
+        self.external_check_label.setText(text)
+        self._set_kind(self.external_check_label, kind)
 
     def _build_plc_controls(self) -> None:
         """「PLC 다시 연결」 · 결과 줄 — 차량 칸 아래(2026-11-20)."""
@@ -1595,6 +1784,54 @@ class ConnectionSettingsScreen(FormScreen):
             self.plc_state_label.style().unpolish(self.plc_state_label)
             self.plc_state_label.style().polish(self.plc_state_label)
 
+    # ---- AGV 제어 노드 (2026-11-24) ------------------------------------------------
+    def _combo_value(self, field: str, table: dict, default):
+        box = self.field(field)
+        return table.get(box.currentText(), default) if box is not None else default
+
+    def agv_node_mode(self) -> str:
+        """"internal"(RCS 가 띄움) 또는 "external"(다른 PC · 따로 띄운 노드에 붙음)."""
+        return self._combo_value("AGV 제어 노드", self.AGV_NODE_MODES, "internal")
+
+    def plc_endpoint(self) -> tuple[str, int]:
+        values = self.values()
+        return (str(values.get("PLC 주소", "") or "192.168.11.10").strip(),
+                int(values.get("PLC 포트") or 8501))
+
+    def plc_writes(self) -> bool:
+        return bool(self._combo_value("PLC 명령 쓰기", self.PLC_WRITE_MODES, True))
+
+    def agv_panel(self) -> bool:
+        return bool(self._combo_value("AGV 조작 패널", self.AGV_PANEL_MODES, False))
+
+    def set_ros_domain_state(self, pending: bool = False) -> None:
+        """「ROS 도메인」 표시 — 지금 쓰는 도메인(ROS_DOMAIN_ID)과 칸에 넣은 값이 다르면 그것도 적는다(2026-11-26).
+
+        예전에는 켤 때 한 번만 적어, 값을 바꿔 저장해도 RCS 를 다시 켜야 표시가 바뀌었다. `pending` 이면
+        저장했지만 작업 중이라 아직 적용하지 않은 것이다.
+        """
+        self._ros_domain_pending = bool(pending)
+        domain = os.environ.get("ROS_DOMAIN_ID", "") or "0"
+        local_only = os.environ.get("ROS_LOCALHOST_ONLY", "") == "1"
+        text = (f"지금 {domain}" + (" · 이 PC 안에서만(ROS_LOCALHOST_ONLY=1)" if local_only else " · 네트워크에 열림")
+                + " — 외부 PC 는 같은 도메인으로 붙는다")
+        wanted = self.ros_domain_setting() if getattr(self, "_fields", None) else ""
+        if wanted and wanted != domain:
+            if not (wanted.isdigit() and 0 <= int(wanted) <= 232):
+                text += f"\n입력 {wanted} — 0~232 만 됩니다"
+            elif pending:
+                text += f"\n저장 {wanted} — 작업 중이라 멈춘 뒤 다시 저장하면 적용합니다"
+            else:
+                text += f"\n입력 {wanted} — 저장하면 {wanted} 로 다시 붙습니다"
+        self.ros_domain_label.setText(text)
+
+    def ros_domain_setting(self) -> str:
+        """「ROS 도메인 ID」 칸(빈 글자 = 환경 그대로). 다음 실행부터 적용된다."""
+        return str(self.values().get("ROS 도메인 ID", "") or "").strip()
+
+    def set_agv_state(self, text: str) -> None:
+        self.agv_state_label.setText(text)
+
     def set_plc_reconnect_enabled(self, on: bool, reason: str = "") -> None:
         """「PLC 다시 연결」을 누를 수 있는지 — PLC 가 끊겼을 때만. `reason` 은 못 누르는 까닭(풍선 도움말)."""
         self.plc_reconnect_btn.setEnabled(bool(on))
@@ -1604,19 +1841,68 @@ class ConnectionSettingsScreen(FormScreen):
         self.plc_message.setText(text)
 
     def _build_connection_controls(self) -> None:
-        """저장과는 별개로 지금 바로 연결/해제를 걸 수 있는 조작부."""
-        # 카드를 따로 만들면 그만큼 입력칸 세로가 줄어 스크롤해야 보인다.
-        # 저장 버튼과 같은 줄 왼쪽에 얹어 자리를 아낀다.
+        """저장과는 별개로 지금 바로 연결/해제를 걸 수 있는 조작부 — 장비 칸 안에 둔다(2026-11-26).
+
+        협동로봇: Modbus 칸 아래에 상태 · [연결] [연결 해제] · 결과 글. 예전에는 저장 버튼 줄에 얹어
+        어느 장비 연결인지 헷갈렸다. 연결 시도 중에도 [연결 해제]로 시도를 멈출 수 있다(set_connecting).
+        ERUT: 비밀번호 칸 아래에 상태 · [접속] [해제] — 해제하고 값을 바꾼 뒤 다시 접속한다.
+        """
+        def link_row(state: QLabel, first: QPushButton, second: QPushButton) -> QWidget:
+            box = QWidget(); row = QHBoxLayout(box); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(8)
+            row.addWidget(state); row.addWidget(first, 1); row.addWidget(second, 1)
+            return box
+
         self.link_state=QLabel("● 연결 안 됨"); self.link_state.setObjectName("StatusDanger")
         self.connect_btn=QPushButton("연결")
         self.connect_btn.setObjectName("PrimarySettingsButton")
         self.connect_btn.clicked.connect(self.connect_requested.emit)
         self.disconnect_btn=QPushButton("연결 해제")
+        self.disconnect_btn.setObjectName("SettingsButton")
         self.disconnect_btn.setEnabled(False)
         self.disconnect_btn.clicked.connect(self.disconnect_requested.emit)
-        for index,widget in enumerate((self.link_state, self.connect_btn, self.disconnect_btn)):
-            self._action_row.insertWidget(index, widget)
-        self._action_row.insertSpacing(1, 12)   # 상태 글자와 버튼이 붙지 않게
+        robot_form = self._section_forms["협동로봇"]
+        robot_form.addRow(QLabel(""), link_row(self.link_state, self.connect_btn, self.disconnect_btn))
+        self.link_message = QLabel(""); self.link_message.setObjectName("Muted"); self.link_message.setWordWrap(True)
+        robot_form.addRow(QLabel(""), self.link_message)
+        self._connecting = False
+
+        self.erut_state = QLabel("● 연결 안 됨"); self.erut_state.setObjectName("StatusDanger")
+        self.erut_connect_btn = QPushButton("접속"); self.erut_connect_btn.setObjectName("PrimarySettingsButton")
+        self.erut_connect_btn.clicked.connect(self.erut_connect_requested.emit)
+        self.erut_disconnect_btn = QPushButton("해제"); self.erut_disconnect_btn.setObjectName("SettingsButton")
+        self.erut_disconnect_btn.setEnabled(False)
+        self.erut_disconnect_btn.clicked.connect(self.erut_disconnect_requested.emit)
+        erut_form = self._section_forms.get("ERUT 접속")
+        if erut_form is not None:
+            erut_form.addRow(QLabel(""), link_row(self.erut_state, self.erut_connect_btn, self.erut_disconnect_btn))
+
+    def set_erut_state(self, enabled: bool, connected: bool, halted: bool = False) -> None:
+        """ERUT 접속 상태 — 켜 둔(enabled) 동안은 붙는 중이어도 [해제]로 멈출 수 있다."""
+        if halted:
+            text, name = "● ID 중복", "StatusDanger"
+        elif connected:
+            text, name = "● 연결됨", "StatusOk"
+        elif enabled:
+            text, name = "● 접속 중", "StatusWarn"
+        else:
+            text, name = "● 연결 안 됨", "StatusDanger"
+        self.erut_state.setText(text)
+        self.erut_state.setObjectName(name)
+        style = self.erut_state.style(); style.unpolish(self.erut_state); style.polish(self.erut_state)
+        self.erut_connect_btn.setEnabled(not enabled or halted)
+        self.erut_disconnect_btn.setEnabled(enabled)
+
+    def set_connecting(self, on: bool) -> None:
+        """로봇 연결 시도 중 — [연결]은 막고 [연결 해제]로 시도를 멈출 수 있게 한다."""
+        self._connecting = bool(on)
+        if on:
+            self.link_state.setText("● 연결 중")
+            self.link_state.setObjectName("StatusWarn")
+            style = self.link_state.style(); style.unpolish(self.link_state); style.polish(self.link_state)
+            self.connect_btn.setEnabled(False)
+            self.disconnect_btn.setEnabled(True)
+        elif self.link_state.text() == "● 연결 중":
+            self.set_link_state(False)
 
     def erut_endpoint(self) -> dict:
         """ERUT 접속 값. 주소 · 장치 ID 는 비어 있을 수 있다(그러면 붙지 않는다)."""
@@ -1639,9 +1925,10 @@ class ConnectionSettingsScreen(FormScreen):
         """연결 시도 결과를 글자로 알린다.
 
         버튼만 있고 결과가 안 보이면 눌러도 됐는지 알 수 없다 — 실패 사유
-        (노드 미동작, 주소 오류 등)를 이 자리에 그대로 보여 준다.
+        (노드 미동작, 주소 오류 등)를 이 자리에 그대로 보여 준다. 협동로봇 칸의 연결 버튼 아래다
+        (2026-11-26 — 예전에는 저장 버튼 줄 아래였다).
         """
-        self.save_status.setText(text)
+        self.link_message.setText(text)
 
     def set_link_state(self, connected: bool) -> None:
         """연결 상태 표시와 버튼 활성 상태를 함께 갱신한다."""
@@ -1649,6 +1936,7 @@ class ConnectionSettingsScreen(FormScreen):
         self.link_state.setObjectName("StatusOk" if connected else "StatusDanger")
         style=self.link_state.style()
         style.unpolish(self.link_state); style.polish(self.link_state)
+        self._connecting = False
         self.connect_btn.setEnabled(not connected)
         self.disconnect_btn.setEnabled(connected)
 

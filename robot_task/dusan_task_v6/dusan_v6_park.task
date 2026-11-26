@@ -1,0 +1,195 @@
+<EliTask name="dusan_v6_park" installationName="dusan_v6" robotType="CS612" toolType="1" createdVersion="2.15.0.477" lastSavedVersion="2.14.3.89" robotSN="09252312420001" savedTime="2026-09-03 14:07:48" directory="Dusan/dusan_v6" installationDirectory="/Dusan/dusan_v6" typeName="Robot Main Task">
+  <InitVariables typeName="Init Variables Value"/>
+  <MainTask isTaskAlwaysLoops="false" hasBeforeStart="false" hasInitVariables="true" typeName="Robot Main Task">
+    <FolderNode display="1 [스크립트파일] dus6_park.script" isHideSubtree="false" typeName="Folder">
+      <ScriptNode scriptType="FILE_TYPE" typeName="Script">
+        <cachedFileContents># =============================================================================
+#  dus6_park.script — dusan_v6
+#  차량이 움직이기 전에 로봇 팔을 받침대 위에 내려놓는다 (홈 -&gt; 받침대)
+#
+#  dusan_v6_park.task 의 하나뿐인 노드다(파일 모드 스크립트 노드). 차량이 움직이기 전에
+#  펜던트에서 이 태스크를 불러와 돌린다.
+#
+#    홈 --movej--&gt; ① 회전 자세 (Park_turn_joint, 베이스 -Z 쪽으로 약 90 도)
+#       --movel--&gt; ② 든 자세    (Park_lift_joint,  TCP 를 위로)
+#       --movel--&gt; ③ 뻗은 자세  (Park_reach_joint, 베이스 +Y 로 — 받침대 바로 위)
+#       --movel--&gt; ④ 내려놓은 자세(Park_rest_joint, 받침대 위 — 여기서 대기)
+#
+#  네 자세는 펜던트 전역 변수다(관절값 [rad]). 그 자세로 옮긴 뒤 변수 화면에서 현재 관절값으로
+#  저장한다. 하나라도 비어 있으면(전부 0) 움직이지 않는다. 직선 구간(②→③→④)은 각 자세의 툴
+#  플랜지 자리로 movel 한다(TCP 를 플랜지로 돌린 뒤) — 저장 위치는 플랜지 기준이다.
+#  ③ -&gt; ④(받침대에 닿는 구간)는 park_v_touch 로 천천히 내린다.
+#
+#  중간에 멈췄으면(어느 자세에 서 있으면) 그 다음 자세부터 이어 간다. 저장한 자세 어디에도
+#  있지 않으면(자세 사이에서 멈췄으면) 움직이지 않는다 — 펜던트에서 가까운 자세로 옮긴 뒤 다시 돈다.
+#  반대 동작(받침대 -&gt; 홈 = 로봇팔 ready)은 dus6_unpark.script 다.
+#
+#  레지스터
+#    360 팔 받침대 상태 : 1 올리는 중 · 2 받침대 위(차량 이동 가능) · 3 홈으로 가는 중 ·
+#                         4 홈 복귀 완료(로봇팔 ready) · 9 위치 미저장(네 자세 중 빈 것) · 0 모름
+#                         자세 사이 · 차량 미고정으로 거절하면 360 을 그대로 둔다 — 팔이 받침대 길에
+#                         있을 수 있어 RCS 「로봇 홈」이 계속 되돌리기 태스크로 와야 한다(노드 cb_move_home).
+#                         태스크 밖(펜던트 조그 등)으로 홈에 돌아오면 노드가 4 로 맞춘다.
+#    276 홈 플래그      : 홈을 떠나면 0 (발행 스레드가 없는 태스크라 여기서 쓴다)
+#
+#  ※ def main() 으로 감싸지 말 것 (펜던트가 호출하지 않는다)
+#  ※ 최상위에 global 을 쓰지 말 것 (preamble 이 이미 선언·대입해 뒀다)
+#  ※ if / while 은 반드시 end 로 닫을 것
+# =============================================================================
+
+def pk_set(q):
+  # 저장한 적이 있는 자세인가 — 6 축이 전부 0 이면 비어 있다.
+  pk_k = 0
+  while (pk_k &lt; 6):
+    if (q[pk_k] != 0):
+      return True
+    end
+    pk_k = pk_k + 1
+  end
+  return False
+end
+
+
+def pk_far(q, ref):
+  # 두 관절값의 가장 큰 차이 [rad]
+  pk_i = 0
+  pk_m = 0
+  while (pk_i &lt; 6):
+    pk_d = q[pk_i] - ref[pk_i]
+    if (pk_d &lt; 0):
+      pk_d = -pk_d
+    end
+    if (pk_d &gt; pk_m):
+      pk_m = pk_d
+    end
+    pk_i = pk_i + 1
+  end
+  return pk_m
+end
+
+
+def pk_near(ref):
+  # 지금 이 자세에 서 있는가 — 관절이 home_tol_j 안이거나, 관절이 달라도 플랜지 자리가
+  # home_tol_p [mm] 안이면(같은 자리를 다른 해로 잡은 경우) 서 있는 것으로 본다.
+  if (pk_far(get_actual_joint_positions(), ref) &lt;= home_tol_j):
+    return True
+  end
+  pk_r = get_forward_kin(ref)
+  pk_c = get_actual_tool_flange_pose()
+  pk_j = 0
+  while (pk_j &lt; 3):
+    pk_e = pk_c[pk_j] - pk_r[pk_j]
+    if (pk_e &lt; 0):
+      pk_e = -pk_e
+    end
+    if (pk_e &gt; home_tol_p * 0.001):
+      return False
+    end
+    pk_j = pk_j + 1
+  end
+  return True
+end
+
+
+def pk_stage():
+  # 지금 서 있는 자세: 4 받침대 위 · 3 뻗은 자세 · 2 든 자세 · 1 회전 자세 · 0 홈 · -1 어디도 아님.
+  # 받침대 쪽부터 본다 — 이미 내려놓았으면 아무것도 하지 않는다.
+  if (pk_near(Park_rest_joint)):
+    return 4
+  end
+  if (pk_near(Park_reach_joint)):
+    return 3
+  end
+  if (pk_near(Park_lift_joint)):
+    return 2
+  end
+  if (pk_near(Park_turn_joint)):
+    return 1
+  end
+  if (pk_near(Home_joint)):
+    return 0
+  end
+  return -1
+end
+
+
+def pk_stop(msg, untaught):
+  # 위치가 비어 있어 못 하면 360 = 9. 자세 사이 · 차량 미고정이면 360 을 그대로 둔다 — 팔이 받침대
+  # 길에 있을 수 있어, RCS 「로봇 홈」이 계속 되돌리기(이 거절)로 와야 한다(스캔 대기 위치 길로 가면 안 된다).
+  if (untaught):
+    write_port_register(360, 9)
+  end
+  popup(s = msg, title = "dusan_v6 park", blocking = True)
+  halt()
+end
+
+
+# ---- 플랜지 기준 -----------------------------------------------------------
+set_tcp([0, 0, 0, 0, 0, 0])
+
+# ---- 홈 = RCS 「홈 위치 저장」(328 = 1, 322~327 [mRad]) 또는 펜던트 Home_joint ----
+# dus6_init 과 같은 규칙이다. 이 태스크는 dus6_init 을 돌지 않으므로 여기서 다시 읽는다.
+if (read_port_register(328, True) == 1):
+  pk_h = [read_port_register(322, True) / 1000.0, read_port_register(323, True) / 1000.0,
+          read_port_register(324, True) / 1000.0, read_port_register(325, True) / 1000.0,
+          read_port_register(326, True) / 1000.0, read_port_register(327, True) / 1000.0]
+  if (pk_set(pk_h)):
+    Home_joint = pk_h
+  end
+end
+
+# ---- 저장한 네 자세가 다 있어야 움직인다 ------------------------------------
+if (pk_set(Park_turn_joint) == False or pk_set(Park_lift_joint) == False or pk_set(Park_reach_joint) == False or pk_set(Park_rest_joint) == False):
+  pk_stop("PARK: TEACH Park_turn/lift/reach/rest_joint FIRST", True)
+end
+
+# ---- 속도 : 기준값에서 매번 새로 정한다(dus6_init 과 같은 상한) -----------------
+pk_vj = v_move_j_set
+if (pk_vj &gt; 0.50 or pk_vj &lt;= 0):
+  pk_vj = 0.34907
+end
+pk_aj = a_move_j_set
+if (pk_aj &gt; 1.40 or pk_aj &lt;= 0):
+  pk_aj = 0.69813
+end
+pk_vl = park_v_l
+if (pk_vl &gt; 0.250 or pk_vl &lt;= 0):
+  pk_vl = 0.1
+end
+pk_vt = park_v_touch
+if (pk_vt &gt; pk_vl or pk_vt &lt;= 0):
+  pk_vt = 0.02
+end
+pk_al = a_move_set
+if (pk_al &gt; 0.400 or pk_al &lt;= 0):
+  pk_al = 0.2
+end
+
+# ---- 홈 -&gt; 받침대 -----------------------------------------------------------
+pk_s = pk_stage()
+if (pk_s &lt; 0):
+  pk_stop("PARK: NOT AT HOME OR A PARK POSE - JOG TO THE NEAREST ONE", False)
+end
+if (pk_s &lt; 4):
+  write_port_register(360, 1)
+  write_port_register(276, 0)
+end
+if (pk_s == 0):
+  movej(Park_turn_joint, a = pk_aj, v = pk_vj)
+end
+if (pk_s &lt;= 1):
+  movel(get_forward_kin(Park_lift_joint), a = pk_al, v = pk_vl)
+end
+if (pk_s &lt;= 2):
+  movel(get_forward_kin(Park_reach_joint), a = pk_al, v = pk_vl)
+end
+if (pk_s &lt;= 3):
+  movel(get_forward_kin(Park_rest_joint), a = pk_al, v = pk_vt)
+end
+write_port_register(360, 2)
+</cachedFileContents>
+        <scriptFile pathRootType="TASK_PATH" path="Dusan/dusan_v6/scripts/dus6_park.script"/>
+      </ScriptNode>
+    </FolderNode>
+  </MainTask>
+</EliTask>

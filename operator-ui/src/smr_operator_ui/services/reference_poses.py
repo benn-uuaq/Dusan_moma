@@ -93,3 +93,20 @@ def delete_reference_pose(name: str) -> str | None:
     data.pop(name, None)
     data[LAYOUT_KEY] = LAYOUT
     return _write(data)
+
+
+def restore_reference_poses(entries: dict) -> str | None:
+    """운전 모드 슬롯의 기준 위치를 저장 시각 그대로 되살린다(2026-11-24). 넘긴 항목만 바꾼다.
+
+    `entries` = {이름: {"values": [6 개], "saved_at": "..."}}. 슬롯에 없는 항목은 지우지 않는다 — 티칭값을
+    잃지 않게. 저장한 경로를 돌려준다(못 쓰면 None).
+    """
+    data = load_reference_poses()
+    for name, entry in entries.items():
+        values = entry.get("values") if isinstance(entry, dict) else None
+        if not values or len(values) != 6:
+            continue
+        data[name] = {"values": [float(v) for v in values],
+                      "saved_at": str(entry.get("saved_at") or datetime.now().isoformat(timespec="seconds"))}
+    data[LAYOUT_KEY] = LAYOUT
+    return _write(data)

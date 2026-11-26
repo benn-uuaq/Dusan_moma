@@ -1,10 +1,10 @@
 <VariablesManager>
-  <Variable name="Home_joint" value="[-3.05761, -1.55391, -2.81363, -1.88002, -1.48684, -0.00297]" remarks="홈(접힌 자세) 관절값 [rad]. RCS 「홈 위치 저장」(레지스터 322~327, 328 = 1)이 있으면 그 값으로 덮어쓰고, 없으면 펜던트에서 티칭한 이 값을 쓴다. 작업 시작·끝에 언제나 스캔 대기 위치(Standby_joint)를 거쳐 movej 로 오간다. 로봇이 여기 있으면 276 = 1(차량·리프트 이동 허가). 처음 값은 예전 홈(= 지금 스캔 대기 위치)과 같으니 새로 티칭할 것" favorite="false"/>
-  <Variable name="Home_pose" value="[-0.3136, 0.16057, 0.14636, 1.5353, -2.0E-5, -1.57082]" remarks="[계산값] 홈의 툴 플랜지 pose. dus6_init 이 Home_joint 로 매번 다시 계산한다 — 직접 바꾸지 말 것" favorite="false"/>
-  <Variable name="Standby_joint" value="[-3.11132, -3.4462, -1.3582, -1.44348, -1.54053, -0.00105]" remarks="[v6: 새 설치 방향의 대기 위치를 아직 티칭하지 않아 홈과 같은 값 — 티칭할 것] 스캔 대기 위치 관절값 [rad] (예전의 홈). 홈과 작업 자리 사이는 언제나 여기를 거친다: 홈 -movej-&gt; 여기 -&gt; 시작 위치 / 스캔 끝 -&gt; 물러나고(여기보다 뒤로는 안 감) 이 높이로 상승 -movej-&gt; 여기 -movej-&gt; 홈. RCS 「스캔 대기 위치 저장」(레지스터 310~315, 308 = 1)이 있으면 그 값으로 덮어쓴다" favorite="false"/>
-  <Variable name="Standby_pose" value="[-0.65419, 0.16058, -0.68295, 1.5355, -2.0E-5, -1.5708]" remarks="[계산값] 스캔 대기 위치의 툴 플랜지 pose. dus6_init 이 Standby_joint 로 매번 다시 계산한다 — 직접 바꾸지 말 것" favorite="false"/>
-  <Variable name="gripper_target_pose" value="[-0.74949, 0.16058, -0.68296, 1.5355, -2.0E-5, -1.5708]" remarks="[v6] 그리퍼와 ERUT 홀더를 달고 **툴 플랜지 TCP [0,0,0,0,0,0]** 로 벽 중앙에 그리퍼를 붙여 티칭한 플랜지 pose (입력레지스터 316~321, RCS 「그리퍼 접촉 위치 저장」 — 저장할 때 TCP 를 플랜지로 맞춘다). 장착 홀더(5축 · 8축 · 노그리퍼)와 무관하다. dus6_init 이 여기서 probe_dist 만큼 물러난 자리를 start_pose 로 쓴다" favorite="false"/>
-  <Variable name="start_pose" value="[-0.70363, 0.00001, -0.50709, 1.57115, 0.00022, -1.57076]" remarks="실제 movej 목표(툴플랜지 기준, 그리퍼가 작업면에서 probe_dist 만큼 물러난 대기 자세). dus_init이 매 작업마다 gripper_target_pose 로부터 다시 계산한다 — 여기 직접 값을 넣어도 다음 작업 시작 시 덮어써진다" favorite="false"/>
+  <Variable name="Home_joint" value="[-2.94901, -1.64798, -2.66401, -1.95001, -1.37799, -0.00099]" remarks="홈(접힌 자세) 관절값 [rad]. RCS 「홈 위치 저장」(레지스터 322~327, 328 = 1)이 있으면 그 값으로 덮어쓰고, 없으면 펜던트에서 티칭한 이 값을 쓴다. 작업 시작·끝에 언제나 스캔 대기 위치(Standby_joint)를 거쳐 movej 로 오간다. 로봇이 여기 있으면 276 = 1(차량·리프트 이동 허가). 처음 값은 예전 홈(= 지금 스캔 대기 위치)과 같으니 새로 티칭할 것" favorite="false"/>
+  <Variable name="Home_pose" value="[-0.41517, 0.12035, 0.15412, 1.55, -0.00307, -1.571]" remarks="[계산값] 홈의 툴 플랜지 pose. dus6_init 이 Home_joint 로 매번 다시 계산한다 — 직접 바꾸지 말 것" favorite="false"/>
+  <Variable name="Standby_joint" value="[-2.801, -1.93, -2.266, -2.04201, -1.231, -0.009]" remarks="[v6: 새 설치 방향의 대기 위치를 아직 티칭하지 않아 홈과 같은 값 — 티칭할 것] 스캔 대기 위치 관절값 [rad] (예전의 홈). 홈과 작업 자리 사이는 언제나 여기를 거친다: 홈 -movej-&gt; 여기 -&gt; 시작 위치 / 스캔 끝 -&gt; 물러나고(여기보다 뒤로는 안 감) 이 높이로 상승 -movej-&gt; 여기 -movej-&gt; 홈. RCS 「스캔 대기 위치 저장」(레지스터 310~315, 308 = 1)이 있으면 그 값으로 덮어쓴다" favorite="false"/>
+  <Variable name="Standby_pose" value="[-0.64721, -0.00273, 0.14874, 1.52821, -0.00606, -1.57006]" remarks="[계산값] 스캔 대기 위치의 툴 플랜지 pose. dus6_init 이 Standby_joint 로 매번 다시 계산한다 — 직접 바꾸지 말 것" favorite="false"/>
+  <Variable name="gripper_target_pose" value="[-0.90054, -0.0237, -0.34356, 1.507, -0.005, -1.568]" remarks="[v6] 그리퍼와 ERUT 홀더를 달고 **툴 플랜지 TCP [0,0,0,0,0,0]** 로 벽 중앙에 그리퍼를 붙여 티칭한 플랜지 pose (입력레지스터 316~321, RCS 「그리퍼 접촉 위치 저장」 — 저장할 때 TCP 를 플랜지로 맞춘다). 장착 홀더(5축 · 8축 · 노그리퍼)와 무관하다. dus6_init 이 여기서 probe_dist 만큼 물러난 자리를 start_pose 로 쓴다" favorite="false"/>
+  <Variable name="start_pose" value="[-0.80074, -0.02345, -0.34993, 1.507, -0.005, -1.568]" remarks="실제 movej 목표(툴플랜지 기준, 그리퍼가 작업면에서 probe_dist 만큼 물러난 대기 자세). dus_init이 매 작업마다 gripper_target_pose 로부터 다시 계산한다 — 여기 직접 값을 넣어도 다음 작업 시작 시 덮어써진다" favorite="false"/>
   <Variable name="pose_src" value="0" remarks="0=이 변수값 사용, 1=Modbus 310~321 사용 (레지스터 308)" favorite="false"/>
   <Variable name="pub_a" value="0" remarks="발행 스레드 생존 확인용 — 워치독(293) 이전 값. dus6_init 이 두 제어주기 동안 293 이 안 변하면 스레드가 죽은 것으로 보고 다시 띄운다" favorite="false"/>
   <Variable name="pub_b" value="0" remarks="발행 스레드 생존 확인용 — 워치독(293) 이후 값" favorite="false"/>
@@ -62,6 +62,9 @@
   <Variable name="pitch_lr" value="0" remarks="[계산값] 1 = 좌·우 끝 이동높이로 줄을 정한다(pitch_l + pitch_r > 0). dus6_init 이 정한다" favorite="false"/>
   <Variable name="row_y" value="0" remarks="[계산값] 지금 줄 높이 [mm] (구역 아래 끝 0 기준). 좌·우 이동높이일 때 dus6_up 이 상승마다 쌓고 위 끝(app_height)에서 자른다" favorite="false"/>
   <Variable name="up_rise" value="0" remarks="[계산값] dus6_up 의 이번 상승 [mm]. 레지스터 296 에 0.1 mm 로 쓴다" favorite="false"/>
+  <Variable name="up_clear_h" value="200" remarks="바닥 근처 물러서기 적용 높이 [mm] — 모재 아래 끝에서 이 높이 안의 줄 바꿈(dus6_up)은 벽에 붙은 채 오르지 않고 up_clear_d 만큼 물러섰다 올라가 다시 붙는다. 받침대 위에 뜬 모재의 아래 끝에 튀어나온 스캐너 홀더가 걸리지 않게(2026-11-23). 0 이면 쓰지 않는다" favorite="false"/>
+  <Variable name="up_clear_d" value="20" remarks="바닥 근처 줄 바꿈에서 벽에서 물러서는 거리 [mm] (툴 -Z). 오른 뒤 툴 +Z 로 같은 만큼 다시 붙는다(벽 접근 속도 v_l / 3). 0 이면 물러서지 않는다(2026-11-23)" favorite="false"/>
+  <Variable name="scan_y_base" value="0" remarks="[계산값] 이번 구역 아래 끝 높이 — 모재 아래 끝에서 [mm]. 레지스터 359(266 = 1 일 때, RCS 가 구역마다 씀). 펜던트로 돌리면 0(구역이 모재 아래 끝에서 시작한다고 본다). dus6_up 이 up_clear_h 와 비교한다" favorite="false"/>
   <Variable name="lr_y" value="0" remarks="[계산값] dus6_init 이 좌·우 이동높이로 줄 수를 셀 때 쓰는 높이 [mm]" favorite="false"/>
   <Variable name="lr_right" value="1" remarks="[계산값] dus6_init 이 줄 수를 셀 때 지금 오른쪽 끝인가(1) 왼쪽 끝인가(0)" favorite="false"/>
   <Variable name="lr_rise" value="0" remarks="[계산값] dus6_init 이 줄 수를 셀 때 이번 상승 [mm]" favorite="false"/>
@@ -130,4 +133,10 @@
   <Variable name="v_move_j" value="0.34907" remarks="[계산값 · v6] 스캔 외 관절 이동 각속도 [rad/s] (v_move_j_set 에서)" favorite="false"/>
   <Variable name="a_move_j" value="0.69813" remarks="[계산값 · v6] 스캔 외 관절 이동 각가속도 [rad/s^2] (a_move_j_set 에서)" favorite="false"/>
   <Variable name="sig_hold" value="0.25" remarks="TPAC 동기 신호 대기 [s]. 스캔 줄 시작·끝에서 구간 레지스터(277)를 바꾼 뒤 이만큼 기다렸다가 움직인다 — RCS 브리지가 값을 읽고(100 ms) DO 신호를 50 ms 이상씩 순서대로 내보낼 시간이다. 줄이면 줄 앞부분이 펄스 없이 지나갈 수 있다" favorite="false"/>
+  <Variable name="Park_turn_joint" value="[0, 0, 0, 0, 0, 0]" remarks="[받침대 ①] 회전 자세 관절값 [rad] — 홈에서 베이스 -Z 쪽으로 약 90 도 돌린 자세. 그 자세로 옮긴 뒤 현재 관절값으로 저장한다. 홈 -movej-&gt; 여기. 전부 0 이면 비어 있는 것으로 보고 dus6_park / dus6_unpark 가 움직이지 않는다" favorite="true"/>
+  <Variable name="Park_lift_joint" value="[0, 0, 0, 0, 0, 0]" remarks="[받침대 ②] 든 자세 관절값 [rad] — ① 에서 TCP 를 위로 든 자세. ① -movel-&gt; 여기(툴 플랜지 직선)" favorite="true"/>
+  <Variable name="Park_reach_joint" value="[0, 0, 0, 0, 0, 0]" remarks="[받침대 ③] 뻗은 자세 관절값 [rad] — ② 에서 앞(베이스 +Y)으로 뻗어 받침대 바로 위에 온 자세. ② -movel-&gt; 여기" favorite="true"/>
+  <Variable name="Park_rest_joint" value="[0, 0, 0, 0, 0, 0]" remarks="[받침대 ④] 내려놓은 자세 관절값 [rad] — ③ 에서 내려 받침대 위에 올려놓은 자세(차량 이동 중 대기). ③ -movel(park_v_touch)-&gt; 여기. 되돌아갈 때(dus6_unpark)는 ④ -&gt; ③ -&gt; ② -&gt; ① -movej-&gt; 홈" favorite="true"/>
+  <Variable name="park_v_l" value="0.1" remarks="[받침대] 직선 구간(① ↔ ② ↔ ③) movel 속도 [m/s]. 상한 0.25. 0 이하면 0.1" favorite="false"/>
+  <Variable name="park_v_touch" value="0.02" remarks="[받침대] 받침대에 닿는 구간(③ ↔ ④) movel 속도 [m/s]. park_v_l 보다 크면 0.02" favorite="false"/>
 </VariablesManager>

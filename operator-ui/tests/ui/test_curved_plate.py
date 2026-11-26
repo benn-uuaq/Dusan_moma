@@ -18,6 +18,10 @@ PLATE = {"shape": "curved_plate", "diameter": 3000, "height": 2000, "width": 100
 def _window(qtbot):
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
+    # 저장된 검사 대상(앞 시험이 저장한 원통)을 늦게 불러와 calibrate 의 곡판을 덮지 않게 — 다 불러온 뒤 시작한다.
+    loaded: list[str] = []
+    window.settings_service.loaded.connect(lambda scope, _values: loaded.append(scope))
+    qtbot.waitUntil(lambda: "inspection_target" in loaded, timeout=5000)
     window.erut.publish_res = lambda *a, **k: True
     window.ros_status.call_command = lambda name: True
     window.ros_status.send_value = lambda *a: True
@@ -87,19 +91,17 @@ def test_erut_plate_start_keeps_the_plate_as_the_rcs_target(qtbot) -> None:
     window.close()
 
 
-def test_vehicle_settings_use_the_align_time_for_a_plate(qtbot) -> None:
+def test_one_align_time_covers_cylinder_and_plate(qtbot) -> None:
+    """「정렬 최대 시간」 하나가 원통 · 곡판 캘리브레이션 한도다(2026-11-24 — 둘을 합쳤다)."""
     window = _window(qtbot)
     vehicle = window.screens["vehicle"]
     vehicle.field(vehicle.ALIGN_FIELD).setValue(90)
-    assert vehicle.apply_calibration_estimate(3000, "curved_plate") == 90
-    vehicle.field(vehicle.SPEED_FIELD).setValue(100)
-    # 원통은 한 바퀴 계산값 — π × 1000 / 100 mm/s × 1.5 = 47 s → 10 초 단위 50 s.
-    assert vehicle.apply_calibration_estimate(1000, "cylinder") == 50
+    assert vehicle.align_time_s() == 90 and vehicle.calibration_time_s() == 90
     window.close()
 
 
 def test_plate_calibration_aligns_with_the_simulator(qtbot, tmp_path, monkeypatch) -> None:
-    """차량 노드(모의기)에 measure_lap mode=ALIGN 을 보내고, DONE · lap_origin_ok 로 끝낸다."""
+    """차량 노드(모의기)에 measure_lap mode=ALIGN 을 보내고, DONE · lap_origin_ok 뒤 HOLD(아웃트리거 고정)로 끝낸다."""
     pytest.importorskip("rclpy")
     vehicle_sim_node = pytest.importorskip("vehicle_sim.vehicle_sim_node")
     from vehicle_interfaces.srv import MeasureLap
@@ -114,7 +116,7 @@ def test_plate_calibration_aligns_with_the_simulator(qtbot, tmp_path, monkeypatc
     qtbot.addWidget(window)
     events: list[tuple] = []
     window.erut.publish_event = lambda name, req, action, status_code=200, error=None, **kw: (
-        events.append((name, action, status_code, kw)) or True)
+        events.append((name, action, status_code, {**kw, **({"error": error} if error else {})})) or True)
     window.erut.publish_res = lambda *a, **k: True
     window.ros_status.call_command = lambda name: True
     window.ros_status.send_value = lambda *a: True
@@ -136,9 +138,10 @@ def test_plate_calibration_aligns_with_the_simulator(qtbot, tmp_path, monkeypatc
         qtbot.waitUntil(lambda: any(e[0] == "complete" and e[1] == "calibrate" for e in events),
                         timeout=15000)
         _name, _action, code, payload = [e for e in events if e[1] == "calibrate"][-1]
-        assert code == 200 and "total_length_mm" not in payload
-        assert window.vehicle.last_status["lap_state"] == "DONE"
-        assert window.vehicle.last_status.get("lap_path_m", 0.0) == pytest.approx(0.0)
+        assert code == 200 and "total_length_mm" not in payload, payload
+        # 정렬(ALIGN) 뒤 RCS 가 HOLD(거리 0 작업 → 도착 HOLD)로 아웃트리거를 고정했다 — 그다음 prepare.
+        qtbot.waitUntil(lambda: window.vehicle.last_status.get("state") == "HOLD", timeout=3000)
+        assert window.vehicle.last_status.get("hold") == "SET" and window.outrigger.position == 1
         assert sim.lap_origin_ok is True and sim.odometer == pytest.approx(0.0)
     finally:
         executor.shutdown()

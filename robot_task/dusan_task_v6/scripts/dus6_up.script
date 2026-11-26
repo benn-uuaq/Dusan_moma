@@ -1,6 +1,7 @@
 # =============================================================================
 #  dus6_up.script — dusan_v6
 #  다음 줄로 상승한다 — 균등 피치, 또는 ERUT 좌·우 끝 이동높이(if-0.12)
+#  바닥 근처(모재 아래 끝에서 up_clear_h 안)에서는 벽에서 up_clear_d 만큼 물러섰다 올라가 다시 붙는다
 #
 #  펜던트에서 "9_up" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
@@ -31,6 +32,9 @@ end
 # 스캔 동작마다 세워 둬야, 사이클이 반복되며 goto_zero 를 다시 지나지
 # 않는 구성에서도 좌표가 끊기지 않는다.
 write_port_register(290, 6)
+
+# 오르기 전 줄 높이(원점 기준) — 바닥 근처 판단에 쓴다(아래 row_y 가 다음 줄 높이로 바뀐다).
+up_y0 = row_y
 
 # 이번 상승 높이. ERUT 좌·우 끝 이동높이(pitch_lr = 1)면 방금 끝낸 줄이 끝난 쪽의
 # 값이다 — pass_r(왼 -> 오)을 끝내면 dir_sign = -1(오른쪽 끝, pitch_r), pass_l 을
@@ -68,9 +72,24 @@ end
 # 그 끝의 상승이 0 이면 오르지 않고 같은 높이를 되돌아 훑는다 — 줄 바꿈(277 = 2)도
 # 내지 않는다(ERUT 는 +y 없이 바로 반대 방향을 받는다).
 if (up_rise > 0.0005):
-  # TPAC 동기 신호: 줄 바꿈 상승 구간 — 스캔 동결(DO[1] = 0) 유지.
+  # TPAC 동기 신호: 줄 바꿈 상승 구간 — 스캔 동결(DO[1] = 0) 유지(물러서고 다시 붙는 동안도).
   write_port_register(277, 2)
-  movel(tgt_pose, a = a_scan, v = v_scan * up_ratio / 100.0)
+  # ---- 바닥 근처는 물러섰다 오른다 (2026-11-23) ------------------------------
+  # 모재가 받침대 위에 떠 있어, 아래 끝 근처에서 벽에 붙은 채 오르면 튀어나온 스캐너 홀더가
+  # 아래 끝(모서리)에 걸린다. 오르기 전 줄이 모재 아래 끝에서 up_clear_h [mm] 안이면
+  #   1) 툴 -Z(벽 반대)로 up_clear_d [mm] 물러서고  2) 그 자리에서 다음 줄 높이로 오른 뒤
+  #   3) 툴 +Z 로 다시 붙는다(벽 접근 속도 v_l / 3) — 다음 줄은 붙은 자리에서 좌우로 훑는다.
+  # 모재 높이 = scan_y_base(이번 구역 아래 끝, 레지스터 359) + 원점 기준 줄 높이(up_y0).
+  # up_clear_d 나 up_clear_h 가 0 이면 예전처럼 붙은 채 오른다.
+  if (up_clear_d > 0 and scan_y_base + up_y0 < up_clear_h):
+    up_back = pose_trans(get_actual_tcp_pose(), [0, 0, -up_clear_d * 0.001, 0, 0, 0])
+    movel(up_back, a = a_scan, v = v_scan * up_ratio / 100.0)
+    up_back[2] = tgt_pose[2]
+    movel(up_back, a = a_scan, v = v_scan * up_ratio / 100.0)
+    movel(tgt_pose, a = a_l, v = v_l / 3.0)
+  else:
+    movel(tgt_pose, a = a_scan, v = v_scan * up_ratio / 100.0)
+  end
 end
 
 path_len = path_len + up_rise

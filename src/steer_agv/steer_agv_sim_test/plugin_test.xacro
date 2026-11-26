@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="steer_agv_test">
+  <!-- Raise the fixed outrigger cylinders to give the test wheels ground contact. -->
+  <xacro:arg name="outrigger_mount_z" default="-0.05"/>
+  <xacro:include filename="$(find steer_agv_description)/urdf/robot_3.xacro"/>
+  <gazebo>
+    <plugin name="four_steer_amr_plugin" filename="libfour_steer_amr_plugin.so">
+      <wheel_radius>0.125</wheel_radius>
+      <wheel_base>1.36</wheel_base>
+      <track_width>0.82</track_width>
+      <max_steer_angle>1.919862</max_steer_angle>
+      <max_drive_steer_angle>0.70</max_drive_steer_angle>
+      <steer_kp>100</steer_kp>
+      <steer_kd>4</steer_kd>
+      <wheel_velocity_kp>12</wheel_velocity_kp>
+      <base_frame>test_base_link</base_frame>
+      <fl_steer_joint>test_fl_steer_joint</fl_steer_joint>
+      <fr_steer_joint>test_fr_steer_joint</fr_steer_joint>
+      <rl_steer_joint>test_rl_steer_joint</rl_steer_joint>
+      <rr_steer_joint>test_rr_steer_joint</rr_steer_joint>
+      <fl_wheel_joint>test_fl_wheel_joint</fl_wheel_joint>
+      <fr_wheel_joint>test_fr_wheel_joint</fr_wheel_joint>
+      <rl_wheel_joint>test_rl_wheel_joint</rl_wheel_joint>
+      <rr_wheel_joint>test_rr_wheel_joint</rr_wheel_joint>
+    </plugin>
+  </gazebo>
+</robot>

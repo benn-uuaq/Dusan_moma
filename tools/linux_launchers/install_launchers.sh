@@ -55,6 +55,10 @@ make_entry dusan-rcs.desktop "RCS" true run_rcs.sh \
     preferences-system "RCS 실행 — cd operator-ui && authbind --deep python3 -m smr_operator_ui"
 make_entry dusan-agv-sim.desktop "AGV 시뮬레이터" true run_agv_sim.sh \
     applications-system "ros2 launch vehicle_sim vehicle_sim.launch.py"
+make_entry dusan-agv-test-plc.desktop "AGV 테스트 PLC" true run_agv_test_plc.sh \
+    applications-engineering "AGV 담당 테스트 PLC(127.0.0.1:8501) + 리프트 보조 — AGV 제어 노드는 RCS 가 띄운다"
+make_entry dusan-erut-sim.desktop "ERUT 시뮬레이터" true run_erut_sim.sh \
+    network-server "python3 mqtt_test/erut_sim.py — ERUT 쪽 MQTT 브릿지 대역(명령 보내기)"
 make_entry dusan-tpac-encoder-sim.desktop "TPAC 엔코더 시뮬레이터" true run_tpac_encoder_sim.sh \
     network-transmit-receive "python3 mqtt_test/tpac_encoder_sim.py --host 127.0.0.1 --port 502 --connect"
 make_entry dusan-mqtt-explorer.desktop "MQTT Explorer" false run_mqtt_explorer.sh \

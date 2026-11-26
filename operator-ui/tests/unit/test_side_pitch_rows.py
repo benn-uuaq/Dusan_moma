@@ -29,21 +29,42 @@ def _rows_block(folder: str) -> str:
     return _python(text[start:end])
 
 
+def _tool_trans(pose, offset):
+    """시험용 pose_trans — 툴 +Z 가 베이스 +X(벽 쪽)를 보는 자세로 본다(벽에 붙어 훑는 자세)."""
+    return [pose[0] + offset[2], pose[1] + offset[1], pose[2] - offset[0], *pose[3:]]
+
+
 def _run_robot(folder: str, height: float, left: float, right: float, scan_h: float = 30.0,
-               z_base: float = 0.0, zero_z: float = 0.0):
-    """init 으로 줄 수를 세고, 펜던트 Loop 처럼 pass → up 을 돌며 줄 높이를 모은다."""
+               z_base: float = 0.0, zero_z: float = 0.0, extra: dict | None = None,
+               poses: list | None = None):
+    """init 으로 줄 수를 세고, 펜던트 Loop 처럼 pass → up 을 돌며 줄 높이를 모은다.
+
+    `poses` 를 주면 movel 마다 (x mm, 원점 기준 z mm)를 담는다 — x 는 벽 쪽이 +.
+    """
     scope = {"app_height": height, "scan_h": scan_h, "pitch_l": left, "pitch_r": right,
              "ceil": math.ceil}
     exec(_rows_block(folder), scope)
     moves, regs = [], {}
+    current = [0.0, 0.0, zero_z, 0.0, 0.0, 0.0]
+
+    def movel(pose, a, v):
+        current[:] = list(pose)
+        moves.append(round(pose[2] * 1000 - zero_z * 1000, 3))
+        if poses is not None:
+            poses.append((round(pose[0] * 1000, 3), round(pose[2] * 1000 - zero_z * 1000, 3)))
+
     scope.update({
         "row_idx": 0, "dir_sign": 1, "z_base": z_base, "a_scan": 1.0, "v_scan": 0.1,
+        "a_l": 1.0, "v_l": 0.1,
         "zero_pose": [0.0, 0.0, zero_z, 0.0, 0.0, 0.0],
         "path_len": 0.0, "floor": math.floor,
+        # 바닥 근처 물러서기(2026-11-23) — 기본은 끈 채로(예전 동작), 시험마다 extra 로 켠다.
+        "up_clear_h": 0.0, "up_clear_d": 0.0, "scan_y_base": 0.0, "pose_trans": _tool_trans,
         "write_port_register": lambda a, v: regs.__setitem__(a, v),
         "read_port_register": lambda a, signed=True: 100,
-        "get_actual_tcp_pose": lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        "movel": lambda pose, a, v: moves.append(round(pose[2] * 1000 - zero_z * 1000, 3)),
+        "get_actual_tcp_pose": lambda: list(current),
+        "movel": movel,
+        **(extra or {}),
     })
     up = _python((TASK / folder / "dus6_up.script").read_text(encoding="utf-8"))
     heights = [0.0]
@@ -105,6 +126,54 @@ def test_screen_draws_the_side_pitch_rows():
     pts, plan = ideal_path(300, 200, 30, 0, row_heights=[0, 40, 40, 80])
     assert plan["rows"] == 4 and plan["pitch"] == 40
     assert pts == [(0, 0), (300, 0), (300, 40), (0, 40), (300, 40), (300, 80), (0, 80)]
+
+
+# ---- 바닥 근처 줄 바꿈은 물러섰다 오른다 (2026-11-23) -------------------------------------
+@pytest.mark.parametrize("folder", FOLDERS)
+def test_rises_near_the_material_bottom_back_off_rise_and_return(folder):
+    """모재 아래 끝에서 up_clear_h(200) 안의 줄 바꿈은 벽에서 up_clear_d(20) 물러섰다 올라가 다시 붙는다 —
+    받침대 위에 뜬 모재의 아래 끝에 스캐너 홀더가 걸리지 않게. 그 위로는 예전처럼 붙은 채 오른다."""
+    poses: list = []
+    rows, heights, _moves, segments = _run_robot(
+        folder, 300, 0, 0, scan_h=100, poses=poses,
+        extra={"up_clear_h": 200.0, "up_clear_d": 20.0, "scan_y_base": 0.0})
+    assert heights == [0, 100, 200, 300]
+    assert poses == [(-20, 0), (-20, 100), (0, 100),          # 0 → 100: 물러서기 · 오르기 · 다시 붙기
+                     (-20, 100), (-20, 200), (0, 200),        # 100 → 200: 아직 200 안
+                     (0, 300)]                                # 200 → 300: 붙은 채
+    assert segments == [2, 2, 2], "물러서고 다시 붙는 동안도 스캔 동결(277 = 2)"
+
+
+@pytest.mark.parametrize("folder", FOLDERS)
+def test_back_off_uses_the_material_height_of_the_zone(folder):
+    """구역 아래 끝이 모재 아래 끝에서 150 이면(359) 첫 줄 바꿈만 200 안이다. 리프트로 올라간 구역(1100)은 없다."""
+    poses: list = []
+    _run_robot(folder, 300, 0, 0, scan_h=100, poses=poses,
+               extra={"up_clear_h": 200.0, "up_clear_d": 20.0, "scan_y_base": 150.0})
+    assert poses == [(-20, 0), (-20, 100), (0, 100), (0, 200), (0, 300)]
+    poses.clear()
+    _run_robot(folder, 300, 0, 0, scan_h=100, poses=poses,
+               extra={"up_clear_h": 200.0, "up_clear_d": 20.0, "scan_y_base": 1100.0})
+    assert poses == [(0, 100), (0, 200), (0, 300)]
+
+
+@pytest.mark.parametrize("folder", FOLDERS)
+def test_back_off_is_off_when_the_distance_is_zero(folder):
+    poses: list = []
+    _run_robot(folder, 300, 0, 0, scan_h=100, poses=poses,
+               extra={"up_clear_h": 200.0, "up_clear_d": 0.0, "scan_y_base": 0.0})
+    assert poses == [(0, 100), (0, 200), (0, 300)]
+
+
+def test_new_task_variables_are_declared_for_the_pendant():
+    """펜던트에서 바꿀 수 있게 변수 목록(configuration.variables)에 있다 — 적용 높이 200 mm, 물러서기 20 mm."""
+    text = (TASK / "dusan_v6.configuration.variables").read_text(encoding="utf-8")
+    assert 'name="up_clear_h" value="200"' in text
+    assert 'name="up_clear_d" value="20"' in text
+    assert 'name="scan_y_base" value="0"' in text
+    for folder in FOLDERS:
+        init = (TASK / folder / "dus6_init.script").read_text(encoding="utf-8")
+        assert "scan_y_base = read_port_register(359, True)" in init
 
 
 # ---- 리프트 대신 팔 올리기 (358, 2026-11-09) ---------------------------------------

@@ -357,15 +357,15 @@ def test_unexpected_link_loss_is_announced_but_manual_disconnect_is_not(qtbot):
     window.ros_status.call_command = lambda name: True
     window.ros_status.connected_changed.emit(True)
     window.ros_status.connected_changed.emit(False)            # 로봇이 끊겼다
-    assert "끊겼습니다" in conn.save_status.text()
+    assert "끊겼습니다" in conn.link_message.text()
     assert "연결 안 됨" in conn.link_state.text()
     assert "연결 안 됨" in window.top_bar.badges["Cobot"].state_label.text()
     window.ros_status.connected_changed.emit(True)             # 자동 재연결
-    assert "다시 연결됐습니다" in conn.save_status.text()
+    assert "다시 연결됐습니다" in conn.link_message.text()
 
     window._disconnect_robot()                                  # 운영자가 끊음
     window.ros_status.connected_changed.emit(False)
-    assert conn.save_status.text() == "연결을 끊었습니다.", "운영자가 끊은 건 끊김 경고가 아니다"
+    assert conn.link_message.text() == "연결을 끊었습니다.", "운영자가 끊은 건 끊김 경고가 아니다"
     window.close()
 
 

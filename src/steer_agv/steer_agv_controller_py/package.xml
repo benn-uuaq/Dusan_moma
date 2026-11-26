@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>steer_agv_controller_py</name>
+  <version>0.1.0</version>
+  <description>Python ROS 2 controller for the steer AGV.</description>
+  <maintainer email="maintainer@example.com">steer_agv maintainers</maintainer>
+  <license>TODO</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>python3-pyqt5</exec_depend>
+  <exec_depend>rosidl_runtime_py</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <depend>vehicle_interfaces</depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <test_depend>python3-pytest</test_depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -1,0 +1,261 @@
+1. AGV NODE NAME: QUAD_STEER_AGV_CONTROLLER
+2. 제어주기는 10MS
+3. PLC interface용 변수명 참고
+ - DM021~024 및 DM029는 수신 INT16에 0.01을 곱해 각도(°)로 환산한다. DM109 송신은 각도(°)에 100을 곱해 반올림한다.
+ - ex)	수신: 원시값 250 --> 2.50°,
+ 	송신: DM109 25.0° --> 2500 카운트 전송.
+
+ NAME	TYPE	UNIT
+-AGV_LIFE	UINT
+-AGV_MODE	UINT
+-AGV_STATE	UINT
+-AGV_BUSY	BOOL
+-ERROR_CODE	UINT
+-FL_WHEEL_DISTANCE	DINT	mm
+-FR_WHEEL_DISTANCE	DINT	mm
+-RL_WHEEL_DISTANCE	DINT	mm
+-RR_WHEEL_DISTANCE	DINT	mm
+-FL_WHEEL_SPEED		DINT	mm/s
+-FR_WHEEL_SPEED		DINT	mm/s
+-RL_WHEEL_SPEED		DINT	mm/s
+-RR_WHEEL_SPEED		DINT	mm/s
+-FL_JOINT_ANGLE		INT	0.01deg
+-FR_JOINT_ANGLE		INT	0.01deg
+-RL_JOINT_ANGLE		INT	0.01deg
+-RR_JOINT_ANGLE		INT 	0.01deg
+-OUTRIG_STATE		BOOL
+-LIFT_HEIGHT		DINT	mm
+-GUIDE_ERROR_DISTANCE	INT	mm
+-GUIDE_ERROR_ANGLE	INT 	0.01deg
+-E-STOP			BOOL
+-AUTO_READY		BOOL
+-FRONT_OBSTACLE_DETECT_STATE	UINT
+-REAR_OBSTACLE DETECT_STATE	UINT
+-GUIDE_SENSOR1_DISTANCE		UINT	mm
+-GUIDE_SENSOR2_DISTANCE		UINT 	mm
+-INPUT_STATE1	UINT
+-INPUT_STATE2	UINT
+-INPUT_STATE3	UINT
+-OUTPUT_STATE1	UINT
+-OUTPUT_STATE2	UINT
+-BATTERY_VOLTAGE	UINT, 0.1VOLT
+-BATTERY_SOC		UINT, 0.1Percent
+-BATTERY_TEMP		UINT, 0.1deg
+-CHARGING	BOOL
+
+-LIFE		UINT
+
+
+-COMMAND	UINT
+-RESET		BOOL
+-INITIALIZE	BOOL
+-TARGET_SPEED	INT	mm/s
+-TARGET_POSITION	INT	mm
+-TARGET_HEIGHT		UINT	mm
+-TARGET_THETA		INT	0.01deg
+-GUIDE_OFFSET_DIST	UINT	mm
+-TARGET_RADIUS		UINT	mm
+-LIFT_SPEED		UINT	mm/s
+-MAN_FORWARD		BOOL
+-MAN_BACKWARD		BOOL
+-MAN_LEFT_TURN		BOOL
+-MAN_RIGHT_TURN		BOOL
+-MAN_LIFT_UP		BOOL
+-MAN_LIFT_DOWN		BOOL
+-MAN_OUTRIG_SET		BOOL
+-MAN_OUTRIG_RESET	BOOL
+
+
+4. ODOMETRY
+ - FL_WHEEL_DISTANCE, FR_WHEEL_DISTANCE, RL_WHEEL_DISTANCE, RR_WHEEL_DISTANCE, FL_STEER_ANGLE, FR_STEER_ANGLE, RL_STEER_ANGLE, RR_STEER_ANGLE를 샘플링하여 실시간 ODOMETRY 를 작성한다.
+ - ODOMETRY X,Y,THETA를 받아 초기화 할수 있는 루트를 열어둬야한다.
+ - FL_WHEEL & STEER X-Y 좌표 [-0.410,0.680,]
+ - FR_WHEEL & STEER X-Y 좌표 [0.410, 0.680,]
+ - RL_WHEEL & STEER X-Y 좌표 [-0.410,-0.680,]
+ - RR_WHEEL & STEER X-Y 좌표 [0.410,-0.680]
+ 
+ - WHEEL DIAMETER: 250mm
+ - MAX_SPEED: 980 mm/s
+ - STEER 최대 ANGLE : +- 110deg
+ - STEER_MAX_각속도 : 90deg/s
+ - urdf및 tf 생성하여 rivz2에서 이동경로가 확인 가능해야함.
+ 
+ 
+ 5. Service & Topic
+ Service name		Service 원본
+/vehicle/set_job	-	vehicle_interfaces/srv/SetJob
+/vehicle/robot_control	-	vehicle_interfaces/srv/RobotControl
+/vehicle/manual_command	-	vehicle_interfaces/srv/ManualCommand
+/vehicle/measure_lap	-	vehicle_interfaces/srv/MeasureLap
+/vehicle/lift_control	- 	vehicle_interfaces/srv/SetMvLift
+
+ - topic name		topic원본
+/vehicle/robot_status	-	vehicle_interfaces/msg/RobotStatus
+/vehicle/start_request	-	std_msgs/msg/Empty
+/vehicle/robot_estop	-	std_msgs/msg/Bool
+
+/vehicle/robot_status — vehicle_interfaces/msg/RobotStatus (AGV 발행 → RCS 구독)						
+robot_status	msg	header	std_msgs/Header	-	-	stamp = 보낸 시각
+		state	string	-	""	STOP · RUNNING · PAUSE · HOLD(아웃트리거로 고정돼 섬) · ERROR
+		hold	string	-	""	아웃트리거 SET(고정) · RELEASE(해제)
+		error_code · error_msg	int32 · string	-	0 · ""	0 정상, 그 외 차량 오류 번호 · 설명(아래 4) 차량 오류 번호). 오류면 state = ERROR
+		job_id	string	-	""	지금 하는 set_job · measure_lap 의 job_id
+		set_dist · mv_dist	float64	m	0	목표 거리 · 이번 이동에서 달린 거리(출발 때 0)
+		speed	float64	m/s	0	지금 속도
+		sen1_dist · sen2_dist	float64	m	0	거리 센서 1 · 2
+		position	Position6D (x y z roll pitch yaw)	m · rad	0	차량 위치 · 자세
+		lift_h	float64	m	0	리프트 높이
+		battery_pct	uint8	%	255	배터리 잔량 0~100. 255 = 모름 · 배터리 없음
+		charging	bool	-	false	충전 중
+		estop	bool	-	false	차량(PLC) 비상정지 중 — 차량 버튼이든 robot_estop · 안전 회로로 건 것이든 true
+		obstacle_stop	bool	-	false	접근 감지(안전 스캐너)로 섰다 → RCS 가 작업을 일시정지
+		level_state	int8	-	-1	아웃트리거 수평 1 맞음 · 0 안 맞음(로봇 검사 막음) · -1 모름
+		standoff_meas	float64	m	-1	지금 잰 거리 — 차량 안쪽 면 ↔ 모재 표면. 모르면 -1
+		lap_state	string	-	"IDLE"	measure_lap 진행 — IDLE · RUNNING · DONE ·PAUSED· FAILED(STOP 명령시 FAILED)
+		lap_path_m	float64	m	0	이번 캘리브레이션 주행에서 차량 중심이 달린 거리(ALIGN 은 정렬하며 움직인 거리)
+		lap_origin_ok	bool	-	false	LAP: 원점 QR 을 다시 찾아 섰다 · ALIGN: QR 에 맞춰 섰다
+		lap_error	string	-	""	FAILED 일 때 까닭
+
+/vehicle/start_request — std_msgs/msg/Empty (AGV 발행 → RCS 구독)						
+start_request	msg	(칸 없음)	-	-	-	차량 물리 「작업 시작」 버튼이 눌렸다. 한 번 낸다
+
+/vehicle/robot_estop — std_msgs/msg/Bool (AGV 발행 → RCS 구독)						
+robot_estop	msg	data	bool	-	false	true = PLC에서 비상정지가 눌렸다 →컨트롤러도 비상정지를 건다 · 움직이는 명령 거절 · estop = true. false 가 되면 차량 리셋 규칙대로 푼다. 실제 동시 정지는 안전 회로 직결이 맡는다(2.작업별 순서 E)
+
+/vehicle/set_job — vehicle_interfaces/srv/SetJob (RCS 호출 → AGV 서버)						
+set_job	요청	job_id	string	-	-	이동마다 새 번호(RCS-0001 …)
+	요청	set_dist	float64	m	-	이번 이동에서 차량 중심이 달릴 거리. 부호 = 방향(+ 원주 진행). 모재 표면 거리 × 주행 배율(RCS 계산)
+	요청	set_speed	float64	m/s	-	RCS 차량 설정 「차량 주행 속도」(기본 0.1)
+	요청	standoff	float64	m	-	지킬 거리 — 차량 안쪽 면 ↔ 모재 표면. RCS 차량 설정 「모재 거리 유지」
+	요청	radius	float64	m	-	대상물의 반경
+	응답	success · message	bool · string	-	-	받았으면 true. 출발은 하지 않는다(robot_control RUNNING 으로). 거절이면 false + 까닭
+
+
+/vehicle/robot_control — vehicle_interfaces/srv/RobotControl (RCS 호출 → AGV 서버)						
+robot_control	요청	state	string	-	""	RUNNING = 출발 · 재개, STOP = 정지 · 일시정지, PAUSE = 캘리브레이션 주행(measure_lap) 일시정지. 빈 글자 = 상태 안 바꿈
+	요청	reset	uint8	-	0	1 = 오류 리셋
+	요청	job_cancel	uint8	-	0	1 = 작업 취소, 이동 거리 보존하려면 PAUSE
+	응답	success · message	bool · string	-	-	false 면 실패(RCS 알람)
+
+/vehicle/manual_command — vehicle_interfaces/srv/ManualCommand (RCS 호출 → AGV 서버)						
+manual_command	요청	cmd_mv_fwd · cmd_mv_rear	bool	-	false	true 동안 전진 · 후진(누르는 동안 200 ms 마다 다시 옴, 끊기면 선다)
+	요청	cmd_trn_left · cmd_trn_right	bool	-	false	true 동안 좌 · 우회전
+	요청	cmd_outrg_set	uint8	-	0	아웃트리거 전체 — 1 해제 · 2 고정 · 0 없음
+	요청	cmd_mv_lift + lift_height	uint8 + float64	- · m	0	cmd_mv_lift = 1 이면 리프트를 lift_height(절대 높이)로. 아웃트리거 고정에서만
+	요청	cmd_init	uint8	-	0	1 = 원점 / 초기화
+	응답	success · message	bool · string	-	-	수동 모드가 아니면(RUNNING · PAUSE · ERROR) false
+	
+	
+/vehicle/measure_lap — vehicle_interfaces/srv/MeasureLap (RCS 호출 → AGV 서버)						
+measure_lap	요청	job_id	string	-	-	캘리브레이션마다 새 번호(LAP-0001 · ALN-0001 …) — robot_status.job_id 로 돌려준다
+	요청	mode	string	-	""	LAP = 원통: 원점(QR)에서 모재를 한 바퀴 돌고 원점에 선다. ALIGN = 곡판: 한 바퀴 돌지 않고 판 가운데의 QR 마커에 맞춰 정렬(거리 · 방향)만 하고 선다 — 곡판은 스캔 때도 차량이 움직이지 않는다. 빈 글자 = LAP
+	요청	speed	float64	m/s	-	RCS 차량 설정 「차량 주행 속도」(ALIGN 은 정렬 움직임의 상한)
+	요청	standoff	float64	m	-	거리 유지 — 차량 안쪽 면 ↔ 모재 표면
+	요청	expected_dist	float64	m	-	LAP: 한 바퀴 거리 2π(모재 반지름 + 거리 유지 + 차량 폭/2) — 안전 한도 · 참고. ALIGN: 0
+	응답	success · message	bool · string	-	-	받아들이면 바로 출발. 모르는 mode 는 거절. 진행 · 결과는 robot_status 의 lap_*
+/vehicle/lift_control - vehicle_interfaces/srv/SetMvLift (RCS 호출 → AGV 서버)
+# Request
+# 리프트는 개별 서비스로 동작한다. 리프트 동작시 협동로봇의 safety reset 명령 수신 확인이 필요하다.
+string job_id          # 작업 식별자
+float64 set_height       # 목표 높이 [m] — 리프트 높이 
+float64 set_speed      # 목표 속도 [m/s] — 리프트 속도, auto mode에서만 적용, 수동 모드는 PLC 속도 조절
+---
+# Response
+bool success           # 명령 접수 성공 여부
+string message         # 처리 결과 또는 실패 사유
+
+
+	
+
+
+
+
+
+
+
+
+
+ 
+ 
+ 6. CONTROL
+ - RCS에서 TARGET_POS가 전송되면, ODOM기준 시작지점에서 TARGET_POS까지 전진/후진 이동한다.
+ - CONTROLLER는 실시간 ODOM 이동량을 파악하여 이동량을 체크한다.
+ - 이동시 속도는 RCS에서 입력받은 TARGET SPEED로 움직인다.
+ - 가감속은 JERK :100%, ACCELATION(m/s^2) : TARGET SPEED(m/s), DECELATION(m/s^2) : TARGET_SPEED 로 구성한다.
+ - TARGET_SPEED가 0일경우 파라미터로 설정된 ACCELATION, DECCELATION을 따른다. 
+ - 거리가 너무 짧아 TARGET SPEED 까지 속도를 올릴수 없을 경우 가능한 범위 까지만 속도를 상승시킨다.
+ -TARGET_THETA는 BODY가 조향해야 하는 각이다. AGV는 원통형 물체의 주위를 일정 OFFSET을 두고 회전한다. 
+     그래서 컨트롤러는 원의 반지름(/vehicle/set_job.radius), OFFSET(/vehicle/set_job.standoff), BODY_OFFSET(파라미터)을 기준으로 AGV가 전진시 원통을 회전하기 위한 값을 연산받아야 한다.
+     
+ - TARGET_RADIUS(DEFAULT 1.25M), GUIDE_OFFSET_DIST(DEFAULT 1.0M), BODY_OFFSET(DEFAULT 0.6M) 은 PARAMETER로 정의한다. TARGET_RADIUS←radius`, `GUIDE_OFFSET_DIST←standoff`.
+
+ - PLC_LIFE는 1MS 주기다. 3초 이상 갱신되지 않으면 에러를 발생시키고(PLC_COMM_LOST)정지한다. PLC는 PC LIFE가 갱신되지 않으면 정지한다.
+ - PLC WIRITE디바이스는 값이 변경 될때만 전송한다.
+ - RESET(DM104)는 /vehicle/robot_control.reset 이 수신될때만 전송하고 송신이 확인 되면 0으로 초기화한다. 초기화한 값은 송신하지 않는다.
+ - RCS에서 /vehicle/set_job(서비스)을 주고 /vehicle/robot_control(서비스)로 run 명령을 주면 AGV는 TARGET DISTANCE까지 주행한다.
+ - 목표 위치 도달 후 AGV MODE에 HOLD 명령을 준다. OUTRIG_STATE가 TRUE가 되면 RCS에서 입력 받은    /vehicle/lift_control의 값을 TARGET_HEIGHT에 넣어 보낸다. 
+ - steer 각도 및 각휠의 속도는 Controller가 보내는 속도및 각도를 기준으로  H/W에서 계산하여 제어한다.
+ - MODE
+    0: COBOT Manual 
+    1: DRIVE Manual 
+    2: Auto
+    
+- COMMAND
+    0: STOP :  정지. 
+    1: RUN : 주행 시작
+    2: HOLD :  아웃트리거 동작
+    4: PAUSE : 일시 정지.
+    16: INITIALIZE
+    32: FINISH : RCS가 /vehicle/robot_control.state="FINISH"로 요청. PLC에서 HOLD 해제.
+    값 8은 STATE 전용 ERROR. COMMAND로 수신하면 오류 응답.
+- STATE
+    0: STOP : 정지, 작업중인 JOB 없음.
+    1: RUNNING : 주행중,
+    2: HOLDING :  아웃트리거 작동. 고정상태.
+    4: PAUSING:   정지, 작업중인 JOB 있음.
+    8: ERROR :  에러상태, 정지.
+    16: INITIALIZE : 초기화 중.
+    32: FINISH : 종료. 새 SetJob 수락 또는 job_cancel=1이면 STOP 요청.
+    
+-TARGET_POS(DM107) 는 상위에서 받는 거리값 단순 전달
+-TARGET_SPEED(DM106) : 속도 연산 값 전달.
+-LAP/ALIGN 및 수평 판단에 필요하지만 입력 인터페이스가 없다. --> 추후 QR POSE TOPIC 을 추가한다, 일단 파라미터만 임의의 토픽(/sensor/qr)을 넣어둔다. subscribe는 추후 적용한다. ALIGN 은 PLC에서 받은 GUIDE SENSOR1 DISTANCE(MM), GUIDE SENSOR2 DISTANCE(MM) 로 유추한다.
+ GUIDE SENSOR1 JOINT 좌표 [0.6M, 0.81M, 0.7M]
+ GUIDE SENSOR2 JOINT 좌표 [0.6M, -0.81M, 0.7M]
+- CHARGING(DM062)
+- E-STOP(DM030)
+- level_state -1
+- 장애물 단계의 bit :FRONT_OBSTACLE_DETECT_STATE, REAR_OBSTACLE_DETECT_STATE
+- 물리시작 버튼 : AUTO_READY[DM031]
+
+
+
+
+
+
+
+ 
+ 
+7.PLC 통신
+-TCP SOCKET 통신
+-IP: 192.168.11.10
+-PORT: 8501
+-PLC 통신방식.txt 참고
+-RDS 리드시 .U로 읽고 형변환 한다.
+
+
+
+
+8.단위는 CONTROLLER에선 Meter, m/s, Radian 단위를 사용하고 PLC 인터페이스로 보내는 단위는 mm, mm/s, degree 로 전송한다.
+
+9. 규칙
+- NAN, INF 나오지 않게 계산한다.
+- 휠 거리·속도 및 리프트 높이는 LOW/HIGH 두 워드의 DINT이며 ROS에서 float로 환산한다.
+
+
+
+
+ 
+ 
+
+

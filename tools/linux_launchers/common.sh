@@ -16,6 +16,12 @@ ros_env() {
     [ -f "$WS/install/setup.bash" ] && source "$WS/install/setup.bash"
     # shellcheck disable=SC1091
     [ -f "$WS/.venv/bin/activate" ] && source "$WS/.venv/bin/activate"
+    # Fast DDS 전송 설정 — WSL 미러 네트워크에서 같은 PC 의 노드끼리 통하게(127.0.0.1 로 가는 1.4 KB 넘는
+    # UDP 가 사라진다). RCS 도 스스로 걸지만, 차량 모의기 · 테스트 PLC · ros2 명령도 같은 설정이어야 한다.
+    local dds="$WS/operator-ui/src/smr_operator_ui/config/fastdds_profile.xml"
+    if [ -z "${FASTRTPS_DEFAULT_PROFILES_FILE:-}" ] && [ -f "$dds" ]; then
+        export FASTRTPS_DEFAULT_PROFILES_FILE="$dds"
+    fi
     return 0
 }
 

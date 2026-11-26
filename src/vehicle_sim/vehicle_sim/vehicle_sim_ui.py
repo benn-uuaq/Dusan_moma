@@ -26,7 +26,7 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
 
-from vehicle_sim.vehicle_sim_node import VehicleSim
+from vehicle_sim.vehicle_sim_node import MODE_NAMES, VehicleSim
 
 BG = "#11161C"
 BODY = "#2E6DA4"
@@ -64,7 +64,15 @@ class VehicleSimUI:
         ttk.Label(top, textvariable=self.state_var, font=("Sans", 11, "bold")).pack(side=tk.LEFT)
         ttk.Button(top, text="오류 주입", command=lambda: self._fault(21)).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="오류 해제", command=lambda: self._fault(0)).pack(side=tk.RIGHT, padx=3)
+        ttk.Button(top, text="비상정지", command=self._toggle_estop).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="정지", command=self._stop).pack(side=tk.RIGHT, padx=3)
+        # PLC 운전 모드(DM001) — 자동이면 RCS 자동 명령, 수동이면 수동 제어 화면 명령을 받는다.
+        modes = ttk.Frame(root, padding=(8, 0))
+        modes.pack(fill=tk.X)
+        ttk.Label(modes, text="운전 모드").pack(side=tk.LEFT, padx=(0, 6))
+        for value in (2, 1, 0):
+            ttk.Button(modes, text=MODE_NAMES[value],
+                       command=lambda v=value: self._set_mode(v)).pack(side=tk.LEFT, padx=3)
 
         self.canvas = tk.Canvas(root, width=self.W, height=self.H, bg=BG, highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
@@ -84,6 +92,12 @@ class VehicleSimUI:
 
     def _stop(self) -> None:
         self.node._halt()
+
+    def _set_mode(self, value: int) -> None:
+        self.node.set_parameters([Parameter("mode", value=int(value))])
+
+    def _toggle_estop(self) -> None:
+        self.node.set_parameters([Parameter("estop", value=not self.node.estop_now)])
 
     # ------------------------------------------------------------ 그리기
     def _tick(self) -> None:
@@ -164,13 +178,13 @@ class VehicleSimUI:
     def _draw_beacon(self, x: float, top: float, s: dict) -> None:
         c = self.canvas
         moving = (abs(s["speed"]) > 1e-6 or s["lift_moving"] or s["outrigger_moving"])
-        error = s["state"] == "ERROR"
+        error = s["state"] == "ERROR" or s.get("estop")
         on = [False, False, False]
         if error:
             on[0] = self.blink < 0.65                     # 빨강 깜빡 — 오류
         elif moving:
             on[1] = self.blink < 0.65                     # 노랑 깜빡 — 움직이는 중
-        elif s["state"] == "PAUSED" or s["hold"] == "SET":
+        elif s["state"] == "PAUSE" or s["hold"] == "SET":
             # 아웃트리거를 내리고 서 있는 동안(로봇이 검사 중)도 '작업 중'이다.
             on[1] = True                                  # 노랑 켜짐
         else:
@@ -198,10 +212,12 @@ class VehicleSimUI:
         hold = {"SET": "고정", "RELEASE": "해제"}.get(s["hold"], s["hold"])
         error = "정상" if not s["error_code"] else f"{s['error_code']} {s['error_msg']}"
         plc = s.get("plc_state", "-") + (f" ({s['plc_error']})" if s.get("plc_error") else "")
-        self.state_var.set(f"상태 {s['state']}   아웃트리거 {hold}   오류 {error}   PLC {plc}")
+        estop = "   비상정지" if s.get("estop") else ""
+        self.state_var.set(f"모드 {MODE_NAMES.get(s.get('mode'), s.get('mode'))}   상태 {s['state']}   "
+                           f"아웃트리거 {hold}   오류 {error}   PLC {plc}{estop}")
         self.info_var.set(
             f"작업 {s['job_id'] or '-'}"
-            + ("(홀딩 — job_finish 기다림)" if s.get("finish_wait") else "")
+            + ("(끝남 — FINISH 기다림)" if s.get("job_done") and s["state"] == "HOLD" else "")
             + f"    이동 {s['mv_dist']:.3f} / {s['set_dist']:.3f} m    "
             f"속도 {s['speed']:.2f} m/s    누적 {s['odometer']:.3f} m    "
             f"리프트 {s['lift_h'] * 1000:,.0f} mm    다리 "

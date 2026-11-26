@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.8)
+project(steer_agv_sim_test)
+find_package(ament_cmake REQUIRED)
+install(PROGRAMS scripts/cmd_vel_test.py DESTINATION lib/${PROJECT_NAME} RENAME cmd_vel_test)
+install(FILES plugin_test.xacro README.md DESTINATION share/${PROJECT_NAME})
+ament_package()

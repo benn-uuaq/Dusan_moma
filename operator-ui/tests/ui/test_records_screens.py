@@ -18,6 +18,9 @@ from smr_operator_ui.services import data_recorder as dr
 @pytest.fixture
 def window(qtbot, tmp_path, monkeypatch):
     monkeypatch.setenv("SMR_DATA_DIR", str(tmp_path / "data"))
+    # 기준 위치 파일도 시험마다 따로 — 운전 모드 시험이 그리퍼 접촉 위치를 되살려 쓰면 세션 공용 파일에 남아
+    # 다른 시험(차량 설정의 그리퍼 접촉 높이)이 그 값을 읽었다(2026-11-25).
+    monkeypatch.setenv("SMR_ROBOT_CONFIG_DIR", str(tmp_path / "robot_config"))
     w = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(w)
     # 로봇 명령은 가로챈다(로봇 없이 알람이 쌓이지 않게).
@@ -287,3 +290,205 @@ def test_manual_status_panel(window) -> None:
     assert screen.lift_value.text() == "960 mm"
     assert screen.status_blocks["hold"].value_label.text() == "고정"
     assert screen.status_blocks["error"].value_label.text() == "정상"
+
+
+def test_mode_slot_carries_connection_system_vehicle_and_robot_poses(window) -> None:
+    """2026-11-24 — 운전 모드에 연결 · 시스템 · 차량 설정과 로봇 기준 위치도 같이 넣는다."""
+    from smr_operator_ui.screens.records_screens import describe_mode
+    from smr_operator_ui.services.reference_poses import load_reference_poses
+
+    screen = _modes(window, "현장 A")
+    conn, system, vehicle = (window.screens[k] for k in ("connection", "system", "vehicle"))
+    conn.field("협동로봇 IP").setText("192.168.11.30")
+    conn.field("PLC 포트").setValue(8501)
+    conn.field("ERUT 비밀번호").setText("secret-pw")
+    system.field("장비 이름").setText("SMR-A")
+    vehicle.field(vehicle.SPEED_FIELD).setValue(300)
+    home = {"values": [0.0, -90.0, 90.0, 0.0, 90.0, 0.0], "saved_at": "2026-11-20T10:00:00"}
+    window._reference_poses = {"home_joint": dict(home)}
+    sent: list[tuple] = []
+    window.ros_status.send_pose = lambda target, values: sent.append((target, list(values))) or True
+
+    screen._save_clicked()                           # 슬롯 1
+    snap = window._mode_slots["1"]
+    assert snap["connection"]["협동로봇 IP"] == "192.168.11.30" and snap["connection"]["PLC 포트"] == 8501
+    assert snap["system"]["장비 이름"] == "SMR-A"
+    assert snap["vehicle"]["차량 주행 속도"] == 300
+    assert snap["reference_poses"] == {"home_joint": home}
+    text = describe_mode(snap)
+    assert "연결: 로봇 192.168.11.30" in text and "PLC 192.168.11.10:8501" in text
+    assert "시스템: SMR-A" in text and "차량: 주행 300 mm/s" in text and "로봇 기준 위치: 홈" in text
+    assert "secret-pw" not in text, "비밀번호는 보이지 않는다"
+
+    # 바꿔 놓고 불러오면 슬롯 값으로 돌아온다 — 기준 위치는 파일 · 로봇에도.
+    conn.field("협동로봇 IP").setText("10.0.0.9")
+    system.field("장비 이름").setText("다른 장비")
+    vehicle.field(vehicle.SPEED_FIELD).setValue(700)
+    window._reference_poses = {"home_joint": {"values": [1.0] * 6, "saved_at": "x"}}
+    screen._load_clicked()
+    assert conn.robot_ip() == "192.168.11.30" and system.values()["장비 이름"] == "SMR-A"
+    assert vehicle.speed_mm_s() == 300 and window._vehicle_amr.speed_mps == 0.3, "저장 버튼과 같이 적용"
+    assert window._reference_poses["home_joint"] == home
+    assert ("home_joint", home["values"]) in sent
+    assert load_reference_poses()["home_joint"] == home, "저장 시각 그대로 파일에"
+    assert "기준 위치 1개" in screen.status_label.text()
+
+
+def test_mode_slot_with_poses_waits_for_the_robot_task_to_stop(window) -> None:
+    screen = _modes(window)
+    window._reference_poses = {"home_joint": {"values": [0.0] * 6, "saved_at": "s"}}
+    screen._save_clicked()
+    window._robot_task_running = lambda: True
+    window.screens["cobot"].field("작업 속도").setValue(66)
+    screen._load_clicked()
+    assert window.screens["cobot"].field("작업 속도").value() == 66
+    assert "로봇 태스크가 도는 중" in screen.status_label.text()
+
+
+def test_manual_lift_has_stop_and_the_amr_jog_has_none(window) -> None:
+    """2026-11-24 — AMR 조그는 누르는 동안만 움직여 「정지」가 없다. 리프트 카드에 「정지」만 둔다
+    (올리기 · 내리기는 같은 날 뺐다 — 높이 입력 + 「이 높이로 이동」은 그대로)."""
+    screen = window.screens["manual"]
+    screen.set_available(True)
+    assert not hasattr(screen, "lift_up_button") and not hasattr(screen, "lift_down_button")
+    jog_card = screen.jog_buttons["cmd_mv_fwd"].parentWidget()
+    assert screen.stop_button.parentWidget() is not jog_card, "정지는 AMR 조그 카드에 없다"
+    assert screen.stop_button.parentWidget() is screen.lift_button.parentWidget(), "리프트 카드에 있다"
+    lifts, stops = [], []
+    screen.lift_requested.connect(lifts.append)
+    screen.stop_requested.connect(lambda: stops.append(1))
+    screen.lift_target.setValue(700)
+    screen.lift_button.click()
+    screen.stop_button.click()
+    assert lifts == [pytest.approx(0.7)] and stops == [1]
+    screen.set_interlock(True, "로봇이 홈 위치가 아님")
+    assert not screen.lift_button.isEnabled()
+    assert screen.stop_button.isEnabled(), "인터락이어도 정지는 누를 수 있다"
+
+
+def test_outrigger_hold_lamp_follows_the_vehicle_status(window) -> None:
+    screen = window.screens["manual"]
+    screen.set_available(True)
+    screen.set_status({"state": "HOLD", "hold": "SET"})
+    assert screen.hold_lamp.property("lamp") == "on" and screen.hold_text.text() == "고정됨 — HOLD"
+    screen.set_status({"state": "STOP", "hold": "RELEASE"})
+    assert screen.hold_lamp.property("lamp") == "off" and screen.hold_text.text() == "해제됨"
+    screen.set_available(False, "차량 상태가 들어오지 않습니다")
+    assert screen.hold_lamp.property("lamp") == "unknown"
+
+
+# ---- 운전 모드 — 모재마다 다른 기준 위치 4개 (2026-11-25 검토) --------------------------------
+POSES_A = {"home_joint": [0.0, -90.0, 90.0, 0.0, 90.0, 0.0],
+           "standby_joint": [10.0, -80.0, 80.0, 0.0, 90.0, 0.0],
+           "start_pose": [-900.5, -23.7, -343.6, 86.3, -0.3, -89.8],
+           "assembly_joint": [20.0, -70.0, 70.0, 0.0, 90.0, 0.0]}
+
+
+def test_mode_slot_restores_all_four_reference_poses(window) -> None:
+    """받침대 높이가 다른 모재마다 슬롯에 저장 — 홈 · 스캔 대기 · 그리퍼 접촉 · 조립 4개가 파일 · 화면 · 로봇에 돌아온다."""
+    from smr_operator_ui.services.reference_poses import load_reference_poses
+
+    screen = _modes(window, "모재 A (받침대 높음)")
+    window._reference_poses = {k: {"values": list(v), "saved_at": "2026-11-20T10:00:00"} for k, v in POSES_A.items()}
+    sent: list[tuple] = []
+    window.ros_status.send_pose = lambda target, values: sent.append((target, list(values))) or True
+    screen._save_clicked()
+    assert set(window._mode_slots["1"]["reference_poses"]) == set(POSES_A)
+
+    window._reference_poses = {k: {"values": [1.0] * 6, "saved_at": "다른 모재"} for k in POSES_A}
+    screen._load_clicked()
+    assert {k: v["values"] for k, v in window._reference_poses.items()} == POSES_A
+    assert sorted(t for t, _ in sent) == sorted(POSES_A), "4개 모두 로봇(노드)으로 보낸다"
+    saved = load_reference_poses()
+    assert {k: saved[k]["values"] for k in POSES_A} == POSES_A, "기준 위치 파일에도"
+    assert window.screens["vehicle"].contact_height_mm() == -343.6, "그리퍼 접촉 높이도 그 모재 값으로"
+    vehicle = window.screens["vehicle"]
+    box = vehicle.field(vehicle.CONTACT_FIELD)
+    assert box.value() == -344 and not box.isEnabled(), "차량 설정 칸에 그 값이 들어가고 잠긴다"
+    for command, (target, _labels) in window.POSE_TARGETS.items():
+        assert window.cobot_jog_screen.saved_labels[command].text(), f"{target} 카드에 값이 보인다"
+
+
+def test_mode_slot_warns_about_reference_poses_it_does_not_have(window) -> None:
+    """빠진 위치는 불러와도 앞 모재의 값이 남는다 — 저장할 때 · 불러올 때 알린다(2026-11-25)."""
+    from smr_operator_ui.screens.records_screens import describe_mode
+
+    screen = _modes(window, "모재 B")
+    window.ros_status.send_pose = lambda target, values: True
+    without_contact = {k: v for k, v in POSES_A.items() if k != "start_pose"}
+    window._reference_poses = {k: {"values": list(v), "saved_at": "s"} for k, v in without_contact.items()}
+    screen._save_clicked()
+    text = screen.status_label.text()
+    assert "저장 안 된 기준 위치: 그리퍼 접촉" in text and screen.status_label.objectName() == "StatusWarn"
+    assert "없음(불러와도 지금 값 유지): 그리퍼 접촉" in describe_mode(window._mode_slots["1"])
+
+    window._reference_poses["start_pose"] = {"values": list(POSES_A["start_pose"]), "saved_at": "모재 A"}
+    screen._load_clicked()
+    assert "슬롯에 없어 지금 값을 그대로 둔 위치: 그리퍼 접촉" in screen.status_label.text()
+    assert window._reference_poses["start_pose"]["saved_at"] == "모재 A", "지우지 않는다(티칭값 보호)"
+
+
+def test_mode_slot_summary_shows_the_gripper_contact_height(window) -> None:
+    from smr_operator_ui.screens.records_screens import describe_mode
+
+    screen = _modes(window, "모재 A")
+    window._reference_poses = {k: {"values": list(v), "saved_at": "s"} for k, v in POSES_A.items()}
+    screen._save_clicked()
+    assert "기준 위치 4개 포함" in screen.status_label.text()
+    assert "그리퍼 접촉(z -343.6 mm)" in describe_mode(window._mode_slots["1"])
+
+
+# ---- 지금 운전 모드 표시 · 켤 때 다시 불러오기 (2026-11-25) ---------------------------------
+def test_main_screen_shows_the_current_mode(window) -> None:
+    screen = _modes(window, "모재 A")
+    screen._save_clicked()                            # 슬롯 1 — 지금 설정을 슬롯으로 = 지금 운전 모드
+    assert window.main_screen.mode_label.text() == "슬롯 1 · 모재 A"
+    screen.slot_buttons[1].click()
+    screen.ask_name = lambda default: "모재 B"
+    screen._save_clicked()                            # 슬롯 2
+    screen.slot_buttons[0].click()
+    screen._load_clicked()
+    assert window.main_screen.mode_label.text() == "슬롯 1 · 모재 A"
+    screen.clear_button.click()
+    assert window.main_screen.mode_label.text().startswith("없음")
+
+
+def test_last_mode_is_loaded_again_when_the_program_starts(qtbot, tmp_path, monkeypatch) -> None:
+    """껐다 켜면 마지막 운전 모드를 다시 불러온다 — 그 슬롯의 값(작업 속도 · 기준 위치)이 돌아온다."""
+    import json
+
+    settings = tmp_path / "settings.json"
+    monkeypatch.setenv("SMR_SETTINGS_FILE", str(settings))
+    monkeypatch.setenv("SMR_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SMR_ROBOT_CONFIG_DIR", str(tmp_path / "robot_config"))
+    first = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(first)
+    first.ros_status.send_pose = lambda target, values: True
+    first.screens["cobot"].field("작업 속도").setValue(73)
+    first._reference_poses = {"start_pose": {"values": list(POSES_A["start_pose"]), "saved_at": "s"}}
+    modes = _modes(first, "모재 A")
+    modes._save_clicked()
+
+    def stored():
+        try:
+            data = json.loads(settings.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data
+    qtbot.waitUntil(lambda: stored().get("mode_current", {}).get("slot") == 1
+                    and "1" in stored().get("mode_slots", {}), timeout=5000)
+    first.close()
+
+    # 껐다 켠 사이 다른 값으로 바뀌어 있었다(파일에 남은 개별 설정).
+    data = stored()
+    data.setdefault("cobot", {})["작업 속도"] = 40
+    settings.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "robot_config").mkdir(exist_ok=True)
+
+    second = OperatorWindow(start_ros=False, start_erut=False, restore_mode=True)
+    qtbot.addWidget(second)
+    second.ros_status.send_pose = lambda target, values: True
+    qtbot.waitUntil(lambda: second.main_screen.mode_label.text() == "슬롯 1 · 모재 A", timeout=5000)
+    assert second.screens["cobot"].field("작업 속도").value() == 73, "슬롯 값이 돌아온다"
+    assert second._reference_poses["start_pose"]["values"] == POSES_A["start_pose"]
+    second.close()

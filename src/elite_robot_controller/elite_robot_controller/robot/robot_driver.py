@@ -166,19 +166,50 @@ class Robot_30001():
         self.alarm_queue = queue.Queue()
         self.__sock = None
         self.__buf = b""
+        #: 마지막으로 끊긴 · 못 붙은 까닭(2026-11-24). 붙으면 비운다.
+        self.last_error = ""
+
+    @property
+    def alive(self):
+        """30001 소켓이 살아 있는가. 로봇이 닫은 것(EOF) · 전송 실패를 보면 False 가 된다(2026-11-24).
+
+        예전에는 로봇이 30001 을 닫아도 수신에서 예외를 삼켜 몰랐다 — 끊긴 소켓을 쥔 채 홈 · 조그 스크립트를
+        보내다 「Broken pipe」로 계속 실패했다.
+        """
+        return self.__sock is not None
+
+    def _drop(self, reason):
+        """끊긴 소켓을 버린다(다시 붙는 것은 노드가 한다)."""
+        sock, self.__sock = self.__sock, None
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+            print(f"[ERROR][Robot Primary] {reason}")
+        self.__buf = b""
+        self.last_error = reason
 
     def connect_30001(self):
         try:
-            self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.__sock.settimeout(0.5)
-            self.__sock.connect((self.ip, self.port2))
-            self.__sock.settimeout(10.0)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.5)
+            sock.connect((self.ip, self.port2))
+            sock.settimeout(10.0)
+            old, self.__sock = self.__sock, sock
+            if old is not None:
+                try:
+                    old.close()
+                except Exception:
+                    pass
             print(f"[DEBUG][Robot Primary] Connected to {self.ip} on port {self.port2}")
             self.__buf = b""
+            self.last_error = ""
             return self.__sock
         except Exception as e:
             print(f"[ERROR][Robot Primary] Connecting to {self.ip} on port {self.port2}: {e}")
             self.__sock = None
+            self.last_error = f"30001 연결 실패: {e}"
             return None
 
     def disconnect_30001(self):
@@ -200,7 +231,7 @@ class Robot_30001():
             self.__sock.sendall(body.encode("utf-8"))
             return True
         except Exception as e:
-            print(f"[ERROR][Robot Primary] Sending script: {e}")
+            self._drop(f"30001 스크립트 전송 실패: {e}")
             return False
 
     def get_data(self):
@@ -238,19 +269,26 @@ class Robot_30001():
         return last_valid_data
 
     def __read_socket_no_wait(self):
-        while True:
-            readable, _, _ = select.select([self.__sock], [], [], 0)
+        while self.__sock is not None:
+            try:
+                readable, _, _ = select.select([self.__sock], [], [], 0)
+            except (OSError, ValueError) as e:
+                self._drop(f"30001 소켓 오류: {e}")
+                break
             if not readable:
                 break
             try:
                 more = self.__sock.recv(4096)
-                if not more:
-                    raise ConnectionError("Socket closed")
-                self.__buf += more
             except BlockingIOError:
                 break
-            except Exception:
+            except OSError as e:
+                self._drop(f"30001 수신 실패: {e}")
                 break
+            if not more:
+                # 로봇이 연결을 닫았다 — 예전에는 이 예외를 삼켜 끊긴 줄 몰랐다.
+                self._drop("로봇이 30001 연결을 닫았습니다")
+                break
+            self.__buf += more
 
 
 class AlarmManager:
@@ -383,6 +421,41 @@ class Robot_29999():
         finally:
             if self.sock is not None:
                 self.sock.settimeout(self.RECV_TIMEOUT_S)
+
+    def check_alive(self):
+        """대시보드 소켓이 살아 있는가 — 로봇이 닫았으면(EOF) 소켓을 버리고 False (2026-11-24).
+
+        명령 중(잠금)이면 기다리지 않고 지금 상태로 답한다.
+        """
+        if not self._lock.acquire(blocking=False):
+            return self.sock is not None
+        try:
+            if self.sock is None:
+                return False
+            try:
+                readable, _, _ = select.select([self.sock], [], [], 0)
+                if readable and not self.sock.recv(4096, socket.MSG_PEEK):
+                    self.last_error = "로봇이 29999 연결을 닫았습니다"
+                    self._close_quietly()
+                    return False
+            except (BlockingIOError, socket.timeout):
+                pass
+            except (OSError, ValueError) as e:
+                self.last_error = f"29999 소켓 오류: {e}"
+                self._close_quietly()
+                return False
+            return True
+        finally:
+            self._lock.release()
+
+    def reconnect(self):
+        """대시보드만 다시 붙는다(명령 중이면 건너뛴다). 붙었으면 True."""
+        if not self._lock.acquire(blocking=False):
+            return self.sock is not None
+        try:
+            return self.connect_29999() is not None
+        finally:
+            self._lock.release()
 
     def _close_quietly(self):
         if self.sock is not None:

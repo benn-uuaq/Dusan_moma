@@ -39,7 +39,10 @@ from PyQt6.QtWidgets import (
 from smr_operator_ui.keypad import TouchComboBox, TouchLineEdit, TouchSpinBox
 from smr_operator_ui.screens.all_screens import BaseScreen
 from smr_operator_ui.services.tpac_bridge import JOINT_NAMES, OUT_FORMATS, TCP_NAMES, WORD_ORDERS
-from smr_operator_ui.services.tpac_bridge.bridge_core import ExternalServer, MIRROR_UR, RobotPoller
+from smr_operator_ui.services.tpac_bridge.bridge_core import (
+    ELITE_STATUS_RANGES, MAPPING_ELITE, MAPPING_UR, MAPPINGS, MIRROR_ELITE, MIRROR_UR,
+    ExternalServer, RobotPoller,
+)
 from smr_operator_ui.services.tpac_bridge.robot_map import (
     CONTROL_TXT, DEFAULT_READ_MAP, OPERATION_TXT, ROBOT_MODE_TXT, RUNNING_TXT,
     clamp_int16, to_uint16,
@@ -48,9 +51,32 @@ from smr_operator_ui.services.tpac_bridge.robot_map import (
 MAX_LOG_LINES = 200
 # 외부 요청이 이 시간(초) 안에 한 번도 없으면 TPAC이 끊겼다고 본다.
 TPAC_LINK_TIMEOUT_S = 5.0
-# UR 주소 매핑의 기본 자리. bridge_core.MIRROR_UR 과 같다 — 라벨 표시용으로만 쓴다.
-_UR_HINT = (f"관절 {MIRROR_UR['joint']} / pose {MIRROR_UR['pose']} / "
-           f"속도 {MIRROR_UR['speed']} / offset {MIRROR_UR['offset']}")
+_SCAN = MIRROR_ELITE["scan"]
+#: 「주소 매핑」 드롭다운 (2026-11-25) — TPAC 이 ELITE 협동로봇에 맞춘 판을 새로 만들었다.
+MAPPING_LABELS = {
+    MAPPING_ELITE: (f"ELITE 로봇 매핑 (로봇 주소 그대로 — CSCAN {_SCAN}~{_SCAN + 7} · "
+                    f"pose {MIRROR_ELITE['pose']} · 속도 {MIRROR_ELITE['speed']})"),
+    MAPPING_UR: (f"UR 주소 매핑 (관절 {MIRROR_UR['joint']} · pose {MIRROR_UR['pose']} · "
+                 f"속도 {MIRROR_UR['speed']} · offset {MIRROR_UR['offset']})"),
+}
+#: 매핑을 고르면 아래 칸이 이 값으로 바뀐다(그 뒤 손으로 바꿀 수 있다).
+#   ELITE 는 로봇 자기 자리 — 280~285 제로점 기준 좌표(평면) · 286 호 위치(Cscan, 0.1mm) ·
+#   287 누적 호 길이(Odometer, mm) · 384 베이스 TCP(pose) · 400 실제 TCP 속도. 상태는 ELITE 배치.
+#   UR 은 지금까지 쓰던 자리 — pose 400 에 스캔 값, 평면 420, Odometer 430, Cscan 431. 상태는 UR 배치.
+MAPPING_PRESETS = {
+    MAPPING_ELITE: {"pose_source": "pose", "pose_addr": MIRROR_ELITE["pose"],
+                    "speed_addr": MIRROR_ELITE["speed"], "plane_addr": _SCAN,
+                    "cscan_addr": _SCAN + 6, "odometer_addr": _SCAN + 7,
+                    "ur_mode": False, "elite_status": True},
+    MAPPING_UR: {"pose_source": "scan", "pose_addr": MIRROR_UR["pose"],
+                 "speed_addr": MIRROR_UR["speed"], "plane_addr": MIRROR_UR["offset"],
+                 "cscan_addr": 431, "odometer_addr": 430,
+                 "ur_mode": True, "elite_status": False},
+}
+#: 처음 켤 때(저장값 없음)의 매핑 — 지금까지 쓰던 UR 판.
+DEFAULT_MAPPING = MAPPING_UR
+#: 저장 형식. 1(키 없음)은 ELITE 를 골라도 주소가 UR 그대로 남던 판 — 불러올 때 매핑 기본값으로 맞춘다.
+SERVER_SETTINGS_VERSION = 2
 
 
 def _port_taken(err) -> bool:
@@ -90,6 +116,9 @@ class TpacBridgeScreen(BaseScreen):
     # 실제 TPAC(외부 마스터)이 서버에서 값을 읽어가고 있는지. 상단 바
     # 배지가 이 신호를 구독한다.
     tpac_link_changed = pyqtSignal(bool)
+    # 「외부에 제공」 주소 배치(매핑 · 포즈 · 평면 · Odometer · Cscan · UR 배치 · 동기 신호)를
+    # 바꿨다 — 앱이 설정 범위 "tpac_bridge" 로 저장한다(껐다 켜도 남게).
+    server_settings_changed = pyqtSignal(dict)
 
     def __init__(self) -> None:
         super().__init__("TPAC 설정 / TCP 인코딩",
@@ -115,6 +144,8 @@ class TpacBridgeScreen(BaseScreen):
         self._scan_zero_hold = False
         self._scan_zero_state: int | None = None
         self._last_data = None
+        # 저장값을 칸에 넣는 동안에는 「바뀜 → 저장」을 내지 않는다.
+        self._applying_settings = False
 
         # 본문이 길어질 수 있어 스크롤 영역에 담는다. 작은 화면에서도
         # 아래쪽 표·로그가 잘리지 않고 스크롤로 보인다.
@@ -298,49 +329,62 @@ class TpacBridgeScreen(BaseScreen):
         form.addRow("최소 응답 간격", self.srv_delay_ms)
         layout.addLayout(form)
 
-        # 270/400/410/420 은 로봇 매뉴얼(S_series_UserManual_Modbus_Server_
-        # Data.xlsx)이 정의한 UR 표준 자리 그대로다 — 400~405 TCP 위치,
-        # 410~415 TCP 속도, 420~425 offset(전부 베이스 프레임, offset만
-        # 툴 프레임). TPAC 등 UR 기준 장비가 별도 설정 없이 그대로 읽는
-        # 주소라 "UR 주소 매핑"이라 부르지만, 로봇 쪽에서도 실제로 쓰는
-        # 진짜 주소다 — bridge_core.MIRROR_UR 참고.
-        self.srv_ur_addr = QCheckBox(f"UR 주소 매핑 ({_UR_HINT})")
-        self.srv_ur_addr.setChecked(True)
-        layout.addWidget(self.srv_ur_addr)
+        # 주소 매핑(2026-11-25) — TPAC 이 ELITE 협동로봇에 맞춘 판을 새로 만들었다.
+        #   ELITE: ELITE 로봇 자기 주소 그대로 — 280~287 C-scan · 384 pose · 400 속도 · 상태 63~110 등.
+        #   UR   : 로봇 매뉴얼(S_series_UserManual_Modbus_Server_Data.xlsx)의 UR 표준 자리 —
+        #          관절 270 / pose 400 / 속도 410 / offset 420. UR 판 TPAC 이 그대로 읽는다.
+        # 매핑을 고르면 아래 포즈 · 속도 · 평면 · Odometer · Cscan 주소와 UR/ELITE 배치가 그 매핑
+        # 기본값(MAPPING_PRESETS)으로 바뀐다. 그 뒤 주소는 손으로 바꿀 수 있다.
+        # bridge_core.ExternalServer.mapping 참고.
+        self.srv_mapping = TouchComboBox()
+        for key in MAPPINGS:
+            self.srv_mapping.addItem(MAPPING_LABELS[key], key)
+        self.srv_mapping.setCurrentIndex(MAPPINGS.index(DEFAULT_MAPPING))
+        self._shrinkable(self.srv_mapping)
+        mapping_form = QFormLayout(); mapping_form.setSpacing(8)
+        mapping_form.addRow("주소 매핑", self.srv_mapping)
+        layout.addLayout(mapping_form)
+
+        extra_note = QLabel("매핑을 바꾸면 아래 주소 · 배치가 그 매핑 기본값으로 바뀝니다 — "
+                            "그 뒤 주소를 바꿔 쓸 수 있습니다.")
+        extra_note.setObjectName("Muted")
+        extra_note.setWordWrap(True)
+        layout.addWidget(extra_note)
 
         # TPAC은 두 버전이 있다: ① 관절·pose·속도·offset 네 자리를 다 읽는
         # 것, ② pose 3개·속도 3개만 읽는 것. ②는 offset(420) 자체를 안
         # 물어보므로, 아래 "작업 평면" 자리를 아무리 채워도 못 읽어간다 —
-        # 그런 장비를 위해 pose(400) 자리에 뭘 넣을지 여기서 고른다.
+        # 그런 장비를 위해 pose 자리에 뭘 넣을지 여기서 고른다.
         self.srv_pose_source = TouchComboBox()
         self.srv_pose_source.addItem("실제 TCP (베이스 기준)", "pose")
         self.srv_pose_source.addItem("제로점 기준 스캔 값", "scan")
         self.srv_pose_source.addItem("자동 (스캔 중엔 스캔값, 아니면 실제 TCP)", "auto")
-        # TPAC 은 로봇이 호를 그리며 훑는 동안의 이동 거리를 받아 평면으로
-        # 펴는 장치다. 그러니 기본값은 베이스 좌표가 아니라 제로점 기준
-        # 스캔 값이어야 한다.
+        # TPAC(UR 판)은 로봇이 호를 그리며 훑는 동안의 이동 거리를 받아 평면으로
+        # 펴는 장치다. 그러니 UR 기본값은 베이스 좌표가 아니라 제로점 기준
+        # 스캔 값이어야 한다. ELITE 는 로봇처럼 pose 자리(384)에 베이스 TCP 를 낸다.
         self.srv_pose_source.setCurrentIndex(1)
         self._shrinkable(self.srv_pose_source)
+        # pose · 속도 자리 주소 — 매핑 기본값(UR 400/410, ELITE 384/400)에서 바꿀 수 있다.
+        self.srv_pose_addr = TouchSpinBox(); self.srv_pose_addr.setRange(0, 9999)
+        self.srv_pose_addr.setValue(MIRROR_UR["pose"])
+        self.srv_speed_addr = TouchSpinBox(); self.srv_speed_addr.setRange(0, 9999)
+        self.srv_speed_addr.setValue(MIRROR_UR["speed"])
         pose_form = QFormLayout(); pose_form.setSpacing(8)
-        pose_form.addRow("포즈(400) 값", self.srv_pose_source)
-        layout.addLayout(pose_form)
+        pose_form.addRow("포즈 값", self.srv_pose_source)
+        pose_form.addRow("포즈 주소", self.srv_pose_addr)
+        pose_form.addRow("속도 주소", self.srv_speed_addr)
+        layout.addLayout(pose_form)       # 아래 평면 · Odometer · Cscan 주소도 같은 칸에 줄 맞춰 넣는다
 
-        # 400~405는 위에서 고른 값, 420~425는 우리 작업의 스캔 위치
-        # (제로점에서 시작하는 값)로 쓴다 — 매뉴얼상 420~425는 "TCP
-        # offset(툴 프레임)"이지만 그 값은 로봇이 채워 주지 않아 항상
-        # 0이었으므로(bridge_core.RobotData.tcp_off), 이 자리를 우리
-        # 스캔 좌표로 대신 쓴다. 속도(410~415)는 베이스/평면 공용이다 —
-        # 평면 좌표가 베이스 좌표를 제로점만큼 평행이동한 것뿐이라
-        # 속도(위치의 변화율)는 두 좌표계에서 같다.
-        # bridge_core 는 이 스캔 좌표 블록을 모르므로(로봇 쪽 원본에 없는
-        # 우리 전용 확장) 화면(_write_plane_block)에서 직접 쓴다.
-        plane_form = QFormLayout(); plane_form.setSpacing(8)
+        # UR 에서 420~425 는 매뉴얼상 "TCP offset(툴 프레임)"이지만 로봇이 채워 주지 않아 항상
+        # 0이었으므로(bridge_core.RobotData.tcp_off), 그 자리를 우리 스캔 좌표(제로점 기준)로 대신
+        # 쓴다. ELITE 는 로봇이 같은 값을 내는 280~285 가 기본이다. bridge_core 는 이 블록을
+        # 모르므로(주소를 바꿀 수 있는 화면 쪽 설정) 화면(_write_plane_block)에서 직접 쓴다.
+        plane_form = pose_form
         self.plane_pos_addr = TouchSpinBox(); self.plane_pos_addr.setRange(0, 9999)
-        self.plane_pos_addr.setValue(420)
+        self.plane_pos_addr.setValue(MIRROR_UR["offset"])
         plane_form.addRow("작업 평면(스캔) 위치 주소", self.plane_pos_addr)
         # TPAC "Robot readings" 화면의 Odometer/Cscan 자리. 로봇이 계산해
-        # 주는 **호 길이** 기준 값이다(로봇 매뉴얼에는 없는 우리 전용 확장이라
-        # 마찬가지로 화면(_write_scan_axis_block)에서 직접 쓴다).
+        # 주는 **호 길이** 기준 값이다(화면 _write_scan_axis_block 에서 직접 쓴다).
         #   Odometer : 누적 호 길이 [mm]        (로봇 레지스터 287 그대로)
         #   Cscan    : 이번 줄의 호 위 위치 [0.1mm] (로봇 레지스터 286 그대로)
         self.odometer_addr = TouchSpinBox(); self.odometer_addr.setRange(0, 9999)
@@ -349,16 +393,20 @@ class TpacBridgeScreen(BaseScreen):
         self.cscan_addr.setValue(431)
         plane_form.addRow("누적 거리(Odometer) 주소", self.odometer_addr)
         plane_form.addRow("C-scan 위치 주소", self.cscan_addr)
-        layout.addLayout(plane_form)
 
         # UR 배치 — bridge_core.ExternalServer.ur_mode 그대로. UR 로봇
         # 자신의 Modbus 맵(Outputs@1, 버전@256~257, 모드@258, 전원·정지
         # 상태@260~265, 전류@450~451)을 따라 외부에 그대로 채운다.
         # TPAC처럼 UR 기준으로 만들어진 장비가 접속 확인 때 이 자리를
         # 먼저 확인하므로, 비어 있으면 접속을 거부할 수 있다.
-        self.srv_ur_mode = QCheckBox("UR 배치 (TPAC 등 UR 기준 장비)")
+        # ELITE 배치 — 같은 일을 ELITE 로봇 자기 자리(63~110 · 306~307 · 500)로 한다
+        # (bridge_core.ExternalServer.elite_status). 매핑을 고르면 맞는 쪽만 켜진다.
+        self.srv_ur_mode = QCheckBox("UR 배치 — UR 상태 자리 채움 (1 · 256~258 · 260~265 · 450~451)")
         self.srv_ur_mode.setChecked(True)
         layout.addWidget(self.srv_ur_mode)
+        self.srv_elite_mode = QCheckBox("ELITE 배치 — ELITE 상태 · 관절 자리 채움 (63~110 · 306~307 · 500)")
+        self.srv_elite_mode.setChecked(False)
+        layout.addWidget(self.srv_elite_mode)
 
         # TPAC 엔코더 보드 동기 신호 — DO[0] 방향 / DO[1] 스캔 / DO[2] 리셋을
         # Coil 16~18 과 Register 1 bit 0~2 에 같은 값으로 낸다. 로봇 태스크가
@@ -393,6 +441,16 @@ class TpacBridgeScreen(BaseScreen):
         self.srv_stop_btn.clicked.connect(self._stop_server)
         buttons.addWidget(self.srv_start_btn); buttons.addWidget(self.srv_stop_btn)
         layout.addLayout(buttons)
+
+        # 매핑을 바꾸면 아래 주소 · 배치를 그 매핑 기본값으로 바꾼다.
+        self.srv_mapping.currentIndexChanged.connect(self._on_mapping_changed)
+        # 주소 배치를 바꾸면 저장한다(앱이 "tpac_bridge" 범위로) — 껐다 켜도 고른 매핑이 남는다.
+        self.srv_pose_source.currentIndexChanged.connect(self._emit_server_settings)
+        for box in (self.srv_pose_addr, self.srv_speed_addr, self.plane_pos_addr,
+                    self.odometer_addr, self.cscan_addr, self.srv_latch_ms):
+            box.valueChanged.connect(self._emit_server_settings)
+        for check in (self.srv_ur_mode, self.srv_elite_mode, self.srv_signals):
+            check.toggled.connect(self._emit_server_settings)
         return card
 
     def _build_table_card(self, title: str, attr: str) -> QWidget:
@@ -452,8 +510,9 @@ class TpacBridgeScreen(BaseScreen):
     def _set_server_fields_enabled(self, enabled: bool) -> None:
         for field in (self.srv_bind_ip, self.srv_port, self.srv_start_addr,
                       self.srv_fmt, self.srv_word_order, self.srv_delay_ms,
-                      self.srv_ur_addr, self.srv_ur_mode, self.srv_pose_source,
-                      self.plane_pos_addr, self.odometer_addr, self.cscan_addr,
+                      self.srv_mapping, self.srv_ur_mode, self.srv_elite_mode, self.srv_pose_source,
+                      self.srv_pose_addr, self.srv_speed_addr, self.plane_pos_addr,
+                      self.odometer_addr, self.cscan_addr,
                       self.srv_signals, self.srv_latch_ms):
             field.setEnabled(enabled)
 
@@ -462,10 +521,13 @@ class TpacBridgeScreen(BaseScreen):
         word_order = self.srv_word_order.currentData()
         ok = self.server.start(
             host=self.srv_bind_ip.text().strip(), port=self.srv_port.value(),
-            start_addr=self.srv_start_addr.value(), mirror=self.srv_ur_addr.isChecked(),
+            start_addr=self.srv_start_addr.value(), mirror=True,
+            mapping=self.srv_mapping.currentData(),
+            mirror_map={"pose": self.srv_pose_addr.value(), "speed": self.srv_speed_addr.value()},
+            elite_status=self.srv_elite_mode.isChecked(),
             fmt=fmt, word_order=word_order, ur_mode=self.srv_ur_mode.isChecked(),
             delay_ms=self.srv_delay_ms.value(),
-            # pose(400) 자리에 뭘 낼지는 위 "포즈(400) 값" 콤보로 고른다.
+            # pose 자리에 뭘 낼지는 위 "포즈 값" 콤보로 고른다.
             # offset(420)만 따로 읽는 장비는 "작업 평면" 블록(_write_plane_block)
             # 으로 스캔 좌표를 받지만, pose·속도 두 블록만 읽는 TPAC은 그
             # 자리를 아예 안 물어보므로 이 pose 자리로 골라 보내야 한다.
@@ -475,6 +537,11 @@ class TpacBridgeScreen(BaseScreen):
         )
         if not ok:
             return
+        # 화면이 따로 채우는 자리도 서버에 알려 둔다(외부 요청 로그의 '채워지지 않은 주소' 판정).
+        self.server.extra_ranges = self._extra_ranges()
+        for warning in self.address_overlaps():
+            self._append_log(f"[주소 겹침] {warning}")
+        self._append_log(f"주소 매핑: {self.srv_mapping.currentText()}")
         if not self.srv_signals.isChecked():
             self.do_status.setText("DO 신호: 꺼짐")
         self._set_server_fields_enabled(False)
@@ -490,6 +557,119 @@ class TpacBridgeScreen(BaseScreen):
         self.srv_stop_btn.setEnabled(False)
         self.serve_table.setRowCount(0)
         self.do_status.setText("DO 신호: 서버 정지")
+
+    # ------------------------------------------------------------ 주소 배치 저장 · 겹침
+    def server_settings(self) -> dict:
+        """저장할 주소 배치 — 매핑 · 포즈(값 · 주소) · 속도 · 평면 · Odometer · Cscan · UR/ELITE 배치 · 동기 신호."""
+        return {
+            "version": SERVER_SETTINGS_VERSION,
+            "mapping": self.srv_mapping.currentData(),
+            "pose_source": self.srv_pose_source.currentData(),
+            "pose_addr": self.srv_pose_addr.value(),
+            "speed_addr": self.srv_speed_addr.value(),
+            "plane_addr": self.plane_pos_addr.value(),
+            "odometer_addr": self.odometer_addr.value(),
+            "cscan_addr": self.cscan_addr.value(),
+            "ur_mode": self.srv_ur_mode.isChecked(),
+            "elite_status": self.srv_elite_mode.isChecked(),
+            "scan_signals": self.srv_signals.isChecked(),
+            "latch_ms": self.srv_latch_ms.value(),
+        }
+
+    def _fill_server_fields(self, values: dict) -> None:
+        """칸에 값을 넣는다(있는 키만). 저장 신호는 내지 않는다."""
+        applying, self._applying_settings = self._applying_settings, True
+        try:
+            for key, combo in (("mapping", self.srv_mapping), ("pose_source", self.srv_pose_source)):
+                index = combo.findData(values.get(key))
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            for key, box in (("pose_addr", self.srv_pose_addr), ("speed_addr", self.srv_speed_addr),
+                             ("plane_addr", self.plane_pos_addr), ("odometer_addr", self.odometer_addr),
+                             ("cscan_addr", self.cscan_addr), ("latch_ms", self.srv_latch_ms)):
+                try:
+                    box.setValue(int(values[key]))
+                except (KeyError, TypeError, ValueError):
+                    pass
+            for key, check in (("ur_mode", self.srv_ur_mode), ("elite_status", self.srv_elite_mode),
+                               ("scan_signals", self.srv_signals)):
+                if key in values:
+                    check.setChecked(bool(values[key]))
+        finally:
+            self._applying_settings = applying
+
+    def _on_mapping_changed(self, _index: int = 0) -> None:
+        """작업자가 매핑을 바꿨다 — 아래 주소 · 배치를 그 매핑 기본값으로 바꾸고 저장한다.
+
+        저장값을 불러오는 중에는 바꾸지 않는다(저장된 주소를 그대로 쓴다).
+        """
+        if self._applying_settings:
+            return
+        self._fill_server_fields(MAPPING_PRESETS[self.srv_mapping.currentData()])
+        self._emit_server_settings()
+
+    def apply_server_settings(self, values: dict) -> None:
+        """저장해 둔 주소 배치를 칸에 넣는다. 서버가 다른 배치로 이미 떠 있으면 다시 켠다.
+
+        매핑 기본값을 먼저 깔고 저장된 값을 덮는다. 옛 형식(version 없음)은 ELITE 를 골라도 주소가
+        UR 그대로 남던 판이라 주소는 버리고 매핑 기본값을 쓴다.
+        """
+        values = dict(values or {})
+        mapping = values.get("mapping")
+        if mapping not in MAPPINGS:
+            mapping = self.srv_mapping.currentData()
+        before = self.server_settings()
+        merged = {"mapping": mapping, **MAPPING_PRESETS[mapping]}
+        if int(values.get("version") or 1) >= SERVER_SETTINGS_VERSION:
+            merged.update(values)
+        else:
+            merged.update({k: values[k] for k in ("scan_signals", "latch_ms") if k in values})
+        merged["mapping"] = mapping
+        self._fill_server_fields(merged)
+        if self.server.running and self.server_settings() != before:
+            self._append_log("저장된 주소 배치로 서버를 다시 시작합니다.")
+            self._stop_server()
+            self._start_server()
+
+    def _emit_server_settings(self, *_args) -> None:
+        if not self._applying_settings:
+            self.server_settings_changed.emit(self.server_settings())
+
+    def _extra_ranges(self) -> list[tuple[int, int, str]]:
+        """화면이 직접 채우는 자리(두 매핑 공통) — 작업 평면 6 · Cscan 1 · Odometer 1."""
+        plane, odo, cscan = (self.plane_pos_addr.value(), self.odometer_addr.value(),
+                             self.cscan_addr.value())
+        return [(plane, plane + 5, "작업 평면"), (cscan, cscan, "Cscan"), (odo, odo, "Odometer")]
+
+    def _planned_ranges(self) -> list[tuple[int, int, str]]:
+        """지금 칸 값대로 서버를 켜면 채울 자리. UR offset(420)은 뺀다 — 작업 평면이 덮어쓰는 자리다."""
+        n = OUT_FORMATS[self.srv_fmt.currentData()][1]
+        base = self.srv_start_addr.value()
+        out = [(base, base + n + 7, "데이터 · 상태 블록")]
+        if self.srv_mapping.currentData() == MAPPING_UR:
+            out.append((MIRROR_UR["joint"], MIRROR_UR["joint"] + 5, "UR 관절"))
+        pose, speed = self.srv_pose_addr.value(), self.srv_speed_addr.value()
+        out += [(pose, pose + 5, "포즈"), (speed, speed + 5, "속도")]
+        out += self._extra_ranges()
+        if self.srv_ur_mode.isChecked():
+            out += [(256, 258, "UR 버전·모드"), (260, 265, "UR 전원·정지"), (450, 451, "UR 전류")]
+        if self.srv_elite_mode.isChecked():
+            out += list(ELITE_STATUS_RANGES)
+        return out
+
+    def address_overlaps(self) -> list[str]:
+        """서로 겹치는 자리 — 겹치면 나중에 쓴 값만 남아 TPAC 이 엉뚱한 값을 읽는다."""
+        def span(lo: int, hi: int) -> str:
+            return str(lo) if lo == hi else f"{lo}~{hi}"
+
+        ranges = self._planned_ranges()
+        out = []
+        for i, (a0, a1, a_name) in enumerate(ranges):
+            for b0, b1, b_name in ranges[i + 1:]:
+                if a0 <= b1 and b0 <= a1:
+                    out.append(f"{a_name}({span(a0, a1)})와 {b_name}({span(b0, b1)})이 겹칩니다 — "
+                               "주소를 옮기세요.")
+        return out
 
     # ------------------------------------------------------------ 콜백 슬롯
     # ------------------------------------------------------------ 정지 · 초기화
@@ -542,7 +722,8 @@ class TpacBridgeScreen(BaseScreen):
         if self.server.running:
             self.server.update(data)
             if self.server.mirror:
-                self._write_real_speed(data)
+                if self.server.mapping == MAPPING_UR:
+                    self._write_real_speed(data)      # 속도(410)는 UR 자리다
                 self._write_plane_block(data)
                 self._write_scan_axis_block(data)
         self._render_read_table(data)
@@ -745,28 +926,35 @@ class TpacBridgeScreen(BaseScreen):
         for i, (name, value) in enumerate(zip(status_names, status_vals)):
             rows.append((status_base + i, name, value, "-"))
 
-        # UR 주소 매핑 — 관절/pose 뿐 아니라 속도·offset 자리도 채운다.
-        # (전에는 속도·offset 표시가 빠져 있었다.)
+        # 주소 매핑 — UR 은 관절(270)까지, ELITE 는 관절을 ELITE 배치(73~78)로 낸다.
+        # pose · 속도 · 평면 · Odometer · Cscan 은 두 매핑 공통(주소는 칸 값).
         if self.server.mirror:
             m = self.server.mirror_map
-            joint_vals = [str(v) for v in data.joint_raw] if data is not None else ["-"] * 6
-            for i, (name, value) in enumerate(zip(JOINT_NAMES, joint_vals)):
-                rows.append((m["joint"] + i, f"[UR] {name}", value, "mRad"))
-            # "포즈(400) 값" 콤보로 고른 소스를 그대로 보여준다 — 실제로
+            ur = self.server.mapping == MAPPING_UR
+            tag = "[UR]" if ur else "[ELITE]"
+            if ur:
+                joint_vals = [str(v) for v in data.joint_raw] if data is not None else ["-"] * 6
+                for i, (name, value) in enumerate(zip(JOINT_NAMES, joint_vals)):
+                    rows.append((m["joint"] + i, f"[UR] {name}", value, "mRad"))
+            # "포즈 값" 콤보로 고른 소스를 그대로 보여준다 — 실제로
             # 서버가 그 자리에 내보내는 값과 항상 같아야 하기 때문이다.
             pose_vals = ([str(v) for v in data.pose_by_source(self.server.pose_source)]
                         if data is not None else ["-"] * 6)
             for i, (name, value) in enumerate(zip(TCP_NAMES, pose_vals)):
                 unit = "0.1mm" if i < 3 else "mRad"
-                rows.append((m["pose"] + i, f"[UR] {name}", value, unit))
+                rows.append((m["pose"] + i, f"{tag} {name}", value, unit))
             # 속도는 베이스/평면 공용이다 — 좌표계가 제로점만큼 평행이동한
             # 차이뿐이라 변화율(속도)은 같다. tcp_spd_real은 로봇이 직접
-            # 주는 실제 속도(400~405) — _write_real_speed가 이미 이 값을
-            # 410~415에 냈다.
-            speed_vals = [str(v) for v in data.tcp_spd_real] if data is not None else ["-"] * 6
+            # 주는 실제 속도(로봇 400~405). 스캔 좌표를 내는 동안 스캔 구간이
+            # 아니면 0 이다(ExternalServer.speed_live) — 실제로 낸 값과 같게 보인다.
+            if data is not None:
+                speed = data.tcp_spd_real if self.server.speed_live(data) else [0] * 6
+                speed_vals = [str(v) for v in speed]
+            else:
+                speed_vals = ["-"] * 6
             for i, (name, value) in enumerate(zip(TCP_NAMES, speed_vals)):
                 unit = "mm/s" if i < 3 else "mRad/s"
-                rows.append((m["speed"] + i, f"[UR] 속도(Base/평면 공용) {name.split(' ')[-1]}", value, unit))
+                rows.append((m["speed"] + i, f"{tag} 속도(Base/평면 공용) {name.split(' ')[-1]}", value, unit))
 
             # 작업 평면(제로점 기준 스캔 좌표) 위치 — 매뉴얼상 offset 자리
             # (420~425)를 대신 쓴다. 로봇이 offset을 채워 주지 않아 항상
@@ -798,6 +986,23 @@ class TpacBridgeScreen(BaseScreen):
                 (262, "[UR] E-Stop", estop, "-"),
                 (450, "[UR] 관절 전류합", cur_sum, "mA"),
             ]
+        if self.server.elite_status:
+            if data is not None:
+                vals = [".".join(str(v) for v in data.version),
+                        ROBOT_MODE_TXT.get(data.robot_mode, str(data.robot_mode)),
+                        str(data.power_on), str(data.protective_stop), str(data.emergency_stop),
+                        RUNNING_TXT.get(data.running_state, str(data.running_state))]
+                joints = [str(v) for v in data.joint_raw]
+            else:
+                vals, joints = ["-"] * 6, ["-"] * 6
+            rows += [(63, "[ELITE] 컨트롤러 버전", vals[0], "-"),
+                     (66, "[ELITE] Robot Mode", vals[1], "-"),
+                     (67, "[ELITE] Power On", vals[2], "-"),
+                     (68, "[ELITE] P-Stop", vals[3], "-"),
+                     (69, "[ELITE] E-Stop", vals[4], "-")]
+            rows += [(73 + i, f"[ELITE] {name}", value, "mRad")
+                     for i, (name, value) in enumerate(zip(JOINT_NAMES, joints))]
+            rows.append((500, "[ELITE] 운전 상태", vals[5], "-"))
         if self.server.signals is not None:
             do = self.server.signals.current
             # 코일은 레지스터와 주소 공간이 따로라 "Coil 16" 처럼 적는다

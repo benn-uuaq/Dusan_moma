@@ -1,9 +1,9 @@
-"""PLC 연결 표시 · 다시 연결 (2026-11-20 — AGV 판 인터페이스에 맞춤).
+"""PLC 연결 표시 · 다시 연결 (2026-11-23 — AGV 제어 노드 규칙).
 
-PLC 와는 차량(AGV) 노드만 통신한다. AGV 판 vehicle_interfaces 에는 PLC 전용 필드 · 서비스가 없어서
+PLC 와는 차량(AGV) 노드만 통신한다. vehicle_interfaces 에는 PLC 전용 필드 · 서비스가 없어서
 RCS 는 차량 상태로 본다: 상태가 안 오면 「모름」, 오면 「연결됨」, error_code 701(PLC_COMM_LOST)이면
-「연결 실패」. 「PLC 다시 연결」은 차량에 리셋(RobotControl reset=1)을 보낸다 — 차량 노드가 PLC 에 다시
-붙으면 701 을 스스로 푼다.
+「연결 실패」. AGV 노드는 끊긴 PLC 에 스스로 다시 붙지만 701 은 걸어 두고, 리셋(RobotControl reset=1 —
+「PLC 다시 연결」)을 받아야 푼다. PLC 가 아직 안 붙었으면 리셋을 거절한다("reset cause still active").
 """
 
 import threading
@@ -87,7 +87,7 @@ def test_plc_reconnect_without_the_vehicle_node_says_why(qtbot) -> None:
 
 
 def test_plc_failure_and_reconnect_with_the_simulator(qtbot, tmp_path, monkeypatch) -> None:
-    """모의기: PLC 끊김 → 701 · 알람 · 「연결 실패」 → 「PLC 다시 연결」(리셋) → 「연결됨」 · 701 풀림."""
+    """모의기: PLC 끊김 → 701 · 알람 · 「연결 실패」 → (안 붙은 동안 리셋 거절) → 붙은 뒤 「PLC 다시 연결」 → 「연결됨」."""
     pytest.importorskip("rclpy")
     vehicle_sim_node = pytest.importorskip("vehicle_sim.vehicle_sim_node")
     from rclpy.executors import SingleThreadedExecutor
@@ -98,8 +98,8 @@ def test_plc_failure_and_reconnect_with_the_simulator(qtbot, tmp_path, monkeypat
     window = _window(qtbot)
     window.ros_status.start()
     sim = vehicle_sim_node.VehicleSim(parameter_overrides=[
-        Parameter("namespace", value=ns), Parameter("plc_connect_s", value=0.3),
-        Parameter("plc_retry_s", value=0.0)])           # 스스로 다시 시도하지 않게 — 버튼으로만
+        Parameter("namespace", value=ns), Parameter("plc_connect_s", value=0.2),
+        Parameter("plc_retry_s", value=0.3)])
     executor = SingleThreadedExecutor()
     executor.add_node(sim)
     threading.Thread(target=executor.spin, daemon=True).start()
@@ -117,17 +117,20 @@ def test_plc_failure_and_reconnect_with_the_simulator(qtbot, tmp_path, monkeypat
         assert "[E2001]" in alarms.item(0).text()
         assert connection.plc_reconnect_btn.isEnabled()
 
-        # 아직 PLC 가 안 붙는다 — 리셋은 받지만 701 이 남는다.
+        # 아직 PLC 가 안 붙는다 — 리셋을 거절하고 701 이 남는다.
         connection.plc_reconnect_btn.click()
-        qtbot.waitUntil(lambda: "리셋을 받았습니다" in connection.plc_message.text(), timeout=3000)
-        qtbot.wait(600)
+        qtbot.waitUntil(lambda: "아직 붙지 않았습니다" in connection.plc_message.text(), timeout=3000)
         assert "연결 실패" in badge.state_label.text()
 
+        # PLC 가 살아나면 차량 노드가 스스로 다시 붙는다 — 그래도 701 은 리셋 전까지 남는다.
         sim.set_parameters([Parameter("plc_fail", value=False)])
+        qtbot.waitUntil(lambda: sim.plc_state == "CONNECTED", timeout=3000)
+        qtbot.wait(300)
+        assert "연결 실패" in badge.state_label.text(), "701 은 걸어 둔다(latched)"
         connection.plc_reconnect_btn.click()
         qtbot.waitUntil(lambda: "연결됨" in badge.state_label.text(), timeout=5000)
         status = window.vehicle.last_status
-        assert status["error_code"] == 0 and status["state"] in ("STOP", "HOLD"), "다시 붙으면 701 이 풀린다"
+        assert status["error_code"] == 0 and status["state"] in ("STOP", "HOLD"), "리셋으로 701 이 풀린다"
         assert "다시 연결됐습니다" in connection.plc_message.text()
         assert not connection.plc_reconnect_btn.isEnabled()
     finally:

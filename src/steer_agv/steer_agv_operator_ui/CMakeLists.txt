@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.8)
+project(steer_agv_operator_ui)
+find_package(ament_cmake REQUIRED)
+install(PROGRAMS scripts/operator_ui.py DESTINATION lib/${PROJECT_NAME} RENAME operator_ui)
+ament_package()

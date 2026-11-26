@@ -131,34 +131,51 @@ def test_vehicle_start_button_runs_the_measurement(qtbot) -> None:
 
 
 # ---- 모의기와 끝까지: measure_lap -----------------------------------------------------
-def test_calibration_uses_measure_lap_with_the_simulator(qtbot, tmp_path, monkeypatch) -> None:
+def _sim_window(qtbot, tmp_path, monkeypatch, prefix, **params):
     pytest.importorskip("rclpy")
     vehicle_sim_node = pytest.importorskip("vehicle_sim.vehicle_sim_node")
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.parameter import Parameter
-    ns = f"vl{int(time.time() * 1000) % 100000}"
+    ns = f"{prefix}{int(time.time() * 1000) % 100000}"
     monkeypatch.setenv("SMR_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("SMR_VEHICLE_NS", ns)
     window = OperatorWindow(start_ros=False, start_erut=False)
     qtbot.addWidget(window)
     events: list[tuple] = []
     window.erut.publish_event = lambda name, req, action, status_code=200, error=None, **kw: (
-        events.append((name, action, status_code, kw)) or True)
+        events.append((name, action, status_code, {**kw, **({"error": error} if error else {})})) or True)
     window.erut.publish_res = lambda *a, **k: True
     window._start_robot_scan = lambda: None
     window.ros_status.start()
     sim = vehicle_sim_node.VehicleSim(parameter_overrides=[
-        Parameter("namespace", value=ns), Parameter("outrigger_s", value=0.2)])
+        Parameter("namespace", value=ns), Parameter("outrigger_s", value=0.2),
+        Parameter("align_s", value=0.3), *[Parameter(k, value=v) for k, v in params.items()]])
     executor = SingleThreadedExecutor()
     executor.add_node(sim)
     threading.Thread(target=executor.spin, daemon=True).start()
+
+    def close():
+        executor.shutdown()
+        sim.destroy_node()
+        window.ros_status.stop()
+        window.close()
+    return window, sim, events, close
+
+
+def test_calibration_aligns_at_the_qr_then_holds_with_the_simulator(qtbot, tmp_path, monkeypatch) -> None:
+    """calibrate = measure_lap ALIGN(한 바퀴 없음) → HOLD(거리 0 작업 → 도착 HOLD) → 결과 (2026-11-24)."""
+    window, sim, events, close = _sim_window(qtbot, tmp_path, monkeypatch, "vl")
     try:
         qtbot.waitUntil(lambda: window.vehicle.online, timeout=5000)
         qtbot.waitUntil(lambda: window.vehicle.supports("measure_lap"), timeout=5000)
         assert window.amr.active == "vehicle"
-        vehicle = window.screens["vehicle"]
-        vehicle.field(vehicle.SPEED_FIELD).setValue(1000)          # 1 m/s — 시험을 빨리
-        vehicle.save_requested.emit("vehicle", vehicle.values())
+        modes: list[str] = []
+        original = window.vehicle.measure_lap
+
+        def record(*args, **kwargs):
+            modes.append(kwargs.get("mode", ""))
+            return original(*args, **kwargs)
+        window.vehicle.measure_lap = record
         window._robot_at_home = True
         window._on_robot_task_state(3)
         window.erut_session.handle_request("calibrate", {"req_id": "cal-ml", "geometry": {"shape": "cylinder", "diameter": 300,
@@ -166,28 +183,51 @@ def test_calibration_uses_measure_lap_with_the_simulator(qtbot, tmp_path, monkey
         qtbot.waitUntil(lambda: any(e[0] == "complete" and e[1] == "calibrate" for e in events),
                         timeout=15000)
         name, action, code, payload = [e for e in events if e[1] == "calibrate"][-1]
-        assert code == 200
+        assert code == 200, payload
+        assert modes == ["ALIGN"], "LAP 은 쓰지 않는다 — 한 바퀴는 작업자가 돈다"
+        # 잰 둘레가 없으니 π × 바깥 지름.
         assert payload["total_length_mm"] == pytest.approx(math.pi * 300, abs=2)
-        assert window.vehicle.last_status["lap_state"] == "DONE"
+        assert sim.lap_origin_ok is True and sim.odometer == pytest.approx(0.0)
+        qtbot.waitUntil(lambda: sim.state == "HOLD" and sim.hold == "SET", timeout=3000)
+        assert window.amr.position == pytest.approx(0.0), "QR 자리가 원점"
     finally:
-        executor.shutdown()
-        sim.destroy_node()
-        window.ros_status.stop()
-        window.close()
+        close()
+
+
+def test_calibration_fails_when_the_vehicle_refuses_alignment(qtbot, tmp_path, monkeypatch) -> None:
+    """차량이 measure_lap(ALIGN)을 거절하면 캘리브레이션은 실패다 — 예전처럼 SetJob 한 바퀴로 대신하지 않는다
+    (AGV 제어 노드는 QR 피드백이 정해질 때까지 measure_lap 을 거절한다, 2026-11-23)."""
+    window, sim, events, close = _sim_window(qtbot, tmp_path, monkeypatch, "vk", lap_supported=False)
+    try:
+        qtbot.waitUntil(lambda: window.vehicle.online, timeout=5000)
+        qtbot.waitUntil(lambda: window.vehicle.supports("measure_lap"), timeout=5000)
+        window._robot_at_home = True
+        window._on_robot_task_state(3)
+        window.erut_session.handle_request("calibrate", {"req_id": "cal-fb", "geometry": {
+            "shape": "cylinder", "diameter": 300, "height": 500}})
+        qtbot.waitUntil(lambda: any(e[0] == "complete" and e[1] == "calibrate" for e in events),
+                        timeout=15000)
+        name, action, code, payload = [e for e in events if e[1] == "calibrate"][-1]
+        assert code == 500
+        assert "QR 정렬" in payload["error"]["detail"]
+        assert sim.odometer == pytest.approx(0.0) and sim.hold == "RELEASE", "달리지도 고정하지도 않는다"
+        assert window.erut_session._calibrated is False
+    finally:
+        close()
 
 
 # ---- 비상정지 — 차량(PLC) · 로봇 컨트롤러 어느 쪽이든 (2026-11-18) -----------------------------
-def test_robot_controller_estop_stops_all_and_asks_the_vehicle_to_estop(qtbot) -> None:
+def test_robot_controller_estop_stops_all_and_reports_once(qtbot) -> None:
+    """로봇 컨트롤러 비상정지 → 로봇 · 작업을 세우고 E1002. 차량과 같이 서는 것은 안전 회로가 맡는다 —
+    RCS 는 <ns>/robot_estop 에 내지 않는다(AGV 노드가 PLC 비상정지를 내는 토픽, 2026-11-23)."""
     window = _window(qtbot)
     raised: list[dict] = []
     original = window.erut_session.raise_error
     window.erut_session.raise_error = lambda fields: raised.append(fields) or original(fields)
-    sent: list[bool] = []
-    window.vehicle.send_robot_estop = lambda pressed: sent.append(pressed) or True
+    assert not hasattr(window.vehicle, "send_robot_estop")
     stops: list[int] = []
     window._stop_robot_scan = lambda: stops.append(1)
     window.ros_status.estop_changed.emit(True)
-    assert sent == [True], "차량에도 비상정지를 요청한다(<ns>/robot_estop)"
     assert raised[-1]["code"] == "E1002" and "로봇 컨트롤러" in raised[-1]["detail"]
     assert stops == [1]
     assert "비상정지" in window.top_bar.badges["Cobot"].state_label.text()
@@ -196,15 +236,15 @@ def test_robot_controller_estop_stops_all_and_asks_the_vehicle_to_estop(qtbot) -
     assert [f["code"] for f in raised].count("E1002") == 1
     # 로봇 쪽만 풀면 아직 비상정지다 — 둘 다 풀려야 푼다.
     window.ros_status.estop_changed.emit(False)
-    assert sent == [True, False]
     assert "E1002" in window.erut_session.error_codes()
     _vehicle_mode(window, {"state": "STOP", "estop": False})
     assert "E1002" not in window.erut_session.error_codes()
     window.close()
 
 
-def test_robot_estop_reaches_the_simulator(qtbot, tmp_path, monkeypatch) -> None:
-    """RCS 가 <ns>/robot_estop 을 내면 모의기는 서고 estop = true 로 알린다 — RCS 는 E1002 를 하나만 낸다."""
+def test_vehicle_plc_estop_from_the_simulator(qtbot, tmp_path, monkeypatch) -> None:
+    """차량(PLC) 비상정지 — 모의기(= AGV 노드)가 robot_status.estop 과 <ns>/robot_estop 으로 낸다. RCS 는 E1002 를
+    하나 내고, 그 토픽에 발행하지 않는다. 비상정지 동안 차량은 움직이는 명령을 거절한다."""
     pytest.importorskip("rclpy")
     vehicle_sim_node = pytest.importorskip("vehicle_sim.vehicle_sim_node")
     from rclpy.executors import SingleThreadedExecutor
@@ -226,15 +266,15 @@ def test_robot_estop_reaches_the_simulator(qtbot, tmp_path, monkeypatch) -> None
     threading.Thread(target=executor.spin, daemon=True).start()
     try:
         qtbot.waitUntil(lambda: window.vehicle.online, timeout=5000)
-        window.ros_status.estop_changed.emit(True)
-        qtbot.waitUntil(lambda: sim.robot_estop, timeout=5000)
+        assert sim.count_publishers(f"{ns}/robot_estop") == 1, "robot_estop 은 차량만 낸다"
+        sim.set_parameters([Parameter("estop", value=True)])
         qtbot.waitUntil(lambda: window.vehicle.last_status.get("estop") is True, timeout=5000)
-        assert "E1002" in window.erut_session.error_codes()
+        qtbot.waitUntil(lambda: "E1002" in window.erut_session.error_codes(), timeout=3000)
         from vehicle_interfaces.srv import SetJob
-        res = sim.on_set_job(SetJob.Request(job_id="J-1", set_dist=1.0, set_speed=0.1), SetJob.Response())
-        assert res.success is False and "estop" in res.message      # 비상정지 동안 움직이는 명령을 거절한다
-        window.ros_status.estop_changed.emit(False)
-        qtbot.waitUntil(lambda: not sim.robot_estop, timeout=5000)
+        res = sim.on_set_job(SetJob.Request(job_id="J-1", set_dist=1.0, set_speed=0.1, radius=1.0),
+                             SetJob.Response())
+        assert res.success is False and "E-STOP" in res.message      # 비상정지 동안 움직이는 명령을 거절한다
+        sim.set_parameters([Parameter("estop", value=False)])
         qtbot.waitUntil(lambda: "E1002" not in window.erut_session.error_codes(), timeout=5000)
     finally:
         executor.shutdown()
@@ -278,3 +318,111 @@ def test_alarm_reset_also_resets_the_vehicle(qtbot) -> None:
     window._reset_alarms()
     assert {"state": "", "reset": True} in sent
     window.close()
+
+
+def test_saved_speed_and_standoff_go_out_with_the_next_drive_job(qtbot, tmp_path, monkeypatch) -> None:
+    """차량 설정 「저장」은 차량에 바로 쏘지 않는다 — AGV 노드에 값만 바꾸는 명령이 없어 다음 주행 작업
+    (SetJob.set_speed · standoff)에 실려 간다. 달리는 중인 작업은 처음 받은 값 그대로 끝까지 간다(2026-11-24 검토)."""
+    window, sim, events, close = _sim_window(qtbot, tmp_path, monkeypatch, "vs")
+    try:
+        qtbot.waitUntil(lambda: window.vehicle.online, timeout=5000)
+        assert window.amr.active == "vehicle"
+        vehicle = window.screens["vehicle"]
+
+        def save(speed, standoff):
+            vehicle.field(vehicle.SPEED_FIELD).setValue(speed)
+            vehicle.field(vehicle.STANDOFF_FIELD).setValue(standoff)
+            vehicle.save_requested.emit("vehicle", vehicle.values())
+
+        said: list[str] = []
+        window.main_screen.show_activity = said.append
+        save(300, 400)
+        assert sim.job is None or sim.job.set_speed != pytest.approx(0.3), "저장만으로는 차량에 아무것도 안 간다"
+        assert any("다음 주행 작업(SetJob)부터" in t and "300 mm/s" in t and "400 mm" in t for t in said)
+        window.amr.move_to(window.amr.position + 600, " mm")
+        qtbot.waitUntil(lambda: sim.job is not None and sim.state == "RUNNING", timeout=5000)
+        assert (sim.job.set_speed, sim.job.standoff) == (pytest.approx(0.3), pytest.approx(0.4))
+
+        save(500, 600)                                         # 달리는 중에 저장
+        assert "처음 받은 값 그대로" in said[-1]
+        assert (sim.job.set_speed, sim.job.standoff) == (pytest.approx(0.3), pytest.approx(0.4)), \
+            "달리는 작업은 바뀌지 않는다"
+        qtbot.waitUntil(lambda: not window.amr.moving, timeout=10000)
+
+        # 다음 주행(작업 끝 → 새 작업)부터 새 값이다.
+        finished = []
+        window._vehicle_finish.arrived.connect(lambda: finished.append(1))
+        window._vehicle_finish.move_to(0)
+        qtbot.waitUntil(lambda: bool(finished), timeout=5000)
+        window.amr.move_to(window.amr.position + 100, " mm")
+        qtbot.waitUntil(lambda: sim.job is not None and sim.job.set_speed == pytest.approx(0.5), timeout=5000)
+        assert sim.job.standoff == pytest.approx(0.6)
+        qtbot.waitUntil(lambda: not window.amr.moving, timeout=10000)
+    finally:
+        close()
+
+
+def test_calibration_alignment_uses_saved_not_typed_values(qtbot) -> None:
+    """QR 정렬(measure_lap)도 주행과 같이 저장한 값 — 입력칸에 쳐 두기만 한 값은 쓰지 않는다."""
+    window = _window(qtbot)
+    vehicle = window.screens["vehicle"]
+    vehicle.field(vehicle.SPEED_FIELD).setValue(250)
+    vehicle.field(vehicle.STANDOFF_FIELD).setValue(300)
+    vehicle.save_requested.emit("vehicle", vehicle.values())
+    vehicle.field(vehicle.SPEED_FIELD).setValue(900)           # 저장 안 함
+    sent: list[tuple] = []
+    window.vehicle.measure_lap = lambda job_id, speed, standoff, dist, mode="": sent.append((speed, standoff, mode)) or True
+    window._start_measured_lap({"limit_s": 0})
+    assert sent == [(pytest.approx(0.25), pytest.approx(0.3), "ALIGN")]
+    window._lap_timer().stop()
+    window.close()
+
+
+@pytest.mark.parametrize("how", ["rcs_stop", "erut_abort"])
+def test_stop_and_abort_cancel_the_vehicle_job(qtbot, tmp_path, monkeypatch, how) -> None:
+    """RCS 「정지」 · ERUT 정지(abort) → 차량에 STOP + job_cancel — 남은 작업이 없어 다음 주행이 받아들여진다
+    (2026-11-24 검토)."""
+    window, sim, _events, close = _sim_window(qtbot, tmp_path, monkeypatch, "vc")
+    try:
+        qtbot.waitUntil(lambda: window.vehicle.online, timeout=5000)
+        assert window.amr.active == "vehicle"
+        sent: list[tuple] = []
+        original = window.vehicle.control
+        window.vehicle.control = lambda state="", reset=False, job_cancel=False: (
+            sent.append((state, job_cancel)), original(state, reset=reset, job_cancel=job_cancel))[1]
+        vehicle = window.screens["vehicle"]
+        vehicle.field(vehicle.SPEED_FIELD).setValue(100)
+        vehicle.save_requested.emit("vehicle", vehicle.values())
+        window.amr.move_to(window.amr.position + 2000, " mm")       # 0.1 m/s 로 20 s — 도중에 끊는다
+        qtbot.waitUntil(lambda: sim.state == "RUNNING", timeout=5000)
+        if how == "rcs_stop":
+            window._stop_inspection()
+        else:
+            window.erut_session.handle_request("abort", {"req_id": "ab-1"})
+        assert ("STOP", True) in sent
+        qtbot.waitUntil(lambda: sim.state == "STOP" and sim.job is None, timeout=3000)
+        accepted: list[bool] = []
+        window.vehicle.command_result.connect(lambda name, ok, _m: accepted.append(ok) if name == "set_job" else None)
+        window.amr.move_to(window.amr.position + 100, " mm")
+        qtbot.waitUntil(lambda: bool(accepted), timeout=3000)
+        assert accepted[-1] is True, "남은 작업이 없어 새 작업을 받는다"
+        window.amr.cancel()
+    finally:
+        close()
+
+
+def test_lift_finish_off_target_fails_quickly_with_the_simulator(qtbot, tmp_path, monkeypatch) -> None:
+    """PLC 가 목표 옆에 세우고 FINISH 를 내면 180 s 를 기다리지 않고 바로 알린다(2026-11-24 현장 780 mm)."""
+    window, sim, _events, close = _sim_window(qtbot, tmp_path, monkeypatch, "vf", lift_stop_error=0.012)
+    try:
+        qtbot.waitUntil(lambda: window.vehicle.online, timeout=5000)
+        problems: list[str] = []
+        window._vehicle_lift.problem.connect(problems.append)
+        window._vehicle_lift.speed_mps = 0.2
+        sim.hold, sim.state = "SET", "HOLD"
+        window._vehicle_lift.move_to(780.0, " mm")
+        qtbot.waitUntil(lambda: bool(problems), timeout=10000)
+        assert "도착 신호(FINISH)" in problems[0] and "목표 780 mm" in problems[0]
+        assert sim.lift_state == "FINISH"
+    finally:
+        close()

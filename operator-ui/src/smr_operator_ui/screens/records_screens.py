@@ -375,8 +375,8 @@ class ModeSlotsScreen(BaseScreen):
     def __init__(self) -> None:
         super().__init__(
             "운전 모드 저장",
-            "작업 영역·검사 대상·Cobot 속도·태스크 조건을 슬롯에 묶어 저장하고 불러옵니다. "
-            "연결·시스템 설정은 장비마다 다른 값이라 넣지 않습니다.")
+            "작업 영역·검사 대상·Cobot·태스크에 연결·시스템·차량 설정과 로봇 기준 위치까지 슬롯에 묶어 "
+            "저장하고 불러옵니다. 불러오면 각 설정 화면에서 「저장」을 누른 것과 같이 적용됩니다.")
         self._slots: dict[str, dict] = {}
         # 시험에서 바꿔 끼운다.
         self.confirm: Callable[[str], bool] = lambda text: _ask_yes(self, "운전 모드", text)
@@ -516,7 +516,43 @@ def describe_mode(snap: dict[str, Any]) -> str:
     if task:
         lines.append(f"태스크: {task.get('task_version', '-')} · "
                      f"{'논센서판' if task.get('nosensor') else '센서판'}")
+    # 2026-11-24 — 연결 · 시스템 · 차량 설정, 로봇 기준 위치도 슬롯에 든다(비밀번호는 보이지 않는다).
+    conn = snap.get("connection") or {}
+    if conn:
+        node = "외부 PC" if str(conn.get("AGV 제어 노드", "")).startswith("외부") else "내부"
+        broker = str(conn.get("ERUT Broker 주소") or "").strip()
+        lines.append(f"연결: 로봇 {conn.get('협동로봇 IP') or '-'} · 차량 {conn.get('차량 제어', '-')} · "
+                     f"AGV 노드 {node} · PLC {conn.get('PLC 주소') or '-'}:{conn.get('PLC 포트') or '-'}")
+        lines.append(f"  ERUT {broker + ':' + str(conn.get('ERUT 포트') or '') if broker else '(안 붙음)'}"
+                     f" · 장치 {conn.get('ERUT 장치 ID') or '-'} · ROS 도메인 {conn.get('ROS 도메인 ID') or '환경'}")
+    system = snap.get("system") or {}
+    if system:
+        lines.append(f"시스템: {system.get('장비 이름') or '-'} · {system.get('언어') or '-'} · "
+                     f"기록 {system.get('데이터 저장 위치') or '-'}")
+    vehicle = snap.get("vehicle") or {}
+    if vehicle:
+        lines.append(f"차량: 주행 {num(vehicle.get('차량 주행 속도'))} mm/s · 거리 유지 "
+                     f"{num(vehicle.get('모재 거리 유지'))} mm · 리프트 {num(vehicle.get('리프트 한계 높이'))} mm "
+                     f"({num(vehicle.get('리프트 속도'))} mm/s) · 정렬 {num(vehicle.get('정렬 최대 시간'))} s")
+    poses = snap.get("reference_poses") or {}
+    if "reference_poses" in snap:
+        names = []
+        for key, name in POSE_NAMES:
+            values = (poses.get(key) or {}).get("values") if key in poses else None
+            if not values:
+                continue
+            # 그리퍼 접촉 위치는 받침대 높이에 따라 달라진다 — 높이(z, 로봇 베이스 기준 mm)를 같이 보인다.
+            names.append(f"{name}(z {float(values[2]):,.1f} mm)" if key == "start_pose" and len(values) > 2 else name)
+        lines.append(f"로봇 기준 위치: {' · '.join(names) if names else '없음'}")
+        missing = [name for key, name in POSE_NAMES if key not in poses]
+        if missing:
+            lines.append(f"  없음(불러와도 지금 값 유지): {' · '.join(missing)}")
     return "\n".join(lines)
+
+
+#: 로봇 기준 위치(조그 화면 「… 저장」) 이름.
+POSE_NAMES = (("home_joint", "홈"), ("standby_joint", "스캔 대기"), ("start_pose", "그리퍼 접촉"),
+              ("assembly_joint", "조립"))
 
 
 def mode_timestamp() -> str:

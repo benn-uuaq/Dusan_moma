@@ -1,9 +1,8 @@
-"""ERUT req/calibrate = 차량(AGV) 캘리브레이션 — 모재 외벽을 따라 한 바퀴.
+"""ERUT req/calibrate = 차량(AGV) 캘리브레이션 — QR 정렬 + 아웃트리거 고정 (2026-11-24).
 
-로봇의 3점 측정은 캘리브레이션이 아니라 구간 검사(start) 안에서 한다.
-확인할 것: 모재 지름이 작업 영역 반지름으로 내려가는가, 차량이 둘레만큼
-한 바퀴 도는가(로봇은 홈, 아웃트리거는 풀린 채로), 다 돌아야 완료가
-나가고 total_length_mm 이 실리는가.
+한 바퀴는 작업자가 수동으로 돈다. calibrate 가 오면 차량은 QR 마커에 맞춰 정렬만 하고(measure_lap ALIGN),
+RCS 가 HOLD(아웃트리거 고정)한 뒤 완료를 낸다 — 그다음 prepare 를 받는다. 로봇의 3점 측정은 구간 검사(start)
+안에서 한다. 여기서는 더미 차량(놓인 자리를 원점으로)으로 순서를 본다.
 """
 
 import math
@@ -50,34 +49,54 @@ def _tap(window):
     return events
 
 
-def test_calibration_drives_the_vehicle_once_around(qtbot):
+def test_calibration_aligns_at_the_qr_and_fixes_the_outriggers(qtbot):
     window = _window(qtbot)
     events = _tap(window)
     robot: list[str] = []
     window._start_robot_scan = lambda: robot.append("play")
     sent: list[list] = []
     window._push_work_area_to_robot = lambda *values: sent.append(list(values))
+    moves: list[float] = []
+    window.amr.arrived.connect(lambda: moves.append(window.amr.position))
     window.outrigger.reset(1)                  # 고정돼 있던 차량
 
     window.erut_session.handle_request(
         "calibrate", {"req_id": "cal-1", "geometry": {"shape": "cylinder", "diameter": 1690, "height": 6000}})
-    assert events == [], "한 바퀴 다 돌기 전에는 완료를 내지 않는다"
+    assert events == [], "정렬 · 고정이 끝나기 전에는 완료를 내지 않는다"
 
     qtbot.waitUntil(lambda: bool(events), timeout=10000)
     name, action, payload = events[-1]
     assert (name, action) == ("complete", "calibrate")
     assert payload["origin"] == {"x": 0, "y": 0}
-    # 계획 둘레 π × 1690 ≈ 5309 mm 를 한 바퀴 돌았다.
+    # 잰 둘레가 없다(한 바퀴는 작업자가 돈다) — π × 지름을 싣는다.
     assert abs(payload["total_length_mm"] - math.pi * 1690) <= 1
-    assert payload["calibration_error_mm"] < 1.0
+    assert payload["calibration_error_mm"] == 0
     # 모재 지름의 절반이 벽 반지름으로 내려간다(로봇이 start 에서 쓴다).
     assert sent and sent[0][4] == 845.0
-    # 차량이 달려야 하므로 아웃트리거는 풀고, 로봇은 움직이지 않는다.
-    assert window.outrigger.position == 0
+    # 차량은 한 바퀴 돌지 않는다. 정렬 뒤 아웃트리거를 고정한 채 prepare 를 기다린다.
+    assert moves == [] and window.outrigger.position == 1
     assert robot == []
-    # 다 돌면 원점으로 돌아온 것 — 차량 위치를 0 으로 맞춘다.
-    assert window.amr.position == 0.0
+    assert window.amr.position == 0.0, "QR 자리가 원점"
     window.close()
+
+
+def _park_on_rest(window) -> None:
+    """주행 전 거치(2026-11-26 — 로봇이 있으면 언제나) — 노드가 받침대 태스크를 돌린 것처럼 360 = 2 로 만든다."""
+    from PyQt6.QtCore import QTimer
+
+    def done() -> None:
+        window._on_robot_task_state(1)
+        window._on_robot_at_home(False)
+        window._on_arm_park(1)
+        window._on_arm_park(2)
+        window._on_robot_task_state(3)
+
+    def call(name: str) -> bool:
+        if name == "rest":
+            QTimer.singleShot(0, done)
+        return True
+
+    window.ros_status.call_command = call
 
 
 def test_calibration_waits_for_the_robot_to_be_home(qtbot):
@@ -86,6 +105,7 @@ def test_calibration_waits_for_the_robot_to_be_home(qtbot):
     _tap(window)
     homes: list[int] = []
     window._send_home = lambda: homes.append(1)
+    _park_on_rest(window)
     window.outrigger.reset(0)
     window._on_robot_task_state(3)
     window._on_robot_at_home(True)
@@ -95,29 +115,57 @@ def test_calibration_waits_for_the_robot_to_be_home(qtbot):
         "calibrate", {"req_id": "cal-2", "geometry": {"shape": "cylinder", "diameter": 1690, "height": 6000}})
 
     assert homes == [1]
-    assert not window.amr.moving, "홈에 닿기 전엔 차량을 움직이지 않는다"
+    assert not window.outrigger.moving, "홈에 닿기 전엔 정렬 · 고정을 하지 않는다"
     window._on_robot_at_home(True)
-    assert window.amr.moving
+    # 홈에 닿으면 받침대에 올린 뒤(주행 전 거치) 정렬 · 고정한다.
+    qtbot.waitUntil(lambda: window.outrigger.moving, timeout=3000)
+    assert window._arm_park == 2, "정렬(차량 주행) 전에 팔을 받침대에 올렸다"
     window.close()
 
 
-def test_pause_stops_the_lap_and_resume_finishes_it(qtbot):
+def test_pause_during_the_hold_finishes_fixing_and_resume_completes(qtbot):
+    """고정(HOLD) 중 일시정지 — 고정은 마저 한다(안전 쪽). 선 뒤(paused) 재개하면 다시 정렬하지 않고 결과를 낸다."""
     window = _window(qtbot)
     events = _tap(window)
     window.outrigger.reset(0)
     window.erut_session.handle_request(
         "calibrate", {"req_id": "cal-3", "geometry": {"shape": "cylinder", "diameter": 1000, "height": 6000}})
-    assert window.amr.moving
-
+    assert window.outrigger.moving
     window.erut_session.handle_request("pause", {"req_id": "pz"})
-    assert not window.amr.moving
-    window.erut_session.handle_request("resume", {"req_id": "rz"})
-    assert window.amr.moving
+    qtbot.waitUntil(lambda: window.erut_session.activity_state() == "paused", timeout=10000)
+    assert window.outrigger.position == 1, "멈춰도 고정은 끝낸다"
+    assert [e for e in events if e[1] == "calibrate"] == [], "일시정지 중에는 결과를 내지 않는다"
 
-    qtbot.waitUntil(lambda: bool(events), timeout=10000)
-    name, action, payload = events[-1]
-    assert (name, action) == ("complete", "calibrate")
-    assert abs(payload["total_length_mm"] - math.pi * 1000) <= 1
+    window.erut_session.handle_request("resume", {"req_id": "rz"})
+    qtbot.waitUntil(lambda: any(e[1] == "calibrate" for e in events), timeout=5000)
+    qtbot.wait(300)
+    completes = [e for e in events if e[1] == "calibrate"]
+    assert len(completes) == 1 and completes[0][0] == "complete"
+    assert abs(completes[0][2]["total_length_mm"] - math.pi * 1000) <= 1
+    assert window.outrigger.position == 1, "재개해도 고정을 풀지 않는다(FINISH 를 다시 보내지 않는다)"
+    window.close()
+
+
+def test_pause_before_the_hold_redoes_the_alignment_on_resume(qtbot):
+    """정렬 전(로봇이 홈으로 가는 중)에 멈추면 재개 때 정렬부터 다시 한다."""
+    window = _window(qtbot)
+    events = _tap(window)
+    window._send_home = lambda: None
+    _park_on_rest(window)
+    window.outrigger.reset(0)
+    window._on_robot_task_state(3)
+    window._on_robot_at_home(True)
+    window._on_robot_at_home(False)
+    window.erut_session.handle_request(
+        "calibrate", {"req_id": "cal-4", "geometry": {"shape": "cylinder", "diameter": 1000, "height": 6000}})
+    window.erut_session.handle_request("pause", {"req_id": "pz"})
+    qtbot.waitUntil(lambda: window.erut_session.activity_state() == "paused", timeout=5000)
+    window._on_robot_at_home(True)
+    assert not window.outrigger.moving, "멈춘 동안에는 정렬 · 고정을 시작하지 않는다"
+    window.erut_session.handle_request("resume", {"req_id": "rz"})
+    qtbot.waitUntil(lambda: any(e[1] == "calibrate" for e in events), timeout=10000)
+    assert [e[0] for e in events if e[1] == "calibrate"] == ["complete"]
+    assert window.outrigger.position == 1
     window.close()
 
 

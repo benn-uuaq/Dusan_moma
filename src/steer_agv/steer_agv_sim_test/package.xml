@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>steer_agv_sim_test</name>
+  <version>0.1.0</version>
+  <description>Gazebo Classic motion test for the four-steer AGV plugin</description>
+  <maintainer email="maintainer@example.com">steer_agv maintainers</maintainer>
+  <license>TODO</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>four_steer_amr_plugin</exec_depend>
+  <exec_depend>steer_agv_description</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

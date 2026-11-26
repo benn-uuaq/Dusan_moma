@@ -50,6 +50,8 @@ class RosTopics:
     JOINT_POSITION = "robot/status/joint_position"
     ALARMS = "robot/status/alarms"
     CONNECTED = "robot/status/connected"
+    #: 어느 포트(29999 · 30001 · 502)가 끊겼는지 · 다시 붙었는지(2026-11-24, 로봇 노드).
+    LINK_DETAIL = "robot/status/link_detail"
     SCAN_STATE = "robot/status/scan_state"
     # 스캔 중 호 위 위치(286/287) — ERUT 에 실제 검사 좌표를 실을 때 쓴다.
     SCAN_ARC = "robot/status/scan_arc"
@@ -58,6 +60,8 @@ class RosTopics:
     TASK_STATE = "robot/status/task_state"
     # 로봇이 홈에 있는지(레지스터 276). 홈을 벗어나면 0 이 된다.
     AT_HOME = "robot/status/at_home"
+    # 팔 받침대 상태(레지스터 360, 2026-11-26): 1 올리는 중 · 2 받침대 위 · 3 홈으로 · 4 ready · 9 미저장.
+    ARM_PARK = "robot/status/arm_park"
     SPEED_SCALE = "robot/status/speed_scale"
     # 디지털 입출력 비트묶음(레지스터 0 = 표준 DI, 2 = 표준 DO).
     DIGITAL_IN = "robot/status/digital_in"
@@ -87,6 +91,9 @@ class RosTopics:
     SCAN_PITCH = "robot/command/scan_pitch"
     # 리프트 대신 로봇 팔을 들어 스캔할 높이 [mm] (레지스터 358, 2026-11-09). 0 = 예전과 같다.
     SCAN_Z_OFFSET = "robot/command/scan_z_offset"
+    # 이번 구역 아래 끝 높이 — 모재 아래 끝에서 [mm] (레지스터 359, 2026-11-23). 로봇이 바닥 근처
+    # 줄 바꿈에서 벽에서 물러섰다 오르는 데 쓴다.
+    SCAN_Y_BASE = "robot/command/scan_y_base"
     JOG_JOINT = "robot/command/jog_joint"
     # 스캔 시작 허가(레지스터 267). 로봇이 원점에서 기다리는 것을 푼다.
     SCAN_GO = "robot/command/scan_go"
@@ -102,6 +109,8 @@ class RosTopics:
     DIGITAL_OUT_CMD = "robot/command/digital_out"
 
     MOVE_HOME = "robot/command/move_home"
+    # 홈 → 받침대 거치(2026-11-26) — 노드가 받침대 태스크(dusan_v6_park)를 튼다.
+    MOVE_REST = "robot/command/move_rest"
     # 홈 -> 조립 위치 movej (노드가 홈에서만 받는다).
     MOVE_ASSEMBLY = "robot/command/move_assembly"
 
@@ -141,6 +150,8 @@ class RosStatusClient(QObject):
     operation_mode_changed = pyqtSignal(int, str)
     alarm_received = pyqtSignal(str)
     connected_changed = pyqtSignal(bool)
+    #: 「끊김 30001(Primary): 까닭」 · 「다시 연결됨 30001(Primary)」 · 「연결됨」(2026-11-24).
+    link_detail_changed = pyqtSignal(str)
     command_result = pyqtSignal(str, bool, str)
     error_occurred = pyqtSignal(str)
     # 로봇 태스크의 스캔 진행 상태(레지스터 290~299)를 정수 그대로 전달한다.
@@ -151,6 +162,8 @@ class RosStatusClient(QObject):
     task_state_changed = pyqtSignal(int)
     # 로봇이 홈에 있는지(레지스터 276). 값이 바뀔 때만 나간다.
     at_home_changed = pyqtSignal(bool)
+    # 팔 받침대 상태(레지스터 360). 값이 바뀔 때만 나간다.
+    arm_park_changed = pyqtSignal(int)
     # 로봇이 실제로 쓰고 있는 속도 비율[%]. 펜던트에서 바꿔도 여기로 온다.
     speed_scale_changed = pyqtSignal(int)
     # 디지털 입출력 비트묶음. (묶음값) 그대로 주고 화면이 비트를 푼다.
@@ -197,6 +210,7 @@ class RosStatusClient(QObject):
         "pause": (f"{RosTopics.DASHBOARD}/pause", None),
         "stop": (f"{RosTopics.DASHBOARD}/stop", None),
         "home": (RosTopics.MOVE_HOME, None),
+        "rest": (RosTopics.MOVE_REST, None),
         "move_assembly": (RosTopics.MOVE_ASSEMBLY, None),
         # Cobot 조그 화면 위치 카드의 「이동」(2026-11-12).
         "move_standby": ("robot/command/move_standby", None),
@@ -236,6 +250,7 @@ class RosStatusClient(QObject):
         self._speed_scale_last: int | None = None
         # 홈 위치 플래그(276)와 차량 고정 확인(309)도 바뀔 때만 오간다.
         self._at_home_last: bool | None = None
+        self._arm_park_last: int | None = None
         self._vehicle_ready_last: bool | None = None
         # 디지털 입출력도 10 Hz 로 오므로 바뀔 때만 내보낸다.
         self._digital_in_last: int | None = None
@@ -328,6 +343,9 @@ class RosStatusClient(QObject):
                 Bool, RosTopics.CONNECTED, self._on_connected, 10
             )
             self._node.create_subscription(
+                String, RosTopics.LINK_DETAIL, lambda msg: self.link_detail_changed.emit(str(msg.data)), 10
+            )
+            self._node.create_subscription(
                 Int32MultiArray, RosTopics.SCAN_STATE, self._on_scan_state, 10
             )
             self._node.create_subscription(
@@ -344,6 +362,9 @@ class RosStatusClient(QObject):
             )
             self._node.create_subscription(
                 Int32, RosTopics.AT_HOME, self._on_at_home, 10
+            )
+            self._node.create_subscription(
+                Int32, RosTopics.ARM_PARK, self._on_arm_park, 10
             )
             self._node.create_subscription(
                 Int32, RosTopics.DIGITAL_IN, self._on_digital_in, 10
@@ -376,6 +397,8 @@ class RosStatusClient(QObject):
                 "scan_go": self._node.create_publisher(Int32, RosTopics.SCAN_GO, 10),
                 "scan_z_offset": self._node.create_publisher(
                     Int32, RosTopics.SCAN_Z_OFFSET, 10),
+                "scan_y_base": self._node.create_publisher(
+                    Int32, RosTopics.SCAN_Y_BASE, 10),
                 "mark_go": self._node.create_publisher(Int32, RosTopics.MARK_GO, 10),
                 "vehicle_ready": self._node.create_publisher(
                     Int32, RosTopics.VEHICLE_READY, 10),
@@ -424,6 +447,7 @@ class RosStatusClient(QObject):
         self._stale_timer.stop()
         self._vehicle_ready_last = None
         self._at_home_last = None
+        self._arm_park_last = None
         executor, self._executor = self._executor, None
         if executor is not None:
             executor.shutdown()
@@ -546,6 +570,14 @@ class RosStatusClient(QObject):
             return False
         try:
             return bool(client.service_is_ready())
+        except Exception:      # pragma: no cover - 통신 예외 경로.
+            return False
+
+    def robot_params_ready(self) -> bool:
+        """로봇 제어 노드의 파라미터 서비스가 잡히는가(주소를 넘길 수 있는가)."""
+        client = getattr(self, "_param_client", None)
+        try:
+            return client is not None and bool(client.service_is_ready())
         except Exception:      # pragma: no cover - 통신 예외 경로.
             return False
 
@@ -774,6 +806,14 @@ class RosStatusClient(QObject):
             return
         self._at_home_last = at_home
         self.at_home_changed.emit(at_home)
+
+    def _on_arm_park(self, msg) -> None:
+        """팔 받침대 상태(360). 10 Hz 로 오므로 바뀔 때만 내보낸다."""
+        state = int(msg.data)
+        if state == self._arm_park_last:
+            return
+        self._arm_park_last = state
+        self.arm_park_changed.emit(state)
 
     def _on_scan_state(self, msg) -> None:
         """스캔 진행 상태를 정수 목록 그대로 전달한다.

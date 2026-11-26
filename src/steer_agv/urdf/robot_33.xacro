@@ -1,0 +1,133 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="steer_agv">
+  <xacro:arg name="prefix" default=""/>
+  <xacro:arg name="cam_mount_rpy" default="0 0 0"/>
+  <xacro:arg name="outrigger_mount_z" default="-0.18"/>
+  <xacro:property name="prefix" value="$(arg prefix)"/>
+  <xacro:property name="wheel_radius" value="0.125"/>
+  <xacro:property name="wheel_width" value="0.10"/>
+  <xacro:property name="wheel_x" value="0.680"/>
+  <xacro:property name="wheel_y" value="0.410"/>
+  <xacro:property name="steer_limit" value="1.919862177"/>
+  <xacro:property name="steer_velocity" value="1.570796327"/>
+  <material name="agv_blue"><color rgba="0.08 0.30 0.80 1"/></material>
+  <material name="agv_dark"><color rgba="0.06 0.07 0.08 1"/></material>
+  <material name="agv_yellow"><color rgba="0.95 0.72 0.05 1"/></material>
+  <material name="sensor_red"><color rgba="0.85 0.10 0.08 1"/></material>
+
+  <xacro:macro name="box_inertial" params="mass x y z">
+    <inertial><mass value="${mass}"/>
+      <inertia ixx="${mass*(y*y+z*z)/12}" ixy="0" ixz="0" iyy="${mass*(x*x+z*z)/12}" iyz="0" izz="${mass*(x*x+y*y)/12}"/>
+    </inertial>
+  </xacro:macro>
+  <xacro:macro name="wheel_inertial" params="mass radius length">
+    <inertial><origin rpy="1.570796327 0 0"/><mass value="${mass}"/>
+      <inertia ixx="${mass*(3*radius*radius+length*length)/12}" ixy="0" ixz="0" iyy="${mass*radius*radius/2}" iyz="0" izz="${mass*(3*radius*radius+length*length)/12}"/>
+    </inertial>
+  </xacro:macro>
+  <xacro:macro name="vertical_cylinder_inertial" params="mass radius length">
+    <inertial><mass value="${mass}"/>
+      <inertia ixx="${mass*(3*radius*radius+length*length)/12}" ixy="0" ixz="0"
+               iyy="${mass*(3*radius*radius+length*length)/12}" iyz="0"
+               izz="${mass*radius*radius/2}"/>
+    </inertial>
+  </xacro:macro>
+
+  <link name="${prefix}base_footprint"/>
+  <joint name="${prefix}base_footprint_joint" type="fixed">
+    <parent link="${prefix}base_footprint"/><child link="${prefix}base_link"/><origin xyz="0 0 ${wheel_radius}"/>
+  </joint>
+  <link name="${prefix}base_link">
+    <inertial><mass value="0.001"/><inertia ixx="0.000001" ixy="0" ixz="0" iyy="0.000001" iyz="0" izz="0.000001"/></inertial>
+  </link>
+  <joint name="${prefix}body_joint" type="fixed">
+    <parent link="${prefix}base_link"/><child link="${prefix}body_link"/><origin xyz="0 0 0.27"/>
+  </joint>
+  <link name="${prefix}body_link">
+    <visual><geometry><box size="1.45 0.90 0.32"/></geometry><material name="agv_blue"/></visual>
+    <collision><geometry><box size="1.45 0.90 0.32"/></geometry></collision>
+    <xacro:box_inertial mass="180" x="1.45" y="0.90" z="0.32"/>
+  </link>
+
+  <xacro:macro name="steered_wheel" params="name x y">
+    <joint name="${prefix}${name}_steer_joint" type="revolute">
+      <parent link="${prefix}base_link"/><child link="${prefix}${name}_steer_link"/>
+      <origin xyz="${x} ${y} 0"/><axis xyz="0 0 1"/>
+      <limit lower="${-steer_limit}" upper="${steer_limit}" effort="1000" velocity="${steer_velocity}"/>
+      <dynamics damping="1.0" friction="0.2"/>
+    </joint>
+    <link name="${prefix}${name}_steer_link">
+      <visual><geometry><cylinder radius="0.055" length="0.06"/></geometry><material name="agv_yellow"/></visual>
+      <collision><geometry><cylinder radius="0.055" length="0.06"/></geometry></collision>
+      <xacro:vertical_cylinder_inertial mass="2" radius="0.055" length="0.06"/>
+    </link>
+    <joint name="${prefix}${name}_wheel_joint" type="continuous">
+      <parent link="${prefix}${name}_steer_link"/><child link="${prefix}${name}_wheel_link"/>
+      <axis xyz="0 1 0"/><limit effort="1000" velocity="20"/><dynamics damping="0.1" friction="0.1"/>
+    </joint>
+    <link name="${prefix}${name}_wheel_link">
+      <visual><origin rpy="1.570796327 0 0"/><geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry><material name="agv_dark"/></visual>
+      <collision><origin rpy="1.570796327 0 0"/><geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry></collision>
+      <xacro:wheel_inertial mass="6" radius="${wheel_radius}" length="${wheel_width}"/>
+    </link>
+  </xacro:macro>
+  <!-- Document coordinates converted using x_ros=y_doc and y_ros=-x_doc. -->
+  <xacro:steered_wheel name="fl" x="${wheel_x}" y="${wheel_y}"/>
+  <xacro:steered_wheel name="fr" x="${wheel_x}" y="${-wheel_y}"/>
+  <xacro:steered_wheel name="rl" x="${-wheel_x}" y="${wheel_y}"/>
+  <xacro:steered_wheel name="rr" x="${-wheel_x}" y="${-wheel_y}"/>
+
+  <xacro:macro name="outrigger" params="name x y">
+    <joint name="${prefix}${name}_joint" type="fixed">
+      <parent link="${prefix}body_link"/><child link="${prefix}${name}_link"/><origin xyz="${x} ${y} $(arg outrigger_mount_z)"/>
+    </joint>
+    <link name="${prefix}${name}_link">
+      <visual><origin xyz="0 0 -0.15"/><geometry><cylinder radius="0.035" length="0.30"/></geometry><material name="agv_yellow"/></visual>
+      <collision><origin xyz="0 0 -0.15"/><geometry><cylinder radius="0.035" length="0.30"/></geometry></collision>
+      <inertial><origin xyz="0 0 -0.15"/><mass value="2"/><inertia ixx="0.015" ixy="0" ixz="0" iyy="0.015" iyz="0" izz="0.0013"/></inertial>
+    </link>
+  </xacro:macro>
+  <xacro:outrigger name="fl_outrigger" x="0.62" y="0.36"/>
+  <xacro:outrigger name="fr_outrigger" x="0.62" y="-0.36"/>
+  <xacro:outrigger name="rl_outrigger" x="-0.62" y="0.36"/>
+  <xacro:outrigger name="rr_outrigger" x="-0.62" y="-0.36"/>
+
+  <joint name="${prefix}lift_joint" type="prismatic">
+    <parent link="${prefix}body_link"/><child link="${prefix}lift_link"/><origin xyz="0 0 0.20"/><axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.5" effort="10000" velocity="0.2"/>
+  </joint>
+  <link name="${prefix}lift_link">
+    <visual><geometry><box size="0.90 0.65 0.08"/></geometry><material name="agv_yellow"/></visual>
+    <collision><geometry><box size="0.90 0.65 0.08"/></geometry></collision>
+    <xacro:box_inertial mass="25" x="0.90" y="0.65" z="0.08"/>
+  </link>
+
+  <xacro:macro name="sensor" params="name parent x y z yaw">
+    <joint name="${prefix}${name}_joint" type="fixed">
+      <parent link="${prefix}${parent}"/><child link="${prefix}${name}_link"/><origin xyz="${x} ${y} ${z}" rpy="0 0 ${yaw}"/>
+    </joint>
+    <link name="${prefix}${name}_link">
+      <visual><geometry><box size="0.05 0.04 0.04"/></geometry><material name="sensor_red"/></visual>
+      <collision><geometry><box size="0.05 0.04 0.04"/></geometry></collision>
+      <xacro:box_inertial mass="0.1" x="0.05" y="0.04" z="0.04"/>
+    </link>
+  </xacro:macro>
+  <xacro:sensor name="imu" parent="body_link" x="0" y="0" z="0" yaw="0"/>
+  <!-- Mount in document axes (right, forward, up): 0.0, 0.45, 0.3 m. -->
+  <joint name="${prefix}cam_joint" type="fixed">
+    <parent link="${prefix}base_link"/>
+    <child link="${prefix}cam_link"/>
+    <origin xyz="0.45 0 0.30" rpy="$(arg cam_mount_rpy)"/>
+  </joint>
+  <link name="${prefix}cam_link"/>
+  <joint name="${prefix}cam_optical_joint" type="fixed">
+    <parent link="${prefix}cam_link"/>
+    <child link="${prefix}cam_optical_frame"/>
+    <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+  </joint>
+  <link name="${prefix}cam_optical_frame"/>
+  <xacro:sensor name="front_scanner" parent="base_link" x="0.69" y="0" z="0.35" yaw="0"/>
+  <xacro:sensor name="rear_scanner" parent="base_link" x="-0.69" y="0" z="0.35" yaw="3.141592654"/>
+  <xacro:sensor name="guide_sensor_front" parent="base_link" x="0.81" y="0.60" z="0.70" yaw="${pi/2}"/>
+  <xacro:sensor name="guide_sensor_rear" parent="base_link" x="-0.81" y="0.60" z="0.70" yaw="${pi/2}"/>
+</robot>

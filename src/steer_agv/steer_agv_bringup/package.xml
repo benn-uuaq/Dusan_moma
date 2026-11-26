@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>steer_agv_bringup</name>
+  <version>0.1.0</version>
+  <description>Launch the steer AGV controller and TF tree</description>
+  <maintainer email="maintainer@example.com">steer_agv maintainers</maintainer>
+  <license>TODO</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>steer_agv_description</exec_depend>
+  <exec_depend>steer_agv_marker</exec_depend>
+  <exec_depend>steer_agv_controller_py</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

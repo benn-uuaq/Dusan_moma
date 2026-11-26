@@ -15,6 +15,11 @@ UI 를 닫으면 자식 노드도 같이 정리한다. 터미널에서 따로 �
     `ros2 run` 래퍼를 거치면 래퍼만 죽고 노드가 남으므로 실행 파일을 직접 띄운다.
   * 켜자마자 ROS 서비스로 「노드가 이미 있나」를 물으면 탐색 전이라 「없다」가
     나와 하나 더 띄웠다 → 이 PC 의 프로세스 목록으로도 본다.
+
+2026-11-24: 노드를 주소 없이 띄워 노드가 자기 기본값(192.168.227.134)에만 붙으려 했다 — 연결 설정의
+  IP(예: 192.168.11.30)는 「연결」을 눌러야 넘어가서, RCS 를 켜도 로봇이 「연결 안 됨」이었다.
+  → 연결 설정의 IP · Modbus 포트를 띄울 때 파라미터로 넘긴다(robot_ip · modbus_port). 출력은
+  ~/.ros/log/smr_robot_node.log 에 남긴다(예전에는 버렸다 — 왜 못 붙는지 볼 곳이 없었다).
 """
 
 from __future__ import annotations
@@ -32,6 +37,8 @@ from PyQt6.QtCore import QObject, pyqtSignal
 NODE_EXECUTABLE = "robot_control_node"
 #: ros2 run 으로 띄울 때 쓰는 패키지 이름.
 NODE_PACKAGE = "elite_robot_controller"
+#: 노드 출력(연결 성공 · 실패 줄). 띄울 때마다 새로 쓴다.
+LOG_PATH = Path.home() / ".ros" / "log" / "smr_robot_node.log"
 
 
 class RobotNodeSupervisor(QObject):
@@ -44,6 +51,10 @@ class RobotNodeSupervisor(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._process: subprocess.Popen | None = None
+        self._log = None
+        #: 붙을 로봇 주소(연결 설정 — 앱이 넣는다). 비면 노드 기본값.
+        self.robot_ip = ""
+        self.modbus_port = 502
 
     # ------------------------------------------------------------------ 상태
     @property
@@ -59,6 +70,14 @@ class RobotNodeSupervisor(QObject):
         """
         # 워크스페이스를 source 하면 AMENT_PREFIX_PATH 에 install/<패키지> 가 있다.
         # 실행 파일을 직접 띄워야 RCS 와 같이 죽게 걸 수 있다(래퍼는 자식을 남긴다).
+        command = self._base_command()
+        if command is None or not self.robot_ip:
+            return command
+        return command + ["--ros-args", "-p", f"robot_ip:={self.robot_ip}",
+                          "-p", f"modbus_port:={int(self.modbus_port or 502)}"]
+
+    @staticmethod
+    def _base_command() -> list[str] | None:
         for prefix in os.environ.get("AMENT_PREFIX_PATH", "").split(os.pathsep):
             candidate = Path(prefix) / "lib" / NODE_PACKAGE / NODE_EXECUTABLE
             if prefix and candidate.is_file() and os.access(candidate, os.X_OK):
@@ -124,30 +143,58 @@ class RobotNodeSupervisor(QObject):
             return False
 
         try:
+            try:
+                LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                self._log = open(LOG_PATH, "w", encoding="utf-8")    # noqa: SIM115 — 자식이 쓰는 동안 연다
+            except OSError:
+                self._log = None
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"      # 연결 줄(print)이 바로 기록되게
             self._process = subprocess.Popen(
                 command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=self._log or subprocess.DEVNULL,
+                stderr=subprocess.STDOUT if self._log else subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
                 # 터미널 신호(Ctrl+C)는 UI 가 받아 정리하게 떼어 두되, UI 가
                 # 어떻게 죽든 노드도 같이 죽게 한다 — 고아 노드가 남으면 다음에
                 # 켠 RCS 가 노드를 하나 더 띄워 둘이 같은 로봇을 다툰다.
                 start_new_session=True,
                 preexec_fn=_die_with_parent,
-                env=os.environ.copy(),
+                env=env,
             )
         except OSError as exc:
             self.activity.emit(f"로봇 제어 노드 실행 실패: {exc}")
             self._process = None
+            self._close_log()
             return False
 
-        self.activity.emit("로봇 제어 노드를 시작했습니다.")
+        target = f" — 로봇 {self.robot_ip}:{int(self.modbus_port or 502)}" if self.robot_ip else ""
+        self.activity.emit(f"로봇 제어 노드를 시작했습니다{target}.")
         return True
+
+    def _close_log(self) -> None:
+        if self._log is not None:
+            try:
+                self._log.close()
+            except OSError:
+                pass
+            self._log = None
+
+    @staticmethod
+    def log_tail(lines: int = 3) -> str:
+        """노드 기록 끝 몇 줄(연결 실패 원인을 알릴 때)."""
+        try:
+            text = LOG_PATH.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+        except OSError:
+            return ""
+        return " / ".join(line.strip() for line in text[-lines:] if line.strip())
 
     def stop(self, timeout: float = 5.0) -> None:
         """우리가 띄운 노드를 정리한다. 남의 노드는 건드리지 않는다."""
         process = self._process
         self._process = None
         if process is None or process.poll() is not None:
+            self._close_log()
             return
         process.terminate()
         try:
@@ -158,6 +205,7 @@ class RobotNodeSupervisor(QObject):
                 process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 pass
+        self._close_log()
 
 
 def _die_with_parent() -> None:

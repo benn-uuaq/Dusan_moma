@@ -13,13 +13,29 @@ import threading
 
 from .modbus_io import RobotModbus, ServerBridge
 from .scan_signals import COIL_BASE, LATCH_MS, STATE_SCAN, STATUS_REGISTER, ScanSignalOutput
-from .robot_map import (READ_BLOCKS, RobotData, OUT_FORMATS,
-                        encode_payload, to_uint16, clamp_int16,
-                        build_read_blocks)
+from .robot_map import (READ_BLOCKS, REG_TCP_POSE, REG_TCP_SCAN, REG_TCP_SPEED,
+                        RobotData, OUT_FORMATS, encode_payload, to_uint16,
+                        clamp_int16, build_read_blocks)
 
 # 외부에 '재현' 할 기본 주소 — UR 배치 (TPAC 등 UR 기준 장비가 읽는 자리)
 #   로봇에서 '읽는' 주소(robot_map)와는 전혀 별개다.
 MIRROR_UR = {"joint": 270, "pose": 400, "speed": 410, "offset": 420}
+
+# 외부에 내는 주소 배치 — 둘 중 하나를 고른다(2026-11-25). TPAC 이 ELITE 협동로봇에 맞춘 판을 새로 만들었다.
+#   "elite": ELITE 로봇 자기 주소 그대로 — pose 384(베이스 TCP) · 속도 400(로봇이 주는 실제 TCP 속도).
+#            C-scan 용 280~287(제로점 기준 좌표 · 호 위치 · 누적 호 길이)은 화면의 평면 · Cscan · Odometer
+#            자리가 그 주소로 채운다. 관절 · 상태는 「ELITE 배치」(elite_status)가 63~110 · 306~307 · 500 에 낸다.
+#   "ur"   : UR 로봇 자리 — 관절 270 / pose 400 / 속도 410 / offset 420. TPAC 의 UR 판.
+#   pose · 속도 자리(mirror_map["pose"] · ["speed"])는 화면에서 바꿀 수 있다.
+MAPPING_ELITE = "elite"
+MAPPING_UR = "ur"
+MAPPINGS = (MAPPING_ELITE, MAPPING_UR)
+#: ELITE 로봇의 실제 주소 — 「ELITE 로봇 매핑」을 고르면 화면 주소 칸이 이 값으로 바뀐다.
+MIRROR_ELITE = {"scan": REG_TCP_SCAN, "pose": REG_TCP_POSE, "speed": REG_TCP_SPEED}
+#: 「ELITE 배치」가 채우는 ELITE 로봇 상태 자리 [(시작, 끝, 설명)] — robot_map 의 읽기 주소와 같다.
+ELITE_STATUS_RANGES = [(63, 78, "ELITE 버전·상태·관절"), (84, 89, "ELITE 관절 속도"),
+                       (95, 100, "ELITE 관절 전류"), (105, 110, "ELITE 관절 온도"),
+                       (306, 307, "ELITE 작업 속도·비율"), (500, 500, "ELITE 운전 상태")]
 
 
 def split_blocks(blocks, max_words=48):
@@ -255,6 +271,11 @@ class ExternalServer:
         # 외부에 '재현' 할 주소. 로봇에서 '읽는' 주소(robot_map)와 별개다.
         # 외부 장치가 다른 주소를 기대하면 여기만 바꾸면 된다.
         self.mirror_map = dict(MIRROR_UR)
+        # 주소 배치: MAPPING_ELITE(ELITE 로봇 주소 그대로) / MAPPING_UR(관절·pose·속도·offset)
+        self.mapping = MAPPING_UR
+        # 화면이 따로 채우는 자리 [(시작, 끝, 설명)] — 작업 평면 · Odometer · Cscan.
+        #   여기 적어 둬야 외부 요청 로그가 그 자리를 '채워지지 않은 주소'로 보지 않는다.
+        self.extra_ranges = []
         # 위상 보정: 0 / 1 / 2
         #   응답을 주소로 짝짓지 못하고 도착 순서대로 칸에 채우는 장치가 있다.
         #   접속할 때 보내는 확인용 요청 하나가 칸을 먼저 먹으면 이후 모든 값이
@@ -269,6 +290,9 @@ class ExternalServer:
         #   TPAC 처럼 UR 기준으로 만들어진 장비가 접속 확인 단계에서
         #   읽어보는 자리들이라, 비어 있으면 연결을 거부할 수 있다.
         self.ur_mode = False
+        # ELITE 배치: ELITE 로봇 자신의 상태 · 관절 자리(63~110 · 306~307 · 500)를 같은 주소로 채운다.
+        #   UR 배치의 ELITE 판 — ELITE 기준 장비가 로봇 대신 브리지를 읽어도 같은 자리에 값이 있다.
+        self.elite_status = False
         # 외부로 내보낼 좌표의 출처: "scan" / "pose" / "auto"
         self.pose_source = "scan"
         self._last_pose = None      # 속도 계산용 (좌표, 시각)
@@ -296,7 +320,7 @@ class ExternalServer:
               fmt="int16_raw", word_order="hi_lo", pos_unit="raw",
               mirror_map=None, delay_ms=0, mirror_shift=0, pose_only=False,
               ur_mode=False, pose_source="scan", scan_signals=True,
-              signal_latch_ms=LATCH_MS):
+              signal_latch_ms=LATCH_MS, mapping=MAPPING_UR, elite_status=False):
         # 응답 지연: 폴링 속도 제한이 없는 장치가 폭주해 스스로 죽는 것을 막는다
         self.bridge = ServerBridge(log=self.on_log, on_request=self._on_request,
                                    delay_ms=delay_ms)
@@ -309,6 +333,8 @@ class ExternalServer:
         self.pose_only = bool(pose_only)
         self.ur_mode = bool(ur_mode)
         self.pose_source = pose_source
+        self.mapping = mapping if mapping in MAPPINGS else MAPPING_UR
+        self.elite_status = bool(elite_status)
         if mirror_map:
             self.mirror_map.update({k: int(v) for k, v in mirror_map.items()})
         ok = self.bridge.start(host, int(port))
@@ -366,9 +392,14 @@ class ExternalServer:
                                 "데이터 블록 시작 주소를 옮기는 것을 권합니다.")
         ok = self.bridge.set_hr(self.start_addr, block)     # 한 번에 통째로
         if self.mirror:
-            self._write_mirror(data)
+            if self.mapping == MAPPING_ELITE:
+                self._write_elite(data)
+            else:
+                self._write_mirror(data)
         if self.ur_mode:
             self._write_ur_state(data)
+        if self.elite_status:
+            self._write_elite_state(data)
         if ok:
             self.update_count += 1
         return ok
@@ -384,15 +415,22 @@ class ExternalServer:
                (self.start_addr + n, self.start_addr + n + 7, "상태")]
         if self.mirror:
             m = self.mirror_map
-            out += [(m["joint"], m["joint"] + 5, "관절 재현"),
-                    (m["pose"], m["pose"] + 5, "pose 재현"),
-                    (m["speed"], m["speed"] + 5, "속도 재현"),
-                    (m["offset"], m["offset"] + 5, "offset 재현")]
+            if self.mapping == MAPPING_ELITE:
+                out += [(m["pose"], m["pose"] + 5, "ELITE pose"),
+                        (m["speed"], m["speed"] + 5, "ELITE 속도")]
+            else:
+                out += [(m["joint"], m["joint"] + 5, "관절 재현"),
+                        (m["pose"], m["pose"] + 5, "pose 재현"),
+                        (m["speed"], m["speed"] + 5, "속도 재현"),
+                        (m["offset"], m["offset"] + 5, "offset 재현")]
+            out += list(self.extra_ranges)
         if self.signals is not None:
             out += [(STATUS_REGISTER, STATUS_REGISTER, "TPAC DO 신호")]
         if self.ur_mode:
             out += [(1, 1, "UR Outputs"), (256, 258, "UR 버전·모드"),
                     (260, 265, "UR 전원·정지"), (450, 451, "UR 전류")]
+        if self.elite_status:
+            out += list(ELITE_STATUS_RANGES)
         return out
 
     def covers(self, addr, count, fc=3):
@@ -400,21 +438,33 @@ class ExternalServer:
 
         fc 1·2(코일·디스크리트 입력)는 레지스터와 주소 공간이 따로다.
         """
-        end = addr + count - 1
         if fc in (1, 2):
             bit_ranges = []
             if self.signals is not None:
                 bit_ranges.append((COIL_BASE, COIL_BASE + 2, "TPAC DO 신호"))
             if self.ur_mode:
                 bit_ranges.append((260, 265, "UR 전원·정지 비트"))
-            for lo, hi, label in bit_ranges:
-                if lo <= addr and end <= hi:
-                    return label
-            return None
-        for lo, hi, label in self.filled_ranges():
-            if lo <= addr and end <= hi:
-                return label
-        return None
+            return self._covered(addr, count, bit_ranges)
+        return self._covered(addr, count, self.filled_ranges())
+
+    @staticmethod
+    def _covered(addr, count, ranges):
+        """요청 구간의 모든 칸이 ranges 중 어딘가에 들면 그 이름들("A + B"), 한 칸이라도 비면 None.
+
+        붙은 구간 여러 개에 걸친 요청도 채워진 것으로 본다 — ELITE 판 TPAC 은 280~287 을 한 번에
+        읽는데, 화면은 그 자리를 평면(280~285) · Cscan(286) · Odometer(287) 로 나눠 채운다.
+        """
+        end = addr + count - 1
+        labels = []
+        at = addr
+        while at <= end:
+            hit = next(((hi, label) for lo, hi, label in ranges if lo <= at <= hi), None)
+            if hit is None:
+                return None
+            if hit[1] not in labels:
+                labels.append(hit[1])
+            at = hit[0] + 1
+        return " + ".join(labels) if labels else None
 
     # ------------------------------------------------------------------
     def _calc_speed(self, pose, data):
@@ -483,6 +533,45 @@ class ExternalServer:
         return self.pose_source != "scan" or data.scan_state == STATE_SCAN
 
     # ------------------------------------------------------------------
+    def _pose_out(self, data: RobotData):
+        """pose 자리에 낼 6 워드 — 「포즈 값」으로 고른 출처, 위치 단위(raw 0.1mm / mm)."""
+        pose = data.pose_by_source(self.pose_source)
+        if self.pos_unit == "mm":
+            pose = [clamp_int16(pose[i] / 10.0) for i in range(3)] + list(pose[3:])
+        return pose
+
+    def _write_elite(self, data: RobotData):
+        """
+        ELITE 배치 — ELITE 로봇 자기 주소 그대로.
+          pose 자리 (기본 384) : 「포즈 값」으로 고른 좌표 (기본 베이스 TCP)  [0.1mm / mRad]
+          속도 자리 (기본 400) : 로봇이 주는 실제 TCP 속도 (tcp_spd_real)    [mm/s / mRad/s]
+        280~287(C-scan)은 화면이 평면 · Cscan · Odometer 자리로 쓴다(주소를 바꿀 수 있어서).
+        UR 배치의 관절(270) · offset(420)은 내지 않는다 — 관절은 ELITE 배치(73~78)가 낸다.
+        """
+        m = self.mirror_map
+        self.bridge.set_hr(m["pose"], [to_uint16(v) for v in self._pose_out(data)])
+        speed = list(data.tcp_spd_real) if self.speed_live(data) else [0] * 6
+        self.bridge.set_hr(m["speed"], [to_uint16(v) for v in speed])
+
+    def _write_elite_state(self, data: RobotData):
+        """
+        ELITE 로봇 자신의 상태 자리를 같은 주소로 채운다 (UR 배치의 ELITE 판).
+          63~65 버전 · 66 Robot mode · 67 전원 · 68 보호 정지 · 69 비상 정지 · 70 감속 ·
+          71 제어 방식 · 72 운전 모드 · 73~78 관절 위치 · 84~89 관절 속도 · 95~100 관절 전류 ·
+          105~110 관절 온도 · 306/307 작업 속도 · 속도 비율 · 500 운전 상태
+        로봇에서 읽지 않는 사이 칸(79~83 등)은 0 이다.
+        """
+        b = self.bridge
+        head = list(data.version) + [data.robot_mode, data.power_on, data.protective_stop,
+                                     data.emergency_stop, data.reduced_mode,
+                                     data.control_method, data.operation_mode]
+        b.set_hr(63, [to_uint16(v) for v in head + list(data.joint_raw)])      # 63~78
+        b.set_hr(84, [to_uint16(v) for v in data.joint_spd])
+        b.set_hr(95, [to_uint16(v) for v in data.joint_cur])
+        b.set_hr(105, [to_uint16(v) for v in data.joint_tmp])
+        b.set_hr(306, [to_uint16(data.work_speed), to_uint16(data.speed_ratio)])
+        b.set_hr(500, [to_uint16(data.running_state)])
+
     def _write_mirror(self, data: RobotData):
         """
         로봇과 동일한 주소·단위로 그대로 재현한다.
@@ -493,9 +582,7 @@ class ExternalServer:
         엔코더 블록처럼 주소가 고정된 장치가 로봇 대신 브리지를 읽으면
         설정을 바꾸지 않고 그대로 동작한다. (브리지는 FC3/FC4 모두 응답)
         """
-        pose = data.pose_by_source(self.pose_source)
-        if self.pos_unit == "mm":
-            pose = [clamp_int16(pose[i] / 10.0) for i in range(3)] + pose[3:]
+        pose = self._pose_out(data)
         m = self.mirror_map
         self.bridge.set_hr(m["joint"], [to_uint16(v) for v in data.joint_raw])
         data.tcp_spd = self._calc_speed(pose, data)

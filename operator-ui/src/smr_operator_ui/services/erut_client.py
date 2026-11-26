@@ -176,6 +176,11 @@ class ErutClient(QObject):
         return self._halted
 
     # ------------------------------------------------------------ 연결
+    @property
+    def enabled(self) -> bool:
+        """접속을 켜 두었는가(붙는 중 포함) — stop() 뒤에는 거짓(연결 설정 「해제」)."""
+        return bool(getattr(self, "_enabled", False))
+
     def start(self) -> None:
         self._enabled = True
         if self._client is not None:

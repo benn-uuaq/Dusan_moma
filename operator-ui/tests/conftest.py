@@ -4,11 +4,17 @@
 설정을 저장하는데, 그대로 두면 테스트가 운영자의 실제 설정 파일
 (`~/.config/smr-operator-ui/settings.json`)을 덮어써 현장 값이 날아간다.
 
-경로는 테스트마다가 아니라 **세션에 하나**만 쓴다. 설정 저장은 백그라운드
-스레드에서 도는데, 테스트가 끝날 때마다 임시 폴더를 지우면 뒤늦게 깨어난
-작업자가 이미 없어진 경로를 건드려 프로세스가 죽는다.
+설정 파일은 **테스트마다 따로** 준다(2026-11-24). 세션에 하나만 쓰면 앞 테스트의 창이
+저장한 값(로봇 IP 등)을 다음 테스트 창이 비동기로 불러와, 테스트가 넣은 값을 덮어써
+순서에 따라 실패했다(test_robot_auto_connect). 폴더는 세션 동안 지우지 않으므로 뒤늦게
+끝난 저장 작업자도 자기 테스트의 파일에만 쓴다.
+
+시험이 드물게 세그폴트로 죽던 원인은 경로가 아니라 **이벤트 전달 도중의 순환 GC** 였다 —
+`smr_operator_ui.gc_guard` 참고. 여기서는 각 테스트가 끝날 때 남은 창을 안전한 지점에서
+지운다(`pytest_runtest_teardown`).
 """
 
+import gc
 import os
 
 import pytest
@@ -16,7 +22,7 @@ import pytest
 
 @pytest.fixture(scope="session", autouse=True)
 def isolated_settings_file(tmp_path_factory):
-    """설정 저장을 세션 전용 임시 파일로 돌린다."""
+    """설정 · 기록 저장을 세션 전용 임시 위치로 돌린다(설정 파일은 테스트마다 다시 잡는다)."""
     path = tmp_path_factory.mktemp("operator_settings") / "settings.json"
     previous = {
         "SMR_SETTINGS_FILE": os.environ.get("SMR_SETTINGS_FILE"),
@@ -39,3 +45,29 @@ def isolated_settings_file(tmp_path_factory):
             os.environ.pop(key, None)
         else:
             os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings_per_test(isolated_settings_file, tmp_path_factory, monkeypatch):
+    """이 테스트만의 설정 파일 — 앞 테스트가 저장한 값이 흘러들지 않는다."""
+    path = tmp_path_factory.mktemp("settings") / "settings.json"
+    monkeypatch.setenv("SMR_SETTINGS_FILE", str(path))
+    return path
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_teardown(item):
+    """테스트가 끝나면 남은 창을 이벤트 전달 밖(안전한 지점)에서 지운다.
+
+    pytest-qt 는 창에 deleteLater 만 걸고 processEvents 를 부르는데, 이벤트 루프 밖에서
+    건 deleteLater 는 processEvents 로는 처리되지 않는다 — 닫힌 창이 다음에 누가 이벤트
+    루프를 돌릴 때까지 살아 남고, 파이썬 쪽은 순환 참조로만 남는다. 그런 창을 GC 가 이벤트
+    전달 도중에 거두면 Qt 가 지워진 위젯에 이벤트를 넘겨 죽었다. pytest-qt 의 정리가 모두
+    끝난 뒤(이 래퍼가 바깥쪽이다) 미뤄 둔 삭제를 처리하고 순환 참조를 거둔다.
+    """
+    yield
+    from PyQt6.QtCore import QCoreApplication, QEvent
+
+    if QCoreApplication.instance() is not None:
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        gc.collect()

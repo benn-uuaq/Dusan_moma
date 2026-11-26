@@ -181,5 +181,11 @@ class SwitchableMotion(QObject):
     def cancel(self) -> None:
         self.backend.cancel()
 
+    def pause(self) -> None:
+        """일시정지 — 실제 차량 주행은 PAUSE 로 작업을 두고 선다(재개는 같은 목표로 move_to).
+        더미 · 다른 장비는 정지(cancel)와 같다."""
+        pause = getattr(self.backend, "pause", None)
+        (pause or self.backend.cancel)()
+
     def reset(self, position: float = 0.0) -> None:
         self.backend.reset(position)

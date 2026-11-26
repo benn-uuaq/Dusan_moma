@@ -177,22 +177,40 @@ def describe_geometry(geometry: dict) -> str:
 
 
 def outside_material(plan: GridPlan, geometry: dict) -> str:
-    """구역이 모재 밖이면 그 까닭, 안이면 "" (if-0.13 「모재 밖 구역」 — 400 E6001).
+    """구역이 모재 밖이면 그 까닭, 안이면 "" — **알림만** 한다(2026-11-26).
 
-    원통 · 곡판 모두 y 는 0 ~ height, 곡판은 x 도 0 ~ width(감기지 않는다). 원통의 x 범위
-    (둘레)는 원점에 기대는 검사라 `_fits_origin` 이 원점 판정 뒤에 본다.
+    ERUT 작업 계획이 먼저다. 모재 크기로 RCS 가 센 구간 · 행을 넘는 구역도 로봇 · 리프트가 닿으면
+    한다 — 닿는지는 `_fits_origin` 이 따로 본다(구역 가로 · 세로 한계 · 리프트 + 팔 높이 · 둘레).
+    예전(if-0.13 「모재 밖 구역」)에는 400 E6001 로 거절했다. 원통 · 곡판 모두 y 는 0 ~ height,
+    곡판은 x 도 0 ~ width. 모재 아래 끝보다 아래(y < 0)는 `below_material` 이 따로 거절한다.
     """
     y0, y1 = plan.origin_y, plan.origin_y + plan.cell_height
     height = float(geometry.get("height") or 0.0)
-    if y0 < 0 or (height > 0 and y1 > height + 1e-6):
-        return (f"모재 밖 구역 — y {y0:g}~{y1:g} mm 는 모재 높이 0~{height:g} mm 안이어야 합니다")
+    if height > 0 and y1 > height + 1e-6:
+        return (f"모재 밖 구역 — y {y0:g}~{y1:g} mm 가 모재 높이 0~{height:g} mm 를 넘습니다")
     if geometry.get("shape") == SHAPE_PLATE:
         x0, x1 = plan.origin_x, plan.origin_x + plan.cell_width
         width = float(geometry.get("width") or 0.0)
         if x0 < 0 or x1 > width + 1e-6:
-            return (f"모재 밖 구역 — 곡판 x {x0:g}~{x1:g} mm 는 판 가로 0~{width:g} mm 안이어야 "
-                    "합니다(감기지 않습니다)")
-        return off_plate_center(plan, width)
+            return (f"모재 밖 구역 — 곡판 x {x0:g}~{x1:g} mm 가 판 가로 0~{width:g} mm 를 벗어납니다")
+    return ""
+
+
+def below_material(plan: GridPlan) -> str:
+    """구역이 모재 아래 끝(y 0)보다 아래에서 시작하면 그 까닭(400 E6001).
+
+    리프트 0 mm 에서 팔이 모재 아래 끝보다 얼마나 더 내려가는지 RCS 는 모른다 — 닿는지 볼 수 없어
+    예전처럼 거절한다.
+    """
+    if plan.origin_y < 0:
+        return (f"모재 아래 끝보다 아래 구역 — y {plan.origin_y:g} mm 는 0 이상이어야 합니다")
+    return ""
+
+
+def plate_center_blocker(plan: GridPlan, geometry: dict) -> str:
+    """곡판 구역이 판 가운데(QR)를 중심으로 하지 않으면 그 까닭(400 E6001) — 장비 한계라 거절한다."""
+    if geometry.get("shape") == SHAPE_PLATE:
+        return off_plate_center(plan, float(geometry.get("width") or 0.0))
     return ""
 
 
@@ -602,6 +620,9 @@ class ErutSession(QObject):
             return _ACTIVITY_MAP.get(self.sequencer.resume_state, "running")
         if self._calibrate_req_id or self._local_calibration:
             return "calibrating"
+        if self._start_req_id and self.sequencer.state in _SEQ_IDLE:
+            # 구간은 다 돌았지만 완료 전 — 로봇 홈 · (마지막 높이면) 리프트 0 을 마치는 중(2026-11-24).
+            return "running"
         if self._is_ready():
             return "ready"
         if self._prepare_req_id and not self._ready_sent:
@@ -1073,15 +1094,25 @@ class ErutSession(QObject):
         if code == E.BAD_REQUEST:
             self._refuse(req_id, action, code, reason)
             return None
+        reason = below_material(plan)
+        if not reason and geometry is not None:
+            reason = plate_center_blocker(plan, geometry)
+        if reason:
+            self._refuse(req_id, action, E.BAD_REQUEST, reason)
+            return None
         if geometry is not None:
-            reason = outside_material(plan, geometry)
-            if reason:
-                self._refuse(req_id, action, E.BAD_REQUEST, reason)
-                return None
+            self._note_outside_material(action, plan, geometry)
         if code:
             self._refuse(req_id, action, code, reason)
             return None
         return plan, geometry
+
+    def _note_outside_material(self, action: str, plan: GridPlan, geometry: dict) -> None:
+        """모재 밖 구역 — 거절하지 않고 알린다(ERUT 계획이 먼저, 2026-11-26)."""
+        note = outside_material(plan, geometry)
+        if note:
+            self.activity.emit(f"ERUT {action}: {note} — ERUT 계획대로 합니다"
+                               "(로봇 · 리프트가 닿는지는 따로 봅니다).")
 
     def _read_geometry(self, content: dict, required: bool) -> tuple[dict | None, str, str]:
         """content.geometry → (geometry, 거절 번호, 까닭). 받을 수 있으면 번호가 "".
@@ -1125,11 +1156,12 @@ class ErutSession(QObject):
                      geometry: dict | None = None) -> bool:
         """원점(모재 둘레 · 지름)에 기대는 값 검사. 안 맞으면 400 + error 로 답하고 False."""
         if geometry is None and self._calibrated_geometry:
-            # geometry 없이 온 요청 — 원점을 잡을 때의 모재로 모재 밖 구역을 본다.
-            reason = outside_material(plan, self._calibrated_geometry)
+            # geometry 없이 온 요청 — 원점을 잡을 때의 모재로 본다(곡판 가운데는 거절, 모재 밖은 알림만).
+            reason = plate_center_blocker(plan, self._calibrated_geometry)
             if reason:
                 self._refuse(req_id, action, E.BAD_REQUEST, reason)
                 return False
+            self._note_outside_material(action, plan, self._calibrated_geometry)
         # 원통 이음매 (if-0.8 탭5 77행 · Q-25): start.x 는 0 이상 둘레 미만, 구역
         # 가로는 둘레 이하. end.x 는 둘레를 넘어도 된다 — 이음매를 지나 0 부터 감긴
         # 자리로 이어 훑는다(차량은 start.x 에 서고 팔이 이음매를 넘어 훑는다).

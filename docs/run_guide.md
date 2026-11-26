@@ -150,7 +150,20 @@ WSL에서 창이 안 뜨면 WSLg가 동작하는지 확인한다. `echo $DISPLAY
 python3 mqtt_test/erut_sim.py
 ```
 
-**연결** 후 **▶ 시나리오 자동 진행**을 누르면 규격 탭3의 순서를 그대로 밟는다.
+화면(if-0.13, 2026-11-24 다시 만듦):
+
+- **연결** — 브로커 주소 · 포트 · 계정 · 비밀번호(선택) · 장치 ID. 붙으면 `erut/status`(online)를 5초마다 낸다
+  (「생존 신호」를 끄면 RCS 가 20초 뒤 브릿지가 없는 것으로 보고 멈추는지 볼 수 있다).
+- **모재** — 원통 · 곡판, 지름 · 높이 · (곡판) 가로 → `geometry`.
+- **격자** — 시작 x · y, 구역 가로 · 세로, 열 · 행, 겹침 → 구역마다 `area` · `scan.overlap`(열 우선, 아래에서 위로).
+  곡판은 열 1 개 · 판 가운데 기준으로만 만든다(차량이 판 가운데 QR 앞에서 움직이지 않는다).
+- **스캔 · 작업** — 좌 · 우 끝 이동높이(`pitch_left` · `pitch_right`), 속도 %(`speed_pct` · `speed_mm_s`),
+  홀더 채널 수(비우면 안 실음), Job ID 시작(구역마다 끝 숫자 + 1).
+- **미리보기** — 펼친 검사면 위 구역. 눌러서 지금 구역을 고른다(노랑 = 지금, 초록 = 끝남, 빨강 테두리 = 모재 밖).
+- **명령** — 접속 확인 query · 캘리브레이션 calibrate · 준비 prepare · 시작 start · 마킹 mark · 홈 home ·
+  일시정지 pause · 재개(리스타트) resume · 정지(스탑) abort · 리셋 reset. prepare · start · mark 는 지금 구역으로 보낸다.
+- **▶ 자동 진행** — 지금 구역부터 끝까지 아래 순서를 밟는다(원점이 잡혀 있으면 캘리브레이션은 건너뛸 수 있다).
+  각 답을 기다렸다 넘어가고, 거절 · 실패(3xx~5xx)나 시간 초과면 까닭을 남기고 멈춘다.
 
 ```
 ① 접속 확인   erut/status 발행 → req/query → res 200
@@ -158,10 +171,11 @@ python3 mqtt_test/erut_sim.py
 ③ 검사 준비   req/prepare  → res 202 → evt/ready
 ④ 구간 검사   req/start    → res 202 → 3점 측정 → evt/contact(attached) → (ERUT 물 켬)
                                      → 2초 뒤 적심(비비기) → ㄹ자 스캔 → evt/progress … → evt/complete
+   → 다음 구역 ③ 부터
 ⑤ 마킹        req/mark     → res 202 → evt/mark_ready ↔ req/mark_next → evt/complete
 ```
 
-각 단계의 응답을 기다렸다가 넘어가고, 못 받으면 그 자리에서 멈추며 무엇을 못 받았는지 로그에 남긴다. 개별 버튼(`pause`/`resume`/`abort`/`reset`)으로 중간에 끼어들 수도 있다.
+오른쪽에 RCS 상태(`evt/status` · 진행 · 접촉 · 홈)와 명령별 마지막 결과(`status_code` · 오류 번호 · 까닭)가 보인다.
 
 **구간 검사 흐름(ERUT 작업)** — 로봇이 3점 측정 뒤 시작점에 붙으면(290 = 7) RCS 가 `evt/contact`(attached)를 낸다. ERUT 는 그걸 보고 물을 뿌리기 시작하고, RCS 는 2초(`CONTACT_LEAD_MS`) 뒤 스캔 허가(267 = 1)를 써서 로봇이 적심(비비기) → ㄹ자 스캔으로 넘어간다.
 
@@ -245,6 +259,8 @@ python3 mqtt_test/run_sim_test.py 3 2
 |---|---|
 | UI에 자세 값이 전부 `-` | UI를 ROS 소싱 안 된 셸에서 띄웠다. 터미널 3에서 `ros2 topic list`가 되는지 확인 |
 | 노드가 계속 연결 경고만 냄 | VM이 꺼져 있거나 IP가 다르다. VM 펜던트에서 IP 확인 후 `robot_ip:=` 교체 |
+| RCS 「연결 안 됨」 · M2002 「로봇 Modbus 연결이 없습니다」인데 로봇 ping · 502 는 된다 (WSL) | **같은 PC 의 ROS 노드끼리 못 본다.** WSL 미러 네트워크(`networkingMode=mirrored`)에서는 127.0.0.1 로 가는 UDP 중 약 1.4 KB 넘는 것이 사라지고, Fast DDS 탐색 묶음(4 KB 남짓)이 그 크기라 탐색이 끝나지 않는다. RCS 는 켤 때 `FASTRTPS_DEFAULT_PROFILES_FILE` 을 `operator-ui/src/smr_operator_ui/config/fastdds_profile.xml`(한 데이터그램 1400 B)로 걸고, 로봇 · AGV 제어 노드도 물려받는다. 바탕화면 실행 아이콘(`tools/linux_launchers`)도 건다. 터미널에서 `ros2` 명령 · 노드를 따로 띄울 때는 같은 줄을 먼저 export 하고 `ros2 daemon start`(**`ros2 daemon stop` 은 쓰지 않는다** — 미러 네트워크에서는 127.0.0.1 의 빈 TCP 포트 접속이 거절되지 않고 멈춰서, 데몬이 없을 때 `ros2` 명령이 데몬을 찾다 멈춘다. 데몬이 엉뚱한 환경으로 떠 있으면 `pkill -f _ros2_daemon` 뒤 `ros2 daemon start`). 로봇 제어 노드는 연결 설정의 「협동로봇 IP」로 뜨고 설정을 불러오면 저절로 붙는다(기록 `~/.ros/log/smr_robot_node.log`) |
+| 외부 PC 의 AGV 노드와 ROS 토픽이 안 오간다 (RCS 가 WSL) | 연결 설정 「외부 PC 확인」을 누른다. ping 은 되는데 ROS 로 안 보이면: ① 두 PC 의 `ROS_DOMAIN_ID` 가 같은지(RCS 연결 설정 「ROS 도메인」) ② 외부 PC 의 `ROS_LOCALHOST_ONLY` 가 1 이 아닌지 ③ **Windows Hyper-V 방화벽** — WSL(미러 네트워크)로 들어오는 UDP 는 기본으로 막힌다. 관리자 PowerShell 에서 한 번: `New-NetFirewallHyperVRule -Name ROS2-DDS-ToWSL -DisplayName 'ROS 2 DDS to WSL' -Direction Inbound -VMCreatorId '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -Protocol UDP -RemoteAddresses 192.168.11.0/24 -Action Allow` (지우기: `Remove-NetFirewallHyperVRule -Name ROS2-DDS-ToWSL`) ④ 외부 PC 도 `fastdds_profile.xml` 을 `FASTRTPS_DEFAULT_PROFILES_FILE` 로 건다(큰 UDP 조각이 WSL 에서 사라지지 않게) |
 | 시뮬레이터를 쓰는데 Modbus만 안 붙음 | `modbus_port:=5502`를 빠뜨렸다. 시뮬레이터는 502가 아니라 5502를 쓴다 |
 | ERUT 요청을 보냈는데 RCS 가 반응 없음 | RCS 연결 설정의 ERUT 브로커와 시뮬레이터(또는 MQTT Explorer)가 같은 브로커를 보는지 확인. `mosquitto_sub -t 'doosan/robot/req/#' -t 'erut/#' -v`로 메시지가 실제로 오가는지 본다. 시각이 10초 넘게 어긋나면 ERUT 가 버린다 |
 | UI 창이 안 뜸 | WSLg 문제. `echo $DISPLAY` 확인 |
@@ -275,6 +291,10 @@ ros2 launch vehicle_sim vehicle_sim.launch.py
 | 작업은 도는데 차량이 안 움직임 | 차량 제어가 '더미' 다. 연결 설정에서 바꾼다 |
 | ROS 차량으로 바꿨는데 명령이 안 나감 | RCS 를 소싱한 터미널에서 다시 띄운다 |
 | 상태가 안 들어옴 | 토픽 이름 확인(`ros2 topic echo /vehicle/robot_status`). 이름이 다르면 `SMR_VEHICLE_NS` 로 맞춘다 |
+
+AGV 담당이 만든 **실제 차량 제어 노드 + 테스트 PLC** 로 시험하려면 [`docs/agv_test_plc_guide.md`](agv_test_plc_guide.md)
+를 본다(이 모의기와 같이 띄우지 않는다). 모의기는 그 제어 노드와 같은 규칙으로 돈다 — 도착하면 HOLD, 다음 주행 전
+FINISH, 일시정지 PAUSE, 리프트 `lift_control`, 운전 모드(`ros2 param set /vehicle_sim mode 1` = 주행 수동).
 
 ---
 

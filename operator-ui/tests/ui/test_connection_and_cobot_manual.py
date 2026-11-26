@@ -31,8 +31,11 @@ def test_connection_screen_collects_all_device_addresses(qtbot) -> None:
         "ERUT 포트",
     ):
         assert key in values
-    # PLC 통신은 차량(AMR) 노드가 맡는다 — RCS 에는 PLC 접속 칸이 없다(2026-11-17).
-    assert not any(key.startswith("PLC") for key in values)
+    # PLC 통신은 AGV 제어 노드가 맡는다 — RCS 가 그 노드를 띄울 때 넘길 PLC 주소 · 포트(2026-11-24).
+    screen = window.screens["connection"]
+    assert screen.plc_endpoint() == ("192.168.11.10", 8501)
+    assert screen.agv_node_mode() == "internal" and screen.plc_writes() and not screen.agv_panel()
+    assert screen.ros_domain_setting() == ""
     assert window.screens["connection"].settings_scope == "connection"
     window.close()
 
@@ -387,5 +390,45 @@ def test_robot_vnc_button_sits_under_modbus_and_uses_the_ip_field(qtbot) -> None
     screen.field("협동로봇 IP").setText("192.168.1.101")
     qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
     assert opened == ["192.168.1.101"]
-    assert "열었음 192.168.1.101" in screen.save_status.text()
+    assert "열었음 192.168.1.101" in screen.link_message.text()
+    window.close()
+
+
+def test_robot_link_controls_sit_in_the_cobot_column_and_stop_a_connect(qtbot) -> None:
+    """협동로봇 칸 안의 [연결] [연결 해제] — 연결 시도 중에도 해제로 멈춘다(2026-11-26)."""
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    conn = window.screens["connection"]
+    form = conn._section_forms["협동로봇"]
+    assert form.indexOf(conn.connect_btn.parentWidget()) >= 0, "협동로봇 칸 안에 있다"
+    assert conn._action_row.indexOf(conn.connect_btn) < 0, "저장 버튼 줄에는 없다"
+    commands = []
+    window.ros_status.set_robot_endpoint = lambda ip, port: True
+    window.ros_status.call_command = lambda name: commands.append(name) or True
+    window._robot_link_up = False
+    conn.connect_btn.click()
+    assert conn.link_state.text() == "● 연결 중"
+    assert conn.disconnect_btn.isEnabled() and not conn.connect_btn.isEnabled()
+    conn.disconnect_btn.click()
+    assert "시도를 멈췄습니다" in conn.link_message.text()
+    assert conn.connect_btn.isEnabled() and window._robot_manual_disconnect
+    window.close()
+
+
+def test_erut_connect_and_disconnect_buttons(qtbot) -> None:
+    window = OperatorWindow(start_ros=False, start_erut=False)
+    qtbot.addWidget(window)
+    conn = window.screens["connection"]
+    assert conn._section_forms["ERUT 접속"].indexOf(conn.erut_connect_btn.parentWidget()) >= 0
+    calls = []
+    window.erut.start = lambda: (calls.append("start"), setattr(window.erut, "_enabled", True))
+    window.erut.stop = lambda announce_offline=True: (calls.append("stop"),
+                                                      setattr(window.erut, "_enabled", False))
+    window._erut_start_pending = False
+    conn.erut_connect_btn.click()
+    assert calls == ["start"] and conn.erut_state.text() == "● 접속 중"
+    assert conn.erut_disconnect_btn.isEnabled() and not conn.erut_connect_btn.isEnabled()
+    conn.erut_disconnect_btn.click()
+    assert calls == ["start", "stop"] and conn.erut_state.text() == "● 연결 안 됨"
+    assert conn.erut_connect_btn.isEnabled()
     window.close()

@@ -6,7 +6,7 @@
 
   rcs    RCS 단독 작업('검사 시작'): 1A 부터 마지막 셀까지 순회한다.
          원점마다 RCS 가 접촉 2초 뒤 스스로 스캔을 풀어 준다.
-  erut   ERUT 표준(if-0.9): 자기소개 → calibrate(차량 한 바퀴) → prepare(값 확인만)
+  erut   ERUT 표준(if-0.9): 자기소개 → calibrate(차량 QR 정렬 + 아웃트리거 고정) → prepare(값 확인만)
          → start(3점 → contact → 스캔, 줄 중간 pause/resume) → mark(mark_ready ↔ mark_next) → home
          → 비상정지 → reset.
   io     로봇 디지털 출력(레지스터 2)을 화면 경로로 켜고 끈다.

@@ -22,6 +22,7 @@ Position6D position
 
 # 리프트 높이
 float64 lift_h           # 리프트 높이 (단위: m)
+string lift_state             # 예: "STOP", "RUNNING", "PAUSE", "FINISH"
 
 # ---- RCS 와 맞춘 필드 (2026-11-17 — docs/AGV_노드_토픽_서비스_목록_20261119.xlsx) ----------
 # 값을 아직 못 채우면 기본값 그대로 둔다 — RCS 는 기본값을 「모름」으로 보고 조건에서 뺀다.

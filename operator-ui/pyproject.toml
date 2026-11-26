@@ -30,7 +30,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-smr_operator_ui = ["styles/*.qss", "resources/*.ttf", "resources/*.png", "config/*.json"]
+smr_operator_ui = ["styles/*.qss", "resources/*.ttf", "resources/*.png", "config/*.json", "config/*.xml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

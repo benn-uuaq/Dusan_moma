@@ -251,6 +251,8 @@ end
 #   356 왼쪽 끝 · 357 오른쪽 끝 이동높이 [0.1mm] — ERUT scan.pitch_left · pitch_right
 #       (if-0.12). 둘 다 0 이면 예전처럼 scan_h 로 구역 세로를 고르게 나눈다.
 #   358 팔을 들어 스캔할 높이 [mm] — 리프트 대신 시작 자세를 이만큼 올린다(2026-11-09).
+#   359 이번 구역 아래 끝 높이 — 모재 아래 끝에서 [mm] (2026-11-23). dus6_up 이 바닥 근처
+#       (up_clear_h 안)의 줄 바꿈에서 벽에서 물러섰다 오르는 데 쓴다.
 # 258/260/261/262/263 이 0.1mm 인 이유: 반지름 834.6, 유효 커버 167.5
 # 처럼 소수가 나오는 값들이라 정수 mm 로 반올림하면 호 모양과 줄 간격이
 # 눈에 띄게 틀어진다. 호 길이·격자 높이·겹침은 1mm 로 충분하다.
@@ -271,6 +273,17 @@ end
 scan_z_ofs = 0
 if (read_port_register(266, True) == 1):
   scan_z_ofs = read_port_register(358, True)
+end
+# 이번 구역 아래 끝이 모재 아래 끝에서 얼마나 위인지 [mm] — RCS 가 구역마다 쓴다(359, 2026-11-23).
+# 리프트로 올라간 구역은 로봇 혼자서는 모재 높이를 모른다. dus6_up 은 「scan_y_base + 지금 줄
+# 높이」가 up_clear_h 안이면 벽에서 물러섰다 오른다. 펜던트로 돌릴 때(266 = 0)는 0 — 구역이 모재
+# 아래 끝에서 시작한다고 본다(바닥 근처 규칙이 늘 걸리는 쪽 — 안전한 쪽이다).
+scan_y_base = 0
+if (read_port_register(266, True) == 1):
+  scan_y_base = read_port_register(359, True)
+end
+if (scan_y_base &lt; 0):
+  scan_y_base = 0
 end
 
 # ---- 프로브 유효 커버 -----------------------------------------------------
@@ -542,7 +555,13 @@ write_port_register(349, floor(eoat_ofs[2] * 10000 + 0.5))
 # [0, 0, 0, 0, 0, 0]** 기준이고 장착 홀더(5축 · 8축 · 노그리퍼)와 무관하다. 그래서 티칭값을
 # 그대로 플랜지 pose 로 쓴다. 홀더 · EOAT 길이(eoat_ofs)는 3점 측정 동작(곡률 중심 · 호 회전)과
 # 스캔 중 좌표 계산에만 쓴다.
-gripper_touch_flange = gripper_target_pose
+# 새 리스트로 만든다 — EliteScript 는 파이썬 규칙이라 `a = b` 는 복사가 아니라 같은 리스트다. 예전에는
+# gripper_touch_flange = gripper_target_pose 로 받아 아래에서 [2] 를 고쳐, 펜던트 변수 gripper_target_pose
+# 자체가 구역마다 팔 올림(358)만큼 올라가 쌓였다(2026-11-24 현장 — A 구역 뒤 B 구역이 A1 그리퍼 접촉 위치가
+# 아니라 앞 작업에서 올린 높이에서 시작했다). RCS 가 그리퍼 접촉 위치를 316~321 로 주면 매번 새로 읽어
+# 드러나지 않았고, 펜던트 값을 쓸 때 드러났다.
+gripper_touch_flange = [gripper_target_pose[0], gripper_target_pose[1], gripper_target_pose[2],
+                        gripper_target_pose[3], gripper_target_pose[4], gripper_target_pose[5]]
 
 # ---- 리프트 대신 팔을 들어 스캔 (358, 2026-11-09) -----------------------------
 # 구역이 팔로 닿는 높이 안이면 RCS 는 리프트를 그대로 두고 358 에 구역 아래 끝까지의
@@ -2018,6 +2037,7 @@ nl_w1(298, row_idx * 100.0 / rows)
                 <cachedFileContents># =============================================================================
 #  dus6_up.script — dusan_v6
 #  다음 줄로 상승한다 — 균등 피치, 또는 ERUT 좌·우 끝 이동높이(if-0.12)
+#  바닥 근처(모재 아래 끝에서 up_clear_h 안)에서는 벽에서 up_clear_d 만큼 물러섰다 올라가 다시 붙는다
 #
 #  펜던트에서 "9_up" 자리에 스크립트 노드를 파일(File) 모드로 넣고 지정한다.
 #
@@ -2048,6 +2068,9 @@ end
 # 스캔 동작마다 세워 둬야, 사이클이 반복되며 goto_zero 를 다시 지나지
 # 않는 구성에서도 좌표가 끊기지 않는다.
 write_port_register(290, 6)
+
+# 오르기 전 줄 높이(원점 기준) — 바닥 근처 판단에 쓴다(아래 row_y 가 다음 줄 높이로 바뀐다).
+up_y0 = row_y
 
 # 이번 상승 높이. ERUT 좌·우 끝 이동높이(pitch_lr = 1)면 방금 끝낸 줄이 끝난 쪽의
 # 값이다 — pass_r(왼 -&gt; 오)을 끝내면 dir_sign = -1(오른쪽 끝, pitch_r), pass_l 을
@@ -2085,9 +2108,24 @@ end
 # 그 끝의 상승이 0 이면 오르지 않고 같은 높이를 되돌아 훑는다 — 줄 바꿈(277 = 2)도
 # 내지 않는다(ERUT 는 +y 없이 바로 반대 방향을 받는다).
 if (up_rise &gt; 0.0005):
-  # TPAC 동기 신호: 줄 바꿈 상승 구간 — 스캔 동결(DO[1] = 0) 유지.
+  # TPAC 동기 신호: 줄 바꿈 상승 구간 — 스캔 동결(DO[1] = 0) 유지(물러서고 다시 붙는 동안도).
   write_port_register(277, 2)
-  movel(tgt_pose, a = a_scan, v = v_scan * up_ratio / 100.0)
+  # ---- 바닥 근처는 물러섰다 오른다 (2026-11-23) ------------------------------
+  # 모재가 받침대 위에 떠 있어, 아래 끝 근처에서 벽에 붙은 채 오르면 튀어나온 스캐너 홀더가
+  # 아래 끝(모서리)에 걸린다. 오르기 전 줄이 모재 아래 끝에서 up_clear_h [mm] 안이면
+  #   1) 툴 -Z(벽 반대)로 up_clear_d [mm] 물러서고  2) 그 자리에서 다음 줄 높이로 오른 뒤
+  #   3) 툴 +Z 로 다시 붙는다(벽 접근 속도 v_l / 3) — 다음 줄은 붙은 자리에서 좌우로 훑는다.
+  # 모재 높이 = scan_y_base(이번 구역 아래 끝, 레지스터 359) + 원점 기준 줄 높이(up_y0).
+  # up_clear_d 나 up_clear_h 가 0 이면 예전처럼 붙은 채 오른다.
+  if (up_clear_d &gt; 0 and scan_y_base + up_y0 &lt; up_clear_h):
+    up_back = pose_trans(get_actual_tcp_pose(), [0, 0, -up_clear_d * 0.001, 0, 0, 0])
+    movel(up_back, a = a_scan, v = v_scan * up_ratio / 100.0)
+    up_back[2] = tgt_pose[2]
+    movel(up_back, a = a_scan, v = v_scan * up_ratio / 100.0)
+    movel(tgt_pose, a = a_l, v = v_l / 3.0)
+  else:
+    movel(tgt_pose, a = a_scan, v = v_scan * up_ratio / 100.0)
+  end
 end
 
 path_len = path_len + up_rise

@@ -1525,14 +1525,13 @@ def test_a_different_diameter_needs_a_new_origin(session):
     s._calibrated_geometry = _origin(1669.2, 140)
     _prepare(s, req_id="p2", diameter=1669.6, height=1000)
     assert client.res[-1]["status_code"] == 202
-    # geometry 가 없는 요청은 받는다 — 견주지 않는다(if-0.13). 모재 밖 구역은 원점을 잡을 때의
-    # 모재 높이로 본다(구역 y 0~800).
+    # geometry 가 없는 요청은 받는다 — 견주지 않는다(if-0.13). 원점을 잡을 때의 모재(높이 140)
+    # 보다 높은 구역(y 0~800)도 받는다 — ERUT 계획이 먼저다(2026-11-26, 알림만).
+    notes = []
+    s.activity.connect(notes.append)
     _prepare(s, req_id="p3", job_id="jb2")
-    assert client.res[-1]["status_code"] == 400
-    assert "모재 밖" in client.res[-1]["error"]["detail"]
-    s._calibrated_geometry = _origin(1669.2, 1000)
-    _prepare(s, req_id="p4", job_id="jb3")
     assert client.res[-1]["status_code"] == 202
+    assert any("모재 밖" in n and "ERUT 계획대로" in n for n in notes)
 
 
 def test_origin_check_comes_before_the_circumference_check(session):
@@ -1816,13 +1815,19 @@ def test_plate_calibrate_asks_for_qr_alignment_and_reports_no_length(session):
 
 
 def test_outside_the_material_is_400_before_the_origin_check(session):
-    """R-17 — 모재 밖 구역(400)과 모르는 모양(501)은 원점 판정(409 E6104)보다 먼저다."""
+    """R-17 — 요청 자체 잘못(400)과 모르는 모양(501)은 원점 판정(409 E6104)보다 먼저다.
+
+    모재 위 끝을 넘는 구역은 2026-11-26 부터 거절하지 않는다(ERUT 계획이 먼저) — 원점 판정으로 간다.
+    모재 아래 끝보다 아래(y < 0)는 닿는지 알 수 없어 여전히 400 이다."""
     s, client, _seq = session
     s._calibrated = False
     tall = {"start": {"x": 0, "y": 5800}, "end": {"x": 600, "y": 6100}}
     _start(s, req_id="s1", area=tall, diameter=1690, height=6000)
+    assert _error(client) == (409, "E6104"), "모재 밖이라고 거절하지 않는다"
+    low = {"start": {"x": 0, "y": -100}, "end": {"x": 600, "y": 200}}
+    _start(s, req_id="s1b", area=low, diameter=1690, height=6000)
     assert _error(client) == (400, "E6001")
-    assert "모재 밖" in client.res[-1]["error"]["detail"]
+    assert "아래 끝" in client.res[-1]["error"]["detail"]
     _start(s, req_id="s2", shape="cone", diameter=1690, height=6000)
     assert _error(client) == (501, "E6501")
     _start(s, req_id="s3", diameter=1690, height=6000)

@@ -25,7 +25,7 @@ def _set(window, **values):
     vehicle = window.screens["vehicle"]
     fields = {"width": vehicle.WIDTH_FIELD, "standoff": vehicle.STANDOFF_FIELD,
               "lift_max": vehicle.LIFT_MAX_FIELD, "reach": vehicle.REACH_FIELD,
-              "base": vehicle.BASE_FIELD, "speed": vehicle.SPEED_FIELD}
+              "contact": vehicle.CONTACT_FIELD, "speed": vehicle.SPEED_FIELD}
     for key, value in values.items():
         vehicle.field(fields[key]).setValue(value)
     return vehicle
@@ -54,13 +54,15 @@ def test_vehicle_settings_is_in_the_settings_menu(qtbot) -> None:
     window.close()
 
 
-def test_defaults_keep_todays_behaviour_and_lift_limit_is_3500(qtbot) -> None:
+def test_defaults_keep_todays_behaviour_and_lift_limit_is_5000(qtbot) -> None:
+    """실제 리프트 한계 높이는 5000 mm(2026-11-24 — 예전 기본 3500)."""
     window = _window(qtbot)
     vehicle = window.screens["vehicle"]
-    assert vehicle.lift_max_mm() == 3500
+    vehicle.apply_values({vehicle.LIFT_MAX_FIELD: vehicle.DEFAULTS[vehicle.LIFT_MAX_FIELD]})
+    assert vehicle.lift_max_mm() == 5000
     assert vehicle.reach_mm() == 1600                  # 로봇 상승 한계 — 베이스 위로
-    assert vehicle.base_height_mm() == 0
-    assert vehicle.arm_reach_mm() == 1600 and vehicle.top_limit_mm() == 5100
+    assert vehicle.contact_height_mm() == 0 and not vehicle.contact_from_saved_pose()
+    assert vehicle.arm_reach_mm() == 1600 and vehicle.top_limit_mm() == 6600
     assert vehicle.speed_mm_s() == 100                 # 차량 주행 속도 기본 0.1 m/s
     assert (vehicle.width_mm(), vehicle.standoff_mm()) == (0, 0)
     assert vehicle.travel_scale(1300) == 1.0          # 폭 · 거리 0 이면 예전처럼 1 배
@@ -104,6 +106,7 @@ def test_saving_applies_speed_and_the_manual_lift_limit(qtbot) -> None:
 ))
 def test_lift_stays_when_the_arm_reaches(qtbot, lift_now, bottom, height, expected) -> None:
     window = _window(qtbot)
+    _set(window, lift_max=3500)
     window.lift.reset(float(lift_now))
     lift, offset, reason = window._plan_lift(bottom, height)
     assert reason == ""
@@ -113,6 +116,7 @@ def test_lift_stays_when_the_arm_reaches(qtbot, lift_now, bottom, height, expect
 
 def test_zone_beyond_the_lift_limit_and_the_arm_is_not_reachable(qtbot) -> None:
     window = _window(qtbot)
+    _set(window, lift_max=3500)
     _lift, _offset, reason = window._plan_lift(4600, 600)           # 위 끝 5200 > 3500 + 1600
     assert "5,200" in reason and "3,500" in reason
     assert "리프트 한계" in window._zone_reach_blocker(4600, 600)
@@ -123,6 +127,7 @@ def test_zone_beyond_the_lift_limit_and_the_arm_is_not_reachable(qtbot) -> None:
 def test_older_tasks_always_use_the_lift(qtbot) -> None:
     """팔을 못 드는 태스크(v5)면 예전처럼 리프트를 구역 아래 끝으로 — 리프트 한계까지만."""
     window = _window(qtbot)
+    _set(window, lift_max=3500)
     window._task_version = "dusan_v5"
     window.lift.reset(0.0)
     assert window._plan_lift(800, 200) == (800, 0.0, "")
@@ -133,6 +138,7 @@ def test_older_tasks_always_use_the_lift(qtbot) -> None:
 
 def test_erut_zone_out_of_reach_is_refused_with_the_reason(qtbot) -> None:
     window = _window(qtbot)
+    _set(window, lift_max=3500)                         # 위 끝 5200 > 3500 + 1600
     _events, responses = _tap(window)
     window.erut_session._calibrated = True
     window.main_screen.orbit_view.set_target_dimensions(1.69, 6.0)
@@ -159,8 +165,8 @@ def test_marking_clears_the_arm_raise(qtbot) -> None:
     window.close()
 
 
-def test_calibration_lap_drives_the_vehicle_path_and_reports_the_surface(qtbot) -> None:
-    """한 바퀴 = 둘레 × 배율 만큼 달리고, ERUT 에는 표면 둘레(π × 지름)로 낸다."""
+def test_calibration_does_not_drive_a_lap_and_reports_the_surface(qtbot) -> None:
+    """한 바퀴는 작업자가 돈다(2026-11-24) — 차량은 달리지 않고, ERUT 에는 표면 둘레(π × 지름)로 낸다."""
     window = _window(qtbot)
     events, _responses = _tap(window)
     window._start_robot_scan = lambda: None
@@ -178,72 +184,102 @@ def test_calibration_lap_drives_the_vehicle_path_and_reports_the_surface(qtbot) 
                                                      "height": 6000}})
     qtbot.waitUntil(lambda: bool(events), timeout=10000)
 
-    scale = (650 + 1000) / 650
-    assert targets[-1] == pytest.approx(math.pi * 1300 * scale, abs=1)
+    assert targets == []
     name, action, payload = events[-1]
     assert (name, action) == ("complete", "calibrate")
     assert abs(payload["total_length_mm"] - math.pi * 1300) <= 1
     window.close()
 
 
-def test_robot_base_height_adds_to_what_the_arm_reaches(qtbot) -> None:
-    """높이 0 = 모재 아래 끝 = 리프트 최하단의 시작 위치. 베이스가 그보다 507 mm 위면 팔은
-    시작 위치에서 507 + 1600 = 2107 mm 까지, 구역 위 끝은 3500 + 507 + 1600 = 5607 mm 까지."""
+def test_gripper_contact_height_sets_what_the_arm_reaches(qtbot) -> None:
+    """높이 0 = 모재 아래 끝 = 리프트 최하단에서 그리퍼를 붙인 그리퍼 접촉 위치(2026-11-23).
+
+    그 위치가 로봇 베이스보다 300 mm 아래(−300)이고 상승 한계가 베이스 기준 960 이면, 팔은 리프트를 그대로
+    두고 접촉 위치에서 960 + 300 = 1260 mm 까지 닿는다. 구역 시작 y 1100 은 위 끝이 그 안이면 리프트 없이
+    팔을 1100 들고, 넘으면 리프트로 간다. 최대 작업 가능 높이 = 3500 + 1260 = 4760.
+    """
     window = _window(qtbot)
-    vehicle = _set(window, base=507)
-    assert vehicle.arm_reach_mm() == 2107
-    assert vehicle.top_limit_mm() == 5607
-    assert "5,607" in vehicle.reach_label.text()
+    vehicle = _set(window, reach=960, contact=-300, lift_max=3500)
+    assert vehicle.arm_reach_mm() == 1260
+    assert vehicle.top_limit_mm() == 4760
+    assert "4,760" in vehicle.reach_label.text() and "이 화면 값" in vehicle.reach_label.text()
 
     window.lift.reset(0.0)
-    assert window._plan_lift(1800, 300) == (0.0, 1800.0, "")          # 위 끝 2100 — 리프트 그대로
-    assert window._plan_lift(1800, 400)[:2] == (1800.0, 0.0)          # 위 끝 2200 — 리프트로
-    assert window._zone_reach_blocker(4600, 600) == ""                 # 5200 ≤ 5607
-    reason = window._zone_reach_blocker(5100, 600)                     # 5700 > 5607
-    assert "5,700" in reason and "507" in reason and "5,607" in reason
+    assert window._plan_lift(1100, 150) == (0.0, 1100.0, "")          # 위 끝 1250 — 리프트 그대로, 팔 1100
+    assert window._plan_lift(1100, 200)[:2] == (1100.0, 0.0)          # 위 끝 1300 — 리프트로
+    assert window._zone_reach_blocker(4100, 600) == ""                 # 4700 ≤ 4760
+    reason = window._zone_reach_blocker(4300, 600)                     # 4900 > 4760
+    assert "4,900" in reason and "4,760" in reason and "-300" in reason
+    window.close()
+
+
+def test_saved_gripper_contact_pose_gives_the_contact_height(qtbot) -> None:
+    """조그 화면에 저장한 그리퍼 접촉 위치의 Z(로봇 베이스 기준)를 그대로 쓴다 — 칸은 잠긴다. 지우면 칸 값."""
+    window = _window(qtbot)
+    vehicle = _set(window, reach=960, contact=0)
+    window._reference_poses["start_pose"] = {"values": [700.0, 10.0, -452.4, 90.0, 0.0, -90.0]}
+    window._sync_contact_height()
+    assert vehicle.contact_height_mm() == pytest.approx(-452.4) and vehicle.contact_from_saved_pose()
+    assert not vehicle.field(vehicle.CONTACT_FIELD).isEnabled()
+    assert vehicle.arm_reach_mm() == pytest.approx(1412.4)
+    assert "저장한 그리퍼 접촉 위치" in vehicle.reach_label.text()
+    vehicle.apply_values({vehicle.CONTACT_FIELD: 100})                # 설정 파일의 옛 값이 와도
+    assert vehicle.contact_height_mm() == pytest.approx(-452.4), "저장한 접촉 위치가 이긴다"
+    window._reference_poses.pop("start_pose")
+    window._sync_contact_height()
+    assert vehicle.field(vehicle.CONTACT_FIELD).isEnabled() and not vehicle.contact_from_saved_pose()
+    window.close()
+
+
+def test_each_zone_tells_the_robot_its_bottom_height(qtbot) -> None:
+    """구역마다 아래 끝의 모재 높이를 로봇에 쓴다(359) — 바닥 근처 줄 바꿈에서 물러섰다 오르는 기준."""
+    window = _window(qtbot)
+    _set(window, reach=960, contact=-300)
+    sent: list[tuple] = []
+    window.ros_status.writable = lambda name: True
+    window.ros_status.send_value = lambda name, value: sent.append((name, value)) or True
+    window.lift.reset(0.0)
+    window._move_lift_for_cell(1100.0)
+    assert ("scan_z_offset", 1100) in sent and ("scan_y_base", 1100) in sent
+    sent.clear()
+    window._move_lift_for_cell(0.0)
+    assert ("scan_y_base", 0) in sent
     window.close()
 
 
 # ---- 캘리브레이션 최대 시간 (2026-11-12) ------------------------------------------------
-def test_calibration_time_is_typed_or_computed_on_the_calibrate_command(qtbot) -> None:
-    """사람이 넣을 수 있지만, 캘리브레이션 명령을 받으면 계산값이 들어가고 그 값이 보인다.
-
-    한 바퀴 = 2π(R + 거리 유지 + 폭/2) ÷ 차량 설정 주행 속도 × 1.5(회전 · 가감속 여유).
-    """
+def test_align_time_limits_the_calibration_and_is_announced_to_erut(qtbot) -> None:
+    """「정렬 최대 시간」(QR 정렬 + 아웃트리거 고정) 하나가 캘리브레이션 한도이자 ERUT 에 알리는 calibrate 시간이다
+    (2026-11-24 — 「캘리브레이션 최대 시간」 · 「곡판 QR 정렬 최대 시간」을 합쳤다)."""
     window = _window(qtbot)
     events, _responses = _tap(window)
     window._start_robot_scan = lambda: None
     window.outrigger.reset(0)
     infos: list[dict] = []
     window.erut_session.client.publish_info = lambda content: infos.append(content) or True
-    vehicle = _set(window, width=800, standoff=2000, speed=100)
-    vehicle.field(vehicle.CALIB_FIELD).setValue(120)          # 사람이 넣은 값
-    assert vehicle.calibration_time_s() == 120
-
-    limits: list = []
-    original = window.amr.move_to
-
-    def record(target, unit="", label=None, timeout_ms=None):
-        limits.append(timeout_ms)
-        return original(target, unit, label=label)
-    window.amr.move_to = record
+    vehicle = window.screens["vehicle"]
+    assert not hasattr(vehicle, "CALIB_FIELD")
+    vehicle.field(vehicle.ALIGN_FIELD).setValue(90)
+    assert vehicle.calibration_time_s() == vehicle.align_time_s() == 90
 
     window.erut_session.handle_request("calibrate", {"req_id": "cal-t", "geometry": {"shape": "cylinder", "diameter": 1690,
                                                      "height": 2000}})
-    lap = 2 * math.pi * (845 + 2000 + 400)
-    expected = math.ceil(lap / 100 * 1.5 / 10) * 10                   # 310 s
-    assert vehicle.calibration_time_s() == expected
-    assert vehicle.field(vehicle.CALIB_FIELD).value() == expected     # 칸에도 계산값이 보인다
-    assert limits[-1] == expected * 1000, "한 바퀴 제한 시간도 계산값"
+    # 계산값으로 바꾸지 않는다 — 넣은 값 그대로.
+    assert vehicle.field(vehicle.ALIGN_FIELD).value() == 90
+    assert window._calibration_lap is None or window._calibration_lap["limit_s"] == 90
     # ERUT 에 알린다 — evt/info timings.complete_within_ms.calibrate
-    assert infos and infos[-1]["timings"]["complete_within_ms"] == {"calibrate": expected * 1000}
+    assert infos and infos[-1]["timings"]["complete_within_ms"] == {"calibrate": 90_000}
     window.close()
 
 
-def test_no_calibration_time_means_erut_default(qtbot) -> None:
+def test_default_align_time_is_announced_and_old_plate_value_carries_over(qtbot) -> None:
     window = _window(qtbot)
-    assert window.screens["vehicle"].calibration_time_s() == 0
-    assert "complete_within_ms" not in window.erut_session._info_content()["timings"]
+    vehicle = window.screens["vehicle"]
+    assert vehicle.calibration_time_s() == 120
+    assert window.erut_session._info_content()["timings"]["complete_within_ms"] == {"calibrate": 120_000}
+    # 예전 저장값(「곡판 QR 정렬 최대 시간」)은 새 칸으로 옮긴다.
+    vehicle.apply_values({vehicle.OLD_ALIGN_FIELD: 75})
+    assert vehicle.align_time_s() == 75
     window.close()
 
 

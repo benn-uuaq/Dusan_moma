@@ -1,0 +1,9 @@
+실행 명령
+
+export ROS_DOMAIN_ID=77
+
+ros2 run steer_agv_test_plc test_plc_ui
+--> 테스트용 가상 PLC
+
+ros2 launch steer_agv_bringup controller.launch.py   debug_ui:=true plc_enabled:=true plc_writes_enabled:=true   plc_host:=192.168.11.10 plc_port:=8501
+-->steer_agv_controller+ui

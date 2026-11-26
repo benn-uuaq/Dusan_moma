@@ -33,9 +33,9 @@ QPushButton { min-height: 64px; border: 1px solid #0070C0; border-radius: 7px; b
 QPushButton:hover { background: #EAF5FD; }
 QPushButton:pressed { background: #D9EEFB; }
 QPushButton:disabled { border-color: #B7C1CB; color: #8A97A3; background: #EFF2F5; }
-QPushButton#PrimaryButton { min-height: 82px; background: #0070C0; color: #FFFFFF; border: 0; font-size: 28px; }
+QPushButton#PrimaryButton { min-height: 66px; background: #0070C0; color: #FFFFFF; border: 0; font-size: 25px; }
 QPushButton#PrimaryButton:hover { background: #00599A; }
-QPushButton#MeasureButton { min-height: 82px; background: #FFFFFF; color: #00599A; border: 2px solid #0070C0; font-size: 28px; font-weight: 700; }
+QPushButton#MeasureButton { min-height: 66px; background: #FFFFFF; color: #00599A; border: 2px solid #0070C0; font-size: 25px; font-weight: 700; }
 QPushButton#MeasureButton:hover { background: #E8F1FA; }
 QPushButton#PauseButton { min-height: 64px; }
 QPushButton#DangerButton { color: #D32F2F; border-color: #D32F2F; }
@@ -112,6 +112,7 @@ QListWidget#TouchSelectList::item:selected { background: #0070C0; color: #FFFFFF
    떴을 때 다른 항목에 밀려 잘리지 않게 한다. */
 QFrame#NoticeBox { min-height: 150px; border: 1px solid #C7D0D9; border-radius: 7px; background: #FFFFFF; }
 QLabel#NoticeTitle { font-size: 14px; font-weight: 700; color: #5B6773; }
+QLabel#CurrentMode { font-size: 16px; font-weight: 700; color: #00599A; }
 QLabel#NoticeText { font-size: 15px; color: #17212B; }
 /* 알림 목록 아래의 리셋 버튼. 자주 쓰는 조작이라 제 크기로 둔다. */
 QPushButton#NoticeClear { min-height: 48px; font-size: 17px; font-weight: 700; }

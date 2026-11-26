@@ -29,16 +29,33 @@ def test_scan_segment_goes_to_erut_with_the_remaining_distance(qtbot) -> None:
     window.close()
 
 
-def test_holder_channel_count_is_compared_with_the_mounted_eoat(qtbot) -> None:
-    """채널 수로 EOAT 를 바꾸지 않는다 — 다르면 작업자와 ERUT 에 알린다."""
+def test_erut_holder_sets_the_mounted_holder(qtbot) -> None:
+    """ERUT 가 보낸 5 · 8 은 「장착 홀더」에 바로 들어가 로봇에 간다(2026-11-26)."""
+    window = _window(qtbot)
+    notes: list[tuple] = []
+    window.erut_session.notify = lambda code, name, text, **extra: notes.append((code, extra))
+    window._work_area_extra["eoat_type"] = 0.0
+
+    window._check_holder_channels(8)
+    assert window._work_area_extra["eoat_type"] == 8.0
+    assert window.screens["cobot"].eoat_type() == 8
+    assert notes == []
+    window._check_holder_channels(8)                     # 같으면 아무것도 안 한다
+    assert notes == []
+    window.close()
+
+
+def test_unknown_channel_count_or_running_job_only_warns(qtbot) -> None:
+    """5 · 8 이 아니거나(맞는 홀더가 없다) 로봇 태스크가 돌면 바꾸지 않고 알린다(M2003)."""
     window = _window(qtbot)
     notes: list[tuple] = []
     window.erut_session.notify = lambda code, name, text, **extra: notes.append((code, extra))
     window._work_area_extra["eoat_type"] = 5.0
 
-    window._check_holder_channels(5)
-    assert notes == []
+    window._check_holder_channels(17)
+    assert notes == [("M2003", {"channel_count": 17, "eoat_type": 5})]
+    window._on_robot_task_state(1)
     window._check_holder_channels(8)
-    assert notes == [("M2003", {"channel_count": 8, "eoat_type": 5})]
+    assert notes[-1] == ("M2003", {"channel_count": 8, "eoat_type": 5})
     assert window._work_area_extra["eoat_type"] == 5.0
     window.close()

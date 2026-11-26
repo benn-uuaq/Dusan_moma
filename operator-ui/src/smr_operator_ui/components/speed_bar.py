@@ -33,7 +33,8 @@ class SpeedBar(QFrame):
         layout.setContentsMargins(8, 12, 8, 12)
         layout.setSpacing(8)
 
-        caption = QLabel("로봇\n속도")
+        # 코봇 · 차량 · 리프트에 같이 거는 전체 속도 비율이다(2026-11-26) — 예전 「로봇 속도」.
+        caption = QLabel("전체\n속도")
         caption.setObjectName("SectionTitle")
         caption.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(caption)
@@ -54,21 +55,13 @@ class SpeedBar(QFrame):
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self.value_label)
 
-        # 운영 상한(100 mm/s)을 곱해 실제 몇 mm/s 로 도는지 함께 보여준다.
-        # % 만으로는 안전 기준을 넘는지 아닌지 눈으로 알 수 없다.
-        self.mms_label = QLabel("- mm/s")
-        self.mms_label.setObjectName("SectionTitle")
-        self.mms_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        layout.addWidget(self.mms_label)
-
-        # ㄹ자 스캔 줄에 실제로 걸린 속도(레지스터 307). 전체 비율(위 바)과 따로다 —
-        # ERUT 작업 중이면 ERUT 가 준 속도, 아니면 바와 같다(2026-11-11). 예전에는 ERUT
-        # 속도가 화면 어디에도 안 나와 「적용이 안 된다」로 보였다.
-        self.scan_label = QLabel("스캔 줄\n- %")
+        # 「100 mm/s」 · 「스캔 줄 %」 표시는 뺐다(2026-11-26 — 바는 전체 속도 하나만 보인다). 값은
+        # 그대로 들고 있어(mms_text · scan_text) 기록 · 시험에서 쓴다. 화면에는 붙이지 않는다.
+        self.mms_label = QLabel("- mm/s", self)
+        self.mms_label.hide()
+        self.scan_label = QLabel("스캔 줄\n- %", self)
         self.scan_label.setObjectName("ScanSpeed")
-        self.scan_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self.scan_label.setWordWrap(True)
-        layout.addWidget(self.scan_label)
+        self.scan_label.hide()
 
         # 끄는 동안은 숫자만 따라오고, 놓을 때 한 번 명령을 보낸다.
         self.slider.valueChanged.connect(self._show_value)

@@ -72,6 +72,10 @@ def make_node(registers=None, map_data=None):
     node._connect_lock = threading.Lock()
     node._want_connected = True
     node._link_fails = 0
+    node._links = dict.fromkeys(RobotControlNode.LINK_NAMES, False)
+    node._last_dash_check = 0.0
+    node._last_partial_retry = 0.0
+    node.pub_link_detail = FakePublisher()
     return node
 
 
@@ -270,6 +274,7 @@ class FakeChannel:
         self.ok = ok
         self.opened = 0
         self.closed = 0
+        self.last_error = ""
 
     def connect(self):
         self.opened += 1
@@ -277,6 +282,17 @@ class FakeChannel:
 
     def disconnect(self):
         self.closed += 1
+
+    # 채널 감시(2026-11-24) — 붙어 있으면 살아 있다.
+    @property
+    def alive(self):
+        return self.ok
+
+    def check_alive(self):
+        return self.ok
+
+    def reconnect(self):
+        return self.connect()
 
 
 def make_connectable_node(dash_ok=True, primary_ok=True, modbus_ok=True):
@@ -559,7 +575,7 @@ def _linked_node(fail_reads):
     assert node.connect_all_servers() is True
     for name in ("pub_robot_mode", "pub_control_method", "pub_op_mode", "pub_tcp_pose",
                  "pub_tcp_pose_zero", "pub_joint_position", "pub_scan_state", "pub_task_state",
-                 "pub_home_flag", "pub_speed_scale", "pub_digital_in",
+                 "pub_home_flag", "pub_arm_park", "pub_speed_scale", "pub_digital_in",
                  "pub_safety_stop", "pub_config_digital_in",
                  "pub_digital_out", "pub_probe_result", "pub_probe_poses",
                  "pub_scan_arc", "pub_scan_segment", "pub_alarm"):
@@ -674,3 +690,21 @@ def test_scan_z_offset_goes_to_358_in_mm_and_never_below_zero():
     node.cb_scan_z_offset(Msg(800))
     node.cb_scan_z_offset(Msg(-5))
     assert node.robot_modbus.writes == [(358, 800), (358, 0)]
+
+
+def test_scan_y_base_goes_to_359_in_mm_and_is_clamped():
+    """이번 구역 아래 끝 높이(모재 아래 끝에서, 2026-11-23) — mm 그대로 359 에. 음수 0, 위 32000."""
+    import os
+    source = os.path.join(os.path.dirname(__file__), "..", "config", "modbus_registers.json")
+    assert register_map.load(source).write_entry("scan_y_base").address == 359
+
+    node = make_node(map_data={
+        "scale": {"position_per_count": 0.1, "rotation_per_count": 1.0},
+        "read": {},
+        "write": {"scan_y_base": {"address": 359, "count": 1}},
+    })
+    Msg = type("Int32", (), {"__init__": lambda self, data=0: setattr(self, "data", data)})
+    node.cb_scan_y_base(Msg(1100))
+    node.cb_scan_y_base(Msg(-5))
+    node.cb_scan_y_base(Msg(99999))
+    assert node.robot_modbus.writes == [(359, 1100), (359, 0), (359, 32000)]

@@ -98,6 +98,11 @@ class RobotControlNode(Node):
         self._want_connected = True
         self._link_fails = 0
         self._connect_lock = threading.Lock()
+        # 채널별 연결 상태(2026-11-24). 하나라도 끊기면 connected 를 내리고 어느 포트인지 알린다
+        # (robot/status/link_detail). 30001 · 29999 만 끊겼으면 Modbus 감시는 계속하고 그 채널만 다시 붙인다.
+        self._links = dict.fromkeys(self.LINK_NAMES, False)
+        self._last_dash_check = 0.0
+        self._last_partial_retry = 0.0
         # 로봇 자체 속도 비율 [%]. 조그 속도도 이 값을 따른다.
         self.speed_ratio = 100
         # 마지막으로 읽은 레지스터 값(publish_code) · 관절값 [mrad].
@@ -125,6 +130,8 @@ class RobotControlNode(Node):
         # 로봇 컨트롤러 비상정지(티치 펜던트 · 컨트롤러 비상정지 버튼 · 외부 비상정지 입력, 2026-11-18).
         self.pub_estop = self.create_publisher(Int32, 'robot/status/estop', 10)
         self.pub_connected = self.create_publisher(Bool, 'robot/status/connected', 10)
+        # 어느 포트가 끊겼는지 · 다시 붙었는지(2026-11-24) — 「끊김 30001(Primary): 까닭」 · 「다시 연결됨 …」.
+        self.pub_link_detail = self.create_publisher(String, 'robot/status/link_detail', 10)
         # 로봇 태스크가 쓰는 스캔 진행 상태(290~298). 운영 UI의 격자 순회가
         # 이 값으로 한 셀의 완료(state==5 && finished==1)를 판정한다.
         self.pub_scan_state = self.create_publisher(Int32MultiArray, 'robot/status/scan_state', 10)
@@ -142,6 +149,10 @@ class RobotControlNode(Node):
         # 태스크가 안 돌 때는 이 노드가 대신 관리한다(조그 0 / 홈 도착 1).
         # RCS 는 이 값과 태스크 상태를 같이 보고 차량·리프트를 움직인다.
         self.pub_home_flag = self.create_publisher(Int32, 'robot/status/at_home', 10)
+        # 팔 받침대 상태(레지스터 360, 2026-11-26) — 받침대 태스크(dus6_park / dus6_unpark)가 쓴다.
+        # 1 올리는 중 · 2 받침대 위 · 3 홈으로 가는 중 · 4 홈 복귀(ready) · 9 위치 미저장 · 0 모름.
+        # RCS 는 2 면 차량 주행만 허가하고(리프트 · 로봇 작업은 홈에서만), 홈 명령은 되돌리기로 간다.
+        self.pub_arm_park = self.create_publisher(Int32, 'robot/status/arm_park', 10)
         # 로봇이 실제로 쓰고 있는 속도 비율[%]. 펜던트에서 바꿔도 여기로 나온다.
         self.pub_speed_scale = self.create_publisher(Int32, 'robot/status/speed_scale', 10)
         # 디지털 입출력 비트묶음(레지스터 0 = 표준 DI, 2 = 표준 DO).
@@ -185,6 +196,8 @@ class RobotControlNode(Node):
         self.create_service(Trigger, 'robot/command/move_assembly', self.cb_move_assembly)
         # Cobot 조그 화면의 위치별 「이동」(2026-11-12): 스캔 대기 위치 · 그리퍼 접촉 위치 앞.
         self.create_service(Trigger, 'robot/command/move_standby', self.cb_move_standby)
+        # 홈 → 받침대 거치(2026-11-26) — 받침대 태스크(dusan_v6_park)를 불러와 튼다. RCS 가 주행 전에 부른다.
+        self.create_service(Trigger, 'robot/command/move_rest', self.cb_move_rest)
         self.create_service(Trigger, 'robot/command/move_gripper', self.cb_move_gripper)
         # 로봇 TCP 를 툴 플랜지 [0, 0, 0, 0, 0, 0] 로 — RCS 가 시작 포즈를 저장하기 전에 부른다
         # (저장하는 위치는 모두 플랜지 기준이다, 2026-11-09).
@@ -227,6 +240,10 @@ class RobotControlNode(Node):
         # 리프트 대신 팔을 들어 스캔할 높이 [mm] -> 358 (2026-11-09). 플래그는 work_area 가 세운다.
         self.create_subscription(
             Int32, 'robot/command/scan_z_offset', self.cb_scan_z_offset, 10)
+        # 이번 구역 아래 끝 높이(모재 아래 끝에서) [mm] -> 359 (2026-11-23). 태스크가 바닥 근처
+        # 줄 바꿈에서 벽에서 물러섰다 오르는 데 쓴다.
+        self.create_subscription(
+            Int32, 'robot/command/scan_y_base', self.cb_scan_y_base, 10)
         # 스캔 시작 허가(267). 로봇이 원점에서 멈춰 기다리는 것을 풀어 준다.
         self.create_subscription(Int32, 'robot/command/scan_go', self.cb_scan_go, 10)
         # 차량 고정 확인(309). 차량이 서고 아웃트리거가 고정되고 리프트가
@@ -250,6 +267,9 @@ class RobotControlNode(Node):
         # 바로 덮어쓴다.
         self.declare_parameter('mark_task_path', 'Dusan/dusan_v6/dusan_v6_mark.task')
         self.declare_parameter('scan_task_path', 'Dusan/dusan_v6/dusan_v6.task')
+        # 받침대 → 홈 되돌리기 태스크(2026-11-26). 팔이 받침대 길에 있을 때 「로봇 홈」이 이걸 돌린다.
+        self.declare_parameter('unpark_task_path', 'Dusan/dusan_v6/dusan_v6_unpark.task')
+        self.declare_parameter('park_task_path', 'Dusan/dusan_v6/dusan_v6_park.task')
         self.create_service(Trigger, 'robot/dashboard/load_mark_task', self.cb_load_mark_task)
         self.create_service(Trigger, 'robot/dashboard/load_scan_task', self.cb_load_scan_task)
 
@@ -284,12 +304,12 @@ class RobotControlNode(Node):
 
     def _try_reconnect(self):
         """끊겨 있고 연결을 원하면 한 번 붙어 본다. 붙으면 True."""
-        if self.connected or not self._want_connected:
-            return False
+        if self.connected or not self._want_connected or self._links["modbus"]:
+            return False            # Modbus 가 살아 있으면 끊긴 채널만 루프가 다시 붙인다
         if not self._connect_lock.acquire(blocking=False):
             return False            # 운영자가 누른 connect 가 이미 붙는 중
         try:
-            if self.connected or not self._want_connected:
+            if self.connected or not self._want_connected or self._links["modbus"]:
                 return False
             self.disconnect_all_servers(quiet=True)
             if self._connect_unlocked():
@@ -339,8 +359,11 @@ class RobotControlNode(Node):
             d_ok = self.robot_dash.connect_29999()
             p_ok = self.robot_primary.connect_30001()
             m_ok = self.robot_modbus.connect()
+            self._links.update(dashboard=bool(d_ok), primary=bool(p_ok), modbus=bool(m_ok))
             self.connected = bool(d_ok and p_ok and m_ok)
             self._link_fails = 0
+            failed = [self.LINK_NAMES[k] for k, ok in self._links.items() if not ok]
+            self._publish_link_detail(f"끊김 {' · '.join(failed)}: 연결 실패" if failed else "연결됨")
         except Exception as e:
             self.get_logger().error(f"[ERROR] 소켓 연결 중 예외 발생: {e}")
             self.connected = False
@@ -357,6 +380,7 @@ class RobotControlNode(Node):
             except Exception as e:
                 if not quiet:
                     self.get_logger().warn(f"[WARN] 연결 해제 중 예외: {e}")
+        self._links = dict.fromkeys(self.LINK_NAMES, False)
         self.connected = False
         self.publish_connected()
         return True
@@ -390,9 +414,11 @@ class RobotControlNode(Node):
         # 매 주기 발행한다. 상태가 바뀔 때만 보내면 UI가 나중에 구독했을 때
         # (또는 재시작했을 때) 이미 지나간 값을 영영 받지 못한다.
         self.publish_connected()
-        # 연결 전에 소켓을 건드리면 예외가 난다.
-        if not self.connected:
+        # 연결 전에 소켓을 건드리면 예외가 난다. Modbus 만 살아 있어도(30001 · 29999 가 끊겨 다시 붙는 중)
+        # 상태 감시는 계속한다(2026-11-24).
+        if not self._links["modbus"]:
             return
+        self._watch_links()
 
         # 첫 읽기를 생존 확인으로 쓴다. 실패하면 이번 주기의 나머지 읽기는
         # 건너뛴다 — 끊긴 채로 열 번을 다 읽으면 번마다 타임아웃(1 s)을 기다려
@@ -412,6 +438,7 @@ class RobotControlNode(Node):
         self.publish_raw('scan_arc', self.pub_scan_arc)
         self.publish_raw('scan_segment', self.pub_scan_segment)
         self.publish_code('task_state', self.pub_task_state)
+        self.publish_code('arm_park', self.pub_arm_park)
         self._watch_home()
         self.publish_code('home_flag', self.pub_home_flag)
         self.publish_code('speed_scale', self.pub_speed_scale)
@@ -463,6 +490,79 @@ class RobotControlNode(Node):
             f"{self.RECONNECT_S:g}초마다 다시 연결합니다.")
         self._link_fails = 0
         self.disconnect_all_servers(quiet=True)
+        self._publish_link_detail(f"끊김 {self.LINK_NAMES['modbus']}: 응답 없음 — 세 채널을 다시 붙입니다")
+
+    # ---- 채널별 연결 감시 (2026-11-24) ---------------------------------------------
+    #: 채널 → 표시 이름(포트).
+    LINK_NAMES = {"dashboard": "29999(Dashboard)", "primary": "30001(Primary)",
+                  "modbus": "502(Modbus)"}
+    #: 대시보드 소켓이 살아 있는지 보는 간격 [s].
+    DASH_CHECK_S = 1.0
+
+    def _publish_link_detail(self, text):
+        self.pub_link_detail.publish(String(data=text))
+
+    def _channel_lost(self, name, reason):
+        """한 채널이 끊겼다 — connected 를 내리고 어느 포트인지 알린다. 다시 붙는 것은 _watch_links."""
+        if not self._links.get(name):
+            return
+        self._links[name] = False
+        self.connected = False
+        self._last_partial_retry = time.monotonic()     # 첫 재연결은 RECONNECT_S 뒤에
+        text = f"끊김 {self.LINK_NAMES[name]}: {reason or '연결이 끊겼습니다'}"
+        self.get_logger().warn(
+            f"[connect] {self.robot_ip} {text} — {self.RECONNECT_S:g}초마다 다시 붙습니다.")
+        self._publish_link_detail(text)
+        self.publish_connected()
+
+    def _channel_restored(self, name):
+        if self._links.get(name):
+            return
+        self._links[name] = True
+        self.connected = all(self._links.values())
+        text = f"다시 연결됨 {self.LINK_NAMES[name]}"
+        self.get_logger().info(f"[connect] {self.robot_ip} {text}")
+        self._publish_link_detail(text)
+        self.publish_connected()
+
+    def _watch_links(self):
+        self._flush_pose_variables()            # 태스크가 멈추면 미뤄 둔 펜던트 변수를 쓴다
+        self._watch_channels()
+
+    def _watch_channels(self):
+        """30001 · 29999 가 끊겼는지 보고, 끊겼으면 RECONNECT_S 마다 그 채널만 다시 붙인다(Modbus 는 그대로)."""
+        if self._links["primary"] and not self.robot_primary.alive:
+            self._channel_lost("primary", self.robot_primary.last_error)
+        now = time.monotonic()
+        if now - self._last_dash_check >= self.DASH_CHECK_S:
+            self._last_dash_check = now
+            alive = self.robot_dash.check_alive()
+            if self._links["dashboard"] and not alive:
+                self._channel_lost("dashboard", self.robot_dash.last_error)
+            elif not self._links["dashboard"] and alive:
+                self._channel_restored("dashboard")      # 명령이 스스로 다시 붙었다
+        if not self._want_connected or all(self._links.values()):
+            return
+        if now - self._last_partial_retry < self.RECONNECT_S:
+            return
+        self._last_partial_retry = now
+        if not self._links["primary"] and self.robot_primary.connect_30001():
+            self._channel_restored("primary")
+        if not self._links["dashboard"] and self.robot_dash.reconnect():
+            self._channel_restored("dashboard")
+
+    def _send_script(self, script):
+        """30001 로 스크립트를 보낸다. 끊겨 있으면 한 번 다시 붙어 다시 보낸다(2026-11-24 — 홈 「Broken pipe」)."""
+        if self.robot_primary.send_script(script):
+            return True
+        reason = self.robot_primary.last_error
+        if self.robot_primary.connect_30001() and self.robot_primary.send_script(script):
+            self.get_logger().warn(f"[connect] 30001 을 다시 붙여 스크립트를 보냈습니다 ({reason})")
+            if not self._links["primary"]:
+                self._channel_restored("primary")
+            return True
+        self._channel_lost("primary", self.robot_primary.last_error or reason)
+        return False
 
     def publish_code(self, name, publisher):
         """레지스터 한 개를 읽어 그대로 발행한다. 읽었으면 True."""
@@ -622,12 +722,14 @@ class RobotControlNode(Node):
             self.get_logger().warn(f"[{name}] {flag_name} 주소가 설정되지 않았습니다.")
 
     def cb_home_joint(self, msg):
-        """홈 관절값 -> 322~327, home_src(328) = 1. 태스크가 Home_joint 로 읽는다."""
+        """홈 관절값 -> 322~327, home_src(328) = 1. 태스크가 Home_joint 로 읽는다. 펜던트 변수에도 쓴다."""
         self._write_pose_topic('home_joint', msg, flag_name='home_src')
+        self._write_pose_variable('home_joint', list(msg.data))
 
     def cb_standby_joint(self, msg):
-        """스캔 대기 위치 관절값 -> 310~315, pose_src(308) = 1 (예전의 홈 자리)."""
+        """스캔 대기 위치 관절값 -> 310~315, pose_src(308) = 1 (예전의 홈 자리). 펜던트 변수에도 쓴다."""
         self._write_pose_topic('standby_joint', msg)
+        self._write_pose_variable('standby_joint', list(msg.data))
 
     def cb_assembly_joint(self, msg):
         """조립 위치 관절값 [mrad] 을 기억한다(레지스터 없음, 2026-11-05)."""
@@ -643,6 +745,55 @@ class RobotControlNode(Node):
 
     def cb_start_pose(self, msg):
         self._write_pose_topic('start_pose', msg)
+        self._write_pose_variable('start_pose', list(msg.data))
+
+    # ---- 기준 위치 → 펜던트 변수 (2026-11-25) ------------------------------------------
+    #: RCS 기준 위치 → 로봇(펜던트) 전역 변수. 조립 위치는 펜던트 변수가 없다(노드만 기억한다).
+    POSE_VARIABLES = {"home_joint": "Home_joint", "standby_joint": "Standby_joint",
+                      "start_pose": "gripper_target_pose"}
+
+    @staticmethod
+    def pose_variable_text(values):
+        """RCS 값(위치 mm · 관절 · 회전 mrad) → 펜던트 변수 글([m · rad] 6개, 빈칸 없이)."""
+        return "[" + ",".join(f"{float(v) / 1000.0:.6f}" for v in values) + "]"
+
+    def _write_pose_variable(self, name, values):
+        """RCS 가 보낸 기준 위치를 펜던트 변수에도 쓴다(29999 variable -set, 2026-11-25).
+
+        운전 모드(모재마다 받침대 높이가 달라 그리퍼 접촉 위치가 다르다)를 불러오면 레지스터만이 아니라
+        펜던트 값도 그 모재 값이어야 한다 — 펜던트에서 보는 값 · RCS 에 값이 없을 때의 「이동」 목표가 같아진다.
+        전부 0(RCS 에서 지웠다)이면 펜던트 값을 그대로 둔다. 태스크가 도는 중이면 멈춘 뒤 쓴다(_flush_pose_variables).
+        """
+        var = self.POSE_VARIABLES.get(name)
+        if var is None or len(values) != 6 or not any(values):
+            return
+        pending = getattr(self, '_pending_variables', None)
+        if pending is None:
+            pending = self._pending_variables = {}
+        pending[var] = self.pose_variable_text(values)
+        self._flush_pose_variables()
+
+    def _flush_pose_variables(self):
+        """미뤄 둔 펜던트 변수 쓰기 — 연결돼 있고 태스크가 안 돌 때만."""
+        pending = getattr(self, '_pending_variables', None)
+        if not pending or not self.connected:
+            return
+        if getattr(self, '_last_codes', {}).get('task_state') == self._TASK_RUNNING:
+            return
+        for var, text in list(pending.items()):
+            reply = self.robot_dash.set_variable(var, text)
+            failed = ("Error", "error", "undefined", "Can not find")
+            if reply is None or any(word in str(reply) for word in failed):
+                self.get_logger().warn(f"[{var}] 펜던트 변수 쓰기 실패: {reply}")
+                if reply is None:
+                    return                       # 대시보드가 안 된다 — 다음 주기에 다시
+                pending.pop(var, None)
+                continue
+            pending.pop(var, None)
+            self.get_logger().info(f"[{var}] 펜던트 변수를 RCS 기준 위치로 맞췄습니다: {text}")
+            cache = getattr(self, '_joint_variables', None)
+            if cache is not None:
+                cache.pop(var, None)            # 다음에 다시 읽는다
 
     def cb_work_area(self, msg):
         # [너비, 높이, 스캐너높이, 겹침] mm -> 256~259, 성공하면 266=1.
@@ -657,6 +808,10 @@ class RobotControlNode(Node):
     def cb_scan_z_offset(self, msg):
         """팔을 들어 스캔할 높이 [mm] 를 358 에 쓴다. 음수는 0 으로."""
         self._write_topic('scan_z_offset', type(msg)(data=max(int(msg.data), 0)))
+
+    def cb_scan_y_base(self, msg):
+        """이번 구역 아래 끝 높이(모재 아래 끝에서) [mm] 를 359 에 쓴다. 음수는 0, 위는 32000 까지."""
+        self._write_topic('scan_y_base', type(msg)(data=min(max(int(msg.data), 0), 32000)))
 
     def cb_mark_target(self, msg):
         """마킹 자리 [u, v] (mm)를 268~269 에 쓴다."""
@@ -853,6 +1008,137 @@ class RobotControlNode(Node):
         at_home = all(abs(q / 1000.0 - h) <= tol for q, h in zip(joints, target))
         if current is not None and bool(current) != at_home:
             self.write_register('home_flag', 1 if at_home else 0)
+        if at_home:
+            self._settle_arm_park()
+
+    # ---- 팔 받침대 (레지스터 360, 2026-11-26) -------------------------------------------
+    #: 받침대 태스크가 360 에 쓰는 값 — dus6_park.script 머리말과 같다.
+    ARM_PARKING, ARM_PARKED, ARM_UNPARKING, ARM_READY, ARM_UNTAUGHT = 1, 2, 3, 4, 9
+    #: 받침대 길의 네 자세(펜던트 전역 변수, 관절 rad) — ① 회전 ② 들기 ③ 뻗기 ④ 받침대 위.
+    PARK_VARIABLES = ("Park_turn_joint", "Park_lift_joint", "Park_reach_joint", "Park_rest_joint")
+
+    def _settle_arm_park(self):
+        """홈에 있으면(태스크가 안 돌 때) 받침대 상태를 4(ready)로 맞춘다.
+
+        펜던트 조그 등 받침대 태스크 밖에서 홈으로 돌아온 경우 360 이 1 · 2 · 3 으로 남아,
+        홈 명령이 계속 되돌리기로 가거나 RCS 가 받침대 위로 알았다.
+        """
+        if not self.registers.write_entry('arm_park').available:
+            return
+        state = getattr(self, '_last_codes', {}).get('arm_park')
+        if state in (self.ARM_PARKING, self.ARM_PARKED, self.ARM_UNPARKING, self.ARM_UNTAUGHT):
+            self.write_register('arm_park', self.ARM_READY)
+            self._last_codes['arm_park'] = self.ARM_READY
+
+    def _near_park_pose(self):
+        """지금 관절값이 받침대 길의 네 자세 중 하나 안쪽인가(홈 근처 오차). 모르면 False.
+
+        레지스터 360 은 전원을 내리면 0 이 된다 — 팔이 받침대 위에 있어도 그렇다. 그래서
+        관절값으로도 본다. 펜던트에 변수가 없거나(태스크를 안 올림) 비어 있으면(전부 0) 안 본다.
+        """
+        joints = getattr(self, '_last_joint_mrad', None)
+        if not joints or len(joints) != 6:
+            return False
+        tol = self._home_near_tol()
+        for name in self.PARK_VARIABLES:
+            target = self._robot_joint_variable(name)
+            if target and any(target) and all(
+                    abs(q / 1000.0 - t) <= tol for q, t in zip(joints, target)):
+                return True
+        return False
+
+    def _on_park_path(self):
+        """팔이 받침대 길(① 회전 ~ ④ 받침대 위)에 있는가 — 홈 명령을 되돌리기 태스크로 보낼지.
+
+        홈이면 아니다. 360 이 1 · 2 · 3(올리는 중 · 받침대 위 · 되돌리는 중, 멈췄으면 그 사이)이거나
+        관절값이 네 자세 중 하나면 받침대 길이다. 9(위치 미저장)는 팔을 움직이지 않은 것이라 아니다.
+        """
+        if self._at_home_now():
+            return False
+        state = getattr(self, '_last_codes', {}).get('arm_park')
+        if state in (self.ARM_PARKING, self.ARM_PARKED, self.ARM_UNPARKING):
+            return True
+        return self._near_park_pose()
+
+    def _start_unpark(self, name, res):
+        """받침대 → 홈 되돌리기 태스크를 불러와 튼다(29999 stop → task -p → play).
+
+        30001 프로그램은 펜던트 변수(Park_*_joint)를 못 보고, 길도 펜던트 스크립트와 하나로 둔다 —
+        dus6_unpark.script 가 자세를 확인하고(자세 사이면 거절) 차량 고정(309)도 기다린다.
+        끝나면 스캔 태스크가 아니라 이 태스크가 올라가 있다 — RCS 가 다시 불러 둔다.
+        """
+        return self._run_park_task(name, 'unpark_task_path', self.UNPARK_MARK,
+                                   "팔을 받침대에서 들어 홈으로 되돌립니다", res)
+
+    def _run_park_task(self, name, param, mark, what, res):
+        """받침대 태스크(거치 · 되돌리기)를 불러와 튼다 — remoteControl -on → stop → task -p → play."""
+        path = self._param_str(param, '')
+        if not path:
+            res.success = False
+            res.message = f"[{name}] 받침대 태스크 경로({param})가 비어 있습니다."
+            return res
+        self.robot_dash.robot_remote_control_on()
+        stop_reply = self.robot_dash.robot_stop()
+        if stop_reply is None:
+            self.get_logger().warn(f"[{name}] 태스크 정지 응답 없음 — {self.robot_dash.last_error}")
+        time.sleep(self._HOME_AFTER_STOP_S)
+        self._leaving_home()
+        load = f"task -p {path}"
+        for label, call in ((load, lambda: self.robot_dash.send_command_29999(load)),
+                            ("play", self.robot_dash.robot_play)):
+            reply = call()
+            if reply is None or any(word in reply.lower() for word in self._DASH_REFUSALS):
+                why = reply if reply is not None else (
+                    getattr(self.robot_dash, "last_error", "") or "응답 없음")
+                res.success = False
+                res.message = f"[{name}] 받침대 태스크 {label} 실패 — {why}"
+                self.get_logger().warn(res.message)
+                return res
+            if label != "play":
+                time.sleep(self._HOME_AFTER_STOP_S)
+        res.success = True
+        res.message = f"[{name}] {mark} — {what}({path})."
+        self.get_logger().info(res.message)
+        return res
+
+    #: 거치 명령이 받침대 태스크로 갔다는 표시.
+    PARK_MARK = "받침대 거치"
+
+    def cb_move_rest(self, req, res):
+        """홈에서 받침대 위로 팔을 올린다(dusan_v6_park, 2026-11-26).
+
+        홈이거나 받침대 길(멈춘 자리에서 이어 간다)에서만 받는다 — 벽 앞에서 곧장 가면 길을 장담할
+        수 없다. 이미 받침대 위면 아무것도 안 한다. 태스크가 도는 중이면 거절한다.
+        """
+        if not self.connected:
+            res.success = False
+            res.message = "[move_rest] 로봇에 연결되어 있지 않습니다."
+            return res
+        if getattr(self, '_last_codes', {}).get('task_state') in (1, 2):
+            res.success = False
+            res.message = "[move_rest] 로봇 태스크가 도는 중이라 받침대로 보내지 않습니다."
+            return res
+        state = getattr(self, '_last_codes', {}).get('arm_park')
+        if state == self.ARM_PARKED and not self._at_home_now():
+            res.success = True
+            res.message = "[move_rest] 팔이 이미 받침대 위에 있습니다."
+            return res
+        if not self._at_home_now() and not self._on_park_path():
+            res.success = False
+            res.message = "[move_rest] 홈에서만 받침대로 갈 수 있습니다 — 먼저 「로봇 홈」으로 보내세요."
+            return res
+        return self._run_park_task("move_rest", 'park_task_path', self.PARK_MARK,
+                                   "팔을 홈에서 받침대 위로 올립니다", res)
+
+    #: 홈 명령이 되돌리기 태스크로 갔다는 표시 — RCS 가 응답에서 이 말을 찾는다(끝나면 스캔 태스크를 다시 불러 둔다).
+    UNPARK_MARK = "받침대 되돌리기"
+
+    def _park_path_refusal(self, name):
+        """받침대 길에서는 스캔 대기 위치 · 그리퍼 쪽으로 곧장 가지 않는다 — 받침대를 끌고 간다."""
+        if self._on_park_path():
+            return (f"[{name}] 팔이 받침대 쪽에 있습니다 — 먼저 「로봇 홈」으로 받침대에서 되돌린 뒤 "
+                    "다시 하세요.")
+        return ""
 
     def _leaving_home(self):
         """로봇을 홈 밖으로 움직이기 직전에 홈 플래그를 내린다.
@@ -882,7 +1168,7 @@ class RobotControlNode(Node):
         qd = self._round6([value * speed for value in unit])
         hold = self.get_parameter('jog_hold_time').value
         self._leaving_home()
-        self.robot_primary.send_script(f"speedj({qd}, {round(accel, 6)}, {hold})")
+        self._send_script(f"speedj({qd}, {round(accel, 6)}, {hold})")
 
     def cb_jog_tcp(self, msg):
         if not self.connected:
@@ -905,7 +1191,7 @@ class RobotControlNode(Node):
         ])
         hold = self.get_parameter('jog_hold_time').value
         self._leaving_home()
-        self.robot_primary.send_script(f"speedl({xd}, {round(accel, 6)}, {hold})")
+        self._send_script(f"speedl({xd}, {round(accel, 6)}, {hold})")
 
     # get_variable이 실패했을 때만 쓰는 마지막 안전망. 정상 경로에서는
     # 항상 레지스터나 로봇에서 29999로 직접 읽은 값을 쓴다. (2026-10-16 전의
@@ -949,6 +1235,10 @@ class RobotControlNode(Node):
             res.success = False
             res.message = "[move_home] 로봇에 연결되어 있지 않습니다."
             return res
+        # 팔이 받침대 길에 있으면 스캔 대기 위치를 거치는 길로 가면 안 된다 — 받침대를 끌고 간다.
+        # 받침대 태스크를 거꾸로 돌려(④ → ③ → ② → ① → 홈) 홈으로 간다(2026-11-26).
+        if self._on_park_path():
+            return self._start_unpark("move_home", res)
 
         home = self._home_joint_target()
         if not home:
@@ -1014,7 +1304,7 @@ class RobotControlNode(Node):
         # 홈으로 가는 **동안**은 홈이 아니다. 태스크를 세운 뒤에 내린다 —
         # 먼저 내리면 아직 도는 태스크의 발행 스레드가 다시 덮어쓴다.
         self._leaving_home()
-        ok = self.robot_primary.send_script(script)
+        ok = self._send_script(script)
         res.success = bool(ok)
         res.message = "[move_home] 홈 이동을 요청했습니다." if ok else "[move_home] 스크립트 전송 실패"
         return res
@@ -1146,7 +1436,7 @@ class RobotControlNode(Node):
             self.get_logger().warn(f"[{name}] 태스크 정지 응답 없음 — {self.robot_dash.last_error}")
         time.sleep(self._HOME_AFTER_STOP_S)
         self._leaving_home()
-        return self.robot_primary.send_script(program)
+        return self._send_script(program)
 
     def cb_move_standby(self, req, res):
         """스캔 대기 위치로 간다(2026-11-12, Cobot 조그 화면 「이동」).
@@ -1157,6 +1447,11 @@ class RobotControlNode(Node):
         if not self.connected:
             res.success = False
             res.message = "[move_standby] 로봇에 연결되어 있지 않습니다."
+            return res
+        refusal = self._park_path_refusal("move_standby")
+        if refusal:
+            res.success = False
+            res.message = refusal
             return res
         lines, error = self._to_standby_program("move_standby")
         if error:
@@ -1180,6 +1475,11 @@ class RobotControlNode(Node):
         if not self.connected:
             res.success = False
             res.message = "[move_gripper] 로봇에 연결되어 있지 않습니다."
+            return res
+        refusal = self._park_path_refusal("move_gripper")
+        if refusal:
+            res.success = False
+            res.message = refusal
             return res
         contact = self._gripper_contact_target()
         if not contact:
@@ -1251,7 +1551,7 @@ class RobotControlNode(Node):
             res.success = False
             res.message = "[flange_tcp] 로봇 태스크가 도는 중이라 TCP 를 바꾸지 않습니다."
             return res
-        ok = self.robot_primary.send_script("set_tcp([0, 0, 0, 0, 0, 0])")
+        ok = self._send_script("set_tcp([0, 0, 0, 0, 0, 0])")
         res.success = bool(ok)
         res.message = "[flange_tcp] TCP 를 툴 플랜지로 맞췄습니다." if ok else "[flange_tcp] 스크립트 전송 실패"
         return res
@@ -1290,7 +1590,7 @@ class RobotControlNode(Node):
                 f"[move_assembly] 태스크 정지 응답 없음 — {self.robot_dash.last_error}")
         time.sleep(self._HOME_AFTER_STOP_S)
         self._leaving_home()
-        ok = self.robot_primary.send_script(script)
+        ok = self._send_script(script)
         res.success = bool(ok)
         res.message = ("[move_assembly] 조립 위치 이동을 요청했습니다." if ok
                        else "[move_assembly] 스크립트 전송 실패")
@@ -1375,7 +1675,9 @@ def main(args=None):
     finally:
         if 'node' in locals():
             node.destroy_node()
-        rclpy.shutdown()
+        # Ctrl+C 면 rclpy 가 신호 처리에서 이미 shutdown 했다 — 두 번 부르면 RCLError 가 난다.
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

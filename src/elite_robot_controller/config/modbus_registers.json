@@ -139,6 +139,11 @@
       "address": 276,
       "count": 1
     },
+    "_arm_park_comment": "arm_park(360)은 받침대 태스크(dusan_v6_park / dusan_v6_unpark, 2026-11-25)가 쓰는 팔 상태다. 1 받침대에 올리는 중 · 2 받침대 위(차량 이동 가능) · 3 홈으로 가는 중 · 4 홈 복귀 완료(로봇팔 ready) · 9 못 함(위치 미저장 · 자세 사이 · 차량 미고정) · 0 모름. 노드가 robot/status/arm_park 로 내보낸다. RCS 는 2 면 차량 주행만 허가하고(리프트 · 로봇 작업은 홈에서만), 받침대 길에서 홈 명령은 되돌리기 태스크(unpark_task_path)로 간다(2026-11-26).",
+    "arm_park": {
+      "address": 360,
+      "count": 1
+    },
     "task_state": {
       "address": 500,
       "count": 1
@@ -228,6 +233,11 @@
       "address": 358,
       "count": 1
     },
+    "_scan_y_base_comment": "359 = 이번 구역 아래 끝 높이 — 모재 아래 끝에서 [mm] (0 이상). RCS 가 구역마다(리프트 · 팔 높이를 정할 때) 쓴다. v6 태스크가 266 = 1 일 때 읽어, 줄 바꿈(dus6_up)의 모재 기준 높이가 up_clear_h 안이면 벽에서 up_clear_d 만큼 물러섰다 오른다(2026-11-23).",
+    "scan_y_base": {
+      "address": 359,
+      "count": 1
+    },
     "param_src": {
       "address": 266,
       "count": 1
@@ -251,6 +261,11 @@
     },
     "home_flag": {
       "address": 276,
+      "count": 1
+    },
+    "_arm_park_comment": "arm_park(360) — 노드는 팔이 홈에 있고 태스크가 안 돌 때만 4(ready)로 맞춘다(받침대 태스크 밖에서 홈으로 돌아온 경우). 나머지 값은 받침대 태스크가 쓴다.",
+    "arm_park": {
+      "address": 360,
       "count": 1
     },
     "digital_out": {
