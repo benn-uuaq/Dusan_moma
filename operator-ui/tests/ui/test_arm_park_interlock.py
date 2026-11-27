@@ -242,3 +242,34 @@ def test_rest_button(window) -> None:
     window._on_robot_at_home(False)                 # 벽 앞 — 홈에서만 거치한다
     window.main_screen.rest_button.click()
     assert window.commands == [] and "홈에서만" in window.main_screen.activity_label.text()
+
+
+def test_no_home_command_while_the_rest_task_starts(window) -> None:
+    """거치를 보내면 노드가 태스크를 틀기 전에 홈 플래그부터 내린다 — 그 틈에 홈을 보내거나 출발하면 안 된다
+    (2026-11-27 현장: 거치 직후 홈을 보내고 차량이 출발했다)."""
+    _ready(window)
+    drove = []
+    window._prepare_to_drive(lambda: drove.append(1))
+    assert window.commands == ["rest"]
+    window._on_robot_at_home(False)                 # 노드가 홈 플래그를 내렸다 — 태스크는 아직 안 돈다
+    window._on_robot_task_state(3)
+    assert window.commands == ["rest"] and drove == [], "홈을 보내지도 출발하지도 않는다"
+    _park_done(window)
+    assert drove == [1] and "home" not in window.commands
+
+
+def test_scan_start_after_parking_reloads_the_scan_task(window) -> None:
+    """거치하면 펜던트에 park 태스크가 올라간다 — 그대로 play 하면 park 태스크가 돌고 멈춘다(E9202,
+    2026-11-27 현장). 스캔을 틀기 전에 스캔 태스크를 다시 불러 둔다."""
+    _ready(window)
+    window._prepare_to_drive(lambda: None)
+    _park_done(window)
+    window._on_robot_at_home(True)                  # (팔이 홈이라 되돌리기 없이) 바로 스캔을 튼다
+    window._on_arm_park(READY)
+    window._work_area_ready_for_scan = lambda: True
+    window.commands.clear()
+    window._start_robot_scan()
+    assert window.commands[:3] == ["remote_control_on", "stop", "load_scan_task"]
+    window.commands.clear()
+    window._start_robot_scan()                      # 다음 셀 — 이미 스캔 태스크다
+    assert "load_scan_task" not in window.commands

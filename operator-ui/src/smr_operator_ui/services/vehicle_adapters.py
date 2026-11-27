@@ -411,6 +411,7 @@ class VehicleFinishAdapter(_VehicleStep):
     def move_to(self, target: float | int = 0, unit: str = "", label: str = "") -> None:
         self._target = float(target)
         self._accepted = False
+        self._align_cleared = False
         self._begin(label or "홀딩 해제 · 아웃트리거 올림")
         if not self._client.finish_job():
             self._fail("작업 끝(FINISH)을 보내지 못했습니다")
@@ -419,11 +420,26 @@ class VehicleFinishAdapter(_VehicleStep):
         # 홀딩 해제 · 아웃트리거 올림은 차량이 마저 한다 — 기다리기만 그만둔다(STOP 을 보내지 않는다).
         self._finish(False)
 
+    #: FINISH 가 「ALIGN is active」로 거절되면 남은 정렬을 지우고(STOP + job_cancel) 이만큼 뒤 한 번 더 보낸다.
+    ALIGN_CLEAR_RETRY_MS = 1000
+
     def _on_command_result(self, name: str, ok: bool, message: str) -> None:
+        if (self._moving and not ok and name == self.COMMAND and "align is active" in str(message).lower()
+                and not getattr(self, "_align_cleared", False)):
+            # 지난 캘리브레이션 정렬이 차량에 남았다(실패 · 시간 초과로 접혔는데 지우지 않았다, 2026-11-27 현장).
+            self._align_cleared = True
+            self.activity.emit("[차량] 남아 있던 QR 정렬을 지우고 작업 끝(FINISH)을 다시 보냅니다.")
+            self._client.control("STOP", job_cancel=True)
+            QTimer.singleShot(self.ALIGN_CLEAR_RETRY_MS, self._resend)
+            return
         super()._on_command_result(name, ok, message)
         if self._moving and ok and name == self.COMMAND:
             self._accepted = True
             self._track(self._client.last_status)
+
+    def _resend(self) -> None:
+        if self._moving and not self._accepted and not self._client.finish_job():
+            self._fail("작업 끝(FINISH)을 보내지 못했습니다")
 
     def _track(self, status: dict) -> None:
         if (self._moving and self._accepted and status.get("hold") == "RELEASE"

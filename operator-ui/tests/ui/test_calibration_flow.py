@@ -608,3 +608,35 @@ def test_short_press_loss_is_ignored_but_a_long_one_raises_e3002(qtbot):
     qtbot.wait(300)
     assert len(raised) == 1, "떨어진 채로 있으면 한 번만 낸다"
     window.close()
+
+
+def test_align_rejected_while_outriggers_rise_is_resent(qtbot):
+    """FINISH 직후 「requires stationary automatic STOP and released outriggers」 — 잠시 뒤 새 job_id 로 다시 보낸다."""
+    window = _window(qtbot)
+    window.ALIGN_RETRY_MS = 10
+    sent = []
+    window.vehicle.measure_lap = lambda job_id, *a, **k: sent.append(job_id) or True
+    lap = {"limit_s": 120}
+    window._calibration_lap = lap
+    window._start_measured_lap(lap)
+    window._on_measure_lap_result("measure_lap", False,
+                                  "ALIGN requires stationary automatic STOP and released outriggers")
+    qtbot.waitUntil(lambda: len(sent) == 2, timeout=2000)
+    assert sent[0] != sent[1], "다시 보낼 때는 새 job_id"
+    assert window._calibration_lap is lap
+    window.close()
+
+
+def test_align_timeout_cancels_the_align_on_the_vehicle(qtbot):
+    """받아들인 정렬이 시간 안에 안 끝나면 차량에서도 지운다 — 남으면 다음 FINISH 가 거절된다(2026-11-27)."""
+    window = _window(qtbot)
+    controls = []
+    window.vehicle.measure_lap = lambda *a, **k: True
+    window.vehicle.control = lambda state="", reset=False, job_cancel=False: controls.append((state, job_cancel))
+    lap = {"limit_s": 120}
+    window._calibration_lap = lap
+    window._start_measured_lap(lap)
+    window._on_measure_lap_result("measure_lap", True, "accepted")
+    window._measured_lap_timeout()
+    assert controls == [("STOP", True)]
+    window.close()

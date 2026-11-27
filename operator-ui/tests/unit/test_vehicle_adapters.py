@@ -474,3 +474,17 @@ def test_lift_without_lift_state_uses_the_height_only(car, qtbot) -> None:
     lift.move_to(780.0, " mm")
     car.status(state="HOLD", hold="SET", lift_h=0.778)
     assert got["arrived"] == 1, "lift_state 를 안 채우는 AGV — 예전처럼 ±5 mm"
+
+
+def test_finish_clears_a_leftover_align_and_resends(car, qtbot) -> None:
+    """지난 캘리브레이션 정렬이 남아 FINISH 가 「ALIGN is active」로 거절되면 지우고 한 번 더 보낸다(2026-11-27)."""
+    finish = VehicleFinishAdapter(car)
+    finish.ALIGN_CLEAR_RETRY_MS = 10
+    got = _spy(finish)
+    car.status(hold="RELEASE", state="STOP")
+    finish.move_to(0)
+    car.command_result.emit("finish", False, "ALIGN is active")
+    assert got["problem"] == [] and ("control", "STOP", False, True) in car.calls
+    qtbot.waitUntil(lambda: car.calls.count(("finish",)) == 2, timeout=1000)
+    car.command_result.emit("finish", False, "ALIGN is active")      # 두 번째는 실패로 본다
+    assert "ALIGN is active" in got["problem"][-1]

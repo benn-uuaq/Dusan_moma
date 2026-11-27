@@ -743,6 +743,9 @@ class OperatorWindow(QMainWindow):
                 # 화면 설정은 아직 안 불러왔다(비동기) — 저장 파일의 주소로 띄운다.
                 self.robot_node.robot_ip, self.robot_node.modbus_port = saved
             self.robot_node.start(already_running=self.ros_status.node_is_running())
+            # 설비 전원을 켜면 로봇 컨트롤러 부팅이 가장 늦다 — 「로봇 부팅 중」 창을 띄우고 붙으면 전원 ON ·
+            # 브레이크 해제까지 한다(2026-11-27, robot_boot.py).
+            self._start_robot_boot_assist()
 
         self._connect_sequencer()
         # 외부 통신은 ERUT(MQTT) 하나다 — 사내 MC MQTT 는 2026-10-07 에 뺐다.
@@ -892,7 +895,7 @@ class OperatorWindow(QMainWindow):
             self.amr, self.lift, self.outrigger, self.retractor,
             send_target=lambda u, v: self.ros_status.send_pose("mark_target", [u, v]),
             start_mark_task=self._start_mark_task,
-            restore_scan_task=lambda: self.ros_status.call_command("load_scan_task"),
+            restore_scan_task=self._load_scan_task,
             # 로봇은 마킹 자리(290 = 11)에서 이게 올 때까지 선다(레지스터 278).
             release_hold=lambda: self.ros_status.send_value("mark_go", 1),
             parent=self,
@@ -1755,6 +1758,7 @@ class OperatorWindow(QMainWindow):
         self.ros_status.call_command("remote_control_on")
         self.ros_status.call_command("stop")
         self.ros_status.call_command("load_scan_task")
+        self._scan_task_loaded = True
 
     #: 로봇 태스크가 끝나기를 기다리는 한도 [ms]. 넘으면 그냥 진행한다
     #: (루프판처럼 태스크가 스스로 안 끝나는 구성에서 멈춰 있지 않게).
@@ -1807,6 +1811,9 @@ class OperatorWindow(QMainWindow):
             # 주행 직전 — 받침대 위여야 한다(무조건, 2026-11-26). 거치는 리프트 0 mm 에서만 된다.
             if self._arm_on_rest():
                 return ""
+            if getattr(self, "_rest_sent", False):
+                # 거치를 보냈다 — 받침대 위(360 = 2, 태스크 멈춤)로 확인될 때까지 출발하지 않는다(2026-11-27).
+                return "로봇 팔을 받침대에 올리는 중입니다"
             if self._rest_required():
                 if not self._lift_at_zero():
                     return "리프트가 0 mm 가 아니라 팔을 받침대에 올릴 수 없습니다"
@@ -1848,6 +1855,7 @@ class OperatorWindow(QMainWindow):
     def _send_rest(self) -> None:
         """팔을 홈에서 받침대 위로 — 노드가 받침대 태스크(dusan_v6_park)를 튼다."""
         self._rest_sent = True
+        self._scan_task_loaded = False             # 노드가 받침대 태스크(dusan_v6_park)로 바꿔 끼운다
         self.main_screen.show_activity("로봇 팔을 받침대에 올립니다(거치).")
         self.ros_status.call_command("rest")
 
@@ -1942,6 +1950,12 @@ class OperatorWindow(QMainWindow):
         """
         if self._robot_task_running():
             return
+        if getattr(self, "_rest_sent", False) or getattr(self, "_unpark_sent", False):
+            # 받침대로 오가는 중이다 — 노드가 태스크를 틀기 전에 홈 플래그부터 내리므로 그 틈에 「홈 아님」으로
+            # 보고 홈(= 받침대에서 내리기)을 보내면 안 된다(2026-11-27 현장 — 거치 직후 홈을 보내고 출발했다).
+            return
+        if kind in ("rest", "drive") and getattr(self, "_arm_park", 0) == self.ARM_PARKED:
+            return                                   # 받침대 위 — 주행하려고 내리지 않는다
         if (kind == "rest" and self._rest_required() and self._lift_at_zero()
                 and getattr(self, "_robot_at_home", False) and not self._arm_on_park_path()):
             if not getattr(self, "_auto_rest_sent", False):
@@ -2069,6 +2083,7 @@ class OperatorWindow(QMainWindow):
         """
         if name == "home" and ok and self.UNPARK_MARK in str(message):
             self._unpark_sent = True
+            self._scan_task_loaded = False
             if self._motion_wait_timer.isActive():
                 self._motion_wait_timer.start(self._robot_wait_ms())
 
@@ -2125,6 +2140,11 @@ class OperatorWindow(QMainWindow):
         self._contact_armed = False
         # 이번 play 에서 태스크가 도는 걸 볼 때까지는 멈춤(3)을 장애로 안 본다.
         self._scan_task_seen_running = False
+        # 받침대 태스크(거치 · 되돌리기)나 마킹 태스크가 올라가 있으면 그대로 play 하면 그 태스크가 돈다 —
+        # 스캔 태스크를 다시 불러 둔 뒤 튼다(2026-11-27 현장: park 태스크가 돌고 멈춰 E9202).
+        if not getattr(self, "_scan_task_loaded", True):
+            self.main_screen.show_activity("스캔 태스크로 바꿔 끼운 뒤 로봇 스캔을 시작합니다.")
+            self._load_scan_task()
         # 원격 제어 모드가 아니면 컨트롤러가 play/stop 을 모두 거부한다
         # ("not supported in local control mode"). 펜던트를 만지면 로컬로
         # 돌아가므로 셀마다 켜 준다.
@@ -2587,6 +2607,7 @@ class OperatorWindow(QMainWindow):
         # 마킹은 시작 자세 높이 그대로 한다 — 스캔 때 들어 둔 팔 높이(358)를 지운다.
         self._send_scan_z_offset(0)
         self.ros_status.call_command("load_mark_task")
+        self._scan_task_loaded = False
         self._schedule_play()
 
     def _stop_inspection(self) -> None:
@@ -2669,6 +2690,8 @@ class OperatorWindow(QMainWindow):
         # 팔이 받침대 길에 있으면 노드가 받침대 되돌리기 태스크를 돌린다(2026-11-26) — 끝나면 스캔
         # 태스크를 다시 불러 둔다(_reload_scan_after_unpark). 관절값으로만 알아본 경우는 응답으로 안다.
         self._unpark_sent = self._arm_on_park_path()
+        if self._unpark_sent:
+            self._scan_task_loaded = False         # 되돌리기 태스크(dusan_v6_unpark)로 바꿔 끼운다
         self.main_screen.show_activity("로봇 팔을 받침대에서 들어 홈으로 되돌립니다." if self._unpark_sent
                                        else "로봇을 홈으로 보냅니다.")
         self._park_position()
@@ -3280,10 +3303,27 @@ class OperatorWindow(QMainWindow):
             conn.set_link_message(message)
             self.main_screen.show_activity(message)
 
+    def _start_robot_boot_assist(self) -> None:
+        from smr_operator_ui.robot_boot import RobotBootAssist
+
+        boot = self.robot_boot = RobotBootAssist(self.ros_status.call_command, parent=self)
+        boot.activity.connect(self.main_screen.show_activity)
+        self.ros_status.connected_changed.connect(boot.on_connected)
+        self.ros_status.control_method_changed.connect(boot.on_control_method)
+        self.ros_status.operation_mode_changed.connect(boot.on_operation_mode)
+        self.ros_status.robot_mode_changed.connect(boot.on_mode)
+        self.ros_status.command_result.connect(boot.on_command_result)
+        self.ros_status.estop_changed.connect(boot.on_fault)
+        self.ros_status.safety_stop_changed.connect(boot.on_fault)
+        boot.start()
+
     def _disconnect_robot(self) -> None:
         """연결한 경로를 같이 끊는다."""
         self._robot_disconnect_requested = True
         self._robot_manual_disconnect = True
+        boot = getattr(self, "robot_boot", None)
+        if boot is not None:
+            boot.cancel("연결 해제")
         tpac_screen = self.screens["tpac_bridge"]
         if tpac_screen.poller is not None:
             tpac_screen._stop_robot()
@@ -4282,6 +4322,12 @@ class OperatorWindow(QMainWindow):
         self.main_screen.show_activity(
             "캘리브레이션 QR 정렬 — 차량이 QR 마커에 맞춰 방향 · 거리를 맞춥니다"
             + (f", 최대 {limit_s} s" if limit_s else ""))
+        self._send_align(lap)
+
+    def _send_align(self, lap: dict) -> None:
+        """measure_lap ALIGN 을 보낸다. 다시 보낼 때(아웃트리거가 덜 올라가 거절됨)는 새 job_id 로 보낸다."""
+        if lap.get("align_retries"):
+            lap["job_id"] = self.vehicle.new_job_id("ALN")
         # 주행(SetJob)과 같이 **저장한** 차량 설정 값을 쓴다 — 입력칸의 저장 안 한 값이 아니라(2026-11-24).
         amr = self._vehicle_amr
         if not self.vehicle.measure_lap(lap["job_id"], amr.effective_speed_mps, amr.standoff_m, 0.0,
@@ -4328,11 +4374,40 @@ class OperatorWindow(QMainWindow):
         if name != "measure_lap" or not lap or not lap.get("measured"):
             return
         if not ok:
+            if self._align_retryable(message) and self._retry_align(lap):
+                return
             self._fail_measured_lap(f"차량이 QR 정렬 명령을 거절했습니다 — {message}")
             return
         lap["accepted"] = True
         # 답보다 상태가 먼저 왔을 수 있다(받자마자 끝낸 AGV) — 받아들여진 지금 마지막 상태를 다시 본다.
         self._track_measured_lap(self.vehicle.last_status)
+
+    #: FINISH 뒤 아웃트리거가 다 올라가기 전에 보낸 ALIGN 은 거절된다 — 이 간격으로 이만큼 다시 보낸다(2026-11-27).
+    ALIGN_RETRY_MS = 1000
+    ALIGN_RETRY_TRIES = 20
+
+    @staticmethod
+    def _align_retryable(message: str) -> bool:
+        """「아직 서지 않았다 · 아웃트리거가 덜 올라갔다」 거절 — 잠시 뒤 다시 보내면 된다."""
+        text = str(message).lower()
+        return "requires stationary" in text or "released outriggers" in text
+
+    def _retry_align(self, lap: dict) -> bool:
+        tries = int(lap.get("align_retries", 0))
+        if tries >= self.ALIGN_RETRY_TRIES:
+            return False
+        lap["align_retries"] = tries + 1
+        if tries == 0:
+            self.main_screen.show_activity("차량이 아직 아웃트리거를 올리는 중입니다 — 끝나면 QR 정렬을 다시 보냅니다.")
+        if tries == 2 and self.vehicle.last_status.get("state") == "FINISH":
+            # ALIGN 은 STOP 에서만 받는다 — FINISH 에 머물러 있으면 끝난 작업을 지워 STOP 으로 둔다(아웃트리거는 그대로).
+            self.vehicle.control("STOP", job_cancel=True)
+
+        def again() -> None:
+            if getattr(self, "_calibration_lap", None) is lap and lap.get("measured") and not lap.get("accepted"):
+                self._send_align(lap)
+        _call_later(self, self.ALIGN_RETRY_MS, again)
+        return True
 
     def _finish_measured_lap(self, moved_mm: float) -> None:
         lap = self._calibration_lap
@@ -4381,16 +4456,18 @@ class OperatorWindow(QMainWindow):
         lap = getattr(self, "_calibration_lap", None)
         if not lap or not lap.get("measured"):
             return
-        self._stop_measured_lap_vehicle()
+        self._stop_measured_lap_vehicle()          # 받아들인 정렬을 차량에서 지운다
         self._fail_measured_lap(f"정렬 최대 시간 {int(lap.get('limit_s') or 0)} s 안에 끝나지 않았습니다")
 
     def _stop_measured_lap_vehicle(self) -> None:
-        """정렬을 접을 때 차량을 세운다 — 움직이는 중일 때만, 작업도 버린다(job_cancel).
+        """정렬을 접을 때 차량을 세우고 정렬 작업을 지운다(STOP + job_cancel).
 
-        차량이 FINISH 에 서 있으면 job_cancel 없는 STOP 은 「FINISH waits for a new job or job_cancel」로
-        거절된다(2026-11-24 현장 알림). 서 있으면 보낼 것이 없다.
+        차량이 받아들인 정렬(ALIGN)은 상태와 상관없이 지운다 — 남아 있으면 다음 FINISH 가 「ALIGN is active」로
+        거절돼 캘리브레이션 · 주행이 모두 막혔다(2026-11-27 현장). 받아들이지 않은 정렬은 움직이는 중일 때만 세운다.
+        job_cancel 을 같이 보내므로 FINISH 에 서 있어도 거절되지 않는다.
         """
-        if self.vehicle.last_status.get("state") in ("RUNNING", "PAUSE"):
+        lap = getattr(self, "_calibration_lap", None) or {}
+        if lap.get("accepted") or self.vehicle.last_status.get("state") in ("RUNNING", "PAUSE"):
             self.vehicle.control("STOP", job_cancel=True)
 
     def _cancel_measured_lap(self) -> None:
